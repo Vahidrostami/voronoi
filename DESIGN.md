@@ -182,9 +182,15 @@ git discipline, multi-agent awareness, and quality standards.
 | Script | Purpose |
 |--------|---------|
 | `swarm-init.sh` | One-time project setup (checks deps, inits Beads, writes config) |
-| `spawn-agent.sh` | Creates worktree, opens tmux pane, launches Claude Code agent |
+| `spawn-agent.sh` | Creates worktree, opens tmux pane, launches agent (code domain) |
+| `spawn-agent-generic.sh` | Creates directory, opens tmux pane, launches agent (research/generic) |
 | `standup.sh` | Queries Beads + git for comprehensive progress report |
 | `merge-agent.sh` | Merges agent branch to main, cleans up worktree/tmux |
+| `merge-agent-generic.sh` | Assembles output files from generic agent into project |
+| `autopilot.sh` | Autonomous daemon: polls, merges, dispatches — no human needed |
+| `plan-tasks.sh` | LLM-powered task decomposition from prompt file |
+| `quality-gate.sh` | Pluggable validation (tests, conflicts, custom hooks) |
+| `dashboard.py` | Rich terminal UI for live swarm monitoring |
 | `teardown.sh` | Removes all worktrees, kills tmux, prunes branches |
 | `cron-standup.sh` | Cron-compatible wrapper that writes reports and posts issues |
 
@@ -260,13 +266,108 @@ tmux attach -t my-app-swarm    # Watch agents work in real time
 
 ---
 
-## 8. Future Extensions
+## 8. Autopilot Mode
 
+The `scripts/autopilot.sh` daemon eliminates human-in-the-loop orchestration by implementing a continuous poll-merge-dispatch cycle.
+
+### How It Works
+
+```
+User runs: ./scripts/autopilot.sh [--dashboard /tmp/swarm.txt]
+
+┌─────────────────────────────────────────────────────────┐
+│                   AUTOPILOT LOOP                        │
+│                                                         │
+│  1. Dispatch all bd-ready tasks (up to max_agents)      │
+│  2. Sleep poll_interval (30s)                           │
+│  3. For each active agent:                              │
+│     ├─ Beads task closed? → quality gate → merge        │
+│     ├─ tmux window gone?  → check results → merge/retry │
+│     └─ Timeout exceeded?  → kill → retry (up to 3x)    │
+│  4. Check bd ready for newly unblocked tasks            │
+│  5. Dispatch next wave                                  │
+│  6. Repeat until no open work remains                   │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Quality Gates
+
+`scripts/quality-gate.sh` runs before every merge:
+1. Branch must have commits
+2. Beads task must be closed
+3. No merge conflicts with main
+4. Tests must pass (auto-detects Python pytest / Node npm test)
+5. Custom gate hook (`.swarm-quality-gate.sh`) if present
+
+Failed gates trigger a retry with error context (up to `--max-retries`).
+
+### Usage
+
+```bash
+# ZERO-TOUCH: From prompt file to finished project
+./scripts/autopilot.sh --prompt PROMPT.md --dashboard /tmp/swarm.txt
+
+# Research domain (plain directories, no git branching):
+./scripts/autopilot.sh --prompt research-brief.md --domain research
+
+# Pre-planned tasks (Beads already populated):
+./scripts/autopilot.sh
+
+# With live TUI dashboard (separate terminal):
+python3 scripts/dashboard.py --refresh 3
+
+# Dry run — see what would happen:
+./scripts/autopilot.sh --prompt PROMPT.md --dry-run
+
+# Custom timeouts and notification:
+./scripts/autopilot.sh --timeout 900 --notify "say 'swarm complete'"
+```
+
+### Domain Support
+
+| Domain | Isolation | Merge Strategy | Quality Gate |
+|--------|-----------|---------------|--------------|
+| `code` (default) | Git worktrees | `git merge` | Tests + conflict check |
+| `research` | Plain directories | File assembly | Summary check |
+| `generic` | Plain directories | File assembly | Custom hook |
+
+### LLM Auto-Planner
+
+`scripts/plan-tasks.sh` calls the agent CLI to decompose a prompt into structured tasks:
+
+```bash
+./scripts/plan-tasks.sh PROMPT.md              # Auto-plan
+./scripts/plan-tasks.sh PROMPT.md --dry-run    # Preview only
+```
+
+The planner outputs JSON, creates Beads epic + tasks + dependency graph automatically.
+
+### Live Dashboard
+
+`scripts/dashboard.py` provides a rich terminal UI:
+
+```
+┌─ 🐝 Swarm Dashboard ─────────────────────────────────────────┐
+│ my-project  ████████░░░░░░ 60%  ✓3 ◐2 ○1 ⚡1 ready  🤖2  ⏱5m │
+├───────────────────────────────────────────────────────────────┤
+│ 📋 Task Graph          │ 🤖 Active Agents                    │
+│ ✓ world-engine   P1    │ agent-ants     2 commits  🟢 running │
+│ ◐ ants           P2    │ agent-birds    1 commit   🟢 running │
+│ ○ runner         P2    │                                      │
+└───────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 9. Future Extensions
+
+- Autopilot TUI dashboard (rich terminal UI with live agent status)
+- Event-driven completion (fswatch/inotify instead of polling)
+- LLM-powered auto-planning (agent decomposes prompt into Beads graph)
+- Adaptive retry with failure analysis (LLM reviews errors before retrying)
+- Non-code domain support (research papers, business reports, course creation)
 - MCP Agent Mail for inter-agent messaging
 - Beads Formulas for pre-built epic templates
-- Auto-merge for branches that pass CI
-- Priority queuing for automatic task pickup
 - Cost tracking per agent per task
-- Web dashboard for real-time swarm status
 - Slack/Discord integration for standup reports
 - Multi-repo support for microservice orchestration
