@@ -35,19 +35,29 @@ copilot
 ## Wave Structure
 
 ```
-Wave 1: core foundation (matrix ops, base network, MNIST loader)
+Wave 1: core foundation (matrix ops from scratch, base network, MNIST loader)
 Wave 2: 5 strategies in parallel (naive, ewc, neurogenesis, replay, cls)
 Wave 3: hybrid combiner (mixes strategies)
-Wave 4: experiment runner + report generator
+Wave 4: experiment runner + interactive webapp (parallel)
 ```
 
 ## Output
 
+Open `output/index.html` in any browser — no server needed.
+
+- `output/index.html` — **interactive webapp** ("The Forgetting Lab")
+- `output/results.json` — machine-readable experiment data
 - `output/results.csv` — accuracy table for all strategies
 - `output/accuracy_matrix.png` — heatmap of who forgot what
 - `output/learning_curves.png` — forgetting cliffs visualized
 - `output/backward_transfer.png` — strategy comparison bar chart
 - `output/discovery.md` — auto-generated findings summary
+
+### The Webapp Features
+- **The Forgetting Cliff**: interactive chart — watch memory collapse in real-time
+- **Strategy Cards**: click to explore each brain-inspired mechanism
+- **Accuracy Matrix**: interactive heatmap, sortable by different metrics
+- **Build Your Own Brain**: toggle EWC/Replay/Neurogenesis/CLS, watch performance change live
 
 ## Why This Demo
 
