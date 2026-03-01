@@ -60,6 +60,21 @@ class AntSpecies(Species):
             ex["carrying_food"] = True
             return Action("eat", dx=0, dy=0)
 
+        # Check for nearby food (within 3 cells) — ants have limited vision
+        food_positions = grid.get_food_positions()
+        nearest_food = None
+        nearest_dist = 999
+        for fx, fy in food_positions:
+            d = abs(fx - x) + abs(fy - y)
+            dw = min(d, grid.width + grid.height - d)
+            if dw <= 3 and dw < nearest_dist:
+                nearest_dist = dw
+                nearest_food = (fx, fy)
+        if nearest_food is not None:
+            dx, dy = _step_toward(x, y, nearest_food[0], nearest_food[1], grid)
+            self._drop(x, y, _WEAK_PHEROMONE)
+            return Action("move", dx=dx, dy=dy)
+
         # Sense pheromones and decide direction
         dx, dy = self._forage_direction(x, y, grid)
         self._drop(x, y, _WEAK_PHEROMONE)

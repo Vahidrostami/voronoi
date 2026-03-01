@@ -41,8 +41,8 @@ class FireflySpecies(Species):
         ]
 
         # 2. Decrease cooldown
-        if ex['flash_cooldown'] > 0:
-            ex['flash_cooldown'] -= 1
+        if ex.get('flash_cooldown', 0) > 0:
+            ex['flash_cooldown'] = ex.get('flash_cooldown', 0) - 1
 
         # 3-4. Receive visible flashes
         visible: list[tuple[int, int, str]] = []
@@ -76,6 +76,19 @@ class FireflySpecies(Species):
             self._emit(entity, 'food', tick)
             return Action('eat', dx=0, dy=0)
 
+        # 6b. Seek nearby food (visual range 5)
+        if food_target is None and ex['attracted_to'] is None:
+            food_positions = grid.get_food_positions()
+            nearest_food = None
+            nearest_dist = 999
+            for fx, fy in food_positions:
+                d = _manhattan(entity.x, entity.y, fx, fy, grid)
+                if d <= 5 and d < nearest_dist:
+                    nearest_dist = d
+                    nearest_food = (fx, fy)
+            if nearest_food:
+                return Action('move', *_dir_toward(entity.x, entity.y, *nearest_food, grid))
+
         # 7. Predator nearby — danger flash and flee
         predator = _nearest_predator(entity, world)
         if predator is not None:
@@ -100,7 +113,7 @@ class FireflySpecies(Species):
         return 'F' if entity.extra.get('flash_cooldown', 0) >= 4 else 'f'
 
     def _emit(self, entity: Entity, flash_type: str, tick: int) -> None:
-        if entity.extra['flash_cooldown'] <= 0:
+        if entity.extra.get('flash_cooldown', 0) <= 0:
             self._flashes.append(
                 (entity.x, entity.y, flash_type, tick, entity.id)
             )
@@ -183,7 +196,7 @@ def _nearest_predator(entity: Entity, world: World) -> Entity | None:
     for e in nearby:
         if e.id == entity.id or e.species_name == 'fireflies':
             continue
-        if e.species_name in ('wolves',):
+        if e.species_name in ('wolf', 'wolves'):
             d = _manhattan(entity.x, entity.y, e.x, e.y, world.grid)
             if d < best_d:
                 best, best_d = e, d

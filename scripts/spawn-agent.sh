@@ -34,7 +34,7 @@ git worktree add "$WORKTREE_PATH" -b "$BRANCH_NAME" 2>/dev/null || {
 }
 
 # 2. Claim the task in Beads
-bd update "$TASK_ID" --claim
+bd update "$TASK_ID" --claim || echo "Warning: claim failed (may already be claimed)"
 
 # 3. Create/attach tmux session
 if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then

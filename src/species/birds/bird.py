@@ -150,6 +150,20 @@ class BirdSpecies(Species):
                 self._emit(entity, 'food', tick)
             return Action('eat', dx=0, dy=0)
 
+        # 4b. Seek nearby food (birds have good vision, range 8)
+        food_positions = grid.get_food_positions()
+        nearest_food = None
+        nearest_dist = 999
+        for fx, fy in food_positions:
+            d = self._manhattan(entity.x, entity.y, fx, fy, w, h)
+            if d <= 8 and d < nearest_dist:
+                nearest_dist = d
+                nearest_food = (fx, fy)
+        if nearest_food:
+            dx = self._dir_toward(entity.x, nearest_food[0], w)
+            dy = self._dir_toward(entity.y, nearest_food[1], h)
+            return Action('move', dx=dx, dy=dy)
+
         # 5. Detect wolves — emit danger, flee
         wolves = [
             e for e in world.entities

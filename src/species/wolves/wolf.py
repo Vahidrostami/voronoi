@@ -75,11 +75,9 @@ class WolfSpecies(Species):
                 self._maybe_reproduce(entity, world)
                 return Action("eat", 0, 0, {"prey_id": prey.id})
 
-            # Chase closest prey
+            # Chase closest prey (world handles the actual move)
             dx, dy = _toroidal_step(entity.x, entity.y, prey.x, prey.y, w, h)
             extra["hunt_target_id"] = prey.id
-            entity.move(dx, dy, world.grid)
-            entity.lose_energy(cfg.ENERGY_LOSS_PER_TICK)
             return Action("move", dx, dy, None)
 
         # 3. Follow scent trails (radius 3)
@@ -97,14 +95,10 @@ class WolfSpecies(Species):
 
         if best_scent is not None:
             dx, dy = _toroidal_step(ex, ey, best_scent[0], best_scent[1], w, h)
-            entity.move(dx, dy, world.grid)
-            entity.lose_energy(cfg.ENERGY_LOSS_PER_TICK)
             return Action("move", dx, dy, {"tracking_scent": True})
 
         # 4. Random movement
         dx, dy = random.choice([(0, 1), (0, -1), (1, 0), (-1, 0)])
-        entity.move(dx, dy, world.grid)
-        entity.lose_energy(cfg.ENERGY_LOSS_PER_TICK)
         return Action("move", dx, dy, None)
 
     def render(self, entity: Entity) -> str:

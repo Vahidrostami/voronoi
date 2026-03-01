@@ -61,6 +61,16 @@ class World:
             if entity.can_reproduce(self.config):
                 entity.energy -= self.config.REPRODUCE_COST
                 child = Entity(entity.species_name, entity.x, entity.y, self.config.REPRODUCE_COST)
+                # Copy parent's extra dict structure for species-specific state
+                if entity.extra:
+                    child.extra = {k: (v if not isinstance(v, (list, dict)) else type(v)())
+                                   for k, v in entity.extra.items()}
+                    # Reset numeric values to defaults
+                    for k, v in child.extra.items():
+                        if isinstance(v, (int, float)):
+                            child.extra[k] = 0
+                        elif v is None:
+                            child.extra[k] = None
                 self.entities.append(child)
         elif action.type == 'signal':
             pos = (entity.x, entity.y)
