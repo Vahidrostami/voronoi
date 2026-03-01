@@ -34,7 +34,7 @@ class WolfSpecies(Species):
         for _ in range(count):
             for _ in range(200):
                 x, y = random.randint(0, w - 1), random.randint(0, h - 1)
-                if world.grid.passable(x, y):
+                if world.grid.is_passable(x, y):
                     break
             e = Entity("wolf", x, y, energy=50.0)
             e.extra = {"ticks_since_eaten": 0, "tracking": None, "hunt_target_id": None}
@@ -119,7 +119,7 @@ class WolfSpecies(Species):
             w, h = world.config.GRID_WIDTH, world.config.GRID_HEIGHT
             for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
                 nx, ny = (entity.x + dx) % w, (entity.y + dy) % h
-                if world.grid.passable(nx, ny):
+                if world.grid.is_passable(nx, ny):
                     child = Entity("wolf", nx, ny, energy=50.0)
                     child.extra = {"ticks_since_eaten": 0, "tracking": None, "hunt_target_id": None}
                     world.entities.append(child)
