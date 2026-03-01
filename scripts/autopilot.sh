@@ -11,6 +11,8 @@ set -euo pipefail
 #   ./scripts/autopilot.sh [options]
 #
 # Options:
+#   --prompt FILE        Auto-plan tasks from prompt file using LLM
+#   --domain DOMAIN      code (default), research, or generic
 #   --poll-interval N    Seconds between polls (default: 30)
 #   --max-retries N      Max retries for failed agents (default: 3)
 #   --quality-gate CMD   Custom quality gate command (default: scripts/quality-gate.sh)
@@ -20,6 +22,16 @@ set -euo pipefail
 #   --dashboard FILE     Write live dashboard to file (tail -f to watch)
 #   --timeout N          Max seconds per agent before killing (default: 600)
 #   --notify CMD         Command to run on completion (e.g., "say done")
+#
+# Examples:
+#   # Full autopilot from prompt file:
+#   ./scripts/autopilot.sh --prompt PROMPT.md --dashboard /tmp/swarm.txt
+#
+#   # Research domain (plain dirs, no git worktrees):
+#   ./scripts/autopilot.sh --prompt research-brief.md --domain research
+#
+#   # Pre-planned tasks (just run the autopilot loop):
+#   ./scripts/autopilot.sh --notify "say 'done'"
 # =============================================================================
 
 # --- Defaults ---
@@ -32,6 +44,8 @@ QUIET=false
 DASHBOARD_FILE=""
 AGENT_TIMEOUT=600
 NOTIFY_CMD=""
+PROMPT_FILE=""
+DOMAIN="code"
 
 # --- Parse args ---
 while [[ $# -gt 0 ]]; do
@@ -45,6 +59,8 @@ while [[ $# -gt 0 ]]; do
         --dashboard)     DASHBOARD_FILE="$2"; shift 2 ;;
         --timeout)       AGENT_TIMEOUT="$2"; shift 2 ;;
         --notify)        NOTIFY_CMD="$2"; shift 2 ;;
+        --prompt)        PROMPT_FILE="$2"; shift 2 ;;
+        --domain)        DOMAIN="$2"; shift 2 ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
@@ -265,7 +281,11 @@ merge_agent() {
     fi
 
     log_action "Merging $branch → main"
-    if ./scripts/merge-agent.sh "$branch" "$task_id" 2>&1; then
+    local merge_script="./scripts/merge-agent.sh"
+    if [[ "$DOMAIN" != "code" ]]; then
+        merge_script="./scripts/merge-agent-generic.sh"
+    fi
+    if $merge_script "$branch" "$task_id" 2>&1; then
         TOTAL_MERGED=$((TOTAL_MERGED + 1))
         # Remove from tracking
         unset "AGENT_RETRIES[$branch]"
@@ -334,7 +354,11 @@ dispatch_ready() {
             log_action "[DRY RUN] Would dispatch $branch for $task_id: $title"
         else
             log_action "Dispatching $branch for task $task_id"
-            if ./scripts/spawn-agent.sh "$task_id" "$branch" "$desc" 2>&1; then
+            local spawn_script="./scripts/spawn-agent.sh"
+            if [[ "$DOMAIN" != "code" ]]; then
+                spawn_script="./scripts/spawn-agent-generic.sh"
+            fi
+            if $spawn_script "$task_id" "$branch" "$desc" 2>&1; then
                 AGENT_SPAWN_TIME[$branch]=$(date +%s)
                 AGENT_TASK_MAP[$branch]=$task_id
                 TASK_DESCRIPTION_MAP[$task_id]="$desc"
@@ -373,10 +397,30 @@ echo "╔═══════════════════════�
 echo "║           🤖 SWARM AUTOPILOT — $PROJECT_NAME"
 echo "║                                                               ║"
 echo "║  Poll: ${POLL_INTERVAL}s  Max agents: $MAX_AGENTS  Timeout: ${AGENT_TIMEOUT}s      ║"
-echo "║  Quality gate: $QUALITY_GATE"
+echo "║  Domain: $DOMAIN  Quality gate: $QUALITY_GATE"
 echo "║  Dry run: $DRY_RUN                                           ║"
 echo "╚═══════════════════════════════════════════════════════════════╝"
 echo ""
+
+# --- Phase 0: Auto-plan if --prompt given ---
+if [[ -n "$PROMPT_FILE" ]]; then
+    if [[ ! -f "$PROMPT_FILE" ]]; then
+        log_error "Prompt file not found: $PROMPT_FILE"
+        exit 1
+    fi
+    log_action "Auto-planning from: $PROMPT_FILE"
+    if [[ "$DRY_RUN" == "true" ]]; then
+        ./scripts/plan-tasks.sh "$PROMPT_FILE" --dry-run
+    else
+        ./scripts/plan-tasks.sh "$PROMPT_FILE"
+    fi
+    # Set epic to in_progress
+    EPIC_ID=$(bd list --json 2>/dev/null | jq -r '[.[] | select(.issue_type == "epic" and .status == "open")] | last | .id // empty')
+    if [[ -n "$EPIC_ID" ]]; then
+        bd update "$EPIC_ID" --status in_progress 2>/dev/null || true
+    fi
+    log_status "Planning complete. Starting autopilot loop."
+fi
 
 if [[ -n "$DASHBOARD_FILE" ]]; then
     log_status "Dashboard: tail -f $DASHBOARD_FILE"
