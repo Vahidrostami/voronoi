@@ -190,7 +190,7 @@
   ],
   "discovery_text": "The full coupled-decisions pipeline discovered 4 of 5 planted ground-truth interaction effects. Discovered: GT-1, GT-2, GT-3, GT-5. The progressive reduction pipeline compressed a ~10^18 combinatorial decision space to 6 final recommendations while maintaining ground-truth coverage. Cross-domain generalization succeeded in 2/2 secondary domains.",
   "metadata": {
-    "total_elapsed_seconds": 42.2,
+    "total_elapsed_seconds": 42.0,
     "random_seed": 42,
     "python_version": "3.9.6"
   }
