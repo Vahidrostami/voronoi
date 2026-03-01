@@ -97,17 +97,19 @@ After running `swarm-init.sh`, edit `.swarm-config.json`:
 ```json
 {
   "max_agents": 4,
-  "agent_command": "copilot -p",
+  "agent_command": "copilot",
+  "agent_flags": "--allow-all",
   "auto_merge": false,
   "branch_prefix": "agent-"
 }
 ```
 
-The `agent_command` field controls which CLI is used to dispatch worker agents into tmux panes. Supported values:
-- `"copilot -p"` — GitHub Copilot CLI (default)
-- `"claude -p"` — Claude Code CLI
+| Field | Purpose |
+|-------|---------|
+| `agent_command` | CLI binary to dispatch agents (`"copilot"` or `"claude"`). The spawn script appends `-p` automatically. |
+| `agent_flags` | Flags for headless execution (e.g. `"--allow-all"` to grant all permissions without prompting). |
 
-The init script auto-detects which is installed. Override manually if needed.
+The init script auto-detects which CLI is installed. Override manually if needed.
 
 ## Design
 

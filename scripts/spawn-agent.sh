@@ -11,7 +11,8 @@ CONFIG=$(cat .swarm-config.json)
 PROJECT_DIR=$(echo "$CONFIG" | jq -r '.project_dir')
 SWARM_DIR=$(echo "$CONFIG" | jq -r '.swarm_dir')
 TMUX_SESSION=$(echo "$CONFIG" | jq -r '.tmux_session')
-AGENT_CMD=$(echo "$CONFIG" | jq -r '.agent_command // "copilot -p"')
+AGENT_CMD=$(echo "$CONFIG" | jq -r '.agent_command // "copilot"')
+AGENT_FLAGS=$(echo "$CONFIG" | jq -r '.agent_flags // "--allow-all"')
 
 # Pre-flight: verify agent CLI exists
 AGENT_BIN="${AGENT_CMD%% *}"
@@ -67,8 +68,12 @@ RULES:
 PROMPT
 )
 
-# 5. Launch agent CLI in the tmux pane
+# 5. Write prompt to file in worktree (avoids shell quoting issues in tmux)
+echo "$AGENT_PROMPT" > "$WORKTREE_PATH/.agent-prompt.txt"
+
+# 6. Launch agent CLI in the tmux pane
+#    Flags go before -p so -p gets the prompt as its argument value
 tmux send-keys -t "$TMUX_SESSION:$BRANCH_NAME" \
-    "$AGENT_CMD '$AGENT_PROMPT'" Enter
+    "$AGENT_CMD $AGENT_FLAGS -p \"\$(cat .agent-prompt.txt)\"" Enter
 
 echo "✓ Agent spawned: $BRANCH_NAME (tmux: $TMUX_SESSION)"

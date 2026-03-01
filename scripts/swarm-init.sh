@@ -13,12 +13,12 @@ command -v gh   >/dev/null 2>&1 || { echo "Install GitHub CLI: brew install gh";
 
 # Detect agent CLI: prefer copilot, fall back to claude
 if command -v copilot >/dev/null 2>&1; then
-    AGENT_CMD="copilot -p"
+    AGENT_CMD="copilot"
 elif command -v claude >/dev/null 2>&1; then
-    AGENT_CMD="claude -p"
+    AGENT_CMD="claude"
 else
     echo "⚠ No agent CLI found (copilot or claude). Install one to dispatch agents."
-    AGENT_CMD="copilot -p"
+    AGENT_CMD="copilot"
 fi
 
 # 2. Initialize Beads
@@ -50,6 +50,7 @@ cat > .swarm-config.json << EOF
   "tmux_session": "${PROJECT_NAME}-swarm",
   "max_agents": 4,
   "agent_command": "$AGENT_CMD",
+  "agent_flags": "--allow-all",
   "created": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 EOF
