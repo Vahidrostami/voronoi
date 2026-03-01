@@ -1,0 +1,884 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The Forgetting Lab</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+/* ── Reset & Base ── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; }
+body {
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  background: #0a0e27;
+  color: #e0e6f0;
+  line-height: 1.6;
+  overflow-x: hidden;
+}
+a { color: #00d4ff; text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* ── Utility ── */
+.container { max-width: 1100px; margin: 0 auto; padding: 0 24px; }
+.section-title {
+  font-size: 2.2rem; font-weight: 700; text-align: center;
+  margin-bottom: 0.3em;
+  background: linear-gradient(90deg, #00d4ff, #ff006e);
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+.section-subtitle {
+  text-align: center; color: #8892b0; font-size: 1.05rem; margin-bottom: 2rem;
+}
+section { padding: 80px 0; position: relative; }
+section:nth-child(even) { background: rgba(255,255,255,0.015); }
+
+/* ── Fallback Banner ── */
+#fallback-banner {
+  display: none; background: #1a1040; border: 1px solid #ff006e;
+  border-radius: 12px; padding: 32px; text-align: center; margin: 40px auto; max-width: 700px;
+}
+#fallback-banner h2 { color: #ff006e; margin-bottom: 12px; }
+#fallback-banner code {
+  display: inline-block; background: #0a0e27; padding: 8px 16px;
+  border-radius: 6px; color: #00ff87; margin-top: 8px;
+}
+
+/* ══════════════════════════════════
+   SECTION 1 — Hero
+   ══════════════════════════════════ */
+#hero {
+  min-height: 100vh; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; text-align: center;
+  position: relative; overflow: hidden;
+}
+#hero .hero-title {
+  font-size: clamp(2.8rem, 6vw, 4.8rem); font-weight: 800;
+  color: #fff; position: relative; z-index: 2;
+  text-shadow: 0 0 40px rgba(0,212,255,0.5), 0 0 80px rgba(255,0,110,0.3);
+  animation: glowPulse 3s ease-in-out infinite alternate;
+}
+@keyframes glowPulse {
+  from { text-shadow: 0 0 40px rgba(0,212,255,0.5), 0 0 80px rgba(255,0,110,0.3); }
+  to   { text-shadow: 0 0 60px rgba(0,212,255,0.8), 0 0 120px rgba(255,0,110,0.5); }
+}
+#hero .hero-subtitle {
+  font-size: clamp(1rem, 2vw, 1.35rem); color: #8892b0;
+  margin-top: 16px; max-width: 600px; z-index: 2;
+}
+#hero .hero-btn {
+  margin-top: 40px; z-index: 2;
+  padding: 14px 36px; border: 2px solid #00d4ff;
+  border-radius: 50px; background: transparent; color: #00d4ff;
+  font-size: 1.1rem; cursor: pointer; transition: all 0.3s;
+}
+#hero .hero-btn:hover {
+  background: rgba(0,212,255,0.15); box-shadow: 0 0 30px rgba(0,212,255,0.3);
+}
+
+/* Neuron canvas behind hero */
+#neuron-canvas {
+  position: absolute; inset: 0; z-index: 1; opacity: 0.35;
+}
+
+/* ══════════════════════════════════
+   SECTION 2 — Forgetting Cliff
+   ══════════════════════════════════ */
+#cliff .chart-wrap {
+  background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 16px; padding: 24px; margin-bottom: 24px;
+}
+#cliff .chart-wrap canvas { max-height: 420px; }
+#cliff .toggles {
+  display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; margin-bottom: 20px;
+}
+#cliff .toggles label {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 14px; border-radius: 20px;
+  background: rgba(255,255,255,0.05); cursor: pointer; font-size: 0.92rem;
+  transition: background 0.2s;
+}
+#cliff .toggles label:hover { background: rgba(255,255,255,0.1); }
+#cliff .toggles .color-dot {
+  width: 12px; height: 12px; border-radius: 50%; display: inline-block;
+}
+#cliff .explainer {
+  max-width: 750px; margin: 0 auto; text-align: center;
+  color: #8892b0; font-size: 0.95rem;
+}
+
+/* ══════════════════════════════════
+   SECTION 3 — Strategy Cards
+   ══════════════════════════════════ */
+#strategies .card-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 24px; margin-bottom: 24px;
+}
+.strategy-card {
+  background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 16px; padding: 28px 24px; cursor: pointer;
+  transition: transform 0.25s, box-shadow 0.25s;
+  position: relative; overflow: hidden;
+}
+.strategy-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+}
+.strategy-card .card-icon {
+  width: 56px; height: 56px; border-radius: 14px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 1.6rem; margin-bottom: 14px;
+}
+.strategy-card h3 { font-size: 1.15rem; margin-bottom: 6px; color: #fff; }
+.strategy-card .brain-region { font-size: 0.82rem; color: #8892b0; margin-bottom: 10px; font-style: italic; }
+.strategy-card .bt-stat {
+  font-size: 1.5rem; font-weight: 700; margin-top: 10px;
+}
+.strategy-card .bt-label { font-size: 0.78rem; color: #8892b0; }
+.strategy-card .card-expand {
+  max-height: 0; overflow: hidden; transition: max-height 0.4s ease;
+}
+.strategy-card.expanded .card-expand { max-height: 400px; }
+.strategy-card .card-expand canvas { margin-top: 16px; max-height: 180px; }
+.strategy-card .expand-hint {
+  font-size: 0.75rem; color: #555; text-align: center; margin-top: 8px;
+}
+
+/* ══════════════════════════════════
+   SECTION 4 — Accuracy Matrix
+   ══════════════════════════════════ */
+#matrix .sort-btns {
+  display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin-bottom: 20px;
+}
+#matrix .sort-btns button {
+  padding: 8px 18px; border-radius: 20px; border: 1px solid rgba(255,255,255,0.15);
+  background: transparent; color: #e0e6f0; cursor: pointer; font-size: 0.88rem;
+  transition: all 0.2s;
+}
+#matrix .sort-btns button:hover,
+#matrix .sort-btns button.active {
+  background: rgba(0,212,255,0.15); border-color: #00d4ff; color: #00d4ff;
+}
+#matrix .heatmap-grid {
+  display: grid; gap: 3px; margin: 0 auto;
+  border-radius: 12px; overflow: hidden; max-width: 900px;
+}
+.hm-header {
+  background: rgba(255,255,255,0.06); padding: 10px 6px;
+  font-size: 0.78rem; font-weight: 600; text-align: center; color: #8892b0;
+}
+.hm-row-label {
+  background: rgba(255,255,255,0.04); padding: 10px 12px;
+  font-size: 0.85rem; font-weight: 600; display: flex; align-items: center;
+}
+.hm-cell {
+  padding: 12px 6px; text-align: center; font-weight: 700;
+  font-size: 0.92rem; position: relative; cursor: default;
+  transition: transform 0.15s;
+}
+.hm-cell:hover { transform: scale(1.08); z-index: 2; }
+.hm-cell .tooltip {
+  display: none; position: absolute; bottom: calc(100% + 8px); left: 50%;
+  transform: translateX(-50%); background: #1a1040; border: 1px solid #333;
+  border-radius: 8px; padding: 8px 12px; white-space: nowrap; z-index: 10;
+  font-size: 0.8rem; font-weight: 400; color: #ccc;
+  pointer-events: none;
+}
+.hm-cell:hover .tooltip { display: block; }
+
+/* ══════════════════════════════════
+   SECTION 5 — Build Your Own Brain
+   ══════════════════════════════════ */
+#builder .toggle-panel {
+  display: flex; flex-wrap: wrap; gap: 20px; justify-content: center; margin-bottom: 28px;
+}
+.toggle-switch {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 20px; border-radius: 12px;
+  background: rgba(255,255,255,0.04); cursor: pointer;
+  border: 1px solid rgba(255,255,255,0.08);
+  transition: all 0.25s; user-select: none;
+}
+.toggle-switch.active { border-color: var(--tc); box-shadow: 0 0 16px var(--tc-glow); }
+.toggle-switch .sw-track {
+  width: 42px; height: 22px; border-radius: 11px;
+  background: #2a2a4a; position: relative; transition: background 0.25s;
+}
+.toggle-switch.active .sw-track { background: var(--tc); }
+.toggle-switch .sw-knob {
+  width: 18px; height: 18px; border-radius: 50%;
+  background: #fff; position: absolute; top: 2px; left: 2px;
+  transition: left 0.25s;
+}
+.toggle-switch.active .sw-knob { left: 22px; }
+.toggle-switch .sw-label { font-size: 0.95rem; font-weight: 600; }
+
+#builder .radar-wrap {
+  max-width: 480px; margin: 0 auto 24px;
+  background: rgba(255,255,255,0.03); border-radius: 16px; padding: 24px;
+  border: 1px solid rgba(255,255,255,0.06);
+}
+#builder .recipe-text {
+  text-align: center; font-size: 1.3rem; font-weight: 700; margin-top: 16px;
+}
+#builder .recipe-text span { color: #00d4ff; }
+#builder .winner-glow {
+  animation: winGlow 1.5s ease-in-out infinite alternate;
+}
+@keyframes winGlow {
+  from { text-shadow: 0 0 10px rgba(0,255,135,0.4); }
+  to   { text-shadow: 0 0 30px rgba(0,255,135,0.8); }
+}
+
+/* ══════════════════════════════════
+   SECTION 6 — Conclusion
+   ══════════════════════════════════ */
+#conclusion .findings {
+  max-width: 750px; margin: 0 auto 40px; counter-reset: finding;
+}
+#conclusion .findings li {
+  list-style: none; padding: 14px 0; border-bottom: 1px solid rgba(255,255,255,0.06);
+  font-size: 1rem;
+}
+#conclusion .findings li::before {
+  counter-increment: finding;
+  content: counter(finding); display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; border-radius: 50%;
+  background: rgba(0,212,255,0.15); color: #00d4ff;
+  font-weight: 700; font-size: 0.85rem; margin-right: 12px;
+}
+#conclusion .compare-cards {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 24px;
+  max-width: 700px; margin: 0 auto 40px;
+}
+@media (max-width: 600px) { #conclusion .compare-cards { grid-template-columns: 1fr; } }
+.compare-card {
+  background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 16px; padding: 28px; text-align: center;
+}
+.compare-card h4 { font-size: 0.85rem; color: #8892b0; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 1px; }
+.compare-card .name { font-size: 1.4rem; font-weight: 700; color: #fff; }
+.compare-card .acc { font-size: 2rem; font-weight: 800; margin-top: 8px; }
+.compare-card.winner { border-color: #00ff87; box-shadow: 0 0 30px rgba(0,255,135,0.15); }
+
+#conclusion .discovery-text {
+  max-width: 750px; margin: 0 auto 40px; padding: 24px;
+  background: rgba(255,255,255,0.03); border-radius: 12px;
+  border-left: 4px solid #00d4ff; font-size: 1.05rem; color: #b0b8cc;
+}
+
+footer {
+  text-align: center; padding: 40px 24px;
+  color: #555; font-size: 0.85rem;
+  border-top: 1px solid rgba(255,255,255,0.05);
+}
+footer code { color: #00ff87; background: rgba(0,255,135,0.08); padding: 2px 8px; border-radius: 4px; }
+
+/* ── Confetti ── */
+.confetti-piece {
+  position: fixed; width: 10px; height: 10px; top: -20px;
+  animation: confettiFall linear forwards;
+  z-index: 999; pointer-events: none; border-radius: 2px;
+}
+@keyframes confettiFall {
+  to { top: 110vh; transform: rotate(720deg); }
+}
+
+/* ── Responsive ── */
+@media (max-width: 700px) {
+  .section-title { font-size: 1.6rem; }
+  section { padding: 50px 0; }
+  #strategies .card-grid { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+
+<!-- ═══ SECTION 1: Hero ═══ -->
+<section id="hero">
+  <canvas id="neuron-canvas"></canvas>
+  <h1 class="hero-title">The Forgetting Lab</h1>
+  <p class="hero-subtitle">Can artificial neural networks learn like biological brains?</p>
+  <button class="hero-btn" onclick="document.getElementById('cliff').scrollIntoView()">Explore Results ↓</button>
+</section>
+
+<!-- ═══ Fallback ═══ -->
+<div id="fallback-banner" class="container">
+  <h2>🧪 No Experiment Data Found</h2>
+  <p>Run the experiment first to generate results:</p>
+  <code>python src/main.py</code>
+  <p style="margin-top:12px;color:#8892b0;">The webapp will visualize your results automatically.</p>
+</div>
+
+<!-- ═══ SECTION 2: Forgetting Cliff ═══ -->
+<section id="cliff" style="display:none;">
+  <div class="container">
+    <h2 class="section-title">The Forgetting Cliff</h2>
+    <p class="section-subtitle">Watch Task 1 accuracy plummet as new tasks arrive</p>
+    <div class="toggles" id="cliff-toggles"></div>
+    <div class="chart-wrap"><canvas id="cliffChart"></canvas></div>
+    <p class="explainer">
+      <strong>Catastrophic forgetting</strong> occurs when a neural network trained on new tasks
+      overwrites the weights it learned for earlier tasks. The <em>naive</em> strategy shows the
+      classic "forgetting cliff" — accuracy on Task 1 drops precipitously as each new task is learned.
+      Brain-inspired strategies protect old memories while still learning new ones.
+    </p>
+  </div>
+</section>
+
+<!-- ═══ SECTION 3: Strategy Cards ═══ -->
+<section id="strategies" style="display:none;">
+  <div class="container">
+    <h2 class="section-title">Four Brains, Four Solutions</h2>
+    <p class="section-subtitle">Each strategy mirrors a real brain mechanism</p>
+    <div class="card-grid" id="card-grid"></div>
+  </div>
+</section>
+
+<!-- ═══ SECTION 4: Accuracy Matrix ═══ -->
+<section id="matrix" style="display:none;">
+  <div class="container">
+    <h2 class="section-title">Accuracy Matrix</h2>
+    <p class="section-subtitle">Head-to-head across all tasks</p>
+    <div class="sort-btns" id="sort-btns">
+      <button class="active" data-sort="overall">Best Overall</button>
+      <button data-sort="retention">Best Task 1 Retention</button>
+      <button data-sort="forgetting">Least Forgetting</button>
+    </div>
+    <div class="heatmap-grid" id="heatmap"></div>
+  </div>
+</section>
+
+<!-- ═══ SECTION 5: Build Your Own Brain ═══ -->
+<section id="builder" style="display:none;">
+  <div class="container">
+    <h2 class="section-title">Build Your Own Brain</h2>
+    <p class="section-subtitle">Toggle strategies and watch performance change</p>
+    <div class="toggle-panel" id="toggle-panel"></div>
+    <div class="radar-wrap"><canvas id="radarChart"></canvas></div>
+    <p class="recipe-text" id="recipe-text"></p>
+  </div>
+</section>
+
+<!-- ═══ SECTION 6: Conclusion ═══ -->
+<section id="conclusion" style="display:none;">
+  <div class="container">
+    <h2 class="section-title">What We Discovered</h2>
+    <p class="section-subtitle">Key findings from the experiment</p>
+    <div class="discovery-text" id="discovery-text"></div>
+    <ol class="findings" id="findings-list"></ol>
+    <div class="compare-cards" id="compare-cards"></div>
+    <footer>
+      Built by AI agents &mdash; Run it yourself: <code>python src/main.py</code>
+    </footer>
+  </div>
+</section>
+
+<script>
+/* ───────────────────────────────────
+   Neuron background animation
+   ─────────────────────────────────── */
+(function drawNeurons() {
+  const c = document.getElementById('neuron-canvas');
+  const ctx = c.getContext('2d');
+  let W, H, nodes = [], raf;
+
+  function resize() {
+    W = c.width = c.parentElement.clientWidth;
+    H = c.height = c.parentElement.clientHeight;
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  for (let i = 0; i < 60; i++) {
+    nodes.push({
+      x: Math.random() * W, y: Math.random() * H,
+      vx: (Math.random() - 0.5) * 0.4, vy: (Math.random() - 0.5) * 0.4,
+      r: Math.random() * 2.5 + 1.5
+    });
+  }
+
+  function tick() {
+    ctx.clearRect(0, 0, W, H);
+    for (const n of nodes) {
+      n.x += n.vx; n.y += n.vy;
+      if (n.x < 0 || n.x > W) n.vx *= -1;
+      if (n.y < 0 || n.y > H) n.vy *= -1;
+    }
+    // connections
+    ctx.strokeStyle = 'rgba(0,212,255,0.12)';
+    ctx.lineWidth = 1;
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        const dx = nodes[i].x - nodes[j].x, dy = nodes[i].y - nodes[j].y;
+        const d = Math.sqrt(dx * dx + dy * dy);
+        if (d < 160) {
+          ctx.globalAlpha = 1 - d / 160;
+          ctx.beginPath();
+          ctx.moveTo(nodes[i].x, nodes[i].y);
+          ctx.lineTo(nodes[j].x, nodes[j].y);
+          ctx.stroke();
+        }
+      }
+    }
+    // dots
+    ctx.globalAlpha = 1;
+    for (const n of nodes) {
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(0,212,255,0.6)';
+      ctx.fill();
+    }
+    raf = requestAnimationFrame(tick);
+  }
+  tick();
+})();
+
+/* ───────────────────────────────────
+   Data Loading & App
+   ─────────────────────────────────── */
+const COLORS = {
+  naive:     { bg: '#666', border: '#888' },
+  ewc:       { bg: '#ff006e', border: '#ff006e' },
+  neurogenesis: { bg: '#00ff87', border: '#00ff87' },
+  replay:    { bg: '#00d4ff', border: '#00d4ff' },
+  cls:       { bg: '#ff8c00', border: '#ff8c00' },
+  ewc_replay: { bg: '#cc66ff', border: '#cc66ff' },
+  neurogenesis_cls: { bg: '#ffdd00', border: '#ffdd00' },
+  full_brain: { bg: '#ffffff', border: '#ffffff' }
+};
+
+const STRATEGY_ICONS = {
+  ewc: '🔒', neurogenesis: '🌱', replay: '💤', cls: '🧠',
+  naive: '⚡', ewc_replay: '🔄', neurogenesis_cls: '🧬', full_brain: '✨'
+};
+
+const NICE_NAME = {
+  naive: 'Naive (No Protection)',
+  ewc: 'Synaptic Consolidation (EWC)',
+  neurogenesis: 'Neurogenesis',
+  replay: 'Sleep Replay',
+  cls: 'Complementary Learning (CLS)',
+  ewc_replay: 'EWC + Replay',
+  neurogenesis_cls: 'Neurogenesis + CLS',
+  full_brain: 'Full Brain (All Combined)'
+};
+
+let DATA = null;
+let cliffChart = null;
+let radarChart = null;
+const cardCharts = {};
+
+/* ── Hybrid mapping ── */
+function getHybridKey(active) {
+  const s = new Set(active);
+  if (s.size === 0) return 'naive';
+  if (s.size === 1) return [...s][0];
+  if (s.size === 2 && s.has('ewc') && s.has('replay')) return 'ewc_replay';
+  if (s.size === 2 && s.has('neurogenesis') && s.has('cls')) return 'neurogenesis_cls';
+  if (s.size === 4) return 'full_brain';
+  // fallback: pick best available combo or full_brain
+  if (s.size === 3) return 'full_brain';
+  return 'ewc_replay'; // 2-combo fallback
+}
+
+/* ── Load ── */
+async function loadData() {
+  try {
+    const resp = await fetch('results.json');
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    DATA = await resp.json();
+    initApp();
+  } catch (e) {
+    console.warn('Could not load results.json:', e);
+    document.getElementById('fallback-banner').style.display = 'block';
+  }
+}
+
+function initApp() {
+  document.getElementById('cliff').style.display = '';
+  document.getElementById('strategies').style.display = '';
+  document.getElementById('matrix').style.display = '';
+  document.getElementById('builder').style.display = '';
+  document.getElementById('conclusion').style.display = '';
+  buildCliffChart();
+  buildStrategyCards();
+  buildMatrix('overall');
+  buildBuilder();
+  buildConclusion();
+}
+
+/* ───────────────────────────────────
+   SECTION 2: Forgetting Cliff
+   ─────────────────────────────────── */
+function buildCliffChart() {
+  const strats = DATA.strategies;
+  const tasks = DATA.tasks || [];
+  const container = document.getElementById('cliff-toggles');
+  const datasets = [];
+
+  for (const [key, s] of Object.entries(strats)) {
+    const color = (COLORS[key] || COLORS.naive).border;
+    // Task 1 accuracy after each successive task
+    const accs = (s.accuracies_after_each_task || []).map(row => row[0] != null ? row[0] : null);
+    // If no per-task progression, use final_accuracies[0] as single point
+    const dataPoints = accs.length ? accs : (s.final_accuracies ? [s.final_accuracies[0]] : []);
+
+    datasets.push({
+      label: NICE_NAME[key] || s.name || key,
+      data: dataPoints.map(v => v != null ? +(v * 100).toFixed(1) : null),
+      borderColor: color,
+      backgroundColor: color + '22',
+      tension: 0.3,
+      pointRadius: 4,
+      pointHoverRadius: 7,
+      hidden: false,
+      _key: key
+    });
+
+    // toggle
+    const lbl = document.createElement('label');
+    lbl.innerHTML = `<input type="checkbox" checked data-key="${key}">
+      <span class="color-dot" style="background:${color}"></span>
+      ${NICE_NAME[key] || key}`;
+    container.appendChild(lbl);
+  }
+
+  const labels = tasks.length ? tasks.map((t, i) => `After Task ${i + 1}`) :
+    datasets[0].data.map((_, i) => `After Task ${i + 1}`);
+
+  cliffChart = new Chart(document.getElementById('cliffChart'), {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      scales: {
+        y: { min: 0, max: 100, title: { display: true, text: 'Task 1 Accuracy (%)', color: '#8892b0' },
+             ticks: { color: '#8892b0' }, grid: { color: 'rgba(255,255,255,0.05)' } },
+        x: { ticks: { color: '#8892b0' }, grid: { color: 'rgba(255,255,255,0.05)' } }
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y}%` } }
+      }
+    }
+  });
+
+  container.addEventListener('change', e => {
+    if (!e.target.matches('input[data-key]')) return;
+    const key = e.target.dataset.key;
+    const ds = cliffChart.data.datasets.find(d => d._key === key);
+    if (ds) { ds.hidden = !e.target.checked; cliffChart.update(); }
+  });
+}
+
+/* ───────────────────────────────────
+   SECTION 3: Strategy Cards
+   ─────────────────────────────────── */
+function buildStrategyCards() {
+  const grid = document.getElementById('card-grid');
+  const mainStrats = ['ewc', 'neurogenesis', 'replay', 'cls'];
+
+  for (const key of mainStrats) {
+    const s = DATA.strategies[key];
+    if (!s) continue;
+    const color = COLORS[key].border;
+    const bt = s.backward_transfer != null ? s.backward_transfer : 0;
+    const btPct = (bt * 100).toFixed(1);
+    const btSign = bt >= 0 ? '+' : '';
+
+    const card = document.createElement('div');
+    card.className = 'strategy-card';
+    card.style.setProperty('--card-color', color);
+    card.innerHTML = `
+      <div class="card-icon" style="background:${color}22;color:${color}">${STRATEGY_ICONS[key] || '🧠'}</div>
+      <h3>${NICE_NAME[key] || s.name}</h3>
+      <div class="brain-region">${s.brain_region || ''}</div>
+      <p style="font-size:0.88rem;color:#8892b0;margin-bottom:6px;">${s.description || ''}</p>
+      <div class="bt-stat" style="color:${bt >= 0 ? '#00ff87' : '#ff006e'}">${btSign}${btPct}%</div>
+      <div class="bt-label">Backward Transfer</div>
+      <div class="expand-hint">Click to expand ▾</div>
+      <div class="card-expand"><canvas id="card-chart-${key}"></canvas></div>`;
+    grid.appendChild(card);
+
+    card.addEventListener('click', () => {
+      card.classList.toggle('expanded');
+      if (card.classList.contains('expanded') && !cardCharts[key]) {
+        buildCardChart(key, s);
+      }
+    });
+  }
+}
+
+function buildCardChart(key, s) {
+  const accs = (s.accuracies_after_each_task || []);
+  if (!accs.length) return;
+  const nTasks = accs[0].length;
+  const color = COLORS[key].border;
+  const datasets = [];
+
+  for (let t = 0; t < nTasks; t++) {
+    datasets.push({
+      label: `Task ${t + 1}`,
+      data: accs.map(row => row[t] != null ? +(row[t] * 100).toFixed(1) : null),
+      borderColor: color + (t === 0 ? 'ff' : '66'),
+      borderWidth: t === 0 ? 2.5 : 1.5,
+      pointRadius: 2,
+      tension: 0.3,
+      borderDash: t === 0 ? [] : [4, 4]
+    });
+  }
+
+  const labels = accs.map((_, i) => `Epoch ${i + 1}`);
+  cardCharts[key] = new Chart(document.getElementById(`card-chart-${key}`), {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      scales: {
+        y: { min: 0, max: 100, ticks: { color: '#666', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.04)' } },
+        x: { ticks: { color: '#666', font: { size: 10 } }, grid: { display: false } }
+      },
+      plugins: { legend: { labels: { color: '#888', font: { size: 10 } } } }
+    }
+  });
+}
+
+/* ───────────────────────────────────
+   SECTION 4: Accuracy Matrix
+   ─────────────────────────────────── */
+function buildMatrix(sortMode) {
+  const strats = DATA.strategies;
+  const tasks = DATA.tasks || [];
+  const nTasks = tasks.length || (Object.values(strats)[0]?.final_accuracies?.length || 5);
+
+  let entries = Object.entries(strats).map(([key, s]) => {
+    const fa = s.final_accuracies || [];
+    const avg = fa.length ? fa.reduce((a, b) => a + b, 0) / fa.length : 0;
+    return { key, s, fa, avg, bt: s.backward_transfer || 0, fm: s.forgetting_measure || 0 };
+  });
+
+  if (sortMode === 'overall') entries.sort((a, b) => b.avg - a.avg);
+  else if (sortMode === 'retention') entries.sort((a, b) => (b.fa[0] || 0) - (a.fa[0] || 0));
+  else if (sortMode === 'forgetting') entries.sort((a, b) => a.fm - b.fm);
+
+  const grid = document.getElementById('heatmap');
+  grid.innerHTML = '';
+  grid.style.gridTemplateColumns = `180px repeat(${nTasks}, 1fr)`;
+
+  // header row
+  grid.innerHTML += `<div class="hm-header"></div>`;
+  for (let i = 0; i < nTasks; i++) {
+    grid.innerHTML += `<div class="hm-header">Task ${i + 1}</div>`;
+  }
+
+  for (const e of entries) {
+    const name = NICE_NAME[e.key] || e.s.name || e.key;
+    const color = (COLORS[e.key] || COLORS.naive).border;
+    grid.innerHTML += `<div class="hm-row-label" style="border-left:3px solid ${color}">${name}</div>`;
+    for (let i = 0; i < nTasks; i++) {
+      const v = e.fa[i] != null ? e.fa[i] : 0;
+      const pct = (v * 100).toFixed(1);
+      const bg = accuracyColor(v);
+      const textColor = v > 0.55 ? '#000' : '#fff';
+      grid.innerHTML += `<div class="hm-cell" style="background:${bg};color:${textColor}">
+        ${pct}%
+        <div class="tooltip">${name} — Task ${i + 1}: ${pct}%</div>
+      </div>`;
+    }
+  }
+}
+
+function accuracyColor(v) {
+  // 0=red, 0.5=yellow, 1=green
+  if (v <= 0.5) {
+    const t = v / 0.5;
+    return `rgb(${Math.round(220 - t * 40)},${Math.round(t * 200)},${Math.round(30 + t * 10)})`;
+  } else {
+    const t = (v - 0.5) / 0.5;
+    return `rgb(${Math.round(180 - t * 180)},${Math.round(200 + t * 55)},${Math.round(40 + t * 40)})`;
+  }
+}
+
+// Sort buttons
+document.getElementById('sort-btns').addEventListener('click', e => {
+  const btn = e.target.closest('button[data-sort]');
+  if (!btn) return;
+  document.querySelectorAll('#sort-btns button').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  buildMatrix(btn.dataset.sort);
+});
+
+/* ───────────────────────────────────
+   SECTION 5: Build Your Own Brain
+   ─────────────────────────────────── */
+function buildBuilder() {
+  const panel = document.getElementById('toggle-panel');
+  const components = [
+    { key: 'ewc', label: 'EWC', color: '#ff006e' },
+    { key: 'replay', label: 'Replay', color: '#00d4ff' },
+    { key: 'neurogenesis', label: 'Neurogenesis', color: '#00ff87' },
+    { key: 'cls', label: 'CLS', color: '#ff8c00' }
+  ];
+
+  for (const c of components) {
+    const div = document.createElement('div');
+    div.className = 'toggle-switch';
+    div.dataset.key = c.key;
+    div.style.setProperty('--tc', c.color);
+    div.style.setProperty('--tc-glow', c.color + '44');
+    div.innerHTML = `
+      <div class="sw-track"><div class="sw-knob"></div></div>
+      <span class="sw-label">${c.label}</span>`;
+    div.addEventListener('click', () => {
+      div.classList.toggle('active');
+      updateRadar();
+    });
+    panel.appendChild(div);
+  }
+
+  // initial radar
+  const tasks = DATA.tasks || [];
+  const nTasks = tasks.length || (Object.values(DATA.strategies)[0]?.final_accuracies?.length || 5);
+  const labels = [];
+  for (let i = 0; i < nTasks; i++) labels.push(`Task ${i + 1}`);
+
+  radarChart = new Chart(document.getElementById('radarChart'), {
+    type: 'radar',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Your Brain',
+        data: new Array(nTasks).fill(0),
+        borderColor: '#00d4ff',
+        backgroundColor: 'rgba(0,212,255,0.15)',
+        pointBackgroundColor: '#00d4ff',
+        borderWidth: 2
+      }]
+    },
+    options: {
+      responsive: true,
+      scales: {
+        r: {
+          min: 0, max: 100,
+          ticks: { color: '#555', backdropColor: 'transparent', stepSize: 25 },
+          grid: { color: 'rgba(255,255,255,0.08)' },
+          angleLines: { color: 'rgba(255,255,255,0.08)' },
+          pointLabels: { color: '#8892b0', font: { size: 12 } }
+        }
+      },
+      plugins: {
+        legend: { labels: { color: '#888' } },
+        tooltip: { callbacks: { label: ctx => `${ctx.label}: ${ctx.parsed.r}%` } }
+      }
+    }
+  });
+  updateRadar();
+}
+
+function updateRadar() {
+  const active = [...document.querySelectorAll('.toggle-switch.active')].map(el => el.dataset.key);
+  const hybridKey = getHybridKey(active);
+  const s = DATA.strategies[hybridKey];
+
+  let accs = s ? (s.final_accuracies || []) : [];
+  const pctData = accs.map(v => +(v * 100).toFixed(1));
+  const avg = pctData.length ? (pctData.reduce((a, b) => a + b, 0) / pctData.length).toFixed(1) : '0.0';
+
+  radarChart.data.datasets[0].data = pctData;
+  radarChart.update();
+
+  const txt = document.getElementById('recipe-text');
+  const name = NICE_NAME[hybridKey] || hybridKey;
+  const isBest = hybridKey === DATA.best_hybrid || hybridKey === DATA.best_single;
+  txt.innerHTML = `Your brain recipe preserves <span>${avg}%</span> of memories`;
+  txt.className = 'recipe-text' + (isBest ? ' winner-glow' : '');
+}
+
+/* ───────────────────────────────────
+   SECTION 6: Conclusion
+   ─────────────────────────────────── */
+function buildConclusion() {
+  // Discovery text
+  const dt = document.getElementById('discovery-text');
+  dt.textContent = DATA.discovery_text || 'Run the experiment to discover findings.';
+
+  // Findings
+  const fl = document.getElementById('findings-list');
+  const strats = DATA.strategies;
+  const bestSingle = DATA.best_single && strats[DATA.best_single] ? DATA.best_single : null;
+  const bestHybrid = DATA.best_hybrid && strats[DATA.best_hybrid] ? DATA.best_hybrid : null;
+
+  const findings = [];
+  if (bestSingle) {
+    const s = strats[bestSingle];
+    const avg = s.final_accuracies ? (s.final_accuracies.reduce((a, b) => a + b, 0) / s.final_accuracies.length * 100).toFixed(1) : '?';
+    findings.push(`<strong>${NICE_NAME[bestSingle] || bestSingle}</strong> was the best single strategy with <strong>${avg}%</strong> average accuracy.`);
+  }
+  if (bestHybrid && bestHybrid !== bestSingle) {
+    const s = strats[bestHybrid];
+    const avg = s.final_accuracies ? (s.final_accuracies.reduce((a, b) => a + b, 0) / s.final_accuracies.length * 100).toFixed(1) : '?';
+    findings.push(`<strong>${NICE_NAME[bestHybrid] || bestHybrid}</strong> hybrid achieved <strong>${avg}%</strong> average accuracy.`);
+  }
+  if (strats.naive) {
+    const fm = (strats.naive.forgetting_measure * 100).toFixed(1);
+    findings.push(`The naive approach suffered <strong>${fm}%</strong> forgetting — the classic catastrophic forgetting cliff.`);
+  }
+  // backward transfer comparisons
+  for (const key of ['ewc', 'replay', 'neurogenesis', 'cls']) {
+    if (strats[key] && strats[key].backward_transfer != null) {
+      const bt = (strats[key].backward_transfer * 100).toFixed(1);
+      const sign = strats[key].backward_transfer >= 0 ? '+' : '';
+      findings.push(`${NICE_NAME[key]} had <strong>${sign}${bt}%</strong> backward transfer.`);
+    }
+  }
+
+  fl.innerHTML = findings.map(f => `<li>${f}</li>`).join('');
+
+  // Compare cards
+  const cc = document.getElementById('compare-cards');
+  if (bestSingle && bestHybrid) {
+    const sAvg = strats[bestSingle].final_accuracies
+      ? (strats[bestSingle].final_accuracies.reduce((a, b) => a + b, 0) / strats[bestSingle].final_accuracies.length * 100).toFixed(1) : 0;
+    const hAvg = strats[bestHybrid].final_accuracies
+      ? (strats[bestHybrid].final_accuracies.reduce((a, b) => a + b, 0) / strats[bestHybrid].final_accuracies.length * 100).toFixed(1) : 0;
+    const sWins = +sAvg >= +hAvg;
+
+    cc.innerHTML = `
+      <div class="compare-card ${sWins ? 'winner' : ''}">
+        <h4>Best Single Strategy</h4>
+        <div class="name">${NICE_NAME[bestSingle] || bestSingle}</div>
+        <div class="acc" style="color:${sWins ? '#00ff87' : '#8892b0'}">${sAvg}%</div>
+      </div>
+      <div class="compare-card ${!sWins ? 'winner' : ''}">
+        <h4>Best Hybrid</h4>
+        <div class="name">${NICE_NAME[bestHybrid] || bestHybrid}</div>
+        <div class="acc" style="color:${!sWins ? '#00ff87' : '#8892b0'}">${hAvg}%</div>
+      </div>`;
+
+    if (+hAvg > +sAvg) launchConfetti();
+  }
+}
+
+function launchConfetti() {
+  const colors = ['#00d4ff', '#ff006e', '#00ff87', '#ff8c00', '#cc66ff', '#ffdd00'];
+  for (let i = 0; i < 60; i++) {
+    const el = document.createElement('div');
+    el.className = 'confetti-piece';
+    el.style.left = Math.random() * 100 + 'vw';
+    el.style.background = colors[Math.floor(Math.random() * colors.length)];
+    el.style.animationDuration = (2 + Math.random() * 3) + 's';
+    el.style.animationDelay = Math.random() * 2 + 's';
+    el.style.width = (6 + Math.random() * 8) + 'px';
+    el.style.height = (6 + Math.random() * 8) + 'px';
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), 6000);
+  }
+}
+
+/* ── Start ── */
+loadData();
+</script>
+</body>
+</html>
