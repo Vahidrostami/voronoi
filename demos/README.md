@@ -8,16 +8,17 @@ Example scenarios to test the agent swarm orchestrator. Each demo includes a rea
 
 ## Running a Demo
 
-All demos use the Copilot CLI (`copilot`). Make sure you've run `./scripts/swarm-init.sh` first.
+### Autopilot (recommended — fully automated)
 
 ```bash
-# 1. Initialize (one-time)
+./scripts/swarm-init.sh                                    # one-time setup
+./scripts/autopilot.sh --prompt demos/emergent-ecosystem/PROMPT.md
+```
+
+### Interactive (human-in-the-loop)
+
+```bash
 ./scripts/swarm-init.sh
-
-# 2. Open the demo README and copy the prompt
-cat demos/emergent-ecosystem/README.md
-
-# 3. Launch Copilot CLI and paste the prompt
 copilot
-> /swarm <paste prompt here>
+> /swarm Build from demos/emergent-ecosystem/PROMPT.md
 ```

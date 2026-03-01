@@ -49,71 +49,56 @@ brew install beads tmux gh
 ./scripts/swarm-init.sh
 ```
 
-### Step 1 — Launch Copilot CLI and Prompt the Swarm
+### Option A — Fully Automated (Autopilot)
+
+One command, zero interaction:
+
+```bash
+./scripts/autopilot.sh --prompt demos/emergent-ecosystem/PROMPT.md \
+  --dashboard /tmp/ecosystem-swarm.txt \
+  --notify "say 'ecosystem complete'"
+```
+
+Watch progress in another terminal:
+```bash
+# Live dashboard
+python3 scripts/dashboard.py
+
+# Or simple tail
+tail -f /tmp/ecosystem-swarm.txt
+```
+
+### Option B — Interactive (Human-in-the-Loop)
 
 ```bash
 copilot
 ```
 
-Then paste the prompt from [PROMPT.md](PROMPT.md):
+Then prompt the orchestrator:
 
 ```
 /swarm @swarm-orchestrator Build an emergent multi-species ecosystem simulation. Details in demos/emergent-ecosystem/PROMPT.md
 ```
 
-Or paste the full prompt inline (see PROMPT.md for the complete text).
+The orchestrator will plan tasks, dispatch agents in waves, and ask you to approve merges between waves. Use `/standup` to check progress and `/merge` when agents complete.
 
-### Step 2 — Watch Agents Work
+### Run the Simulation
 
+After the swarm completes (all agents merged):
 ```bash
-# Attach to the tmux session
-tmux attach -t $(jq -r '.tmux_session' .swarm-config.json)
-```
-
-### Step 3 — Run Standups
-
-In Copilot CLI:
-```
-/standup
-```
-
-### Step 4 — Merge Completed Work
-
-After Wave 1 (world engine) completes:
-```
-/merge
-```
-
-This unblocks Wave 2. The orchestrator dispatches 4 species agents in parallel.
-
-After all 4 species complete:
-```
-/merge
-```
-
-Then dispatch the final runner agent:
-```
-/swarm continue
-```
-
-### Step 5 — Run the Simulation
-
-After the final merge:
-```bash
-# Colorful live visualization (the wow moment)
-python demos/emergent-ecosystem/run.py --ticks 500 --seed 42
+python -m src.main --ticks 500 --seed 42
 
 # Or headless for data + HTML report
-python demos/emergent-ecosystem/src/main.py --ticks 500 --no-viz --fast --seed 42
+python -m src.main --ticks 500 --no-display --seed 42
 ```
 
-### Step 6 — View Results
+### View Results
 
 - **Terminal:** Live ASCII playback of creatures moving on the grid
-- **CSV:** `demos/emergent-ecosystem/output/population.csv` — population counts per species per tick
-- **HTML:** `demos/emergent-ecosystem/output/report.html` — charts showing population curves, extinction events, territory maps
+- **CSV:** `output/population.csv` — population counts per species per tick
+- **HTML:** `output/report.html` — charts showing population curves, extinction events, territory maps
 
-### Step 7 — Cleanup
+### Cleanup
 
 ```
 /teardown
