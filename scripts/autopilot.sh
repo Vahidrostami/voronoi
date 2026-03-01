@@ -22,6 +22,7 @@ set -euo pipefail
 #   --dashboard FILE     Write live dashboard to file (tail -f to watch)
 #   --timeout N          Max seconds per agent before killing (default: 600)
 #   --notify CMD         Command to run on completion (e.g., "say done")
+#   --safe               Use granular tool permissions (no curl, ssh, sudo, rm -rf)
 #
 # Examples:
 #   # Full autopilot from prompt file:
@@ -46,6 +47,7 @@ AGENT_TIMEOUT=600
 NOTIFY_CMD=""
 PROMPT_FILE=""
 DOMAIN="code"
+SAFE_MODE=false
 
 # --- Parse args ---
 while [[ $# -gt 0 ]]; do
@@ -61,6 +63,7 @@ while [[ $# -gt 0 ]]; do
         --notify)        NOTIFY_CMD="$2"; shift 2 ;;
         --prompt)        PROMPT_FILE="$2"; shift 2 ;;
         --domain)        DOMAIN="$2"; shift 2 ;;
+        --safe)          SAFE_MODE=true; shift ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
@@ -263,7 +266,12 @@ Previous attempt failed. Check git log for what was tried before. Fix issues and
     if [[ "$DRY_RUN" == "true" ]]; then
         log_action "[DRY RUN] Would re-spawn $branch for $task_id"
     else
-        ./scripts/spawn-agent.sh "$task_id" "$branch" "$retry_desc"
+        local spawn_args=()
+        if [[ "$SAFE_MODE" == "true" ]]; then
+            spawn_args+=("--safe")
+        fi
+        spawn_args+=("$task_id" "$branch" "$retry_desc")
+        ./scripts/spawn-agent.sh "${spawn_args[@]}"
         AGENT_SPAWN_TIME[$branch]=$(date +%s)
         AGENT_TASK_MAP[$branch]=$task_id
     fi
@@ -358,7 +366,12 @@ dispatch_ready() {
             if [[ "$DOMAIN" != "code" ]]; then
                 spawn_script="./scripts/spawn-agent-generic.sh"
             fi
-            if $spawn_script "$task_id" "$branch" "$desc" 2>&1; then
+            local spawn_args=()
+            if [[ "$SAFE_MODE" == "true" ]]; then
+                spawn_args+=("--safe")
+            fi
+            spawn_args+=("$task_id" "$branch" "$desc")
+            if $spawn_script "${spawn_args[@]}" 2>&1; then
                 AGENT_SPAWN_TIME[$branch]=$(date +%s)
                 AGENT_TASK_MAP[$branch]=$task_id
                 TASK_DESCRIPTION_MAP[$task_id]="$desc"
@@ -398,7 +411,7 @@ echo "║           🤖 SWARM AUTOPILOT — $PROJECT_NAME"
 echo "║                                                               ║"
 echo "║  Poll: ${POLL_INTERVAL}s  Max agents: $MAX_AGENTS  Timeout: ${AGENT_TIMEOUT}s      ║"
 echo "║  Domain: $DOMAIN  Quality gate: $QUALITY_GATE"
-echo "║  Dry run: $DRY_RUN                                           ║"
+echo "║  Dry run: $DRY_RUN  Safe mode: $SAFE_MODE                     ║"
 echo "╚═══════════════════════════════════════════════════════════════╝"
 echo ""
 

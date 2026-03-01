@@ -1,7 +1,19 @@
 #!/bin/bash
 set -euo pipefail
 
-# Usage: ./scripts/spawn-agent.sh <beads-task-id> <branch-name> <task-description>
+# Usage: ./scripts/spawn-agent.sh [--safe] <beads-task-id> <branch-name> <task-description>
+#
+# Options:
+#   --safe    Use granular tool permissions instead of --allow-all.
+#             Agents can read/write files, use git, run tests, submit Slurm jobs,
+#             but CANNOT: curl, ssh, rm -rf /, sudo, or access network tools.
+
+SAFE_MODE=false
+if [[ "${1:-}" == "--safe" ]]; then
+    SAFE_MODE=true
+    shift
+fi
+
 TASK_ID="$1"
 BRANCH_NAME="$2"
 TASK_DESC="$3"
@@ -12,7 +24,20 @@ PROJECT_DIR=$(echo "$CONFIG" | jq -r '.project_dir')
 SWARM_DIR=$(echo "$CONFIG" | jq -r '.swarm_dir')
 TMUX_SESSION=$(echo "$CONFIG" | jq -r '.tmux_session')
 AGENT_CMD=$(echo "$CONFIG" | jq -r '.agent_command // "copilot"')
-AGENT_FLAGS=$(echo "$CONFIG" | jq -r '.agent_flags // "--allow-all"')
+
+# Select permission mode
+if [[ "$SAFE_MODE" == "true" ]]; then
+    # Build flags from the agent_flags_safe array in config
+    AGENT_FLAGS=$(echo "$CONFIG" | jq -r '(.agent_flags_safe // []) | join(" ")')
+    if [[ -z "$AGENT_FLAGS" ]]; then
+        echo "⚠ No agent_flags_safe in config, falling back to --allow-all"
+        AGENT_FLAGS="--allow-all"
+    else
+        echo "🔒 Safe mode: using granular tool permissions"
+    fi
+else
+    AGENT_FLAGS=$(echo "$CONFIG" | jq -r '.agent_flags // "--allow-all"')
+fi
 
 # Pre-flight: verify agent CLI exists
 AGENT_BIN="${AGENT_CMD%% *}"
