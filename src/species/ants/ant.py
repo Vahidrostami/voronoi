@@ -85,6 +85,12 @@ class AntSpecies(Species):
         if pmap is None:
             return ActionCommand(type='idle')
 
+        # Ensure extra fields exist (for newly reproduced ants)
+        entity.extra.setdefault('state', FORAGING)
+        entity.extra.setdefault('has_food', False)
+        entity.extra.setdefault('home', (entity.x, entity.y))
+        entity.extra.setdefault('path', [])
+
         # Decay pheromones once per tick (keyed on grid.current_tick)
         if self._decay_tick != grid.current_tick:
             pmap.decay()

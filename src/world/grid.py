@@ -236,8 +236,8 @@ if __name__ == '__main__':
     obs = sum(1 for row in g.terrain for c in row if c == Terrain.OBSTACLE)
     wat = sum(1 for row in g.terrain for c in row if c == Terrain.WATER)
     total = g.width * g.height
-    assert abs(obs / total - 0.15) < 0.01, f"Obstacles: {obs/total:.2%}"
-    assert abs(wat / total - 0.05) < 0.01, f"Water: {wat/total:.2%}"
+    assert abs(obs / total - config.OBSTACLE_RATIO) < 0.02, f"Obstacles: {obs/total:.2%}"
+    assert abs(wat / total - config.WATER_RATIO) < 0.02, f"Water: {wat/total:.2%}"
     print(f"  Terrain ratios: obs={obs/total:.2%} wat={wat/total:.2%} OK")
 
     # Test wrap

@@ -78,9 +78,26 @@ class World:
 
         return self.get_populations()
 
-    def _apply_action(self, entity: Entity, action: Action,
-                      new_entities: list[Entity]) -> None:
-        """Apply an action to an entity."""
+    def _apply_action(self, entity: Entity, action, new_entities: list[Entity]) -> None:
+        """Apply an action to an entity. Accepts Action enum or ActionCommand namedtuple."""
+        # Handle ActionCommand namedtuple (returned by all species)
+        if isinstance(action, ActionCommand):
+            atype = action.type
+            if atype == 'move':
+                entity.move(action.dx, action.dy, self.grid)
+            elif atype == 'eat':
+                if self.grid.consume_food(entity.x, entity.y):
+                    entity.energy += config.ENERGY_PER_FOOD
+            elif atype == 'reproduce':
+                if entity.energy > config.REPRODUCE_THRESHOLD:
+                    entity.energy -= config.REPRODUCE_COST
+                    child = Entity(entity.x, entity.y, entity.species_name,
+                                   energy=config.ENERGY_START)
+                    new_entities.append(child)
+            # 'signal' and 'idle' require no world-level processing
+            return
+
+        # Handle Action enum (legacy path)
         if action in DIRECTION_DELTAS:
             dx, dy = DIRECTION_DELTAS[action]
             entity.move(dx, dy, self.grid)
@@ -92,7 +109,6 @@ class World:
                 entity.energy -= config.REPRODUCE_COST
                 child = Entity(entity.x, entity.y, entity.species_name,
                                energy=config.ENERGY_START)
-                # Copy species-specific extra data defaults
                 child.extra = {k: v for k, v in entity.extra.items()
                                if k.startswith('init_')}
                 new_entities.append(child)
