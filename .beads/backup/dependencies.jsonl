@@ -18,4 +18,3 @@
 {"created_at":"2026-03-01T16:10:44Z","created_by":"vahid","depends_on_id":"agent-swarm-2y2","issue_id":"agent-swarm-2y2.8","type":"parent-child"}
 {"created_at":"2026-03-01T16:10:54Z","created_by":"vahid","depends_on_id":"agent-swarm-2y2.7","issue_id":"agent-swarm-2y2.8","type":"blocks"}
 {"created_at":"2026-03-01T16:10:44Z","created_by":"vahid","depends_on_id":"agent-swarm-2y2","issue_id":"agent-swarm-2y2.9","type":"parent-child"}
-{"created_at":"2026-03-01T16:10:54Z","created_by":"vahid","depends_on_id":"agent-swarm-2y2.8","issue_id":"agent-swarm-2y2.9","type":"blocks"}
