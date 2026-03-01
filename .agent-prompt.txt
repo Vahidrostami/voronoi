@@ -1,0 +1,96 @@
+You are a worker agent in a multi-agent swarm.
+
+YOUR TASK (Beads ID: agent-swarm-template-x5t.6):
+Build the simulation runner and visualization. All species modules are complete and merged to this branch.
+
+FILES YOU OWN (work ONLY in these):
+- src/__init__.py
+- src/main.py
+- src/visualize.py
+- output/ directory (for generated files)
+
+IMPORTANT: Check existing files first. src/main.py and src/visualize.py may already have code from a prior iteration. Read them, understand what exists, then improve/complete.
+
+AVAILABLE SPECIES (already implemented, import them):
+- from src.species.ants.ant import AntSpecies
+- from src.species.birds.bird import BirdSpecies
+- from src.species.fireflies.firefly import FireflySpecies
+- from src.species.wolves.wolf import WolfSpecies
+
+WORLD ENGINE (already implemented):
+- from src.world.grid import Grid, Terrain
+- from src.world.entity import Entity, Species, Action, ActionCommand
+- from src.world.config import * (all config constants)
+
+Grid API:
+- Grid(width, height) - constructor, generates random terrain
+- grid.spawn_food(count) - spawn random food items
+- grid.food_positions - set of (x,y) tuples
+- grid.add_entity(entity, x, y) / grid.remove_entity(entity)
+- grid.entity_positions - dict mapping (x,y) to list of entities
+- grid.get_neighbors(x, y, radius) - get nearby open cells
+- grid.distance(x1,y1,x2,y2) - toroidal distance
+- grid.wrap(x, y) - toroidal wrapping
+- grid.leave_scent(x, y, entity) - for wolf tracking
+- grid.get_scent_trail(x, y, radius) - scent trails nearby
+- grid.decay_scents() - age scent trails
+
+Species API (each species class):
+- species.spawn(grid, count) -> list[Entity]
+- species.tick(entity, world_state) -> ActionCommand
+- species.render(entity) -> str (single char)
+
+ActionCommand fields: action (Action enum), dx, dy, signal_type, signal_data
+
+SIMULATION LOOP (src/main.py):
+1. Parse CLI args: --ticks N (default 500), --no-viz (skip ASCII), --fast (no delay between ticks)
+2. Init Grid(GRID_WIDTH, GRID_HEIGHT)
+3. Spawn all species at configured counts
+4. Each tick:
+   a. Collect all living entities, shuffle order
+   b. For each entity: call species.tick(entity, world_state) where world_state is a dict with grid, food_positions, nearby entities
+   c. Process actions: MOVE (update position with wrapping), EAT (if food at position, remove food, add energy), REPRODUCE (if energy > threshold, create child), SIGNAL (species-specific)
+   d. Apply energy loss (ENERGY_LOSS_PER_TICK per entity)
+   e. Kill entities with energy <= 0
+   f. For wolves: check ticks_since_last_meal in metadata
+   g. grid.spawn_food(FOOD_SPAWN_RATE) capped at MAX_FOOD
+   h. grid.decay_scents()
+   i. Log population: count each species alive, count food
+   j. Render ASCII frame if not --no-viz
+5. After loop: generate CSV and HTML report
+
+ASCII VISUALIZATION:
+- Clear screen each tick (print chr(27) + '[2J' or use os.system('clear'))
+- Show 50x50 viewport of the grid (scaled/sampled from 100x100)
+- Species chars: a=ant, b=bird, f=firefly, W=wolf, .=food, #=obstacle, ~=water, space=empty
+- Show tick number, population counts at bottom
+- If --fast: no sleep. Otherwise: time.sleep(0.05) between frames
+
+CSV OUTPUT (output/population.csv):
+tick,ants,birds,fireflies,wolves,total_food
+One row per tick.
+
+HTML REPORT (src/visualize.py -> output/report.html):
+- generate_report(population_data, grid, all_entities_history) function
+- Uses matplotlib to create charts, saves as base64 embedded in HTML
+- Chart 1: Population over time (line chart, one color per species + food)
+- Chart 2: Mark extinction events with vertical dashed lines and labels
+- Chart 3: Final territory heatmap - 4 subplots showing where each species spent most time
+- Self-contained HTML file (no external dependencies)
+
+TESTING: After building, run python src/main.py --ticks 10 --no-viz --fast to verify it works end-to-end.
+
+RULES:
+1. Work ONLY in this directory: /Users/vahidrostami/repositories/agent-swarm-template-swarm/agent-runner
+2. Run bd prime for context at start
+3. This task is already claimed by you in Beads
+4. Commit often with clear messages
+5. When done:
+   - Run tests
+   - bd close agent-swarm-template-x5t.6 --reason "Completed: [summary of what you built]"
+   - git push origin agent-runner
+   - THEN STOP. Do not continue to other tasks.
+6. If you find work outside your scope, file it:
+   bd create "Discovered: [description]" -t task -p 2
+7. If you are blocked, update Beads:
+   bd update agent-swarm-template-x5t.6 --notes "BLOCKED: [reason]"

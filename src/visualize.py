@@ -3,14 +3,11 @@
 import os
 import base64
 import io
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from src.world import World
 
 
 def generate_report(history: list[dict], extinction_events: list[tuple[int, str]],
-                    world: 'World', output_path: str = 'output/report.html') -> None:
+                    heatmaps: dict[str, list[list[int]]],
+                    output_path: str = 'output/report.html') -> None:
     """Generate an HTML report with population charts and territory heatmaps."""
     import matplotlib
     matplotlib.use('Agg')
@@ -54,26 +51,27 @@ def generate_report(history: list[dict], extinction_events: list[tuple[int, str]
     food_img = _fig_to_base64(fig2)
     plt.close(fig2)
 
-    # Chart 3: Territory heatmaps (final state)
+    # Chart 3: Cumulative territory heatmaps
     fig3, axes = plt.subplots(2, 2, figsize=(12, 10))
     species_list = ['ant', 'bird', 'firefly', 'wolf']
     for idx, sp in enumerate(species_list):
         ax = axes[idx // 2][idx % 2]
-        heatmap = [[0] * world.grid.width for _ in range(world.grid.height)]
-        for e in world.entities:
-            if e.alive and e.species_name == sp:
-                heatmap[e.y][e.x] += 1
+        full_map = heatmaps.get(sp, [[0] * 100 for _ in range(100)])
+        h = len(full_map)
+        w = len(full_map[0]) if h > 0 else 100
         # Downsample to 50x50 for visibility
-        ds = 2
-        small = [[0] * (world.grid.width // ds) for _ in range(world.grid.height // ds)]
-        for y in range(world.grid.height):
-            for x in range(world.grid.width):
-                small[y // ds][x // ds] += heatmap[y][x]
+        ds = max(1, w // 50)
+        sh = h // ds
+        sw = w // ds
+        small = [[0] * sw for _ in range(sh)]
+        for y in range(h):
+            for x in range(w):
+                small[y // ds][x // ds] += full_map[y][x]
         ax.imshow(small, cmap='hot', interpolation='nearest', aspect='equal')
-        ax.set_title(f'{sp.capitalize()} Territory')
+        ax.set_title(f'{sp.capitalize()} Territory (cumulative)')
         ax.set_xlabel('x')
         ax.set_ylabel('y')
-    fig3.suptitle('Final Territory Heatmaps', fontsize=14)
+    fig3.suptitle('Territory Heatmaps — Where Each Species Spent Most Time', fontsize=14)
     fig3.tight_layout()
     heat_img = _fig_to_base64(fig3)
     plt.close(fig3)
