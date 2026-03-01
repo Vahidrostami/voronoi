@@ -17,14 +17,13 @@ from src.species.fireflies import FireflySpecies
 from src.species.wolves import WolfSpecies
 
 
-def render_ascii(world: World, width: int = 60, height: int = 30) -> str:
+def render_ascii(world: World, width: int = 50, height: int = 50) -> str:
     """Render a downsampled ASCII view of the world."""
-    # Map grid to display size
     x_scale = config.GRID_WIDTH / width
     y_scale = config.GRID_HEIGHT / height
 
-    # Build display grid
-    display = [['.' for _ in range(width)] for _ in range(height)]
+    # Build display grid: space = empty
+    display = [[' ' for _ in range(width)] for _ in range(height)]
 
     # Place terrain (downsampled)
     for dy in range(height):
@@ -42,14 +41,13 @@ def render_ascii(world: World, width: int = 60, height: int = 30) -> str:
         dx = int(fx / x_scale)
         dy = int(fy / y_scale)
         if 0 <= dx < width and 0 <= dy < height:
-            if display[dy][dx] == '.':
-                display[dy][dx] = '*'
+            if display[dy][dx] == ' ':
+                display[dy][dx] = '.'
 
     # Place entities (later ones overwrite)
     render_priority = {'ant': 1, 'bird': 2, 'firefly': 3, 'wolf': 4}
     entity_chars = {'ant': 'a', 'bird': 'b', 'firefly': 'f', 'wolf': 'W'}
 
-    # Build entity map for display cells
     entity_map: dict[tuple[int, int], tuple[int, str]] = {}
     for e in world.entities:
         if not e.alive:
@@ -69,7 +67,8 @@ def render_ascii(world: World, width: int = 60, height: int = 30) -> str:
 
 
 def run_simulation(ticks: int = 500, seed: int | None = None,
-                   visual: bool = True, csv_path: str = 'output/population.csv',
+                   visual: bool = True, fast: bool = False,
+                   csv_path: str = 'output/population.csv',
                    report_path: str = 'output/report.html') -> None:
     """Run the ecosystem simulation."""
     world = World(seed=seed)
@@ -100,6 +99,12 @@ def run_simulation(ticks: int = 500, seed: int | None = None,
     extinction_events: list[tuple[int, str]] = []
     was_alive: dict[str, bool] = {'ant': True, 'bird': True, 'firefly': True, 'wolf': True}
 
+    # Cumulative territory heatmaps: species -> 2D array of visit counts
+    heatmaps: dict[str, list[list[int]]] = {
+        sp: [[0] * config.GRID_WIDTH for _ in range(config.GRID_HEIGHT)]
+        for sp in ['ant', 'bird', 'firefly', 'wolf']
+    }
+
     print(f"Starting ecosystem simulation: {ticks} ticks, seed={seed}")
     print(f"Initial: {config.ANT_COUNT} ants, {config.BIRD_COUNT} birds, "
           f"{config.FIREFLY_COUNT} fireflies, {config.WOLF_COUNT} wolves")
@@ -108,6 +113,11 @@ def run_simulation(ticks: int = 500, seed: int | None = None,
     try:
         for tick in range(1, ticks + 1):
             pops = world.tick()
+
+            # Record positions for cumulative heatmaps
+            for e in world.entities:
+                if e.alive and e.species_name in heatmaps:
+                    heatmaps[e.species_name][e.y][e.x] += 1
 
             ant_c = pops.get('ant', 0)
             bird_c = pops.get('bird', 0)
@@ -130,7 +140,6 @@ def run_simulation(ticks: int = 500, seed: int | None = None,
             # Visual output
             if visual and tick % 5 == 0:
                 ascii_view = render_ascii(world)
-                # Clear screen
                 print('\033[2J\033[H', end='')
                 print(f"=== Ecosystem Simulation — Tick {tick}/{ticks} ===")
                 print(f"  Ants: {ant_c:4d}  Birds: {bird_c:4d}  "
@@ -142,8 +151,9 @@ def run_simulation(ticks: int = 500, seed: int | None = None,
                 print()
                 print(ascii_view)
                 print()
-                print("Legend: a=ant b=bird f=firefly W=wolf *=food #=obstacle ~=water")
-                time.sleep(0.05)
+                print("Legend: a=ant b=bird f=firefly W=wolf .=food #=obstacle ~=water")
+                if not fast:
+                    time.sleep(0.05)
             elif not visual and tick % 50 == 0:
                 print(f"Tick {tick:4d}: ants={ant_c} birds={bird_c} "
                       f"fireflies={firefly_c} wolves={wolf_c} food={food_c}")
@@ -163,7 +173,7 @@ def run_simulation(ticks: int = 500, seed: int | None = None,
     # Generate HTML report
     try:
         from src.visualize import generate_report
-        generate_report(history, extinction_events, world, report_path)
+        generate_report(history, extinction_events, heatmaps, report_path)
         print(f"HTML report saved to {report_path}")
     except ImportError as e:
         print(f"Could not generate report: {e}")
@@ -173,7 +183,8 @@ def main():
     parser = argparse.ArgumentParser(description='Ecosystem Simulation')
     parser.add_argument('--ticks', type=int, default=500, help='Number of ticks')
     parser.add_argument('--seed', type=int, default=None, help='Random seed')
-    parser.add_argument('--no-visual', action='store_true', help='Disable ASCII viz')
+    parser.add_argument('--no-viz', action='store_true', help='Disable ASCII viz')
+    parser.add_argument('--fast', action='store_true', help='No delay between frames')
     parser.add_argument('--csv', default='output/population.csv', help='CSV output path')
     parser.add_argument('--report', default='output/report.html', help='HTML report path')
     args = parser.parse_args()
@@ -181,7 +192,8 @@ def main():
     run_simulation(
         ticks=args.ticks,
         seed=args.seed,
-        visual=not args.no_visual,
+        visual=not args.no_viz,
+        fast=args.fast,
         csv_path=args.csv,
         report_path=args.report,
     )
