@@ -185,6 +185,8 @@ git discipline, multi-agent awareness, and quality standards.
 | `spawn-agent.sh` | Creates worktree, opens tmux pane, launches Claude Code agent |
 | `standup.sh` | Queries Beads + git for comprehensive progress report |
 | `merge-agent.sh` | Merges agent branch to main, cleans up worktree/tmux |
+| `autopilot.sh` | Autonomous daemon: polls, merges, dispatches — no human needed |
+| `quality-gate.sh` | Pluggable validation (tests, conflicts, custom hooks) |
 | `teardown.sh` | Removes all worktrees, kills tmux, prunes branches |
 | `cron-standup.sh` | Cron-compatible wrapper that writes reports and posts issues |
 
@@ -260,13 +262,68 @@ tmux attach -t my-app-swarm    # Watch agents work in real time
 
 ---
 
-## 8. Future Extensions
+## 8. Autopilot Mode
 
+The `scripts/autopilot.sh` daemon eliminates human-in-the-loop orchestration by implementing a continuous poll-merge-dispatch cycle.
+
+### How It Works
+
+```
+User runs: ./scripts/autopilot.sh [--dashboard /tmp/swarm.txt]
+
+┌─────────────────────────────────────────────────────────┐
+│                   AUTOPILOT LOOP                        │
+│                                                         │
+│  1. Dispatch all bd-ready tasks (up to max_agents)      │
+│  2. Sleep poll_interval (30s)                           │
+│  3. For each active agent:                              │
+│     ├─ Beads task closed? → quality gate → merge        │
+│     ├─ tmux window gone?  → check results → merge/retry │
+│     └─ Timeout exceeded?  → kill → retry (up to 3x)    │
+│  4. Check bd ready for newly unblocked tasks            │
+│  5. Dispatch next wave                                  │
+│  6. Repeat until no open work remains                   │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Quality Gates
+
+`scripts/quality-gate.sh` runs before every merge:
+1. Branch must have commits
+2. Beads task must be closed
+3. No merge conflicts with main
+4. Tests must pass (auto-detects Python pytest / Node npm test)
+5. Custom gate hook (`.swarm-quality-gate.sh`) if present
+
+Failed gates trigger a retry with error context (up to `--max-retries`).
+
+### Usage
+
+```bash
+# Full autopilot — plan tasks in Beads first, then:
+./scripts/autopilot.sh
+
+# With live dashboard (tail -f in another terminal):
+./scripts/autopilot.sh --dashboard /tmp/swarm-status.txt
+
+# Dry run — see what would happen:
+./scripts/autopilot.sh --dry-run
+
+# Custom timeouts and notification:
+./scripts/autopilot.sh --timeout 900 --notify "say 'swarm complete'"
+```
+
+---
+
+## 9. Future Extensions
+
+- Autopilot TUI dashboard (rich terminal UI with live agent status)
+- Event-driven completion (fswatch/inotify instead of polling)
+- LLM-powered auto-planning (agent decomposes prompt into Beads graph)
+- Adaptive retry with failure analysis (LLM reviews errors before retrying)
+- Non-code domain support (research papers, business reports, course creation)
 - MCP Agent Mail for inter-agent messaging
 - Beads Formulas for pre-built epic templates
-- Auto-merge for branches that pass CI
-- Priority queuing for automatic task pickup
 - Cost tracking per agent per task
-- Web dashboard for real-time swarm status
 - Slack/Discord integration for standup reports
 - Multi-repo support for microservice orchestration
