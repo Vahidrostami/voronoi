@@ -1,0 +1,36 @@
+name: Agent Branch CI
+
+on:
+  push:
+    branches: ['agent-*', 'agent/**']
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect project type and run tests
+        run: |
+          if [ -f "package.json" ]; then
+            npm ci && npm test
+          elif [ -f "requirements.txt" ]; then
+            pip install -r requirements.txt && pytest
+          elif [ -f "go.mod" ]; then
+            go test ./...
+          elif [ -f "Cargo.toml" ]; then
+            cargo test
+          else
+            echo "No test runner detected"
+          fi
+
+      - name: Comment on related PR
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH="${GITHUB_REF#refs/heads/}"
+          PR=$(gh pr list --head "$BRANCH" --json number -q '.[0].number')
+          if [ -n "$PR" ]; then
+            gh pr comment "$PR" --body "⚠ CI failed on branch \`$BRANCH\`. Check the [action run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."
+          fi

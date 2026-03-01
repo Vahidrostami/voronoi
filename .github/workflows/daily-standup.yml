@@ -1,0 +1,32 @@
+name: Daily Agent Standup
+
+on:
+  schedule:
+    - cron: '0 9 * * 1-5'   # 9am UTC, weekdays
+  workflow_dispatch:          # manual trigger
+
+jobs:
+  standup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0     # full history for git log comparisons
+
+      - name: Install Beads
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/steveyegge/beads/main/scripts/install.sh | bash
+
+      - name: Generate Standup Report
+        run: |
+          chmod +x scripts/standup.sh
+          ./scripts/standup.sh > standup-report.md 2>&1
+
+      - name: Post as GitHub Issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create \
+            --title "Agent Standup — $(date +%Y-%m-%d)" \
+            --body-file standup-report.md \
+            --label "standup,automated"
