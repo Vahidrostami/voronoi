@@ -34,3 +34,4 @@ venv/
 
 # Rust
 /target/
+output/

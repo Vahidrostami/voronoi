@@ -1,0 +1,30 @@
+"""Simulation configuration constants."""
+
+# Grid
+GRID_WIDTH = 100
+GRID_HEIGHT = 100
+OBSTACLE_RATIO = 0.10
+WATER_RATIO = 0.05
+
+# Food
+FOOD_SPAWN_RATE = 5
+MAX_FOOD = 200
+
+# Species counts
+ANT_COUNT = 50
+BIRD_COUNT = 30
+FIREFLY_COUNT = 40
+WOLF_COUNT = 10
+
+# Energy
+ENERGY_START = 50
+ENERGY_COST_PER_TICK = 1
+ENERGY_FROM_FOOD = 10
+REPRODUCE_THRESHOLD = 80
+REPRODUCE_COST = 40
+
+# Wolf-specific
+WOLF_HUNGER_LIMIT = 50
+
+# Communication ranges
+BIRD_SOUND_RANGE = 15
