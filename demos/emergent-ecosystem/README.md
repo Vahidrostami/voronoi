@@ -100,14 +100,18 @@ Then dispatch the final runner agent:
 
 After the final merge:
 ```bash
-python src/main.py --ticks 1000 --visualize
+# Colorful live visualization (the wow moment)
+python demos/emergent-ecosystem/run.py --ticks 500 --seed 42
+
+# Or headless for data + HTML report
+python demos/emergent-ecosystem/src/main.py --ticks 500 --no-viz --fast --seed 42
 ```
 
 ### Step 6 — View Results
 
 - **Terminal:** Live ASCII playback of creatures moving on the grid
-- **CSV:** `output/population_dynamics.csv` — population counts per species per tick
-- **HTML:** `output/report.html` — charts showing population curves, extinction events, territory maps
+- **CSV:** `demos/emergent-ecosystem/output/population.csv` — population counts per species per tick
+- **HTML:** `demos/emergent-ecosystem/output/report.html` — charts showing population curves, extinction events, territory maps
 
 ### Step 7 — Cleanup
 

@@ -34,4 +34,9 @@ venv/
 
 # Rust
 /target/
+# Demo outputs (generated)
+demos/*/output/
 output/
+
+# Agent artifacts
+.agent-prompt.txt

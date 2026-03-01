@@ -6,8 +6,10 @@ import time
 import csv
 import argparse
 
-# Add project root to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Add demo root (demos/emergent-ecosystem/) to path so `import src.*` works
+_DEMO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _DEMO_ROOT)
+_OUTPUT_DIR = os.path.join(_DEMO_ROOT, 'output')
 
 from src.world import World
 from src.world import config
@@ -68,9 +70,12 @@ def render_ascii(world: World, width: int = 50, height: int = 50) -> str:
 
 def run_simulation(ticks: int = 500, seed: int | None = None,
                    visual: bool = True, fast: bool = False,
-                   csv_path: str = 'output/population.csv',
-                   report_path: str = 'output/report.html') -> None:
+                   csv_path: str = '', report_path: str = '') -> None:
     """Run the ecosystem simulation."""
+    if not csv_path:
+        csv_path = os.path.join(_OUTPUT_DIR, 'population.csv')
+    if not report_path:
+        report_path = os.path.join(_OUTPUT_DIR, 'report.html')
     world = World(seed=seed)
 
     # Register species
@@ -185,8 +190,8 @@ def main():
     parser.add_argument('--seed', type=int, default=None, help='Random seed')
     parser.add_argument('--no-viz', action='store_true', help='Disable ASCII viz')
     parser.add_argument('--fast', action='store_true', help='No delay between frames')
-    parser.add_argument('--csv', default='output/population.csv', help='CSV output path')
-    parser.add_argument('--report', default='output/report.html', help='HTML report path')
+    parser.add_argument('--csv', default='', help='CSV output path')
+    parser.add_argument('--report', default='', help='HTML report path')
     args = parser.parse_args()
 
     run_simulation(

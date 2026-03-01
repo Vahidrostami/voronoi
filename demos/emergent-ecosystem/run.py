@@ -14,7 +14,8 @@ import os
 import time
 import argparse
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Add demo root to path so `import src.*` works
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from src.world import World
 from src.world import config
