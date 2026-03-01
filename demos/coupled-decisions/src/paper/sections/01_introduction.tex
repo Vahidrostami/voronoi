@@ -1,0 +1,23 @@
+% 01_introduction.tex — Introduction
+\section{Introduction}
+\label{sec:introduction}
+
+A broad class of applied decision problems---including revenue growth management, precision medicine, materials discovery, supply chain design, and financial risk management---share a common underlying structure.
+In these settings, the decision space is combinatorial over interdependent levers, the feasible region is constrained by hard operational limits, and the knowledge required to navigate the space is fragmented across sources with incompatible semantics, noise characteristics, and epistemic status.
+
+We identify three \emph{structural invariants} that characterize this problem class:
+\begin{enumerate}
+    \item \textbf{Lever Coupling}: Adjusting one decision variable alters the optimal configuration of others, rendering independent optimization invalid.
+    \item \textbf{Knowledge Heterogeneity}: Available knowledge spans quantitative measurements, codified policy rules, and expert judgment---each with distinct representational requirements.
+    \item \textbf{Cognitive Assembly Bottleneck}: No single analysis or analyst can jointly reason across all knowledge types and lever interactions simultaneously.
+\end{enumerate}
+
+We show that approaches addressing any single invariant in isolation necessarily produce incomplete solutions (Table~\ref{tab:ablation}).
+
+This paper makes three contributions.
+First, we formally characterize this problem class through the three structural invariants and demonstrate that isolation is insufficient (\S\ref{sec:problem}).
+Second, we introduce a multimodal encoding layer that transforms each knowledge type into a reasoning-ready representation while preserving its native semantics (\S\ref{sec:encoding}).
+Third, we present a progressive space-reduction pipeline that compresses a combinatorial decision space from \PIPELINEINPUT{} candidates to \PIPELINEOUTPUT{} actionable recommendations while maintaining full ground-truth coverage (\S\ref{sec:pipeline}).
+
+We validate the framework through a synthetic-but-realistic Revenue Growth Management scenario with known ground truth, demonstrating that the full system discovers \EFFECTSDISCOVERED{}/\EFFECTSTOTAL{} planted interaction effects while the best ablation discovers at most \BESTABLATION{} (\S\ref{sec:results}).
+Cross-domain experiments confirm generalization to precision medicine and supply chain settings (\S\ref{sec:generalization}).

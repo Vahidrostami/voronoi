@@ -1,0 +1,35 @@
+% 02_problem_characterization.tex — Problem Characterization
+\section{Problem Characterization}
+\label{sec:problem}
+
+\subsection{Structural Invariants}
+
+We define the class of \emph{coupled decision problems with heterogeneous knowledge} through three invariants that hold across domains (Table~\ref{tab:domains}).
+
+\paragraph{Invariant 1: Lever Coupling.}
+Let $\mathcal{L} = \{l_1, \ldots, l_n\}$ denote the set of decision levers.
+The optimization landscape exhibits coupling when $\frac{\partial^2 f}{\partial l_i \partial l_j} \neq 0$ for at least one pair $(l_i, l_j)$.
+In the Revenue Growth Management domain, for instance, pricing and promotion decisions are coupled because promotional discounts interact with base-price elasticity---a 30\% promotion on a high-base-price SKU produces different revenue effects than the same discount on a low-base-price SKU.
+
+\paragraph{Invariant 2: Knowledge Heterogeneity.}
+The information required for decision-making is distributed across $K$ knowledge sources $\{S_1, \ldots, S_K\}$ with incompatible representational schemas.
+Quantitative data provides statistical signals, policy documents encode hard and soft constraints, and expert judgment contributes qualitative directional beliefs.
+Naive concatenation destroys the epistemic metadata that distinguishes a high-confidence statistical estimate from an intuition-based expert belief.
+
+\paragraph{Invariant 3: Cognitive Assembly Bottleneck.}
+Even when all knowledge sources are available, the cognitive load of jointly reasoning across multiple coupled levers and heterogeneous sources exceeds the capacity of unaided human or single-pass algorithmic analysis.
+The combinatorial explosion of lever interactions ($\mathcal{O}(2^{|\mathcal{L}|})$ pairwise) combined with the need to reconcile conflicting signals across knowledge types creates a synthesis challenge that requires structured decomposition.
+
+\subsection{Insufficiency of Isolation}
+
+\begin{proposition}
+Addressing any single invariant in isolation produces solutions that are necessarily incomplete.
+\end{proposition}
+
+\textit{Argument.}
+Without coupling awareness, the optimizer treats each lever independently, missing interaction effects such as the price-promotion trap (GT-1) and the assortment-distribution synergy (GT-2).
+Without heterogeneous encoding, cross-source signals---where the correct action requires synthesizing quantitative data, policy constraints, and expert judgment (GT-4)---cannot be detected.
+Without progressive assembly, the cognitive bottleneck prevents systematic exploration of the ${\sim}10^{18}$ combinatorial space, resulting in ad-hoc solutions with constraint violations.
+Our ablation study (\S\ref{sec:results}) provides empirical evidence for this proposition.
+
+\input{tables/table1_domains}

@@ -1,0 +1,35 @@
+% 08_generalization.tex — Generalization
+\section{Generalization}
+\label{sec:generalization}
+
+\subsection{Structural Conditions for Transfer}
+
+The framework generalizes to any domain satisfying the three structural invariants:
+\begin{enumerate}
+    \item The decision space involves multiple coupled levers where $\frac{\partial^2 f}{\partial l_i \partial l_j} \neq 0$.
+    \item Available knowledge spans at least two types with incompatible representational schemas.
+    \item The joint reasoning task exceeds the capacity of single-pass analysis.
+\end{enumerate}
+
+These conditions are domain-agnostic: they depend on the \emph{structure} of the problem, not its content.
+The encoding layer requires only that each knowledge type can be mapped to one of three representation families (statistical profile, constraint vector, temporal belief), while the diagnostic agents require only that the coupling graph and encoded knowledge be defined.
+
+\subsection{Cross-Domain Evidence}
+
+Our generalization experiments (\S\ref{sec:results}, Table~\ref{tab:generalization}) demonstrate that the same pipeline architecture, without modification, successfully identifies planted cross-lever interactions in two additional domains:
+
+\paragraph{Precision Medicine.}
+Three coupled treatment levers (drug selection, dosing, timing) with knowledge from clinical trial data, treatment guidelines, and physician judgment.
+The system discovered the planted drug-dose interaction---where optimal dosing depends on the selected drug's pharmacokinetic profile---using the same diagnostic agent pipeline applied to medical encodings.
+
+\paragraph{Supply Chain Design.}
+Three coupled logistics levers (sourcing, inventory, routing) with knowledge from cost data, compliance regulations, and supplier assessments.
+The system identified the planted sourcing-inventory interaction---where single-source cost advantages are offset by inventory risk that routing changes cannot mitigate.
+
+\subsection{Conditions Where the Framework May Not Apply}
+
+The framework is less likely to generalize to domains where:
+(a)~decision levers are genuinely independent (no coupling);
+(b)~knowledge is available in a single, unified representation (no heterogeneity); or
+(c)~the decision space is small enough for exhaustive analysis (no cognitive bottleneck).
+In such cases, simpler optimization or decision-support approaches may suffice.
