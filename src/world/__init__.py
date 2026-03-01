@@ -1,9 +1,14 @@
 """World engine — ties grid, entities, and simulation tick together."""
 
 import random
-from src.world.grid import Grid
-from src.world.entity import Entity, Species, Action, DIRECTION_DELTAS
+from src.world.grid import Grid, Terrain
+from src.world.entity import Entity, Species, Action, ActionCommand, DIRECTION_DELTAS
 from src.world import config
+
+__all__ = [
+    'World', 'Grid', 'Terrain', 'Entity', 'Species', 'Action',
+    'ActionCommand', 'DIRECTION_DELTAS', 'config',
+]
 
 
 class World:
@@ -49,7 +54,7 @@ class World:
 
             # Age and energy cost
             entity.age += 1
-            entity.energy -= config.ENERGY_COST_PER_TICK
+            entity.energy -= config.ENERGY_LOSS_PER_TICK
 
             # Record trail for scent tracking
             self.grid.record_trail(entity.x, entity.y, entity.species_name)
@@ -81,7 +86,7 @@ class World:
             entity.move(dx, dy, self.grid)
         elif action == Action.EAT:
             if self.grid.consume_food(entity.x, entity.y):
-                entity.energy += config.ENERGY_FROM_FOOD
+                entity.energy += config.ENERGY_PER_FOOD
         elif action == Action.REPRODUCE:
             if entity.energy > config.REPRODUCE_THRESHOLD:
                 entity.energy -= config.REPRODUCE_COST
@@ -113,3 +118,52 @@ class World:
                 if self.grid.distance(x, y, e.x, e.y) <= radius:
                     result.append(e)
         return result
+
+
+if __name__ == '__main__':
+    print("=== World Integration Tests ===")
+
+    # Test construction
+    w = World(seed=42)
+    assert w.grid.width == 100
+    assert w.grid.height == 100
+    assert w.tick_count == 0
+    print("  World construction: OK")
+
+    # Test tick with no entities (just food spawning)
+    pops = w.tick()
+    assert pops == {}
+    assert w.tick_count == 1
+    assert len(w.grid.food) > 0
+    print("  Empty tick (food spawning): OK")
+
+    # Test exports
+    assert Grid is not None
+    assert Terrain is not None
+    assert Entity is not None
+    assert Species is not None
+    assert Action is not None
+    assert ActionCommand is not None
+    assert DIRECTION_DELTAS is not None
+    assert config.GRID_WIDTH == 100
+    print("  Exports: OK")
+
+    # Test get_entities_at / get_entities_near
+    e1 = Entity(10, 10, 'test', energy=50)
+    e2 = Entity(11, 10, 'test', energy=50)
+    e3 = Entity(50, 50, 'test', energy=50)
+    w.entities = [e1, e2, e3]
+    at_10 = w.get_entities_at(10, 10)
+    assert e1 in at_10 and e2 not in at_10
+    near_10 = w.get_entities_near(10, 10, radius=2, exclude=e1)
+    assert e2 in near_10 and e3 not in near_10 and e1 not in near_10
+    print("  get_entities_at/near: OK")
+
+    # Test multi-tick food accumulation
+    w2 = World(seed=99)
+    for _ in range(20):
+        w2.tick()
+    assert len(w2.grid.food) > 10
+    print(f"  Food after 20 ticks: {len(w2.grid.food)} OK")
+
+    print("All world tests passed!")
