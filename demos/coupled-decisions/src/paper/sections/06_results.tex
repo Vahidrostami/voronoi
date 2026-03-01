@@ -1,0 +1,88 @@
+% 06_results.tex — Results
+\section{Results}
+\label{sec:results}
+
+\subsection{Experiment 1: Encoding Layer Validation}
+
+The multimodal encoding layer achieves an average fidelity of \AVGFIDELITY{} across knowledge types (Figure~\ref{fig:fidelity}).
+Policy encoding is lossless (\FIDELITYPOLICY{}), expert judgment encoding preserves all semantic content (\FIDELITYEXPERT{}), and quantitative encoding achieves \FIDELITYQUANT{} fidelity---the slight loss reflecting dimensionality reduction in distribution fitting.
+
+Cross-type query performance strongly differentiates the encoding approach from baselines (Figure~\ref{fig:crosstype}).
+The full system achieves \CROSSTYPEACCURACY{} accuracy on queries requiring reasoning across two or more knowledge types, compared to \RAWCONCATACCURACY{} for raw concatenation and \LLMBASELINEACCURACY{} for the LLM baseline.
+The encoding layer's preservation of epistemic metadata enables the cross-encoder to correctly weigh conflicting signals---a capability that raw text concatenation cannot support.
+
+The system detected \CONFLICTSDETECTED{}/\CONFLICTSTOTAL{} planted cross-source conflicts, including the price-promotion trap where expert judgment contradicts joint quantitative analysis, and the constraint-coupling conflict where expert recommendations exceed policy margin thresholds.
+
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=0.85\textwidth]{figures/fig5_fidelity_heatmap.pdf}
+    \caption{Encoding fidelity across knowledge types and encoding dimensions.}
+    \label{fig:fidelity}
+\end{figure}
+
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=0.7\textwidth]{figures/fig6_cross_type_comparison.pdf}
+    \caption{Cross-type query success rates comparing the full system against baselines.}
+    \label{fig:crosstype}
+\end{figure}
+
+\subsection{Experiment 2: Ablation Study}
+
+The ablation study demonstrates that each structural invariant contributes to system performance (Figure~\ref{fig:ablation}, Table~\ref{tab:ablation}).
+
+The full system discovers \EFFECTSDISCOVERED{}/\EFFECTSTOTAL{} ground-truth effects with a precision of \FULLPRECISION{} and recall of \FULLRECALL{}.
+Removing the coupling model (\textit{No Coupling}) reduces effects discovered to \NOCOUPLINGEFFECTS{}, as interaction effects GT-1 (price-promotion) and GT-2 (assortment-distribution) require cross-lever analysis.
+Removing multimodal encoding (\textit{No Encoding}) reduces precision, as the system cannot properly weigh conflicting evidence without epistemic metadata.
+Removing the progressive pipeline (\textit{No Pipeline}) yields the lowest precision at \NOPIPELINEPRECISION{}, confirming that unstructured single-pass analysis cannot systematically explore the decision space.
+
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=\textwidth]{figures/fig4_ablation_bars.pdf}
+    \caption{Ablation results: effects discovered, precision, and recall across four configurations.}
+    \label{fig:ablation}
+\end{figure}
+
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=0.85\textwidth]{figures/fig9_discovery_matrix.pdf}
+    \caption{Ground-truth discovery matrix: which effects are found by each configuration.}
+    \label{fig:discovery}
+\end{figure}
+
+\input{tables/table5_ablation_results}
+
+\subsection{Experiment 3: Progressive Reduction Pipeline}
+
+The pipeline achieves dramatic compression while preserving ground-truth coverage at every stage (Figure~\ref{fig:compression}).
+Stage~1 (diagnostic agents) reduces the ${\sim}10^{18}$ input space to \PIPELINESTAGE{1} evidence packets.
+Stage~2 (causal synthesis) consolidates to \PIPELINESTAGE{2} structured interventions.
+Stage~3 (quality gate) selects \PIPELINEOUTPUT{} final recommendations with zero hard-constraint violations.
+
+Ground-truth coverage remains at \GTCOVERAGE{3} through all stages, confirming that the compression is lossless with respect to the planted interaction effects.
+
+The quality profile of the top interventions (Figure~\ref{fig:radar}) shows strong performance across all scoring dimensions, with perfect constraint alignment and high evidence density.
+
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=0.65\textwidth]{figures/fig8_quality_radar.pdf}
+    \caption{Quality gate radar chart for top-5 interventions across scoring dimensions.}
+    \label{fig:radar}
+\end{figure}
+
+\input{tables/table6_top_interventions}
+
+\subsection{Experiment 4: Cross-Domain Generalization}
+
+The framework generalizes to two secondary domains using the same pipeline architecture (Figure~\ref{fig:generalization}, Table~\ref{tab:generalization}).
+In a precision medicine mini-domain (3 coupled treatment levers, 100 patients), the system discovers 1/1 planted cross-lever interaction effects.
+In a supply chain design mini-domain (3 coupled logistics levers, 50 nodes), the system again discovers 1/1 planted effects.
+
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=\textwidth]{figures/fig10_generalization.pdf}
+    \caption{Cross-domain generalization: effects discovered and pipeline functionality across three domains.}
+    \label{fig:generalization}
+\end{figure}
+
+\input{tables/table7_generalization}

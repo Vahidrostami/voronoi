@@ -1,0 +1,43 @@
+% appendix_a.tex — Implementation Details
+\appendix
+\section{Implementation Details}
+\label{app:implementation}
+
+\subsection{System Architecture}
+
+The framework is implemented in Python 3.11+ using only NumPy, SciPy, and matplotlib as external dependencies.
+The codebase is organized into the following modules:
+
+\begin{itemize}
+    \item \texttt{src/core/}: Type definitions, encoding interfaces, coupling model, configuration, and utilities.
+    \item \texttt{src/data/}: Synthetic data generators for the BevCo scenario (sales, elasticities, policies, expert beliefs).
+    \item \texttt{src/encoding/}: Statistical profile, constraint vector, temporal belief, and cross-encoder implementations.
+    \item \texttt{src/agents/}: Five diagnostic agents (elasticity, interaction, constraint, temporal, portfolio).
+    \item \texttt{src/synthesis/}: Causal assembler that merges evidence packets into candidate interventions.
+    \item \texttt{src/quality/}: Multi-dimensional quality gate with configurable scoring weights.
+    \item \texttt{src/pipeline/}: Pipeline orchestrator and ablation runner.
+    \item \texttt{src/experiments/}: Four experimental modules and a master runner.
+\end{itemize}
+
+\subsection{Hyperparameters}
+
+\begin{tabular}{ll}
+\toprule
+\textbf{Parameter} & \textbf{Value} \\
+\midrule
+Number of SKUs & \NSKUS{} \\
+Number of stores & \NSTORES{} \\
+Number of weeks & \NWEEKS{} \\
+Elasticity noise $\sigma$ & 0.15 \\
+Sales noise $\sigma$ & 0.10 \\
+Random seed & 42 \\
+Quality gate top-$K$ & 10 \\
+Confidence decay rate & 0.1 per month \\
+\bottomrule
+\end{tabular}
+
+\subsection{Reproducibility}
+
+All experiments are deterministic given the random seed (42).
+The full experiment suite completes in under 60 seconds on a modern CPU.
+Code and data are available at the project repository.

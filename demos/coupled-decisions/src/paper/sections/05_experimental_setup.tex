@@ -1,0 +1,52 @@
+% 05_experimental_setup.tex — Experimental Setup
+\section{Experimental Setup}
+\label{sec:setup}
+
+\subsection{Synthetic Scenario: BevCo}
+
+We validate the framework through a synthetic-but-realistic Revenue Growth Management scenario.
+BevCo is a simulated beverage company with \NSKUS{} SKUs across 5 categories, \NSTORES{} retail stores in 4 regions, operating over \NWEEKS{} weeks (2 years).
+
+\paragraph{Decision Levers.}
+The scenario includes \NLEVERS{} coupled commercial levers: pricing, promotion, assortment, distribution, and pack-price architecture.
+The total naive decision space is ${\sim}10^{18}$ combinations, rendering exhaustive search intractable.
+
+\paragraph{Knowledge Sources.}
+Three heterogeneous knowledge sources provide complementary information:
+(1)~\textit{Quantitative data}---sales transactions (${\sim}$1M rows), price elasticity matrices, and market share time series;
+(2)~\textit{Policy knowledge}---structured rules encoding margin thresholds, promotion limits, and shelf space constraints;
+(3)~\textit{Expert judgment}---18 expert belief statements with varying confidence, recency, and basis quality.
+
+\paragraph{Ground-Truth Interaction Effects.}
+Five interaction effects are planted in the synthetic data:
+\begin{enumerate}
+    \item \textbf{Price-Promotion Trap} (GT-1): Independent analysis suggests 30\% promotions have positive ROI, but joint optimization reveals a 5\% base-price reduction yields 12\% higher net revenue.
+    \item \textbf{Assortment-Distribution Synergy} (GT-2): Removing 8 low-velocity SKUs and reallocating shelf space increases category revenue by 9\%, though neither change alone is beneficial.
+    \item \textbf{Pack-Price Cannibalization} (GT-3): A 12-pack introduction appears to grow volume +15\% but cannibalizes the 6-pack by 22\%, destroying \$0.43/unit margin.
+    \item \textbf{Cross-Source Signal} (GT-4): Correct intervention requires synthesizing declining sales data, shelf-share policy mandates, and expert seasonal prediction.
+    \item \textbf{Constraint-Coupling Conflict} (GT-5): Expert-suggested aggressive pricing is directionally correct but must be scoped to 3 of 12 premium SKUs where margin headroom exists.
+\end{enumerate}
+
+\paragraph{Multi-Collinearity.}
+Realistic correlations are introduced between levers ($\rho_{\text{price-promo}} \approx -0.6$, $\rho_{\text{assort-dist}} \approx 0.5$, $\rho_{\text{promo-display}} \approx 0.7$, $\rho_{\text{pack-price}} \approx 0.85$) to test whether agents can disentangle confounded effects from genuine interactions.
+
+\subsection{Baselines and Ablation Configurations}
+
+We compare four configurations (Table~\ref{tab:ablation}):
+\begin{itemize}
+    \item \textbf{Full System}: All three invariants addressed (coupling + encoding + pipeline).
+    \item \textbf{No Coupling}: Independent lever optimization; coupling model disabled.
+    \item \textbf{No Encoding}: Raw text concatenation replaces multimodal encoding.
+    \item \textbf{No Pipeline}: Single-pass analysis replaces progressive reduction.
+\end{itemize}
+
+\subsection{Metrics}
+
+\begin{itemize}
+    \item \textbf{Effects discovered}: Ground-truth interaction effects identified (out of 5).
+    \item \textbf{Precision/Recall}: Of generated interventions vs.\ ground truth.
+    \item \textbf{Constraint violations}: Hard policy constraint violations in recommendations.
+    \item \textbf{Revenue impact}: Simulated revenue change from top recommendations.
+    \item \textbf{Encoding fidelity}: Information preservation in encoded representations.
+    \item \textbf{Cross-type query accuracy}: Correct answers to queries requiring multi-source reasoning.
+\end{itemize}

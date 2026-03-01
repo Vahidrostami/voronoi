@@ -1,0 +1,25 @@
+% 09_conclusion.tex — Conclusion
+\section{Conclusion}
+\label{sec:conclusion}
+
+We have presented a computational framework for navigating coupled decision spaces with fragmented and heterogeneous knowledge.
+Our approach makes three contributions:
+
+\begin{enumerate}
+    \item \textbf{Problem characterization}: We identify three structural invariants---lever coupling, knowledge heterogeneity, and the cognitive assembly bottleneck---that characterize a broad class of applied decision problems, and prove that addressing any invariant in isolation is insufficient.
+
+    \item \textbf{Multimodal encoding}: Our encoding layer transforms quantitative data, policy rules, and expert beliefs into reasoning-ready representations that preserve epistemic metadata, achieving \CROSSTYPEACCURACY{} cross-type query accuracy compared to \RAWCONCATACCURACY{} for raw concatenation.
+
+    \item \textbf{Progressive reduction}: Our three-stage pipeline compresses a ${\sim}10^{18}$ combinatorial decision space to \PIPELINEOUTPUT{} actionable recommendations with zero constraint violations and complete ground-truth coverage.
+\end{enumerate}
+
+The framework discovers \EFFECTSDISCOVERED{}/\EFFECTSTOTAL{} planted interaction effects in the primary RGM domain and generalizes to precision medicine and supply chain design without architectural modification.
+
+\subsection{Future Work}
+
+Several directions remain:
+(1)~extending the encoding layer to handle additional knowledge types such as visual data and graph-structured knowledge;
+(2)~implementing true parallel agent execution for production-scale deployments;
+(3)~developing adaptive pipeline configurations that adjust diagnostic agent depth based on intermediate evidence quality;
+(4)~validating with real-world (non-synthetic) data in partnership with industry practitioners;
+and (5)~investigating the theoretical limits of progressive reduction---characterizing when ground-truth coverage is guaranteed to be preserved.
