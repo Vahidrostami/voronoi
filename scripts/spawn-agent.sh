@@ -11,6 +11,15 @@ CONFIG=$(cat .swarm-config.json)
 PROJECT_DIR=$(echo "$CONFIG" | jq -r '.project_dir')
 SWARM_DIR=$(echo "$CONFIG" | jq -r '.swarm_dir')
 TMUX_SESSION=$(echo "$CONFIG" | jq -r '.tmux_session')
+AGENT_CMD=$(echo "$CONFIG" | jq -r '.agent_command // "copilot -p"')
+
+# Pre-flight: verify agent CLI exists
+AGENT_BIN="${AGENT_CMD%% *}"
+if ! command -v "$AGENT_BIN" >/dev/null 2>&1; then
+    echo "✗ Agent CLI not found: $AGENT_BIN"
+    echo "  Install it or update agent_command in .swarm-config.json"
+    exit 1
+fi
 
 WORKTREE_PATH="${SWARM_DIR}/${BRANCH_NAME}"
 
@@ -58,8 +67,8 @@ RULES:
 PROMPT
 )
 
-# 5. Launch Copilot CLI in the tmux pane
+# 5. Launch agent CLI in the tmux pane
 tmux send-keys -t "$TMUX_SESSION:$BRANCH_NAME" \
-    "copilot -p '$AGENT_PROMPT'" Enter
+    "$AGENT_CMD '$AGENT_PROMPT'" Enter
 
 echo "✓ Agent spawned: $BRANCH_NAME (tmux: $TMUX_SESSION)"

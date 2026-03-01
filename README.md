@@ -1,6 +1,6 @@
 # Agent Swarm Template
 
-A production-ready template for orchestrating multiple AI coding agents working in parallel using git worktrees, [Beads](https://github.com/steveyegge/beads) for task tracking, tmux for session management, and Claude Code for execution.
+A production-ready template for orchestrating multiple AI coding agents working in parallel using git worktrees, [Beads](https://github.com/steveyegge/beads) for task tracking, tmux for session management, and an AI coding CLI ([Copilot CLI](https://githubnext.com/projects/copilot-cli/) or [Claude Code](https://docs.anthropic.com/en/docs/claude-code)) for execution.
 
 Clone → initialize → start shipping features 10x faster with a self-organizing team of AI agents.
 
@@ -84,7 +84,7 @@ agent-swarm-template/
 - [Beads (bd)](https://github.com/steveyegge/beads) — Task tracking with dependency graphs
 - [tmux](https://github.com/tmux/tmux) — Terminal multiplexer for agent sessions
 - [GitHub CLI (gh)](https://cli.github.com/) — GitHub integration
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — AI coding agent
+- One of: [Copilot CLI](https://githubnext.com/projects/copilot-cli/) or [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — AI coding agent (must support `-p` flag for non-interactive mode)
 
 ## Why Not Just `/fleet`?
 
@@ -97,10 +97,17 @@ After running `swarm-init.sh`, edit `.swarm-config.json`:
 ```json
 {
   "max_agents": 4,
+  "agent_command": "copilot -p",
   "auto_merge": false,
   "branch_prefix": "agent-"
 }
 ```
+
+The `agent_command` field controls which CLI is used to dispatch worker agents into tmux panes. Supported values:
+- `"copilot -p"` — GitHub Copilot CLI (default)
+- `"claude -p"` — Claude Code CLI
+
+The init script auto-detects which is installed. Override manually if needed.
 
 ## Design
 
@@ -110,7 +117,7 @@ See [DESIGN.md](DESIGN.md) for the full architecture, workflow diagrams, and des
 
 Ready-to-run scenarios in [demos/](demos/):
 
-- **[Emergent Ecosystem](demos/emergent-ecosystem/)** — 4 species with different communication strategies compete on a shared grid. 6 agents across 3 waves. Run it with Copilot CLI:
+- **[Emergent Ecosystem](demos/emergent-ecosystem/)** — 4 species with different communication strategies compete on a shared grid. 6 agents across 3 waves. Run it with Copilot CLI or Claude Code:
   ```bash
   copilot
   > /swarm @swarm-orchestrator Build an emergent multi-species ecosystem simulation. Details in demos/emergent-ecosystem/PROMPT.md

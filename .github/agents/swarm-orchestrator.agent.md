@@ -24,7 +24,7 @@ working in parallel on a shared codebase.
 - **Beads (bd)** — Single source of truth for task state, dependencies, and progress
 - **Git worktrees** — Isolated working directories per agent (shared `.git`)
 - **tmux** — Session management for visual agent monitoring
-- **Claude Code** — AI coding agents dispatched with `-p` flag
+- **Claude Code / Copilot CLI** — AI coding agents dispatched with `-p` flag (configurable via `agent_command` in `.swarm-config.json`)
 
 ## Workflow
 

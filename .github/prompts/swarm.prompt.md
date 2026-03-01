@@ -42,7 +42,7 @@ The user provides a high-level task or feature description.
 ## Phase 2: Dispatch
 
 1. Run `bd ready --json` to find unblocked tasks
-2. Load `.swarm-config.json` for project paths
+2. Load `.swarm-config.json` for project paths and `agent_command`
 3. For EACH ready task (up to max_agents from config):
    ```bash
    ./scripts/spawn-agent.sh <task-id> agent-<short-name> "<task description>"

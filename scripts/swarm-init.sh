@@ -11,6 +11,16 @@ command -v bd   >/dev/null 2>&1 || { echo "Install beads: brew install beads"; e
 command -v tmux >/dev/null 2>&1 || { echo "Install tmux: brew install tmux"; exit 1; }
 command -v gh   >/dev/null 2>&1 || { echo "Install GitHub CLI: brew install gh"; exit 1; }
 
+# Detect agent CLI: prefer copilot, fall back to claude
+if command -v copilot >/dev/null 2>&1; then
+    AGENT_CMD="copilot -p"
+elif command -v claude >/dev/null 2>&1; then
+    AGENT_CMD="claude -p"
+else
+    echo "⚠ No agent CLI found (copilot or claude). Install one to dispatch agents."
+    AGENT_CMD="copilot -p"
+fi
+
 # 2. Initialize Beads
 if [ ! -d ".beads" ]; then
     bd init --quiet
@@ -39,6 +49,7 @@ cat > .swarm-config.json << EOF
   "swarm_dir": "$(cd "$SWARM_DIR" && pwd)",
   "tmux_session": "${PROJECT_NAME}-swarm",
   "max_agents": 4,
+  "agent_command": "$AGENT_CMD",
   "created": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 EOF
