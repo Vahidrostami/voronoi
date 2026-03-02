@@ -115,4 +115,24 @@ bd automatically syncs via Dolt:
 
 For more details, see README.md and docs/QUICKSTART.md.
 
+### Finding Protocol
+
+When creating findings from investigation tasks, use the structured format:
+
+```bash
+# Create finding
+bd create "FINDING: [result with effect size and CI]" -t task --parent <epic>
+
+# Attach evidence metadata
+bd update <finding-id> --notes "TYPE:finding | VALENCE:positive|negative|inconclusive | CONFIDENCE:0.X"
+bd update <finding-id> --notes "SOURCE_TASK:<investigation-task-id>"
+bd update <finding-id> --notes "EFFECT_SIZE:[d] | CI_95:[lo, hi] | N:[n] | STAT_TEST:[test] | P:[p]"
+bd update <finding-id> --notes "DATA_FILE:[path to raw data]"
+bd update <finding-id> --notes "DATA_HASH:sha256:[hash of raw data file]"
+bd update <finding-id> --notes "SENSITIVITY: [parameter variations and results] | ROBUST:yes|no"
+bd update <finding-id> --notes "REPLICATED:no | STAT_QUALITY:[pending] | REVIEWED_BY:[pending]"
+```
+
+Findings must pass review gates (Statistician, Critic) before entering the knowledge store. See CLAUDE.md for the full rigor gate table.
+
 <!-- END BEADS INTEGRATION -->

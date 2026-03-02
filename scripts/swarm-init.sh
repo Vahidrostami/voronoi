@@ -41,7 +41,20 @@ fi
 SWARM_DIR="../${PROJECT_NAME}-swarm"
 mkdir -p "$SWARM_DIR"
 
-# 6. Write swarm config
+# 6. Create .swarm/ directory and investigation journal
+mkdir -p .swarm
+if [ ! -f ".swarm/journal.md" ]; then
+    cat > .swarm/journal.md << 'JOURNAL'
+# Investigation Journal
+
+> Maintained by the Synthesizer. Read by the Orchestrator at session start and the Theorist when building causal models.
+
+<!-- Append new cycles below. Do not edit previous entries. -->
+JOURNAL
+    echo "✓ Investigation journal initialized at .swarm/journal.md"
+fi
+
+# 7. Write swarm config
 cat > .swarm-config.json << EOF
 {
   "project_name": "$PROJECT_NAME",
@@ -51,6 +64,19 @@ cat > .swarm-config.json << EOF
   "max_agents": 4,
   "agent_command": "$AGENT_CMD",
   "agent_flags": "--allow-all",
+  "rigor": {
+    "default": "auto",
+    "serendipity_budget": 0.15,
+    "replication_threshold": 0.7,
+    "paradigm_stress_threshold": 3,
+    "bias_alert_ratio": 0.8,
+    "bias_alert_min_sample": 5,
+    "max_investigation_cycles": 20,
+    "require_pre_registration": "scientific",
+    "require_methodologist": "scientific",
+    "require_statistician": "analytical",
+    "require_adversarial_review": "scientific"
+  },
   "created": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 EOF

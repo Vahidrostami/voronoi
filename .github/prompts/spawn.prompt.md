@@ -19,11 +19,23 @@ Spawn a single worker agent.
    - `bd create "<title>" -t task -p <priority>`
    - Note the returned ID
 
-3. Derive a branch name: `agent-<short-descriptive-name>`
+3. **Methodologist Review Gate** (Scientific+ rigor, investigation tasks only):
+   Before spawning an investigator, check for Methodologist approval:
+   ```bash
+   bd show <id>
+   # Look for: METHODOLOGIST_REVIEW: APPROVED
+   ```
+   - If the task has `TASK_TYPE:investigation` and `RIGOR:scientific` or higher:
+     - If no Methodologist review exists: BLOCK spawn, dispatch Methodologist first
+     - If review is REJECTED: show rejection reasons, do NOT spawn
+     - If review is CONDITIONAL: show conditions, let user decide
+     - If review is APPROVED: proceed with spawn
 
-4. Run:
+4. Derive a branch name: `agent-<short-descriptive-name>`
+
+5. Run:
    ```bash
    ./scripts/spawn-agent.sh <task-id> <branch-name> "<task description>"
    ```
 
-5. Confirm to user: agent is running, provide tmux attach command.
+6. Confirm to user: agent is running, provide tmux attach command.
