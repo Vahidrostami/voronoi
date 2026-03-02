@@ -1,7 +1,6 @@
 
 __pycache__/
 .agent-prompt.txt
-.beads/
 .DS_Store
 .idea/
 .swarm-config.json
