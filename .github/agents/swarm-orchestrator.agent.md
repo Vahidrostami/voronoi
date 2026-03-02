@@ -16,12 +16,14 @@ scientific investigations through a unified OODA-based workflow.
 
 1. **Classify** — Determine workflow mode (Build/Investigate/Explore/Hybrid) and rigor level (Standard/Analytical/Scientific/Experimental) from the user's prompt
 2. **Plan** — Decompose into structured epics and subtasks in Beads, mode-appropriate
-3. **Scout** — At Investigate/Explore/Hybrid modes, dispatch Scout for prior knowledge before hypothesis generation
-4. **Cast** — Select agent roles based on mode × rigor (see Role Selection table)
-5. **Dispatch** — Create git worktrees and launch agents via tmux
-6. **Monitor (OODA)** — Observe state, Orient events, Decide next action, Act on it — every cycle
-7. **Synthesize** — Accept validated findings into the knowledge store, update belief maps
-8. **Converge** — Verify rigor-appropriate convergence criteria are met before closing
+3. **Initialize Strategic Context** — Create `.swarm/strategic-context.md` with verbatim original abstract, initial interpretation, empty decision/dead-end tables
+4. **Scout** — At Investigate/Explore/Hybrid modes, dispatch Scout for prior knowledge before hypothesis generation
+5. **Cast** — Select agent roles based on mode × rigor (see Role Selection table)
+6. **Dispatch** — Create git worktrees and launch agents via tmux, injecting `STRATEGIC_CONTEXT` into each worker's task notes
+7. **Monitor (OODA)** — Observe state, Orient events, Decide next action, Act on it — every cycle. Update Strategic Context Document each cycle.
+8. **Synthesize** — Accept validated findings into the knowledge store, update belief maps
+9. **Evaluate** — Before declaring convergence, dispatch Evaluator to score deliverable against original abstract
+10. **Converge** — Verify rigor-appropriate convergence criteria are met AND Evaluator score ≥ threshold before closing
 
 ## Rigor Classification
 
@@ -51,7 +53,8 @@ Classified as: [Mode] / [Rigor] rigor
 | Scout 🔍 | — | — | ✅ | ✅ |
 | Investigator 🔬 | — | ✅ | ✅ | ✅ |
 | Statistician 📊 | — | ✅ | ✅ | ✅ |
-| Synthesizer 🧩 | — | — | ✅ | ✅ |
+| Synthesizer 🧩 | — | ✅ | ✅ | ✅ |
+| Evaluator 🎯 | — | ✅ | ✅ | ✅ |
 | Explorer 🧭 | — | ✅ | ✅ | ✅ |
 | Theorist 🧬 | — | — | ✅ | ✅ |
 | Methodologist 📐 | — | — | ✅ (advisory) | ✅ (mandatory) |
@@ -89,23 +92,105 @@ if confirmed / (confirmed + refuted) > 0.8 AND sample > 5:
 ### Observe
 - Read Beads status for all tasks
 - At Analytical+: read knowledge store, journal, belief map
+- Read Strategic Context Document (`.swarm/strategic-context.md`)
 - Check git activity and user input
 
 ### Orient
-- Classify events: completion, finding, negative_result, failure, conflict, stall, paradigm_stress
+- Classify events: completion, finding, negative_result, failure, conflict, stall, paradigm_stress, diminishing_returns
+- **Update Strategic Context Document:**
+  - Log decisions made this cycle with rationale and alternatives considered
+  - Update dead ends if any approach was abandoned
+  - Update remaining gaps based on new findings
+  - Update progress velocity with latest eval score
+  - Check if current interpretation of abstract needs revision
 - Run convergence check per rigor level
+- **Check dead ends before new dispatches** — if proposed investigation overlaps with a dead end, skip unless materially different approach
 
 ### Decide
 - **Build mode:** dispatch builders → critic review → merge → rebase downstream
 - **Investigate mode:** Statistician review → Critic review → replication → Methodologist → Synthesizer → Theorist → new investigations
 - **Explore mode:** standard explore + Statistician review on quantitative comparisons
 - **Hybrid mode:** detect current phase, apply appropriate logic, transition on phase convergence
+- **Convergence approaching?** Dispatch Synthesizer for final deliverable → Evaluator for scoring
 
 ### Act
 - Spawn/restart agents, merge completed work
+- **Inject `STRATEGIC_CONTEXT` into every worker prompt at dispatch:**
+  ```bash
+  bd update <task-id> --notes "STRATEGIC_CONTEXT: This task tests whether [X], which matters because [Y]. A strong result here would [Z]. A weak result means we need to [W]. Dead ends to avoid: [list]."
+  ```
 - Accept validated findings, update belief map
 - Append to investigation journal
-- Notify user only for: plan approval, strategic pivot, convergence, paradigm stress
+- Commit updated Strategic Context Document
+- Notify user only for: plan approval, strategic pivot, convergence, paradigm stress, diminishing returns
+
+## Final Evaluation Pass (Analytical+ Rigor)
+
+Before declaring convergence, the Evaluator scores the final output:
+
+```
+BEFORE declaring convergence:
+  1. Synthesizer produces final deliverable (.swarm/deliverable.md)
+  2. Evaluator scores deliverable against original abstract:
+     - COMPLETENESS: Does every part of the abstract have a finding/output?
+     - COHERENCE: Do the pieces form a unified answer?
+     - STRENGTH: Are claims backed by robust evidence?
+     - ACTIONABILITY: Can someone act on this without further research?
+  3. OVERALL = 0.30×COMPLETENESS + 0.25×COHERENCE + 0.25×STRENGTH + 0.20×ACTIONABILITY
+  4. If OVERALL ≥ 0.75: PASS → declare convergence
+  5. If 0.50 ≤ OVERALL < 0.75: IMPROVE → generate targeted improvement tasks, run 1-2 more cycles
+  6. If OVERALL < 0.50: FAIL → generate tasks AND flag to user
+  7. Max 2 improvement rounds, then deliver with honest quality assessment
+```
+
+## Macro Retry Loop
+
+```
+improvement_round = 0
+MAX_IMPROVEMENT_ROUNDS = 2
+
+while improvement_round < MAX_IMPROVEMENT_ROUNDS:
+    deliverable = synthesizer.produce_deliverable()
+    eval_result = evaluator.score(deliverable, original_abstract)
+    
+    if eval_result.overall >= 0.75:
+        CONVERGE  # Output is good
+        break
+    
+    if improvement_round > 0:
+        delta = eval_result.overall - previous_score
+        if delta < 0.05:
+            DIMINISHING_RETURNS  # Stop spinning
+            break
+    
+    # Generate targeted improvement tasks from evaluator
+    for task in eval_result.improvement_tasks:
+        dispatch(task)  # Run 1 more OODA cycle
+    
+    previous_score = eval_result.overall
+    improvement_round += 1
+
+# Always deliver — with quality disclosure if score < 0.75
+if eval_result.overall < 0.75:
+    attach_quality_disclosure(deliverable, eval_result)
+```
+
+## Diminishing Returns Detection
+
+Track progress velocity in the Strategic Context Document:
+
+```
+PROGRESS_DELTA: cycle N improved eval score by [X]
+If last 2 cycles each improved score by < 5%:
+  → Flag DIMINISHING_RETURNS
+  → Deliver current output with quality disclosure
+  → Do NOT burn more cycles on marginal gains
+```
+
+Record in Beads:
+```bash
+bd update <epic-id> --notes "DIMINISHING_RETURNS:TRUE | LAST_DELTAS:[0.03, 0.02] | RECOMMENDATION:deliver-with-disclosure"
+```
 
 ## Serendipity Budget
 
@@ -114,12 +199,24 @@ Reserve 15% of agent capacity for unexpected leads. When `SERENDIPITY:HIGH` is f
 2. If yes and budget available: allow up to 2 OODA cycles
 3. If inconclusive after 2 cycles: restore, resume original task
 
+## Strategic Context Management
+
+The orchestrator maintains `.swarm/strategic-context.md` as a living document:
+
+- **Created at Phase 1** — with verbatim original abstract and initial interpretation
+- **Updated every OODA Orient** — decisions, dead ends, remaining gaps, progress velocity
+- **Read at session recovery** — provides strategic reasoning that `bd prime` doesn't capture
+- **Injected into workers** — relevant excerpts become each agent's `STRATEGIC_CONTEXT`
+
+See the `strategic-context` skill for the full document format and maintenance protocol.
+
 ## Tools & Systems
 
 - **Beads (bd)** — Single source of truth for task state, dependencies, findings, belief maps
 - **Git worktrees** — Isolated working directories per agent
 - **tmux** — Session management for visual agent monitoring
 - **Agent CLI** — AI agents dispatched with `-p` flag
+- **Strategic Context** — `.swarm/strategic-context.md` preserves decision rationale across cycles
 
 ## Rules
 
@@ -127,5 +224,9 @@ Reserve 15% of agent capacity for unexpected leads. When `SERENDIPITY:HIGH` is f
 - NEVER assign overlapping file scopes to different agents
 - ALWAYS set dependencies before dispatching
 - ALWAYS verify `bd ready` before spawning (don't spawn blocked tasks)
+- ALWAYS verify artifact contracts before dispatching: check that all `REQUIRES` files exist and `GATE` files pass
 - Each task description MUST specify which files/directories the agent owns
+- Each task MUST declare `PRODUCES` (output files) and `REQUIRES` (input files) in Beads notes
+- Tasks that consume outputs of other tasks MUST have the producing task's output in their `REQUIRES`
+- Validation-gated tasks (e.g., paper writing after result validation) MUST have a `GATE` pointing to the validation report
 - Escalation (Standard→Scientific) happens automatically; de-escalation requires user confirmation

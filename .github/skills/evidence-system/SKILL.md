@@ -166,6 +166,38 @@ When the Synthesizer integrates a new finding:
 | Rigor | Requirements |
 |-------|-------------|
 | Standard | All build tasks closed, tests passing |
-| Analytical | All questions answered with data, Statistician reviewed all findings |
-| Scientific | All hypotheses resolved, causal model complete, 1+ prediction confirmed, 1+ competing theory ruled out, all findings ROBUST or FRAGILE-with-conditions, zero CONSISTENCY_CONFLICTs |
-| Experimental | Scientific + all high-impact findings replicated, pre-registration verified, meta-analysis complete, all adversarial loops resolved |
+| Analytical | All questions answered with data, Statistician reviewed all findings, **Evaluator score ≥ 0.75** |
+| Scientific | All hypotheses resolved, causal model complete, 1+ prediction confirmed, 1+ competing theory ruled out, all findings ROBUST or FRAGILE-with-conditions, zero CONSISTENCY_CONFLICTs, **Evaluator score ≥ 0.75** |
+| Experimental | Scientific + all high-impact findings replicated, pre-registration verified, meta-analysis complete, all adversarial loops resolved, **Evaluator score ≥ 0.75** |
+
+## Layer 5: Strategic Context Document
+
+Location: `.swarm/strategic-context.md`
+
+A living document maintained by the orchestrator that preserves:
+- **Original Abstract** — verbatim user input, never modified
+- **Current Interpretation** — how the abstract is being read now (may evolve)
+- **Decisions and Rationale** — key forks taken and why
+- **Dead Ends** — approaches abandoned and why (prevents re-exploration)
+- **Remaining Gaps** — what's still weak in the answer
+- **Progress Velocity** — eval scores per cycle for diminishing returns detection
+
+The orchestrator reads this at session start (before journal, before Beads). Workers receive relevant excerpts via the `STRATEGIC_CONTEXT` field in their task notes.
+
+See the `strategic-context` skill for the full maintenance protocol.
+
+## Layer 6: Final Deliverable
+
+Location: `.swarm/deliverable.md`
+
+The Synthesizer produces a structured final output artifact that directly answers the user's original request. Unlike the journal (which tracks process), the deliverable IS the answer.
+
+Structure:
+- Executive Summary
+- Findings by Topic (mapped to original abstract)
+- Evidence strength per conclusion
+- Gaps and Limitations
+- Recommended Next Steps
+- Evidence Appendix
+
+The Evaluator scores this against the original abstract before convergence is declared. See `evaluator.agent.md` for scoring dimensions and thresholds.

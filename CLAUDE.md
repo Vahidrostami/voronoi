@@ -29,6 +29,15 @@ This project uses Beads (bd) for ALL planning and task tracking.
 - Run the test suite before closing a task.
 - Leave the codebase cleaner than you found it.
 
+## Artifact Contracts — MANDATORY
+Tasks may declare file-level dependencies in Beads notes. You MUST respect them:
+- `PRODUCES:file1, file2` — Files you MUST create before closing the task. The quality gate rejects merges with missing outputs.
+- `REQUIRES:file1, file2` — Files that must exist before you start. If missing, report BLOCKED and STOP.
+- `GATE:path/to/validation.json` — Validation file that must exist AND contain PASS verdicts before you begin.
+- NEVER close a task without verifying all PRODUCES artifacts exist.
+- NEVER start work if REQUIRES or GATE artifacts are missing — report BLOCKED instead.
+- When planning tasks, ALWAYS declare PRODUCES and REQUIRES for tasks that create or consume files.
+
 ## Evidence Standards (Analytical+ Rigor)
 
 When working on investigation or exploration tasks at Analytical rigor or above:
@@ -47,6 +56,7 @@ Gates activate based on the rigor level classified by the orchestrator:
 |------|----------|------------|------------|--------------|
 | Critic code review | ✅ | ✅ | ✅ | ✅ |
 | Statistician review | — | ✅ | ✅ | ✅ |
+| **Final Evaluation** | — | ✅ | ✅ | ✅ |
 | Methodologist design review | — | — | ✅ (advisory) | ✅ (mandatory) |
 | Pre-registration | — | — | ✅ | ✅ |
 | Power analysis | — | — | ✅ | ✅ |
@@ -82,3 +92,30 @@ When assigned an investigation task:
   ```bash
   bd create "Discovered: [description]" -t task -p 2 --notes "Found while working on [your task]"
   ```
+
+## Strategic Context — MANDATORY
+
+Every agent receives strategic context explaining how their work fits the whole:
+
+- **Read your `STRATEGIC_CONTEXT`** field in task notes at startup. It explains:
+  - HOW your piece fits the overall investigation/project
+  - WHY this task was prioritized
+  - WHAT a strong or weak result means for the whole
+  - Which DEAD ENDS to avoid
+- **Do NOT re-explore dead ends** unless your approach is materially different from what was already tried.
+- **Flag strategic misalignment** if your task's assumptions no longer hold:
+  ```bash
+  bd update <id> --notes "STRATEGIC_MISALIGNMENT: [what you found] contradicts [assumption]"
+  ```
+- The orchestrator maintains `.swarm/strategic-context.md` — read it for full context on the investigation's strategic direction.
+
+## Final Evaluation (Analytical+ Rigor)
+
+Before convergence is declared, the output is evaluated against the original abstract:
+
+- The Synthesizer produces a final deliverable (`.swarm/deliverable.md`)
+- The Evaluator scores it on: **Completeness**, **Coherence**, **Strength**, **Actionability**
+- If below threshold: targeted improvement tasks are created and 1-2 more OODA cycles run
+- **Max 2 improvement rounds** — then deliver with honest quality disclosure
+- If last 2 rounds improved by < 5% each: **DIMINISHING_RETURNS** — deliver as-is with disclosure
+- Process completion ≠ output quality. Gates passing does not mean the answer is good.

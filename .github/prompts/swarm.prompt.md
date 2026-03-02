@@ -73,13 +73,67 @@ Skip this phase for pure Build mode.
 2. Plan investigation phase first, build phase second
 3. Investigation findings inform build task specs
 
+### Initialize Strategic Context (all modes at Analytical+)
+
+Create `.swarm/strategic-context.md` with:
+- Verbatim original abstract (NEVER modified after creation)
+- Initial interpretation of what the user is asking
+- Empty decision/dead-end/gap tables
+- Empty progress velocity table
+
+```bash
+mkdir -p .swarm
+cat > .swarm/strategic-context.md << 'STRATEGIC_EOF'
+# Strategic Context
+
+## Original Abstract
+[verbatim user input]
+
+## Current Interpretation
+[initial interpretation]
+Last updated: Cycle 0
+
+## Decisions and Rationale
+| Cycle | Decision | Rationale | Alternatives Considered |
+|-------|----------|-----------|------------------------|
+
+## Dead Ends
+| Approach | Cycle Abandoned | Why | Key Finding |
+|----------|----------------|-----|-------------|
+
+## Remaining Gaps
+| Gap | Severity | Why Unresolved | Potential Path |
+|-----|----------|----------------|----------------|
+
+## Progress Velocity
+| Cycle | Eval Score | Delta | Hypotheses Resolved | Notes |
+|-------|-----------|-------|--------------------|----|
+STRATEGIC_EOF
+git add .swarm/strategic-context.md
+git commit -m "chore: initialize strategic context"
+```
+
 For all modes:
 ```bash
 bd create "<epic title>" -t epic -p 1
 bd create "<subtask title>" -t task -p <1|2|3> --parent <epic-id>
 bd update <task-id> --description "TASK_TYPE:<type> | RIGOR:<level> | SCOPE:<files>"
 bd dep add <child-id> <parent-id>
+
+# Artifact contracts — MANDATORY for pipeline correctness
+bd update <task-id> --notes "PRODUCES:<comma-separated output files>"
+bd update <task-id> --notes "REQUIRES:<comma-separated input files>"
+# For validation-gated tasks (e.g., paper writing after result validation):
+bd update <task-id> --notes "GATE:<path/to/validation_report.json>"
 ```
+
+**Artifact Contract Rules:**
+- Every task that creates output files MUST declare `PRODUCES`
+- Every task that consumes output from another task MUST declare `REQUIRES` listing those files
+- If the project description specifies "X must pass before Y begins", set `GATE` on Y pointing to the validation artifact
+- The autopilot will NOT dispatch a task until all `REQUIRES` files exist and `GATE` passes
+- The quality gate will REJECT a merge if `PRODUCES` files are missing
+
 Show the plan and ask for approval before proceeding.
 
 ## Phase 2: Cast & Dispatch
@@ -87,11 +141,15 @@ Show the plan and ask for approval before proceeding.
 1. Select roles based on mode × rigor (see orchestrator agent definition)
 2. Run `bd ready --json` to find unblocked tasks
 3. Load `.swarm-config.json` for project paths and `agent_command`
-4. For EACH ready task (up to max_agents):
+4. **Inject strategic context** into each task before dispatch:
+   ```bash
+   bd update <task-id> --notes "STRATEGIC_CONTEXT: This task tests whether [X], which matters because [Y]. A strong result here would [Z]. A weak result means we need to [W]. Dead ends to avoid: [list]."
+   ```
+5. For EACH ready task (up to max_agents):
    ```bash
    ./scripts/spawn-agent.sh <task-id> agent-<short-name> "<task description>"
    ```
-5. Report which agents were launched and in which tmux session
+6. Report which agents were launched and in which tmux session
 
 ## Phase 3: Monitor (OODA Loop)
 
@@ -102,16 +160,30 @@ Tell the user:
 - "When agents finish, run: /merge"
 
 The orchestrator continues the OODA loop:
-- **Observe:** Beads status, git activity, findings, journal
-- **Orient:** Classify events, run convergence/paradigm/bias checks
-- **Decide:** Next action based on mode + rigor + state
-- **Act:** Spawn, merge, accept findings, update belief map, notify
+- **Observe:** Beads status, git activity, findings, journal, strategic context
+- **Orient:** Classify events, update strategic context (decisions, dead ends, gaps, velocity), run convergence/paradigm/bias checks
+- **Decide:** Next action based on mode + rigor + state. Check dead ends before new dispatches.
+- **Act:** Spawn, merge, accept findings, update belief map, commit strategic context, notify
+
+### Convergence (Analytical+ Rigor)
+
+Before declaring convergence:
+1. Dispatch Synthesizer to produce final deliverable (`.swarm/deliverable.md`)
+2. Dispatch Evaluator to score deliverable against original abstract
+3. If Evaluator verdict is PASS (≥ 0.75): declare convergence
+4. If IMPROVE (0.50–0.74): generate targeted improvement tasks, run 1-2 more OODA cycles
+5. If FAIL (< 0.50): generate tasks AND flag to user
+6. Max 2 improvement rounds — then deliver with honest quality disclosure
+7. If last 2 rounds improved by < 5% each: DIMINISHING_RETURNS — deliver as-is
 
 ## Rules
 
 - NEVER dispatch more agents than max_agents in config
 - NEVER assign overlapping file scopes to different agents
 - Each task description MUST specify which files/directories the agent should work in
+- Each task MUST declare PRODUCES and REQUIRES artifact contracts in Beads notes
+- Validation-gated tasks MUST have a GATE artifact pointing to the validation report
 - Always set dependencies before dispatching
 - Always verify bd ready before spawning (don't spawn blocked tasks)
+- Always verify artifact contracts: REQUIRES files exist and GATE files pass before dispatch
 - At Scientific+ rigor, investigation tasks require Methodologist approval before execution

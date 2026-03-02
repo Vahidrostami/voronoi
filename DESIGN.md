@@ -33,15 +33,21 @@ A production-ready template repository for orchestrating multiple AI agents work
 │  │ Observe │→│  Orient  │→│  Decide  │→│  Act            │ │
 │  │ state,  │ │ classify │ │ based on │ │ spawn, merge,   │ │
 │  │ findings│ │ events,  │ │ mode +   │ │ replan, notify, │ │
-│  │ data    │ │ check    │ │ evidence │ │ record findings │ │
-│  │         │ │ paradigm │ │          │ │                 │ │
+│  │ data    │ │ update   │ │ evidence │ │ record findings │ │
+│  │         │ │ strategy │ │          │ │                 │ │
 │  └─────────┘ └──────────┘ └──────────┘ └─────────────────┘ │
+│                                              ↓              │
+│  FINAL EVALUATION — Score output vs. original abstract      │
+│  Synthesizer → Deliverable → Evaluator → PASS / IMPROVE    │
+│  Max 2 improvement rounds · Diminishing returns detection   │
 ├─────────────────────────────────────────────────────────────┤
-│  ROLE REGISTRY — 9 roles, auto-selected by task type        │
+│  ROLE REGISTRY — 11 roles, auto-selected by task type       │
 │  Builder · Investigator · Scout · Critic · Synthesizer      │
-│  Explorer · Theorist · Methodologist · Statistician         │
+│  Evaluator · Explorer · Theorist · Methodologist            │
+│  Statistician · Worker                                      │
 ├─────────────────────────────────────────────────────────────┤
 │  EVIDENCE SYSTEM — Findings, raw data, journal, beliefs     │
+│  Strategic Context — Decision rationale, dead ends, gaps    │
 ├─────────────────────────────────────────────────────────────┤
 │  INFRASTRUCTURE — Worktrees · Beads · tmux · git            │
 └─────────────────────────────────────────────────────────────┘
@@ -73,6 +79,8 @@ agent-swarm-template/
 │   ├── agents/                        # GitHub Copilot custom agents
 │   │   ├── swarm-orchestrator.agent.md
 │   │   ├── worker-agent.agent.md
+│   │   ├── synthesizer.agent.md       # Final-output architect
+│   │   ├── evaluator.agent.md         # Final quality evaluator
 │   │   ├── theorist.agent.md          # Causal model builder
 │   │   ├── methodologist.agent.md     # Experimental design reviewer
 │   │   └── statistician.agent.md      # Quantitative rigor gatekeeper
@@ -83,7 +91,9 @@ agent-swarm-template/
 │   │   ├── agent-standup/SKILL.md
 │   │   ├── branch-merging/SKILL.md
 │   │   ├── investigation-protocol/SKILL.md  # Hypothesis → experiment → finding
-│   │   └── evidence-system/SKILL.md         # Findings, journal, belief maps
+│   │   ├── evidence-system/SKILL.md         # Findings, journal, belief maps
+│   │   ├── artifact-gates/SKILL.md          # PRODUCES/REQUIRES/GATE file contracts
+│   │   └── strategic-context/SKILL.md       # Strategic context across cycles
 │   ├── prompts/                       # GitHub Copilot reusable prompts
 │   │   ├── swarm.prompt.md
 │   │   ├── standup.prompt.md
@@ -189,7 +199,7 @@ Escalation (Standard -> Analytical -> Scientific) happens automatically when evi
 
 ---
 
-## 5. Role Registry — 9 Roles
+## 5. Role Registry — 11 Roles
 
 ### Builder 🔨
 
@@ -231,12 +241,30 @@ Stress-tests output. For code: edge cases, security, performance. For findings: 
 
 ### Synthesizer 🧩
 
-Reads results from multiple agents, produces unified view, identifies contradictions and consensus, recommends next steps.
+Reads results from multiple agents, produces unified view, identifies contradictions and consensus, recommends next steps. **Also responsible for producing the final deliverable artifact.**
 
-- Activated by: When 2+ agents complete related tasks.
+- Activated by: When 2+ agents complete related tasks. Also at convergence for final output production.
+- At Analytical+ rigor: produces a structured final deliverable (`.swarm/deliverable.md`) that maps back to the original abstract.
 - At Scientific+ rigor: also produces an updated belief map (probability distribution over hypotheses given all evidence so far) and appends to the investigation journal.
+- **Final deliverable responsibility:** The Synthesizer doesn't just maintain the journal — it produces the actual output artifact that answers the user's original request. The deliverable is scored against a quality rubric (Completeness, Coherence, Strength, Actionability, Honesty) before submission. See §10.5 Final Evaluation.
 - **Consistency gate (Scientific+):** Before updating the belief map, the Synthesizer must run a formal **pairwise consistency check** across all validated findings. If two findings imply contradictory conclusions (e.g., "bottleneck is CPU-bound" vs "bottleneck is I/O-bound"), the Synthesizer flags a CONSISTENCY_CONFLICT. Contradicting findings that individually passed review cannot both enter the belief map as confirmed — the Synthesizer must mark one as contested and trigger reconciliation (Critic + Statistician joint review of both). See §7.5 Consistency Gate.
 - At Experimental rigor: performs meta-analysis across findings with effect sizes and confidence intervals.
+
+### Evaluator 🎯
+
+Final quality gate between "process complete" and "output is good." Scores the assembled deliverable against the original abstract and generates targeted improvement tasks when quality is below threshold.
+
+- Activated by: Before the orchestrator declares convergence at Analytical+ rigor.
+- After the Synthesizer produces a deliverable, the Evaluator decomposes the original abstract into discrete answer requirements and scores the deliverable against four dimensions:
+  - **COMPLETENESS (30%):** Does every part of the abstract have a corresponding finding/output?
+  - **COHERENCE (25%):** Do the pieces fit together into a unified answer?
+  - **STRENGTH (25%):** Are claims backed by robust evidence (not just any evidence)?
+  - **ACTIONABILITY (20%):** Could someone act on this output without further research?
+- **Verdict thresholds:** PASS (≥0.75), IMPROVE (0.50–0.74), FAIL (<0.50)
+- **Improvement generation:** On IMPROVE/FAIL, the Evaluator creates specific, targeted improvement tasks (max 5) aimed at the weakest dimensions. The orchestrator runs 1-2 more OODA cycles on these tasks.
+- **Hard cap:** Maximum 2 improvement rounds. After 2 rounds, deliver with an honest quality disclosure regardless of score.
+- **Diminishing returns:** Tracks evaluation scores across improvement rounds. If the last 2 rounds each improved by <5%, flags DIMINISHING_RETURNS and recommends delivery with disclosure.
+- See §10.5 Final Evaluation for the full protocol.
 
 ### Explorer 🧭
 
@@ -471,6 +499,64 @@ bd update <id> --notes "H6:gc-pauses | STATUS:untested | PRIOR:0.15 | BASIS:theo
 ```
 
 The orchestrator uses the belief map to decide which hypothesis to investigate next (highest expected information gain: `prior * uncertainty`).
+
+### Layer 5: Strategic Context Document
+
+A living document maintained by the orchestrator that preserves decision rationale, dead ends, and remaining gaps across OODA cycles and sessions. Prevents context degradation in long-running tasks.
+
+Location: `.swarm/strategic-context.md`
+
+```markdown
+# Strategic Context
+
+## Original Abstract
+[Verbatim user input — NEVER modified after creation]
+
+## Current Interpretation
+[How the orchestrator is reading the abstract NOW — may evolve as findings arrive]
+Last updated: Cycle N — YYYY-MM-DD
+
+## Decisions and Rationale
+| Cycle | Decision | Rationale | Alternatives Considered |
+|-------|----------|-----------|------------------------|
+| 1 | Prioritized H1 over H2 | H1 has higher information gain (0.72 vs 0.45) | Could have tested H2 first |
+| 3 | Pivoted from CPU to I/O | Finding F2 ruled out CPU bottleneck | Could have replicated F2 first |
+
+## Dead Ends
+| Approach | Cycle Abandoned | Why | Key Finding |
+|----------|----------------|-----|-------------|
+| Redis caching hypothesis | Cycle 3 | Effect vanished under realistic load | F3: d=0.02 |
+
+## Remaining Gaps
+| Gap | Severity | Why Unresolved | Potential Path |
+|-----|----------|----------------|----------------|
+| Cold-start latency impact | Medium | Not yet tested | Need specific benchmark |
+
+## Progress Velocity
+| Cycle | Eval Score | Delta | Hypotheses Resolved | Notes |
+|-------|-----------|-------|--------------------|----|
+| 1 | — | — | 0/5 | Initial dispatch |
+| 3 | 0.35 | — | 1/5 | First finding validated |
+| 5 | 0.52 | +0.17 | 3/5 | Major pivot |
+```
+
+**Purpose:** `bd prime` gives task state but not strategic reasoning. The journal captures cycle summaries but not *why* certain directions were chosen over others. The Strategic Context Document fills this gap.
+
+**Lifecycle:**
+- **Created** by the orchestrator at Phase 1 (planning), with verbatim original abstract
+- **Updated** every OODA Orient phase with decisions, dead ends, gaps, and progress velocity
+- **Read** at session recovery (before journal, before Beads) for strategic reasoning
+- **Injected** into worker prompts as `STRATEGIC_CONTEXT` — relevant excerpts tailored per worker type
+
+**Dead end prevention:** Before dispatching any new investigation, the orchestrator checks dead ends in the Strategic Context. If a proposed hypothesis overlaps with a dead end, it is skipped unless the new approach is materially different.
+
+**Diminishing returns:** The progress velocity table enables detection. If the last 2 cycles each improved the eval score by < 5%, the orchestrator flags DIMINISHING_RETURNS and considers delivering with quality disclosure rather than burning more cycles.
+
+### Layer 6: Final Deliverable
+
+The Synthesizer produces a structured final output artifact at `.swarm/deliverable.md` that directly answers the user's original request. Unlike the journal (which tracks process), the deliverable is the actual answer.
+
+See §10.5 Final Evaluation for the evaluation protocol that scores the deliverable before convergence.
 
 ---
 
@@ -916,6 +1002,111 @@ The gates are the same mechanism; rigor level just controls how many activate.
 
 ---
 
+## 9.5 Artifact Contracts — File-Level Dependency Enforcement
+
+### The Problem
+
+Beads task dependencies (`bd dep add`) ensure tasks start in order, but they don't verify that a task **actually produced its expected output files** before downstream tasks begin. This causes two classes of pipeline failure:
+
+1. **Phantom completion**: A task closes in Beads but didn't create the expected output file (e.g., `results.json`). Downstream tasks launch, find no input, and either fail or produce garbage.
+2. **Premature dispatch**: A task that consumes results (e.g., paper writing) starts before the results exist because Beads considers it "ready" (all task-level dependencies closed).
+
+These failures are especially common in complex multi-phase pipelines like the coupled-decisions demo, where data generation → experiments → validation → paper writing must be strictly ordered by actual file outputs, not just task status.
+
+### Solution: Three-Layer Artifact Contracts
+
+Each task can declare three artifact properties in its Beads notes:
+
+| Property | Format | Meaning |
+|----------|--------|---------|
+| `PRODUCES:file1, file2` | Comma-separated paths | Files the task MUST create before it can pass the quality gate |
+| `REQUIRES:file1, file2` | Comma-separated paths | Files that MUST exist on disk before the task is dispatched |
+| `GATE:path/to/report.json` | Single file path | A validation artifact that must exist AND contain passing verdicts |
+
+### Enforcement Points
+
+| Checkpoint | Script | What it checks |
+|------------|--------|---------------|
+| **Pre-flight** (before dispatch) | `autopilot.sh` → `preflight_check()` | `REQUIRES` files exist, `GATE` file exists and contains PASS |
+| **Quality gate** (before merge) | `quality-gate.sh` → Gate 5 | `PRODUCES` files all exist in worktree or project root |
+| **Agent prompt** (at spawn) | `spawn-agent.sh` | Injects contract into agent's instructions so it knows what to create |
+
+### How Contracts Flow Through the System
+
+```
+plan-tasks.sh                     spawn-agent.sh                quality-gate.sh
+─────────────                     ──────────────                ───────────────
+LLM generates tasks               Reads PRODUCES/REQUIRES/GATE  Checks PRODUCES
+with produces/requires/gate  →    from Beads notes          →   artifacts exist
+fields in JSON                     Injects into agent prompt     before allowing merge
+         │                                  │                          │
+         ▼                                  ▼                          ▼
+  bd update <id>                   Agent knows what files        Blocks merge if
+  --notes "PRODUCES:..."           it MUST create and what       outputs are missing
+  --notes "REQUIRES:..."           inputs to verify first
+  --notes "GATE:..."
+
+                    autopilot.sh dispatch_ready()
+                    ─────────────────────────────
+                    Before spawning, runs preflight_check():
+                    - Verifies all REQUIRES files exist on disk
+                    - Verifies GATE file exists and passes
+                    - Skips task if not truly ready (tries again next poll)
+```
+
+### Gate Files
+
+A `GATE` artifact is a special case of `REQUIRES`. It's a JSON file whose **content** is also validated — not just its existence. The pre-flight check parses the gate file and verifies it contains passing verdicts. Supported formats:
+
+- `{"verdict": "PASS"}` — top-level verdict
+- `{"stage_1": {"verdict": "PASS"}, "stage_2": {"verdict": "PASS"}}` — per-stage verdicts
+- `{"experiments": [{"verdict": "PASS"}, {"verdict": "PASS"}]}` — array of experiment verdicts
+
+If ANY verdict is not `PASS`, the gated task is blocked.
+
+### Example: Coupled-Decisions Pipeline
+
+```json
+{
+  "tasks": [
+    {
+      "id": "task-1",
+      "title": "Generate synthetic BevCo data",
+      "produces": ["demos/coupled-decisions/output/sales_transactions.csv",
+                    "demos/coupled-decisions/output/policies.json",
+                    "demos/coupled-decisions/output/expert_beliefs.json"],
+      "requires": [],
+      "gate": null
+    },
+    {
+      "id": "task-3",
+      "title": "Run experiments",
+      "produces": ["demos/coupled-decisions/output/results.json"],
+      "requires": ["demos/coupled-decisions/output/sales_transactions.csv"],
+      "gate": null
+    },
+    {
+      "id": "task-4",
+      "title": "Validate results",
+      "produces": ["demos/coupled-decisions/output/validation_report.json"],
+      "requires": ["demos/coupled-decisions/output/results.json"],
+      "gate": null
+    },
+    {
+      "id": "task-5",
+      "title": "Write academic paper",
+      "produces": ["demos/coupled-decisions/output/paper.pdf"],
+      "requires": ["demos/coupled-decisions/output/results.json"],
+      "gate": "demos/coupled-decisions/output/validation_report.json"
+    }
+  ]
+}
+```
+
+In this example, the paper-writing task has both a `requires` (needs the results file) AND a `gate` (validation report must exist and contain all PASS verdicts). Even if the validation task closes in Beads, the paper task won't dispatch until the validation report actually exists and passes.
+
+---
+
 ## 10. Convergence Criteria
 
 ### Standard Rigor (Engineering)
@@ -971,6 +1162,108 @@ To prevent infinite replication loops:
 4. Replication of a replication is never triggered automatically
 5. The user can manually request additional replications via `/swarm replicate <finding-id>`
 
+### 10.5 Final Evaluation — Closing the Intent-to-Output Gap
+
+Process convergence (all gates passed, all hypotheses resolved) does not guarantee output quality. A finding can be statistically sound but strategically irrelevant. The Final Evaluation pass closes the gap between "process complete" and "output actually answers the question."
+
+#### Protocol (Analytical+ Rigor)
+
+```
+BEFORE declaring convergence:
+  1. Synthesizer produces final deliverable (.swarm/deliverable.md)
+     - Maps every part of the original abstract to findings/outputs
+     - Integrates evidence into a narrative (not just a list)
+     - Identifies remaining gaps honestly
+
+  2. Evaluator scores deliverable against original abstract:
+     COMPLETENESS (weight: 0.30):
+       For each abstract requirement Rn: fully addressed (1.0), partial (0.7),
+       mentioned but not answered (0.4), missing (0.0)
+     COHERENCE (weight: 0.25):
+       Do pieces form a unified answer? Logical flow? No contradictions?
+     STRENGTH (weight: 0.25):
+       Are claims backed by ROBUST findings? Meaningful effect sizes?
+       Survived adversarial review?
+     ACTIONABILITY (weight: 0.20):
+       Could someone act on this without further research?
+
+  3. OVERALL = 0.30×COMPLETENESS + 0.25×COHERENCE + 0.25×STRENGTH + 0.20×ACTIONABILITY
+
+  4. Verdict:
+     ≥ 0.75: PASS → declare convergence
+     0.50–0.74: IMPROVE → targeted improvement tasks, 1-2 more OODA cycles
+     < 0.50: FAIL → improvement tasks AND flag to user
+```
+
+#### Macro Retry Loop
+
+```
+improvement_round = 0
+MAX_IMPROVEMENT_ROUNDS = 2
+
+while improvement_round < MAX_IMPROVEMENT_ROUNDS:
+    deliverable = synthesizer.produce_deliverable()
+    eval_result = evaluator.score(deliverable, original_abstract)
+
+    if eval_result.overall >= 0.75:
+        CONVERGE
+        break
+
+    if improvement_round > 0:
+        delta = eval_result.overall - previous_score
+        if delta < 0.05:
+            DIMINISHING_RETURNS → deliver with quality disclosure
+            break
+
+    dispatch(eval_result.improvement_tasks)  # Max 5 targeted tasks
+    previous_score = eval_result.overall
+    improvement_round += 1
+
+# Always deliver — attach quality disclosure if score < 0.75
+```
+
+#### Improvement Task Generation
+
+The Evaluator creates specific, targeted tasks aimed at the weakest dimensions:
+
+| Weakness | Example Task |
+|----------|-------------|
+| Completeness gap | "Address unanswered requirement R3 — impact on cold-start latency" |
+| Strength gap | "Strengthen evidence for serialization claim — current finding is FRAGILE" |
+| Coherence gap | "Reconcile contradiction between finding F2 and F7" |
+| Actionability gap | "Add concrete implementation recommendations for caching strategy" |
+
+Rules:
+- Max 5 improvement tasks per round
+- Each task targets a specific dimension and gap
+- Each task includes `STRATEGIC_CONTEXT` explaining its importance to the overall answer
+- Tasks must be achievable in 1-2 OODA cycles
+
+#### Diminishing Returns Detection
+
+The orchestrator tracks evaluation scores across improvement rounds in the Strategic Context Document's progress velocity table:
+
+```
+If last 2 improvement rounds each improved overall by < 5%:
+  DIMINISHING_RETURNS = TRUE
+  → Deliver current output with quality disclosure
+  → Do NOT burn more cycles on marginal gains
+  → Record: bd update <epic-id> --notes "DIMINISHING_RETURNS:TRUE | LAST_DELTAS:[0.03, 0.02]"
+```
+
+#### Quality Disclosure (attached when score < 0.75)
+
+```markdown
+## Quality Assessment
+**Overall Score:** 0.X/1.0
+**Strongest dimension:** [dimension] (0.X)
+**Weakest dimension:** [dimension] (0.X)
+**Known limitations:**
+- [Specific gap 1]
+- [Specific gap 2]
+**Improvement attempts:** N rounds, score improved from 0.X to 0.X
+```
+
 ---
 
 ## 11. GitHub Copilot Integration
@@ -983,6 +1276,8 @@ Each `.agent.md` file defines a Copilot agent persona with YAML frontmatter:
 |-------|------|-----------------|
 | `swarm-orchestrator` | Central coordinator: classifies, plans, dispatches, monitors, merges | Yes |
 | `worker-agent` | Individual worker executing a single task in isolation | No |
+| `synthesizer` | Integrates findings into deliverables, maintains journal and belief map | No |
+| `evaluator` | Scores final output against original abstract, generates improvement tasks | No |
 | `theorist` | Builds causal models from evidence, generates predictions | No |
 | `methodologist` | Reviews experimental designs before execution | No |
 | `statistician` | Reviews quantitative findings for statistical validity | No |
@@ -998,6 +1293,8 @@ Each `.agent.md` file defines a Copilot agent persona with YAML frontmatter:
 | `branch-merging` | Safely merging agent branches to main |
 | `investigation-protocol` | Hypothesis to experiment to finding workflow |
 | `evidence-system` | Managing findings, belief maps, journal, raw data |
+| `artifact-gates` | File-level dependency enforcement with PRODUCES/REQUIRES/GATE contracts |
+| `strategic-context` | Maintaining strategic context document across cycles and sessions |
 
 ### Reusable Prompts (`.github/prompts/`)
 
@@ -1449,11 +1746,11 @@ This section details every file that must be modified or created to implement th
 
 #### `.github/agents/swarm-orchestrator.agent.md` — Orchestrator Agent
 
-**Replace** Core Responsibilities with 8-item list covering: Classify, Plan, Cast, Dispatch, Monitor (OODA), Synthesize, Merge, Converge. **Add** Rigor Classification table, Information-Gain Prioritization formula, Paradigm Check logic, and Bias Monitor. **Replace** linear Workflow with OODA-based workflow.
+**Replace** Core Responsibilities with 10-item list adding: Initialize Strategic Context, Evaluate, and updated Converge. **Add** Rigor Classification table, Information-Gain Prioritization formula, Paradigm Check logic, Bias Monitor, Strategic Context Management, Final Evaluation Pass, Macro Retry Loop, and Diminishing Returns Detection. **Replace** linear Workflow with OODA-based workflow with strategic context updates. **Expand** Role Selection table to include Synthesizer (now at Analytical+) and Evaluator.
 
 #### `.github/agents/worker-agent.agent.md` — Worker Agent
 
-**Add** Evidence Standards section and Unexpected Findings section. **Replace** Completion Checklist with separate checklists for Build Tasks and Investigation Tasks.
+**Add** Strategic Context reading to Startup Sequence (step 4). **Add** Strategic Alignment section. **Add** Evidence Standards section and Unexpected Findings section. **Replace** Completion Checklist with separate checklists for Build Tasks and Investigation Tasks.
 
 #### `.github/prompts/swarm.prompt.md` — /swarm Command
 
@@ -1502,10 +1799,14 @@ This section details every file that must be modified or created to implement th
 | `.github/agents/theorist.agent.md` | Causal model builder agent |
 | `.github/agents/methodologist.agent.md` | Experimental design review agent |
 | `.github/agents/statistician.agent.md` | Quantitative rigor gatekeeper agent |
+| `.github/agents/synthesizer.agent.md` | Final-output architect: deliverables, journal, belief map, consistency |
+| `.github/agents/evaluator.agent.md` | Final quality evaluator: scores output vs. original abstract |
 | `.github/skills/investigation-protocol/SKILL.md` | Hypothesis to experiment to finding workflow |
 | `.github/skills/evidence-system/SKILL.md` | Findings, belief maps, journal, raw data management |
+| `.github/skills/strategic-context/SKILL.md` | Strategic context document maintenance across cycles |
 | `templates/investigator-prompt.md` | Template for investigator agent prompts |
 | `.swarm/journal.md` | Investigation journal (created at swarm init) |
+| `.swarm/strategic-context.md` | Strategic context document (created at swarm init) |
 
 ### Files UNCHANGED
 
@@ -1517,11 +1818,21 @@ This section details every file that must be modified or created to implement th
 - `.github/skills/branch-merging/SKILL.md` — Merge process unchanged
 - `scripts/teardown.sh` — Cleanup unchanged
 - `scripts/dashboard.py` — Dashboard unchanged
-- `scripts/quality-gate.sh` — Gate logic unchanged
 - `scripts/merge-agent.sh` — Merge mechanics unchanged
 - `scripts/merge-agent-generic.sh` — Generic merge unchanged
 - `scripts/spawn-agent-generic.sh` — Generic spawn unchanged
 - `scripts/cron-standup.sh` — Cron wrapper unchanged
+
+### Files MODIFIED for Artifact Contracts (§9.5)
+
+| File | Change |
+|------|--------|
+| `scripts/plan-tasks.sh` | Planner prompt now requires `produces`, `requires`, and `gate` fields per task. Stores these as Beads notes (`PRODUCES:`, `REQUIRES:`, `GATE:`) on each task. |
+| `scripts/quality-gate.sh` | New Gate 5: reads `PRODUCES:` from Beads notes, verifies each listed file exists in worktree or project root. |
+| `scripts/autopilot.sh` | New `preflight_check()` function: before dispatching any task, verifies all `REQUIRES:` files exist and `GATE:` files exist with PASS verdicts. Skips task if not ready (retries next poll). |
+| `scripts/spawn-agent.sh` | Reads `PRODUCES:`, `REQUIRES:`, `GATE:` from Beads notes. Injects artifact contract rules into the agent prompt so agents know what they must create and verify. |
+| `.github/agents/worker-agent.agent.md` | New Startup Sequence step: check artifact contracts. New "Artifact Contracts" section. Updated completion checklists to include artifact verification. |
+| `.github/skills/artifact-gates/SKILL.md` | NEW: Skill document explaining artifact contracts and how agents should work with them. |
 - `scripts/autopilot.sh` — Autopilot unchanged (OODA logic lives in orchestrator, not script)
 
 ---
@@ -1530,7 +1841,7 @@ This section details every file that must be modified or created to implement th
 
 | Dimension | Design |
 |-----------|--------|
-| Roles | 9 (builder, investigator, scout, critic, synthesizer, explorer, theorist, methodologist, statistician) |
+| Roles | 11 (builder, investigator, scout, critic, synthesizer, evaluator, explorer, theorist, methodologist, statistician, worker) |
 | Workflow modes | 4 (build, investigate, explore, hybrid) |
 | Rigor levels | 4 (standard, analytical, scientific, experimental) — auto-classified |
 | Task types | 6 (build, investigation, exploration, review, replication, theory) |
