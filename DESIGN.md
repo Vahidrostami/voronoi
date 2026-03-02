@@ -205,6 +205,8 @@ Tests a specific hypothesis or answers a specific question by running experiment
 - Must submit experimental design for Methodologist review before execution at Scientific+ rigor.
 - Must attach raw data files to findings, not just summaries.
 - Must pre-register expected outcomes.
+- **Sensitivity analysis (Scientific+):** Must test at least 2 parameter variations beyond the primary configuration to demonstrate robustness. Report whether the finding holds, weakens, or breaks under variation. See §7.5 Sensitivity Analysis.
+- **Data integrity:** Must compute SHA-256 hash of all raw data files and include the hash in the finding metadata. See §7.5 Data Integrity Chain.
 
 ### Scout 🔍
 
@@ -213,6 +215,7 @@ Researches existing knowledge before other agents start. Searches codebase, docs
 - Activated by: Phase 0 of Investigate, Explore, and Hybrid workflows. NOT activated for pure Build mode (see §4 Scout Activation by Mode).
 - At Scientific+ rigor, Scout runs BEFORE hypothesis generation (not after).
 - Produces a structured knowledge brief with: known results, related work, failed approaches, open questions, AND suggested initial hypotheses with rationale.
+- **SOTA anchoring (Scientific+):** The Scout must identify the **best-known methodology** for the type of investigation being planned — not just related results, but HOW the best results were obtained. The knowledge brief must include a "Recommended Methodology" section citing specific techniques, sample sizes, statistical approaches, and known pitfalls from prior art. The Methodologist uses this as a baseline when reviewing experimental designs. See §7.5 SOTA Anchoring.
 - Re-activates when any finding is surprising — searching for whether it's a known phenomenon.
 
 ### Critic ⚖️
@@ -221,7 +224,9 @@ Stress-tests output. For code: edge cases, security, performance. For findings: 
 
 - Activated by: Before any merge (Standard+) or finding acceptance (Analytical+).
 - **Build mode behavior:** The Critic runs as an inline review step within the orchestrator — not as a separate agent in its own worktree. It reads the Builder's diff, checks for edge cases/security/performance issues, and either approves (merge proceeds) or rejects with specific objections (Builder gets feedback and retries, up to 3 attempts before escalating to user). This keeps the agent count low for simple builds.
-- **Investigation mode behavior:** The Critic runs as a full agent in its own worktree at Scientific+ rigor, performing adversarial audits — actively constructing the strongest case AGAINST each positive finding.
+- **Investigation mode behavior:** The Critic runs as a full agent in its own worktree at Scientific+ rigor, performing adversarial audits using the **Structured Critic Protocol** (see §7.5). The Critic must complete ALL items on a mandatory checklist — not just generate plausible-sounding objections.
+- **Partial blinding (Scientific+):** The Critic receives the raw data, methodology, and statistical results — but NOT the hypothesis direction or the Investigator's interpretation. The Critic must evaluate whether the data supports ANY conclusion before being told what conclusion the Investigator drew. See §7.5 Partial Blinding Protocol.
+- **Adversarial loop:** When the Critic objects, the finding enters the Critic-Investigator Adversarial Loop (see §7.5). The Investigator must address each objection with evidence or concede it. This loop runs up to 3 rounds before escalating to user.
 - Tracks confirmed-to-refuted ratio; flags if suspiciously high (>80%).
 
 ### Synthesizer 🧩
@@ -230,6 +235,7 @@ Reads results from multiple agents, produces unified view, identifies contradict
 
 - Activated by: When 2+ agents complete related tasks.
 - At Scientific+ rigor: also produces an updated belief map (probability distribution over hypotheses given all evidence so far) and appends to the investigation journal.
+- **Consistency gate (Scientific+):** Before updating the belief map, the Synthesizer must run a formal **pairwise consistency check** across all validated findings. If two findings imply contradictory conclusions (e.g., "bottleneck is CPU-bound" vs "bottleneck is I/O-bound"), the Synthesizer flags a CONSISTENCY_CONFLICT. Contradicting findings that individually passed review cannot both enter the belief map as confirmed — the Synthesizer must mark one as contested and trigger reconciliation (Critic + Statistician joint review of both). See §7.5 Consistency Gate.
 - At Experimental rigor: performs meta-analysis across findings with effect sizes and confidence intervals.
 
 ### Explorer 🧭
@@ -249,7 +255,8 @@ Constructs causal models from accumulated evidence. Identifies mechanisms (not j
   - Generates testable predictions: "If X is true, we should also observe Y."
   - These predictions become NEW investigation tasks — closing the investigation loop.
   - Monitors for paradigm stress: if 3+ findings contradict the working model, flags for major replan.
-- Convergence role: Investigation is not done when all hypotheses are tested. It's done when the Theorist's model accounts for all observations and at least one novel prediction has been confirmed.
+- **Competing theories (Scientific+):** The Theorist must propose at least one **alternative theory** that could explain the same data. For each theory, the Theorist must identify at least one **discriminating prediction** — a test whose outcome would differ between the primary theory and the alternative. These discriminating experiments are prioritized by the orchestrator because they have the highest information gain. A theory is not considered validated until at least one discriminating prediction has confirmed it over the alternative. See §7.5 Competing Theories.
+- Convergence role: Investigation is not done when all hypotheses are tested. It's done when the Theorist's model accounts for all observations, at least one novel prediction has been confirmed, and at least one competing theory has been ruled out by a discriminating experiment.
 
 ### Methodologist 📐
 
@@ -259,6 +266,8 @@ Reviews experimental designs BEFORE execution. Ensures proper controls, adequate
 - Responsibilities:
   - Reviews every investigation task's experimental design and must approve before the Investigator starts.
   - Checks for: control conditions, confounding variables, sample size adequacy, appropriate statistical test selection, pre-registration completeness.
+  - **Mandatory power analysis (Scientific+):** The Methodologist must verify that the proposed sample size provides adequate statistical power (>0.8 for the minimum effect size of interest). The Investigator must include a formal power calculation in the pre-registration: given expected effect size d, alpha, and desired power, compute minimum N. If the Investigator omits this, the Methodologist rejects the design. See §7.5 Mandatory Power Analysis.
+  - **SOTA compliance:** The Methodologist compares the proposed design against the Scout's "Recommended Methodology" section. If the design falls below SOTA (e.g., smaller sample size, weaker controls, less appropriate statistical test), the Methodologist must either reject or document why the deviation is acceptable.
   - Can reject a design with specific objections.
   - After experiments: compares pre-registered analysis plan to actual analysis. Flags deviations.
 - Gate power: At Experimental rigor, no investigation proceeds without Methodologist approval. At Scientific rigor, Methodologist reviews are advisory (orchestrator can override with a note).
@@ -272,6 +281,8 @@ Quantifies uncertainty properly. Reviews all quantitative findings for statistic
 - Responsibilities:
   - Every quantitative finding must pass Statistician review before entering the knowledge store.
   - Reviews: confidence intervals, effect sizes, statistical test appropriateness, sample size adequacy, multiple comparison corrections.
+  - **Data integrity verification:** Before reviewing any finding, computes SHA-256 of the referenced raw data file and compares it to the hash in the finding metadata. If mismatch: finding is rejected and flagged for re-investigation. See §7.5 Data Integrity Chain.
+  - **Replication agreement criterion:** When reviewing replications, applies formal agreement test — overlapping 95% CIs OR equivalence test (TOST with margin = 20% of original effect size). "Both positive" is not sufficient for agreement. See §7.5 Replication Success Criteria.
   - When multiple investigators report in parallel, applies family-wise error rate adjustment (Bonferroni or Holm-Bonferroni).
   - Computes Bayes factors or posterior probabilities when priors are available from the Theorist's model.
   - Flags: insufficient power, inflated effect sizes, suspiciously clean results, p-values clustered just below 0.05.
@@ -312,15 +323,20 @@ bd update <id> --notes "EXPECTED_RESULT: p95 reduction >50%, CI width <15%"
 bd update <id> --notes "CONFOUNDS: Network variance, background processes, cache warm-up time"
 bd update <id> --notes "STAT_TEST: Two-sample t-test with Welch correction, alpha=0.05"
 bd update <id> --notes "SAMPLE_SIZE: 1000 per condition (power >0.9 for d=0.5)"
-bd update <id> --acceptance "Hypothesis confirmed or refuted with data, CI, effect size, raw data attached"
+bd update <id> --notes "POWER_ANALYSIS: d=0.5, alpha=0.05, power=0.9 -> N=1000 per group (computed via G*Power)"
+bd update <id> --notes "SENSITIVITY_PLAN: Primary N=1000; also test N=500 (power check) and timeout=30s vs 60s"
+bd update <id> --acceptance "Hypothesis confirmed or refuted with data, CI, effect size, raw data + sensitivity analysis attached"
 ```
 
 **Gates at Scientific+ rigor:**
-1. Methodologist reviews design before Investigator starts
-2. Investigator runs experiment and commits raw data
-3. Statistician reviews quantitative results
-4. Critic attempts to find alternative explanations
-5. Only then does the finding enter the knowledge store
+1. Methodologist reviews design (including power analysis and SOTA compliance) before Investigator starts
+2. Investigator runs experiment, commits raw data, computes SHA-256 hash of data files
+3. Investigator runs sensitivity analysis (at least 2 parameter variations)
+4. Statistician verifies data integrity (hash check), reviews quantitative results
+5. Critic performs partially-blinded adversarial review (sees data + method, NOT hypothesis direction)
+6. If Critic objects: Critic-Investigator Adversarial Loop (up to 3 rounds)
+7. Synthesizer runs consistency check against all existing validated findings
+8. Only then does the finding enter the knowledge store
 
 ### Replication Task
 
@@ -383,6 +399,8 @@ bd update <id> --notes "TYPE:finding | VALENCE:positive | CONFIDENCE:0.87"
 bd update <id> --notes "SOURCE_TASK:<investigation-task-id>"
 bd update <id> --notes "EFFECT_SIZE:0.62 | CI_95:[0.54, 0.70] | N:1000 | STAT_TEST:welch-t | P:0.0001"
 bd update <id> --notes "DATA_FILE:results/cache-benchmark-2026-03-02.csv"
+bd update <id> --notes "DATA_HASH:sha256:a3f2b8c9d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1"
+bd update <id> --notes "SENSITIVITY: N=500 -> effect=0.58 (holds); timeout=30s -> effect=0.61 (holds) | ROBUST:yes"
 bd update <id> --notes "REPLICATED:no | STAT_QUALITY:0.91 | REVIEWED_BY:critic"
 bd update <id> --notes "CONTRADICTS: | SUPPORTS:hypothesis-cache-is-bottleneck"
 
@@ -453,6 +471,194 @@ bd update <id> --notes "H6:gc-pauses | STATUS:untested | PRIOR:0.15 | BASIS:theo
 ```
 
 The orchestrator uses the belief map to decide which hypothesis to investigate next (highest expected information gain: `prior * uncertainty`).
+
+---
+
+## 7.5 Scientific Rigor Framework
+
+This section defines the concrete protocols that enforce scientific rigor across all investigation workflows. Every mechanism below is referenced by role definitions (§5) and enforced by the gate chain (§9).
+
+### 7.5.1 Consistency Gate
+
+**When:** After Synthesizer integrates a new finding into the knowledge store.
+
+**Protocol:**
+1. Synthesizer performs pairwise comparison of the new finding against ALL existing validated findings
+2. For each pair, check: Do the conclusions logically contradict? Do effect directions conflict? Do confidence intervals overlap where expected?
+3. If a contradiction is detected, flag it:
+   ```
+   bd update <finding-id> --notes "CONSISTENCY_CONFLICT:finding-12 vs finding-17 | TYPE:effect-direction | SEVERITY:high"
+   ```
+4. A CONSISTENCY_CONFLICT flag **blocks convergence** — it must be resolved before the investigation can close
+5. Resolution options: (a) Re-run one or both experiments with tighter controls, (b) Identify a moderating variable that explains both, (c) Theorist updates the causal model to accommodate both
+
+**Enforcement:** Convergence criteria (§10) require zero unresolved CONSISTENCY_CONFLICT flags.
+
+### 7.5.2 Replication Success Criteria
+
+**When:** An Investigator attempts to replicate a previous finding.
+
+**Formal Agreement Criteria (choose one):**
+- **Overlapping Confidence Intervals:** The 95% CI of the replication overlaps with the 95% CI of the original
+- **TOST Equivalence Test:** Two One-Sided Tests confirm the replication effect is within an equivalence bound (default: ±0.2 Cohen's d of the original)
+
+**Protocol:**
+1. Replication uses identical method (or documents deviations)
+2. Statistician computes agreement using one of the formal criteria above
+3. Result is recorded:
+   ```
+   bd update <replication-id> --notes "REPLICATION_OF:finding-12 | AGREEMENT:TOST_p=0.03 | EQUIVALENT:yes"
+   ```
+4. If replication fails: Critic initiates adversarial review of both original and replication
+
+### 7.5.3 Sensitivity Analysis Protocol
+
+**When:** After every experiment, before the finding enters review.
+
+**Protocol:**
+1. Investigator identifies at least 2 key parameters that could affect the result
+2. For each parameter, vary it across a meaningful range (default: ±50% of the original value)
+3. Re-run the experiment for each variation
+4. Report robustness:
+   ```
+   bd update <finding-id> --notes "SENSITIVITY: param1=cache_size varied [50MB,150MB,200MB] -> effect stable (d=0.48-0.62) | ROBUST:yes"
+   bd update <finding-id> --notes "SENSITIVITY: param2=timeout varied [15s,30s,60s] -> effect vanishes at 60s | ROBUST:no | BREAKS_AT:timeout>=60s"
+   ```
+5. A finding is marked **ROBUST** only if the primary conclusion holds across all variations
+6. A finding marked **FRAGILE** must document the exact conditions under which it breaks
+
+**Enforcement:** Convergence criteria require all findings to be ROBUST or FRAGILE-with-documented-conditions.
+
+### 7.5.4 Critic-Investigator Adversarial Loop
+
+**When:** Critic raises an objection during review at Scientific+ rigor.
+
+**Protocol:**
+1. **Round 1 — Critic objects:** Critic files a structured objection (see §7.5.8 checklist)
+   ```
+   bd create "OBJECTION: [finding-id] — [category]" -t task --notes "OBJECTION_TYPE:confound | DETAIL:warmup period too short | SEVERITY:high"
+   ```
+2. **Round 1 — Investigator responds:** Investigator addresses the objection with data, additional analysis, or an amended experiment
+3. **Round 2 — Critic evaluates response:** Critic either accepts the response or raises a refined objection
+4. **Round 3 — Final resolution:** If still unresolved, Orchestrator convenes Methodologist + Statistician for arbitration
+5. **Maximum 3 rounds.** If unresolved after 3 rounds, the finding is marked CONTESTED and cannot contribute to convergence
+   ```
+   bd update <finding-id> --notes "ADVERSARIAL_STATUS:CONTESTED | ROUNDS:3 | UNRESOLVED_OBJECTION:confound-warmup"
+   ```
+
+**Key rule:** The adversarial loop is collaborative, not combative. The goal is truth, not winning.
+
+### 7.5.5 Partial Blinding Protocol
+
+**When:** Critic reviews any finding at Scientific+ rigor.
+
+**Protocol:**
+1. Orchestrator prepares a **blinded review packet** containing:
+   - Raw data and summary statistics
+   - Exact methodology description
+   - Statistical test results
+   - **NOT included:** The hypothesis being tested, the expected direction of the effect
+2. Critic reviews the data and method, identifies potential issues, and forms their own interpretation of what the data shows
+3. Only AFTER the Critic submits their review does the Orchestrator reveal the hypothesis
+4. If the Critic's independent interpretation conflicts with the hypothesis, this triggers an adversarial loop (§7.5.4)
+
+**Why:** Prevents confirmation bias in review. A Critic who knows the hypothesis unconsciously looks for ways to confirm it.
+
+### 7.5.6 SOTA Anchoring
+
+**When:** Scout briefs the team at the start of any investigation (Build, Science, or Experimental mode).
+
+**Protocol:**
+1. Scout identifies the current state-of-the-art methodology for the problem domain
+2. Scout documents SOTA in structured format:
+   ```
+   bd update <id> --notes "SOTA: [domain] | BEST_METHOD:[method] | SOURCE:[paper/doc] | METRIC:[metric]=[value]"
+   ```
+3. Methodologist reviews the Scout brief and enforces:
+   - If SOTA methodology exists, the investigation MUST either use it or document why a deviation is justified
+   - If the investigation proposes a novel method, it must include a comparison against SOTA
+4. Findings that ignore SOTA without justification are rejected at review
+
+### 7.5.7 Mandatory Power Analysis
+
+**When:** Pre-registration of any experiment at Scientific+ rigor.
+
+**Protocol:**
+1. Before any experiment runs, Methodologist requires:
+   - **Minimum detectable effect size** (based on practical significance, not convenience)
+   - **Alpha level** (default: 0.05)
+   - **Target power** (default: 0.80, recommended: 0.90)
+   - **Computed minimum sample size**
+2. Power analysis is recorded in the task:
+   ```
+   bd update <id> --notes "POWER_ANALYSIS: effect=0.5d | alpha=0.05 | power=0.90 | min_N=172 per group | method=G*Power"
+   ```
+3. If the required sample size is infeasible, the team must either:
+   - Justify a smaller effect size threshold
+   - Use a sequential testing design (with alpha spending function)
+   - Abandon the experiment and use observational methods
+4. Experiments that run without power analysis are flagged and cannot produce findings above CONFIDENCE:medium
+
+### 7.5.8 Structured Critic Checklist
+
+**When:** Every Critic review at any rigor level.
+
+**Named Checks (all must be addressed):**
+
+| # | Check | Question |
+|---|-------|----------|
+| 1 | **CONFOUNDS** | Are there uncontrolled variables that could explain the result? |
+| 2 | **ALT_EXPLANATIONS** | What alternative theories could produce the same data? |
+| 3 | **DATA_QUALITY** | Are there outliers, missing data, floor/ceiling effects, or measurement artifacts? |
+| 4 | **STAT_VALIDITY** | Are assumptions of the statistical test met? Is the test appropriate for this data? |
+| 5 | **GENERALIZABILITY** | Under what conditions might this finding NOT hold? |
+
+**Protocol:**
+1. Critic addresses EACH check explicitly, even if the answer is "No issues found"
+2. Each check receives a verdict: PASS, CONCERN (minor, non-blocking), or FAIL (blocking)
+3. A single FAIL triggers the adversarial loop (§7.5.4)
+4. Review is recorded:
+   ```
+   bd update <finding-id> --notes "CRITIC_REVIEW: CONFOUNDS:PASS | ALT_EXPLANATIONS:CONCERN(thermal-throttling) | DATA_QUALITY:PASS | STAT_VALIDITY:PASS | GENERALIZABILITY:FAIL(only-tested-on-linux)"
+   ```
+
+### 7.5.9 Competing Theories Requirement
+
+**When:** Before an investigation can converge at Scientific+ rigor.
+
+**Protocol:**
+1. Theorist must propose at least 2 competing causal models that could explain the observed phenomena
+2. For each competing theory, Theorist identifies a **discriminating prediction** — a testable outcome where the theories make different predictions
+3. At least one discriminating experiment must be run
+4. Results:
+   ```
+   bd update <id> --notes "COMPETING_THEORIES: T1=cache-bottleneck T2=serialization-overhead | DISCRIMINATING_TEST:finding-22 | RESULT:T1-supported,T2-refuted"
+   ```
+5. An investigation cannot converge if only one theory was ever considered
+
+**Why:** Science advances by ruling out alternatives, not by confirming a single story. Without competing theories, confirmation bias dominates.
+
+### 7.5.10 Data Integrity Chain
+
+**When:** Every experiment that produces data files.
+
+**Protocol:**
+1. Immediately after data collection, Investigator computes SHA-256 hash of all raw data files:
+   ```
+   shasum -a 256 results/cache-benchmark-2026-03-02.csv
+   ```
+2. Hash is recorded in the finding metadata:
+   ```
+   bd update <finding-id> --notes "DATA_HASH:sha256:a3f2b8c9d4e5...f0a1"
+   ```
+3. When Statistician reviews the finding, they independently recompute the hash and verify it matches
+4. If hashes don't match, the finding is immediately quarantined:
+   ```
+   bd update <finding-id> --notes "DATA_INTEGRITY:FAILED | EXPECTED_HASH:a3f2b8... | ACTUAL_HASH:7c9d1e... | STATUS:QUARANTINED"
+   ```
+5. A quarantined finding cannot contribute to convergence until the discrepancy is resolved
+
+**Why:** Prevents both accidental data corruption and ensures the exact data that was reviewed is the data that supports the conclusion.
 
 ---
 
@@ -685,11 +891,14 @@ At Scientific+ rigor, certain task transitions require review:
 
 ```
 Investigation task created
-  -> REQUIRES_REVIEW: Methodologist (design approval)
-  -> Investigator executes
+  -> REQUIRES_REVIEW: Methodologist (design + power analysis + SOTA compliance)
+  -> Investigator executes, commits raw data with SHA-256 hash
+  -> Investigator runs sensitivity analysis (2+ parameter variations)
   -> Finding produced
-  -> REQUIRES_REVIEW: Statistician (quantitative validity)
-  -> REQUIRES_REVIEW: Critic (adversarial review)
+  -> REQUIRES_REVIEW: Statistician (data integrity hash check + quantitative validity)
+  -> REQUIRES_REVIEW: Critic (partially-blinded adversarial review)
+  -> If Critic objects: Adversarial Loop (up to 3 rounds, see §7.5)
+  -> REQUIRES_REVIEW: Synthesizer (consistency check against existing findings)
   -> Finding enters knowledge store
 ```
 
@@ -721,13 +930,18 @@ All questions answered with quantitative evidence. Statistician has reviewed all
 3. No PARADIGM_STRESS flags unresolved
 4. At least one novel prediction from the model has been tested
 5. Investigation journal has a complete narrative
+6. No unresolved CONSISTENCY_CONFLICT flags (all validated findings are mutually consistent)
+7. At least one competing theory has been ruled out by a discriminating experiment
+8. All findings marked ROBUST (sensitivity analysis passed) or FRAGILE with documented conditions
 
 ### Experimental Rigor
 All Scientific criteria PLUS:
-6. All high-impact findings independently replicated
+6. All high-impact findings independently replicated (using formal agreement criterion: overlapping CIs or TOST equivalence test)
 7. Pre-registration compliance verified for all experiments (Methodologist sign-off)
 8. Meta-analysis of effect sizes across related findings
-9. Comprehensive raw data archive committed
+9. Comprehensive raw data archive committed with SHA-256 hashes verified
+10. All Critic adversarial loops resolved (no outstanding objections)
+11. Power analysis documented for every experiment
 
 ### Convergence Can Regress (and That's Correct)
 
