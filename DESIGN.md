@@ -159,6 +159,34 @@ The classifier also determines how much scientific rigor the work requires. This
 
 When in doubt, classify higher — gates can be skipped but can't be added retroactively.
 
+### Scout Activation by Mode
+
+The Scout's "Phase 0" behavior depends on the classified mode:
+
+| Mode | Scout? | Reason |
+|------|--------|--------|
+| **Build** | **No** (unless prompt is ambiguous) | Requirements are explicit; no prior-knowledge search needed |
+| **Investigate** | **Yes** — mandatory | Must survey existing knowledge BEFORE hypothesis generation |
+| **Explore** | **Yes** — mandatory | Must identify known evaluations and prior art |
+| **Hybrid** | **Yes** — mandatory | Investigation/explore phases need grounding |
+
+Build mode skips Scout because the user's prompt IS the specification. If the classifier detects significant ambiguity in a Build prompt (e.g., "build something that handles auth well"), it can optionally dispatch Scout to clarify requirements before planning.
+
+### Misclassification Correction
+
+The user can override the classifier at two points:
+
+1. **At plan presentation.** The orchestrator always shows the detected mode and rigor before asking for confirmation:
+   ```
+   Swarm: Classified as: Investigate / Scientific rigor
+          [Override: /swarm --mode build]
+   ```
+   The user can re-invoke with an explicit `--mode` or `--rigor` flag.
+
+2. **Mid-flight.** The user says "this is simpler than you think, just build it" or "this actually needs investigation." The orchestrator reclassifies, preserves completed work, and adjusts gates for remaining tasks.
+
+Escalation (Standard -> Analytical -> Scientific) happens automatically when evidence suggests higher rigor is needed. De-escalation requires explicit user confirmation because dropping gates loses safety guarantees.
+
 ---
 
 ## 5. Role Registry — 9 Roles
@@ -182,9 +210,9 @@ Tests a specific hypothesis or answers a specific question by running experiment
 
 Researches existing knowledge before other agents start. Searches codebase, docs, logs, and (with web search) external literature.
 
-- Activated by: Phase 0 of any non-trivial workflow.
+- Activated by: Phase 0 of Investigate, Explore, and Hybrid workflows. NOT activated for pure Build mode (see §4 Scout Activation by Mode).
 - At Scientific+ rigor, Scout runs BEFORE hypothesis generation (not after).
-- Produces a structured knowledge brief with: known results, related work, failed approaches, and open questions.
+- Produces a structured knowledge brief with: known results, related work, failed approaches, open questions, AND suggested initial hypotheses with rationale.
 - Re-activates when any finding is surprising — searching for whether it's a known phenomenon.
 
 ### Critic ⚖️
@@ -192,7 +220,8 @@ Researches existing knowledge before other agents start. Searches codebase, docs
 Stress-tests output. For code: edge cases, security, performance. For findings: methodology, confounds, alternative explanations.
 
 - Activated by: Before any merge (Standard+) or finding acceptance (Analytical+).
-- At Scientific+ rigor: performs adversarial audit — actively constructs the strongest case AGAINST each positive finding.
+- **Build mode behavior:** The Critic runs as an inline review step within the orchestrator — not as a separate agent in its own worktree. It reads the Builder's diff, checks for edge cases/security/performance issues, and either approves (merge proceeds) or rejects with specific objections (Builder gets feedback and retries, up to 3 attempts before escalating to user). This keeps the agent count low for simple builds.
+- **Investigation mode behavior:** The Critic runs as a full agent in its own worktree at Scientific+ rigor, performing adversarial audits — actively constructing the strongest case AGAINST each positive finding.
 - Tracks confirmed-to-refuted ratio; flags if suspiciously high (>80%).
 
 ### Synthesizer 🧩
@@ -214,6 +243,7 @@ Generates and evaluates options against criteria. Produces comparison matrices w
 Constructs causal models from accumulated evidence. Identifies mechanisms (not just correlations), generates novel predictions, and detects when the working theory needs fundamental revision.
 
 - Activated by: Scientific+ rigor, after Synthesizer produces a belief map.
+- **Also activated for Investigation Bootstrap** (see §8): After the Scout's knowledge brief arrives and the orchestrator generates initial hypotheses, the Theorist is optionally dispatched to refine hypotheses, assign calibrated priors, and identify non-obvious hypotheses that the orchestrator might miss. At Scientific+ rigor this refinement is mandatory; at Analytical rigor the orchestrator's initial hypotheses are used directly.
 - Responsibilities:
   - Takes synthesized findings and builds an explanatory model: "A + B happen because of mechanism X."
   - Generates testable predictions: "If X is true, we should also observe Y."
@@ -232,6 +262,7 @@ Reviews experimental designs BEFORE execution. Ensures proper controls, adequate
   - Can reject a design with specific objections.
   - After experiments: compares pre-registered analysis plan to actual analysis. Flags deviations.
 - Gate power: At Experimental rigor, no investigation proceeds without Methodologist approval. At Scientific rigor, Methodologist reviews are advisory (orchestrator can override with a note).
+- **Batch review:** When multiple investigation tasks are created simultaneously, the Methodologist reviews all designs in a single pass (one agent invocation), returning approve/reject for each. This prevents the Methodologist from becoming a serial bottleneck. The orchestrator groups pending designs and dispatches one Methodologist review covering all of them.
 
 ### Statistician 📊
 
@@ -427,16 +458,67 @@ The orchestrator uses the belief map to decide which hypothesis to investigate n
 
 ## 8. Workflow Engine — The OODA Loop
 
+### Investigation Bootstrap (Fixes the "first cycle" problem)
+
+Before the OODA loop starts, investigation/explore/hybrid workflows run a one-time bootstrap sequence:
+
+```
+=== BOOTSTRAP (runs once, before first OODA cycle) ===
+
+1. Dispatch Scout
+   Scout produces: knowledge brief (known results, related work,
+   failed approaches, open questions, suggested hypotheses)
+
+2. Orchestrator generates initial hypotheses
+   Reads Scout brief. Produces 3-7 hypotheses with:
+   - Plain-language description
+   - Initial prior (0.0-1.0) based on Scout evidence
+   - Basis for the prior ("deploy diff shows ORM change" -> 0.7)
+   - Estimated testability (how cleanly can this be tested?)
+   - Impact (how many downstream decisions depend on this?)
+
+3. At Scientific+ rigor: dispatch Theorist to refine
+   Theorist reviews orchestrator's hypotheses, may:
+   - Adjust priors with calibration reasoning
+   - Add non-obvious hypotheses (mechanistic reasoning)
+   - Identify dependencies between hypotheses
+   - Flag hypotheses that are actually the same thing stated differently
+   At Analytical rigor: skip this step, use orchestrator's hypotheses directly.
+
+4. Create initial belief map
+   The orchestrator (or Theorist at Scientific+) creates the first
+   BELIEF_MAP entry in Beads with all hypotheses and their priors.
+   This belief map is the input to the information-gain formula
+   that drives hypothesis prioritization in the OODA loop.
+
+5. Create investigation tasks for top-priority hypotheses
+   Rank by: uncertainty(H) * impact(H) * testability(H)
+   Create tasks for the top N (up to max_agents worth).
+
+6. At Scientific+ rigor: dispatch Methodologist for batch review
+   Methodologist reviews all initial investigation designs in one pass.
+   Approved designs proceed. Rejected designs get revised.
+
+7. Enter OODA loop
+```
+
+Build mode skips bootstrap entirely — the orchestrator decomposes the prompt into build tasks and dispatches immediately.
+
 ### The Full Cycle
 
 ```
-while not converged(rigor_level):
+cycle_count = 0
+max_cycles = config.rigor.max_investigation_cycles  # default: 20
+
+while not converged(rigor_level) and cycle_count < max_cycles:
 
     === OBSERVE ===
+    # Build mode short-circuit: skip evidence layers
     Read Beads status for all tasks
-    Read knowledge store (new findings since last cycle)
-    Read investigation journal (narrative context)
-    Read belief map (current hypothesis state)
+    if rigor > standard:
+        Read knowledge store (new findings since last cycle)
+        Read investigation journal (narrative context)
+        Read belief map (current hypothesis state)
     Check git activity (commits, stalls, pushes)
     Check for user input
 
@@ -464,6 +546,8 @@ while not converged(rigor_level):
 
     If BUILD mode:
       Standard pipeline: dispatch builders -> critic review -> merge
+      On wave completion: rebase downstream agent branches onto main
+        (see "Multi-Wave Rebase Protocol" below)
 
     If INVESTIGATE mode:
       1. Any findings awaiting Statistician review? -> dispatch Statistician
@@ -492,6 +576,15 @@ while not converged(rigor_level):
     Append to investigation journal
     Broadcast relevant findings to active agents
     Notify user only if: plan approval, strategic pivot, convergence, or paradigm stress
+
+    cycle_count += 1
+
+# If max_cycles reached without convergence:
+#   Notify user: "Investigation reached cycle limit ({max_cycles}).
+#   Current convergence: {X}%. Options:
+#   A) Extend by N cycles
+#   B) Accept current findings and close
+#   C) Narrow scope to unresolved hypotheses only"
 ```
 
 ### Orchestrator Priority Queue
@@ -508,6 +601,27 @@ The DECIDE phase picks the most valuable next action. Priority order:
 8. **New build dispatch** — When investigation phase complete and builds are ready
 9. **Serendipity pursuit** — When budget allows and a lead looks promising
 10. **Scout re-check** — When a surprising finding warrants literature search
+
+### Multi-Wave Rebase Protocol
+
+When Build mode organizes work into sequential waves (Wave 1, Wave 2, etc.), downstream agents need upstream changes:
+
+```
+Wave 1 agents complete -> Critic review -> Merge to main
+|
+v
+For each Wave 2 agent already spawned:
+  1. Orchestrator runs: git -C <worktree> fetch origin main
+  2. Orchestrator runs: git -C <worktree> rebase origin/main
+  3. If conflict: orchestrator notifies agent to resolve, OR
+     kills agent, respawns on fresh worktree from updated main
+
+For Wave 2 agents not yet spawned:
+  1. Spawn from current main (already includes Wave 1)
+  2. No rebase needed
+```
+
+The orchestrator prefers spawning new agents from updated main over rebasing existing ones. Rebase is only used when an agent is already running and has uncommitted work that would be lost by respawning.
 
 ### Information-Gain Hypothesis Selection
 
@@ -583,8 +697,10 @@ At Standard rigor (engineering), the gates are simpler:
 ```
 Build task created
   -> Builder executes
-  -> REQUIRES_REVIEW: Critic (code review)
-  -> Merge
+  -> REQUIRES_REVIEW: Critic (code review, inline)
+  -> If approved: Merge
+  -> If rejected: Builder receives specific objections, retries (up to 3x)
+  -> If 3 rejections: escalate to user with Critic's objections + Builder's attempts
 ```
 
 The gates are the same mechanism; rigor level just controls how many activate.
@@ -612,6 +728,34 @@ All Scientific criteria PLUS:
 7. Pre-registration compliance verified for all experiments (Methodologist sign-off)
 8. Meta-analysis of effect sizes across related findings
 9. Comprehensive raw data archive committed
+
+### Convergence Can Regress (and That's Correct)
+
+In investigation workflows, the convergence percentage can decrease. This happens when:
+- A new finding contradicts the working model (hypotheses reopen)
+- The Theorist generates new predictions (adds untested hypotheses)
+- Replication fails (a "confirmed" result reverts to "contested")
+
+This is scientifically correct but must be communicated clearly to the user:
+
+```
+Convergence: 45% (was 65%)
+  Reason: Replication of finding #12 produced different effect size.
+  Impact: H1 status changed from CONFIRMED to CONTESTED.
+  Action: Dispatching Critic + Statistician to reconcile.
+```
+
+The orchestrator always shows the direction of change, the reason, and what it's doing about it. Convergence is not a progress bar — it's a confidence meter.
+
+### Replication Termination
+
+To prevent infinite replication loops:
+
+1. Each finding can be replicated at most **2 times** (original + 2 replications = 3 total measurements)
+2. If 2/3 agree: majority result enters the knowledge store
+3. If all 3 disagree: finding is marked `CONTESTED`, Critic + Statistician jointly audit all three, and the result is flagged for user attention
+4. Replication of a replication is never triggered automatically
+5. The user can manually request additional replications via `/swarm replicate <finding-id>`
 
 ---
 
@@ -742,16 +886,24 @@ By default, agents run with `--allow-all`. For unattended/server deployments, us
 ```
 You: /swarm Build a full-stack SaaS with auth, billing, and dashboard
 
-Swarm: I'll build this in 3 parallel waves:
+Swarm: Classified as: Build / Standard rigor
+       [Override: /swarm --mode investigate or /swarm --rigor analytical]
+
+  I'll build this in 3 parallel waves:
   Wave 1: Database schema + Auth service (2 agents)
   Wave 2: Billing integration + API layer (2 agents, after Wave 1)
   Wave 3: Dashboard frontend + Integration tests (2 agents, after Wave 2)
 
-  Each wave includes code review before merge. Ready to go?
+  Each wave includes code review before merge.
+  When Wave 1 merges, Wave 2 agents spawn from updated main. Ready to go?
 
 You: go
 
 [Standard engineering workflow — builders + critic reviews]
+[User can check /progress or /standup at any time]
+[Wave 2 agents auto-spawn after Wave 1 merges — no user intervention]
+[If Critic rejects a build: Builder retries with feedback, up to 3x]
+[If 3 rejections: user gets notified with the specific issue]
 ```
 
 ### Scenario: Scientific Investigation
@@ -759,13 +911,15 @@ You: go
 ```
 You: /swarm Figure out why our API latency spiked 3x after the last deploy
 
-Swarm: I'll investigate this systematically.
+Swarm: Classified as: Investigate / Scientific rigor
+       [Override: /swarm --mode build or /swarm --rigor standard]
 
   Phase 0 — Scout: Review deploy diff, recent metrics, error logs, and known
   latency patterns in our stack.
 
-  Phase 1 — Based on scout findings, I'll generate hypotheses and test the
-  most likely ones in parallel (2-3 investigators).
+  Phase 1 — Based on scout findings, I'll generate hypotheses, assign priors,
+  and test the most informative ones in parallel (2-3 investigators).
+  Each experiment design gets Methodologist review.
 
   Phase 2 — Validated findings feed into a causal model. If the root cause is
   clear, I'll build the fix. If not, I'll test the next round of hypotheses.
@@ -776,10 +930,12 @@ You: go
 
 [15 minutes later]
 Swarm: Update — Scout found the deploy changed the ORM query builder.
-  Testing 3 hypotheses in parallel:
+  Generated 4 hypotheses from scout brief:
   1. N+1 query regression (prior: 0.7 based on deploy diff)
   2. Missing index on new query pattern (prior: 0.5)
   3. Connection pool exhaustion under new load (prior: 0.3)
+  4. GC pause accumulation (prior: 0.15, from Theorist)
+  Testing top 3 by information gain. Designs approved by Methodologist.
 
 [30 minutes later]
 Swarm: Finding — N+1 query confirmed. New endpoint makes 47 queries per request
@@ -791,6 +947,11 @@ Swarm: Finding — N+1 query confirmed. New endpoint makes 47 queries per reques
   loading, and a second investigator to verify no other regressions.
 
 [No further user interaction needed until completion]
+
+--- User can inject at any time: ---
+You: I think it might be the new middleware, not the ORM
+Swarm: Adding hypothesis: "Middleware overhead" (prior: 0.5 based on your input).
+  Queuing investigation after current round completes.
 ```
 
 ### Scenario: Experimental Science
@@ -886,6 +1047,32 @@ Rigor:     Scientific | Pre-reg: 3/3 compliant | Replications: 1/1 confirmed
 Converge:  65%
 ```
 
+### User Interaction Model
+
+The orchestrator minimizes interruptions while keeping the user informed and in control.
+
+**Mandatory user touchpoints** (system pauses for confirmation):
+1. Initial plan presentation — before any agents spawn
+2. Paradigm stress — when 3+ findings contradict the working model
+3. Cycle limit reached — when max_investigation_cycles is hit without convergence
+
+**Informational updates** (system continues without waiting):
+- Major finding validated (direction-changing)
+- Mode transition (investigate -> build)
+- Convergence regression with reason
+- Replication mismatch detected
+
+**User can always**:
+- Inject a hypothesis: "I think it might be X" — orchestrator adds it to the belief map with user-assigned or default prior (0.5)
+- Override classification: `/swarm --mode build` or `/swarm --rigor standard`
+- Force-close: `/swarm stop` — saves state, all agents stop, work can be resumed
+- Request specific action: `/swarm replicate <finding-id>` or `/swarm investigate <hypothesis>`
+
+**The orchestrator never**:
+- Asks for confirmation on routine OODA decisions
+- Asks whether to continue after each finding
+- Blocks on Theorist/Synthesizer output (these run asynchronously)
+
 ---
 
 ## 14. Workflow: End to End
@@ -920,6 +1107,30 @@ tmux attach -t my-app-swarm    # Watch agents work in real time
 > /swarm continue
 ```
 
+`/swarm continue` is not a 7th command — it's the same `/swarm` command with the keyword `continue`. It triggers the orchestrator to:
+1. Read Beads state (open tasks, closed tasks, findings)
+2. Read `.swarm/journal.md` for narrative context (if investigation)
+3. Read the belief map (if investigation)
+4. Resume the OODA loop from where it left off
+
+This is the **Session Recovery Protocol** — how the stateless orchestrator reconstructs state after a session break:
+
+```
+Session Recovery:
+  1. Read .swarm-config.json (project settings, rigor config)
+  2. bd prime (loads Beads context)
+  3. bd list --json (all tasks: status, type, notes)
+  4. Parse findings from Beads (TYPE:finding entries)
+  5. Parse belief map from Beads (BELIEF_MAP entries)
+  6. Read .swarm/journal.md (narrative, last cycle number)
+  7. Check tmux session (are agents still running?)
+  8. Check git worktrees (which branches exist?)
+  9. Reconstruct OODA state: what cycle are we on? What's pending?
+  10. Present summary to user and resume
+```
+
+For Build mode, steps 4-6 are skipped (no evidence layers).
+
 ### Step 5 — Repeat until epic is done
 
 ### Step 6 — Cleanup
@@ -946,6 +1157,7 @@ tmux attach -t my-app-swarm    # Watch agents work in real time
 | **Information-gain hypothesis selection** | Replaces simple priority ordering. Always test the hypothesis that would teach us the most, not just the one marked P1. |
 | **Mandatory pre-registration** | Prevents p-hacking and post-hoc rationalization. Analysis plans are locked before experiments run. |
 | **Serendipity budget (15%)** | Strict scope prevents serendipitous discoveries. Reserving capacity for unexpected leads captures high-value outliers. |
+| **Platform-agnostic design** | The architecture works with both Claude Code (`.claude/commands/`) and GitHub Copilot (`.github/agents/`). Prompts, skills, and agent definitions are stored in `.github/` (Copilot-native). Claude Code uses `.claude/commands/` that reference the same logic. The orchestrator's behavior is defined once in the agent/prompt files; the platform is just the execution environment. Users pick one platform — the design doesn't require both simultaneously. |
 
 ---
 
