@@ -263,20 +263,64 @@ class DiagnosticAgent:
 
 #### LLM Client Abstraction (src/agents/llm_client.py)
 
+The framework uses **Copilot CLI** as its LLM backend — no API keys needed. Since users already have Copilot authenticated, this is zero-config.
+
 ```python
-class LLMClient:
-    """Thin wrapper around LLM API with caching for reproducibility."""
-    def __init__(self, provider="openai", model="gpt-4o-mini", temperature=0.0, cache_dir=".llm_cache"):
-        """temperature=0 + response caching ensures reproducible experiments."""
+class CopilotLLMClient:
+    """LLM reasoning via Copilot CLI subprocess with caching for reproducibility.
+    
+    Uses `copilot -p <prompt> -s --no-color --allow-all` in non-interactive mode.
+    The -s (silent) flag outputs only the agent response, no stats or formatting.
+    
+    All responses are cached by prompt hash — once experiments run once, 
+    subsequent runs replay from cache for perfect reproducibility.
+    """
+    def __init__(self, cache_dir=".llm_cache", timeout=120):
+        """
+        cache_dir: directory for cached responses (hash-keyed JSON files)
+        timeout: max seconds to wait for Copilot CLI response
+        """
+    
     def reason(self, system_prompt: str, user_prompt: str) -> str:
-        """Send prompt, return response. Cache by hash(system+user) for determinism."""
+        """Combine system+user prompt, send to Copilot CLI, return response.
+        
+        Implementation:
+        1. cache_key = sha256(system_prompt + user_prompt)[:16]
+        2. If .llm_cache/{cache_key}.json exists → return cached response
+        3. combined = f"{system_prompt}\\n\\n{user_prompt}\\n\\nRespond with ONLY valid JSON."
+        4. result = subprocess.run(
+               ["copilot", "-p", combined, "-s", "--no-color", "--allow-all"],
+               capture_output=True, text=True, timeout=self.timeout
+           )
+        5. Parse and cache result.stdout
+        6. Return response
+        """
+    
     def reason_structured(self, system_prompt: str, user_prompt: str, schema: dict) -> dict:
-        """Same as reason() but with JSON schema enforcement for typed output."""
+        """Same as reason() but appends JSON schema hint and parses response as dict.
+        Includes retry logic: if JSON parsing fails, re-prompt with error feedback."""
 ```
 
-- Supports OpenAI, Anthropic, or local models via config
-- **Response caching**: Hash(system_prompt + user_prompt) → cached response file. Once an experiment runs once, it replays from cache for determinism.
-- **Fallback mode**: If no API key is set, falls back to a simple heuristic reasoner (the current numpy-based logic) so experiments can still run without LLM access. Results section should clearly distinguish "LLM mode" vs "fallback mode" runs.
+**Why Copilot CLI instead of direct API calls?**
+- **Zero configuration**: No API keys, no environment variables — if the user has Copilot CLI installed (they do, since they're running this framework), it just works
+- **Model-agnostic**: Copilot CLI routes to whatever model is configured (Claude, GPT-4, etc.) — the framework doesn't need to know or care
+- **Authentication handled**: GitHub handles auth, billing, rate limits — the framework is pure application logic
+- **Subprocess isolation**: Each agent's LLM call is a clean subprocess with no shared state — agents are truly independent
+
+**Key flags**:
+- `-p "<prompt>"` — non-interactive mode, exits after completion
+- `-s` / `--silent` — output only the response text, no stats or banners
+- `--no-color` — strip ANSI codes for clean parsing
+- `--allow-all` — no permission prompts (subprocess would hang otherwise)
+
+**Caching implementation**:
+```python
+cache_key = hashlib.sha256(f"{system_prompt}\n---\n{user_prompt}".encode()).hexdigest()[:16]
+cache_file = self.cache_dir / f"{cache_key}.json"
+# Cache stores: {"prompt_hash": str, "system": str, "user": str, "response": str, "timestamp": str}
+```
+
+**Fallback mode**: If `copilot` binary is not found in PATH, the client falls back to heuristic-based reasoning (the current numpy/scipy logic). The results section must clearly label which mode was used. Set `LLM_MODE=fallback` in config to force this.
 
 #### How Each Agent Uses the LLM
 
@@ -544,15 +588,16 @@ A single self-contained HTML file that visualizes the framework and experimental
 ## Technical Requirements
 
 - Python 3.11+
-- stdlib + matplotlib + numpy + scipy for computation + an LLM client library (openai or anthropic)
-- **LLM-powered agents**: Diagnostic agents and causal synthesis use LLM reasoning via API calls (OpenAI, Anthropic, or local models). Temperature=0 for reproducibility.
-- **Response caching**: All LLM calls are cached by prompt hash in `.llm_cache/`. Once experiments run once, subsequent runs replay from cache — making results deterministic and reproducible without additional API costs.
-- **Fallback mode**: If no API key is configured (`LLM_PROVIDER=none`), agents fall back to heuristic-based reasoning (numpy/scipy). Results section must clearly label which mode was used. The fallback exists so the codebase can be tested without API access, but the paper's primary results MUST use LLM mode.
+- stdlib + matplotlib + numpy + scipy for computation
+- **Copilot CLI** (`copilot` binary in PATH) for LLM-powered agent reasoning — no API keys or additional LLM libraries needed
+- **LLM-powered agents**: Diagnostic agents and causal synthesis use Copilot CLI (`copilot -p <prompt> -s --no-color --allow-all`) in non-interactive subprocess mode. Each call is a clean subprocess — no shared state between agents.
+- **Response caching**: All LLM calls are cached by prompt hash in `.llm_cache/`. Once experiments run once, subsequent runs replay from cache — making results deterministic and reproducible with zero additional LLM calls.
+- **Fallback mode**: If `copilot` is not in PATH or `LLM_MODE=fallback` is set in config, agents fall back to heuristic-based reasoning (numpy/scipy). Results section must clearly label which mode was used. The fallback exists so the codebase can be tested without Copilot CLI, but the paper's primary results MUST use LLM mode.
 - Each agent module is self-contained (no cross-agent imports, only imports from src/core/)
 - Webapp is a single HTML file using Chart.js + D3.js via CDN
 - Paper compiles with standard pdflatex + bibtex
 - Total codebase under 6000 lines (Python) + ~600 lines (HTML/JS) + ~2000 lines (LaTeX)
-- Full experiment should complete in under 30 minutes on a modern CPU (first run with API calls; <5 minutes from cache)
+- Full experiment should complete in under 30 minutes on a modern CPU (first run with LLM calls; <5 minutes from cache)
 
 ## Dependency Graph
 
