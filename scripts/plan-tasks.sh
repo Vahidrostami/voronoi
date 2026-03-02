@@ -87,20 +87,63 @@ echo "$FULL_PROMPT" > "$PLAN_TMP"
 
 # Call the agent CLI to generate the plan
 PLAN_JSON_FILE=$(mktemp)
-$AGENT_CMD $AGENT_FLAGS -p "$(cat "$PLAN_TMP")" --output-text 2>/dev/null > "$PLAN_JSON_FILE" || {
-    echo "✗ LLM planning failed. Trying fallback extraction..."
-    # Some CLIs wrap output — try to extract JSON
-    $AGENT_CMD $AGENT_FLAGS -p "$(cat "$PLAN_TMP")" 2>/dev/null | grep -o '{.*}' > "$PLAN_JSON_FILE" || {
-        echo "✗ Could not extract plan. Run manually and pipe to plan-tasks.sh --from-json"
+
+# copilot CLI doesn't support --output-text; it outputs markdown-fenced JSON
+# plus a usage summary footer. We capture everything and extract JSON below.
+if $AGENT_CMD $AGENT_FLAGS --no-color -p "$(cat "$PLAN_TMP")" 2>/dev/null > "$PLAN_JSON_FILE"; then
+    echo "  ✓ LLM responded"
+else
+    echo "✗ LLM planning failed (exit code $?)."
+    # Try without --no-color in case that flag isn't supported
+    if $AGENT_CMD $AGENT_FLAGS -p "$(cat "$PLAN_TMP")" 2>/dev/null > "$PLAN_JSON_FILE"; then
+        echo "  ✓ LLM responded (fallback)"
+    else
+        echo "✗ Could not get LLM plan. Check that '$AGENT_CMD' works with '-p' flag."
         rm -f "$PLAN_TMP" "$PLAN_JSON_FILE"
         exit 1
-    }
-}
+    fi
+fi
 rm -f "$PLAN_TMP"
 
-# Extract JSON (handle potential markdown fences in output)
-PLAN_JSON=$(cat "$PLAN_JSON_FILE" | sed 's/^```json//' | sed 's/^```//' | grep -v '^$')
+# Extract JSON from copilot output:
+# 1. Strip markdown code fences (```json ... ```)
+# 2. Strip the usage/stats footer that copilot appends
+# 3. Extract the JSON object using sed to grab from first { to last }
+RAW_OUTPUT=$(cat "$PLAN_JSON_FILE")
 rm -f "$PLAN_JSON_FILE"
+
+# Try to extract JSON between first { and last }
+PLAN_JSON=$(echo "$RAW_OUTPUT" | sed -n '/^[[:space:]]*{/,/^[[:space:]]*}/p' | head -n "$(echo "$RAW_OUTPUT" | grep -c '')")
+
+# If that didn't work, try stripping markdown fences first
+if ! echo "$PLAN_JSON" | jq . >/dev/null 2>&1; then
+    PLAN_JSON=$(echo "$RAW_OUTPUT" | sed '/^```/d' | sed -n '/^[[:space:]]*{/,/^[[:space:]]*}/p')
+fi
+
+# Last resort: use python to extract JSON
+if ! echo "$PLAN_JSON" | jq . >/dev/null 2>&1; then
+    PLAN_JSON=$(echo "$RAW_OUTPUT" | python3 -c "
+import sys, json, re
+text = sys.stdin.read()
+# Find the first { and last } to extract JSON
+start = text.find('{')
+end = text.rfind('}')
+if start >= 0 and end > start:
+    candidate = text[start:end+1]
+    try:
+        obj = json.loads(candidate)
+        print(json.dumps(obj))
+    except json.JSONDecodeError:
+        sys.exit(1)
+else:
+    sys.exit(1)
+" 2>/dev/null) || {
+        echo "✗ Could not extract valid JSON from LLM output."
+        echo "Raw output:"
+        echo "$RAW_OUTPUT" | head -50
+        exit 1
+    }
+fi
 
 # Validate JSON
 if ! echo "$PLAN_JSON" | jq . >/dev/null 2>&1; then
