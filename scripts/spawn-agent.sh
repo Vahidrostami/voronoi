@@ -69,7 +69,33 @@ else
     tmux new-window -t "$TMUX_SESSION" -n "$BRANCH_NAME" -c "$WORKTREE_PATH"
 fi
 
-# 4. Build the agent prompt
+# 4. Read artifact contract from Beads
+TASK_NOTES=$(bd show "$TASK_ID" --json 2>/dev/null | jq -r '.notes // ""' || true)
+PRODUCES=$(echo "$TASK_NOTES" | sed -n 's/.*PRODUCES:\(.*\)/\1/p' | head -1 || true)
+REQUIRES=$(echo "$TASK_NOTES" | sed -n 's/.*REQUIRES:\(.*\)/\1/p' | head -1 || true)
+GATE=$(echo "$TASK_NOTES" | sed -n 's/.*GATE:\(.*\)/\1/p' | head -1 || true)
+
+ARTIFACT_RULES=""
+if [[ -n "$PRODUCES" ]]; then
+    ARTIFACT_RULES="${ARTIFACT_RULES}
+8. ARTIFACT CONTRACT — You MUST create these files before closing your task:
+   $PRODUCES
+   The quality gate will REJECT your work if any of these files are missing."
+fi
+if [[ -n "$REQUIRES" ]]; then
+    ARTIFACT_RULES="${ARTIFACT_RULES}
+9. REQUIRED INPUTS — These files must exist (they should already be present):
+   $REQUIRES
+   If any are missing, update Beads with BLOCKED status and STOP."
+fi
+if [[ -n "$GATE" ]]; then
+    ARTIFACT_RULES="${ARTIFACT_RULES}
+10. GATE CHECK — Before doing ANY work, verify this gate artifact:
+    $GATE
+    The file must exist AND contain passing verdicts. If it doesn't, STOP and report BLOCKED."
+fi
+
+# 5. Build the agent prompt
 AGENT_PROMPT=$(cat <<PROMPT
 You are a worker agent in a multi-agent swarm.
 
@@ -89,14 +115,14 @@ RULES:
 6. If you find work outside your scope, file it:
    bd create "Discovered: [description]" -t task -p 2
 7. If you are blocked, update Beads:
-   bd update $TASK_ID --notes "BLOCKED: [reason]"
+   bd update $TASK_ID --notes "BLOCKED: [reason]"$ARTIFACT_RULES
 PROMPT
 )
 
-# 5. Write prompt to file in worktree (avoids shell quoting issues in tmux)
+# 6. Write prompt to file in worktree (avoids shell quoting issues in tmux)
 echo "$AGENT_PROMPT" > "$WORKTREE_PATH/.agent-prompt.txt"
 
-# 6. Launch agent CLI in the tmux pane
+# 7. Launch agent CLI in the tmux pane
 #    Flags go before -p so -p gets the prompt as its argument value
 tmux send-keys -t "$TMUX_SESSION:$BRANCH_NAME" \
     "$AGENT_CMD $AGENT_FLAGS -p \"\$(cat .agent-prompt.txt)\"" Enter

@@ -73,7 +73,26 @@ if [[ -d "$WORKTREE" ]]; then
     fi
 fi
 
-# --- Gate 5: Custom gate hook (if exists) ---
+# --- Gate 5: Artifact contract — expected outputs must exist ---
+PRODUCES=$(bd show "$TASK_ID" --json 2>/dev/null | jq -r '.notes // ""' | sed -n 's/.*PRODUCES:\(.*\)/\1/p' | head -1 || true)
+if [[ -n "$PRODUCES" ]]; then
+    echo "  Checking artifact contract (PRODUCES)..."
+    IFS=',' read -ra ARTIFACTS <<< "$PRODUCES"
+    for artifact in "${ARTIFACTS[@]}"; do
+        artifact=$(echo "$artifact" | xargs)  # trim whitespace
+        # Check in the worktree first, then in the project root
+        if [[ -e "$WORKTREE/$artifact" || -e "$artifact" ]]; then
+            echo "    ✓ Found: $artifact"
+        else
+            echo "    ✗ Missing: $artifact"
+            PASS=false
+        fi
+    done
+else
+    echo "  ⊘ No artifact contract (PRODUCES not set)"
+fi
+
+# --- Gate 6: Custom gate hook (if exists) ---
 CUSTOM_GATE=".swarm-quality-gate.sh"
 if [[ -x "$CUSTOM_GATE" ]]; then
     echo "  Running custom quality gate..."

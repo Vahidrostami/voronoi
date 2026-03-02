@@ -41,7 +41,9 @@ cd "$PROJECT_DIR"
 PROMPT_CONTENT=$(cat "$PROMPT_FILE")
 
 # --- Generate task decomposition via LLM ---
-PLANNER_PROMPT=$(cat <<'PLAN_EOF'
+# Write the planner instructions to a temp file first (avoids bash 3.2 heredoc-in-subshell issues)
+PLANNER_TMP=$(mktemp)
+cat > "$PLANNER_TMP" <<'PLAN_EOF'
 You are a task planner. Read the project description below and decompose it into a structured task graph.
 
 OUTPUT FORMAT — respond with ONLY valid JSON, no markdown fences, no explanation:
@@ -55,7 +57,10 @@ OUTPUT FORMAT — respond with ONLY valid JSON, no markdown fences, no explanati
       "description": "Detailed description of what to build. Include file paths this agent owns.",
       "priority": 2,
       "depends_on": [],
-      "file_scope": ["src/path/to/files"]
+      "file_scope": ["src/path/to/files"],
+      "produces": ["path/to/output/file.json"],
+      "requires": [],
+      "gate": null
     }
   ]
 }
@@ -68,10 +73,21 @@ RULES:
 5. Include a description detailed enough for an AI agent to implement independently
 6. Keep tasks focused — each should be completable in under 30 minutes
 7. Order tasks so foundations come first (shared interfaces, base classes, config)
+8. CRITICAL — Artifact contracts:
+   a. "produces" lists files/directories this task MUST create before it can be considered done
+   b. "requires" lists files/directories that MUST exist before this task can start
+   c. If task B uses output from task A, task B "requires" must list the file and task A "produces" must list it
+   d. If the project description specifies a validation gate -- such as "X must pass before Y begins" --
+      set "gate" on the downstream task to the path of the validation artifact, like "output/validation_report.json",
+      AND add a gate check description in the task description, like "GATE: output/validation_report.json must contain all PASS verdicts"
+9. Never let a task that consumes results -- such as paper writing or reporting -- start before the task that produces those results
+10. Data-generation and experiment tasks MUST list their output data files in "produces"
 
 PROJECT DESCRIPTION:
 PLAN_EOF
-)
+
+PLANNER_PROMPT=$(cat "$PLANNER_TMP")
+rm -f "$PLANNER_TMP"
 
 FULL_PROMPT="$PLANNER_PROMPT
 
@@ -186,6 +202,10 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
     PRIORITY=$(echo "$PLAN_JSON" | jq -r ".tasks[$i].priority")
     SCOPE=$(echo "$PLAN_JSON" | jq -r ".tasks[$i].file_scope | join(\", \")")
 
+    PRODUCES=$(echo "$PLAN_JSON" | jq -r ".tasks[$i].produces // [] | join(\", \")")
+    REQUIRES=$(echo "$PLAN_JSON" | jq -r ".tasks[$i].requires // [] | join(\", \")")
+    GATE=$(echo "$PLAN_JSON" | jq -r ".tasks[$i].gate // empty")
+
     FULL_DESC="$DESC
 
 File scope: $SCOPE"
@@ -195,8 +215,22 @@ File scope: $SCOPE"
         bd create "$TITLE" -t task -p "$PRIORITY" --parent "$EPIC_ID" \
         --description "$FULL_DESC" 2>&1 | grep -oP 'Created issue: \K\S+')
 
+    # Store artifact contracts in Beads notes
+    if [[ -n "$PRODUCES" ]]; then
+        bd update "$BEADS_ID" --notes "PRODUCES:$PRODUCES" 2>/dev/null || true
+    fi
+    if [[ -n "$REQUIRES" ]]; then
+        bd update "$BEADS_ID" --notes "REQUIRES:$REQUIRES" 2>/dev/null || true
+    fi
+    if [[ -n "$GATE" ]]; then
+        bd update "$BEADS_ID" --notes "GATE:$GATE" 2>/dev/null || true
+    fi
+
     TASK_ID_MAP[$PLAN_ID]="$BEADS_ID"
     echo "  ✓ Task: $BEADS_ID — $TITLE (P$PRIORITY, scope: $SCOPE)"
+    [[ -n "$PRODUCES" ]] && echo "    produces: $PRODUCES"
+    [[ -n "$REQUIRES" ]] && echo "    requires: $REQUIRES"
+    [[ -n "$GATE" ]]     && echo "    gate: $GATE"
 done
 
 # Set dependencies

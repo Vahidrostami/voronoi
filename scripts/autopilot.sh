@@ -91,6 +91,76 @@ cleanup_on_exit() {
 }
 trap cleanup_on_exit EXIT
 
+# --- Pre-flight artifact check ---
+# Returns 0 if all REQUIRES and GATE artifacts exist, 1 if any are missing
+preflight_check() {
+    local task_id="$1"
+    local task_json
+    task_json=$(bd show "$task_id" --json 2>/dev/null || echo "{}")
+    local notes
+    notes=$(echo "$task_json" | jq -r '.notes // ""')
+
+    # Check REQUIRES artifacts
+    local requires
+    requires=$(echo "$notes" | sed -n 's/.*REQUIRES:\(.*\)/\1/p' | head -1)
+    if [[ -n "$requires" ]]; then
+        IFS=',' read -ra REQ_ARTIFACTS <<< "$requires"
+        for artifact in "${REQ_ARTIFACTS[@]}"; do
+            artifact=$(echo "$artifact" | xargs)  # trim whitespace
+            if [[ ! -e "$PROJECT_DIR/$artifact" ]]; then
+                log_status "  ⏳ $task_id waiting on required artifact: $artifact"
+                return 1
+            fi
+        done
+    fi
+
+    # Check GATE artifact and its content
+    local gate
+    gate=$(echo "$notes" | sed -n 's/.*GATE:\(.*\)/\1/p' | head -1)
+    if [[ -n "$gate" ]]; then
+        gate=$(echo "$gate" | xargs)
+        if [[ ! -e "$PROJECT_DIR/$gate" ]]; then
+            log_status "  🚫 $task_id blocked by gate: $gate (file missing)"
+            return 1
+        fi
+        # If the gate file is JSON, check for PASS verdicts
+        if [[ "$gate" == *.json ]]; then
+            local all_pass
+            all_pass=$(python3 -c "
+import json, sys
+try:
+    data = json.load(open('$PROJECT_DIR/$gate'))
+    # Check various common validation report formats
+    if isinstance(data, dict):
+        # Format: {\"experiments\": [{\"verdict\": \"PASS\"}, ...]}
+        if 'experiments' in data:
+            verdicts = [e.get('verdict','').upper() for e in data['experiments']]
+            sys.exit(0 if all(v == 'PASS' for v in verdicts) else 1)
+        # Format: {\"stage_1\": {\"verdict\": \"PASS\"}, ...}
+        verdicts = []
+        for k, v in data.items():
+            if isinstance(v, dict) and 'verdict' in v:
+                verdicts.append(v['verdict'].upper())
+        if verdicts:
+            sys.exit(0 if all(v == 'PASS' for v in verdicts) else 1)
+        # Format: {\"verdict\": \"PASS\"}
+        if 'verdict' in data:
+            sys.exit(0 if data['verdict'].upper() == 'PASS' else 1)
+    # If we can't determine structure, just check the file exists (already done above)
+    sys.exit(0)
+except Exception:
+    sys.exit(1)
+" 2>/dev/null)
+            if [[ $? -ne 0 ]]; then
+                log_status "  🚫 $task_id blocked by gate: $gate (validation not PASS)"
+                return 1
+            fi
+        fi
+    fi
+
+    return 0
+}
+
 # --- State tracking ---
 declare -A AGENT_RETRIES        # branch -> retry count
 declare -A AGENT_SPAWN_TIME     # branch -> epoch seconds
@@ -364,6 +434,11 @@ dispatch_ready() {
         issue_type=$(echo "$ready_json" | jq -r ".[$i].issue_type // \"task\"")
         if [[ "$issue_type" == "epic" ]]; then
             continue
+        fi
+
+        # Pre-flight artifact check: verify REQUIRES and GATE artifacts exist
+        if ! preflight_check "$task_id"; then
+            continue  # Skip this task — it's not truly ready (missing artifacts)
         fi
 
         # Generate branch name from title

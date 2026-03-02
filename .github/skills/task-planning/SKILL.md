@@ -34,6 +34,12 @@ For each subtask:
 bd create "<subtask title>" -t task -p <1|2|3> --parent <epic-id>
 bd update <task-id> --description "<detailed specification>"
 bd update <task-id> --acceptance "<definition of done>"
+
+# Artifact contracts — MANDATORY for pipeline correctness
+bd update <task-id> --notes "PRODUCES:<output files this task must create>"
+bd update <task-id> --notes "REQUIRES:<input files that must exist before task starts>"
+# For validation-gated tasks:
+bd update <task-id> --notes "GATE:<path/to/validation_report.json>"
 ```
 
 ### Priority Guidelines
@@ -74,3 +80,6 @@ bd list --blocked    # Check dependency graph
 - Circular dependencies
 - Missing acceptance criteria
 - Vague descriptions ("make it work")
+- Missing artifact contracts (PRODUCES/REQUIRES) — causes downstream tasks to fail
+- Tasks that consume files without declaring REQUIRES on those files
+- Validation-gated tasks (e.g., paper writing) without a GATE contract
