@@ -95,13 +95,36 @@ if [[ -n "$GATE" ]]; then
     The file must exist AND contain passing verdicts. If it doesn't, STOP and report BLOCKED."
 fi
 
+# 4b. Read demo-scoped output directory from environment (set by autopilot.sh)
+OUTPUT_DIR_RULE=""
+if [[ -n "${SWARM_OUTPUT_DIR:-}" ]]; then
+    OUTPUT_DIR_RULE="
+CRITICAL — OUTPUT DIRECTORY:
+All output files MUST be written under: $SWARM_OUTPUT_DIR/
+Do NOT write output to the repository root. All source code goes in $SWARM_OUTPUT_DIR/src/
+and all generated output goes in $SWARM_OUTPUT_DIR/output/.
+This is the demo working directory — scope ALL your work within it."
+fi
+
+# 4c. Include original prompt context if available
+PROMPT_CONTEXT=""
+if [[ -n "${SWARM_PROMPT_FILE:-}" && -f "${SWARM_PROMPT_FILE:-}" ]]; then
+    # Include the first 100 lines of the prompt for context (avoid huge prompts)
+    PROMPT_EXCERPT=$(head -100 "$SWARM_PROMPT_FILE")
+    PROMPT_CONTEXT="
+ORIGINAL PROJECT BRIEF (first 100 lines — read the full file at $SWARM_PROMPT_FILE if needed):
+---
+$PROMPT_EXCERPT
+---"
+fi
+
 # 5. Build the agent prompt
 AGENT_PROMPT=$(cat <<PROMPT
 You are a worker agent in a multi-agent swarm.
 
 YOUR TASK (Beads ID: $TASK_ID):
 $TASK_DESC
-
+$OUTPUT_DIR_RULE
 RULES:
 1. Work ONLY in this directory: $WORKTREE_PATH
 2. Run bd prime for context at start
@@ -116,6 +139,7 @@ RULES:
    bd create "Discovered: [description]" -t task -p 2
 7. If you are blocked, update Beads:
    bd update $TASK_ID --notes "BLOCKED: [reason]"$ARTIFACT_RULES
+$PROMPT_CONTEXT
 PROMPT
 )
 

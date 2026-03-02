@@ -54,6 +54,13 @@ JOURNAL
     echo "✓ Investigation journal initialized at .swarm/journal.md"
 fi
 
+# 6b. Warn about stale state from prior runs
+if [ -f ".swarm/autopilot-state.json" ]; then
+    echo "⚠ Found autopilot state from a prior run (.swarm/autopilot-state.json)"
+    echo "  This means a previous autopilot session crashed or was interrupted."
+    echo "  Use --resume to continue, or delete it to start fresh."
+fi
+
 # 7. Write swarm config
 cat > .swarm-config.json << EOF
 {
@@ -64,6 +71,11 @@ cat > .swarm-config.json << EOF
   "max_agents": 4,
   "agent_command": "$AGENT_CMD",
   "agent_flags": "--allow-all",
+  "agent_flags_safe": [
+    "--disallow-tool", "mcp__curl",
+    "--disallow-tool", "mcp__ssh",
+    "--disallow-tool", "mcp__sudo"
+  ],
   "rigor": {
     "default": "auto",
     "serendipity_budget": 0.15,

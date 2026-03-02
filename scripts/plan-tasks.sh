@@ -16,12 +16,14 @@ set -euo pipefail
 PROMPT_FILE="${1:-}"
 EPIC_NAME=""
 DRY_RUN=false
+OUTPUT_DIR=""
 
 shift || true
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --epic-name) EPIC_NAME="$2"; shift 2 ;;
-        --dry-run)   DRY_RUN=true; shift ;;
+        --epic-name)   EPIC_NAME="$2"; shift 2 ;;
+        --dry-run)     DRY_RUN=true; shift ;;
+        --output-dir)  OUTPUT_DIR="$2"; shift 2 ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
@@ -82,9 +84,27 @@ RULES:
       AND add a gate check description in the task description, like "GATE: output/validation_report.json must contain all PASS verdicts"
 9. Never let a task that consumes results -- such as paper writing or reporting -- start before the task that produces those results
 10. Data-generation and experiment tasks MUST list their output data files in "produces"
+11. CRITICAL — OUTPUT DIRECTORY: If an output directory is specified below, ALL file_scope paths,
+    produces paths, and requires paths MUST be relative to the repository root and scoped to that directory.
+    For example, if the output directory is "demos/coupled-decisions", then file_scope should be like
+    "demos/coupled-decisions/src/module.py", NOT "src/module.py".
+    Never put files in the repository root unless the project description explicitly says to.
 
 PROJECT DESCRIPTION:
 PLAN_EOF
+
+# Append output directory constraint if specified
+if [[ -n "$OUTPUT_DIR" ]]; then
+    cat >> "$PLANNER_TMP" <<OUTDIR_EOF
+
+IMPORTANT CONSTRAINT — OUTPUT DIRECTORY:
+All work for this project MUST be scoped under: $OUTPUT_DIR/
+- Source code: $OUTPUT_DIR/src/
+- Output/results: $OUTPUT_DIR/output/
+- All file_scope, produces, and requires paths must be relative to the repo root and start with "$OUTPUT_DIR/".
+- Do NOT use the repository root for any output files.
+OUTDIR_EOF
+fi
 
 PLANNER_PROMPT=$(cat "$PLANNER_TMP")
 rm -f "$PLANNER_TMP"

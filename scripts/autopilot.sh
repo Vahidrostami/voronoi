@@ -23,6 +23,8 @@ set -euo pipefail
 #   --timeout N          Max seconds per agent before killing (default: 600)
 #   --notify CMD         Command to run on completion (e.g., "say done")
 #   --safe               Use granular tool permissions (no curl, ssh, sudo, rm -rf)
+#   --output-dir DIR      Set the output directory for demo-scoped work (auto-detected from --prompt path)
+#   --resume              Resume from a crashed/interrupted autopilot session
 #
 # Examples:
 #   # Full autopilot from prompt file:
@@ -30,6 +32,9 @@ set -euo pipefail
 #
 #   # Research domain (plain dirs, no git worktrees):
 #   ./scripts/autopilot.sh --prompt research-brief.md --domain research
+#
+#   # Resume after crash:
+#   ./scripts/autopilot.sh --resume
 #
 #   # Pre-planned tasks (just run the autopilot loop):
 #   ./scripts/autopilot.sh --notify "say 'done'"
@@ -48,6 +53,8 @@ NOTIFY_CMD=""
 PROMPT_FILE=""
 DOMAIN="code"
 SAFE_MODE=false
+OUTPUT_DIR=""        # Demo-scoped output directory (auto-detected from --prompt path)
+RESUME=false          # If true, skip planning and resume from saved state
 
 # --- Parse args ---
 while [[ $# -gt 0 ]]; do
@@ -64,6 +71,8 @@ while [[ $# -gt 0 ]]; do
         --prompt)        PROMPT_FILE="$2"; shift 2 ;;
         --domain)        DOMAIN="$2"; shift 2 ;;
         --safe)          SAFE_MODE=true; shift ;;
+        --output-dir)    OUTPUT_DIR="$2"; shift 2 ;;
+        --resume)        RESUME=true; shift ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
@@ -79,14 +88,118 @@ MAX_AGENTS=$(echo "$CONFIG" | jq -r '.max_agents // 4')
 cd "$PROJECT_DIR"
 shopt -s nullglob   # globs that match nothing expand to nothing
 
-# --- Cleanup trap: ensure branches/worktrees are cleaned up on exit ---
+# --- State persistence file (survives crashes) ---
+STATE_FILE="${PROJECT_DIR}/.swarm/autopilot-state.json"
+mkdir -p "${PROJECT_DIR}/.swarm"
+
+save_state() {
+    local _state_tmp
+    _state_tmp=$(mktemp)
+    # Build JSON from bash arrays
+    local _agents_json="{"
+    local _first=true
+    local _b _t
+    for _b in "${!AGENT_TASK_MAP[@]}"; do
+        _t="${AGENT_TASK_MAP[$_b]}"
+        local _spawn="${AGENT_SPAWN_TIME[$_b]:-0}"
+        local _retries="${AGENT_RETRIES[$_b]:-0}"
+        local _desc="${TASK_DESCRIPTION_MAP[$_t]:-}"
+        _desc=$(echo "$_desc" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read().strip()))' 2>/dev/null || echo '""')
+        if [[ "$_first" == "true" ]]; then _first=false; else _agents_json+=","; fi
+        _agents_json+="\"$_b\":{\"task_id\":\"$_t\",\"spawn_time\":$_spawn,\"retries\":$_retries,\"description\":$_desc}"
+    done
+    _agents_json+="}"
+    cat > "$_state_tmp" <<STATEJSON
+{
+  "wave": $WAVE,
+  "total_merged": $TOTAL_MERGED,
+  "total_dispatched": $TOTAL_DISPATCHED,
+  "start_time": $START_TIME,
+  "prompt_file": "${PROMPT_FILE:-}",
+  "output_dir": "${OUTPUT_DIR:-}",
+  "agents": $_agents_json,
+  "updated": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+STATEJSON
+    mv "$_state_tmp" "$STATE_FILE" 2>/dev/null || true
+}
+
+load_state() {
+    [[ -f "$STATE_FILE" ]] || return 1
+    echo "[$(date '+%H:%M:%S')] [RECOVERY] Found autopilot state, restoring..."
+    local _agents
+    _agents=$(jq -r '.agents // {} | to_entries[] | "\(.key)|\(.value.task_id)|\(.value.spawn_time)|\(.value.retries)|\(.value.description)"' "$STATE_FILE" 2>/dev/null || true)
+    while IFS='|' read -r _b _t _s _r _d; do
+        [[ -z "$_b" ]] && continue
+        # Only restore if the worktree still exists or the branch exists on remote
+        if [[ -d "$SWARM_DIR/$_b" ]] || git branch -r --list "origin/$_b" 2>/dev/null | grep -q .; then
+            AGENT_TASK_MAP[$_b]="$_t"
+            AGENT_SPAWN_TIME[$_b]="${_s:-$(date +%s)}"
+            AGENT_RETRIES[$_b]="${_r:-0}"
+            TASK_DESCRIPTION_MAP[$_t]="${_d:-Recovered task $_t}"
+            echo "  Restored agent: $_b → task $_t"
+        fi
+    done <<< "$_agents"
+    WAVE=$(jq -r '.wave // 0' "$STATE_FILE" 2>/dev/null || echo 0)
+    TOTAL_MERGED=$(jq -r '.total_merged // 0' "$STATE_FILE" 2>/dev/null || echo 0)
+    TOTAL_DISPATCHED=$(jq -r '.total_dispatched // 0' "$STATE_FILE" 2>/dev/null || echo 0)
+    return 0
+}
+
+# --- Safe cleanup trap: merge completed agents FIRST, then clean up only merged ones ---
 cleanup_on_exit() {
     local exit_code=$?
     echo ""
-    echo "[$(date '+%H:%M:%S')] [CLEANUP] Autopilot exiting (code=$exit_code), running cleanup..."
-    if [[ -x "./scripts/teardown.sh" ]]; then
-        ./scripts/teardown.sh 2>&1 || true
-    fi
+    echo "[$(date '+%H:%M:%S')] [CLEANUP] Autopilot exiting (code=$exit_code)..."
+
+    # SAFETY: Try to merge any completed-but-unmerged agents before cleanup
+    local _branch _tid
+    for _wt in "$SWARM_DIR"/agent-*; do
+        [ -d "$_wt" ] || continue
+        _branch=$(basename "$_wt")
+        _tid="${AGENT_TASK_MAP[$_branch]:-}"
+        [[ -z "$_tid" ]] && continue
+
+        if agent_succeeded "$_branch" "$_tid" 2>/dev/null; then
+            echo "[CLEANUP] Attempting emergency merge of completed agent: $_branch"
+            merge_agent "$_branch" "$_tid" 2>/dev/null || {
+                echo "[CLEANUP] ⚠ Could not merge $_branch — branch preserved on remote"
+                # Ensure branch is pushed to remote so code isn't lost
+                (cd "$SWARM_DIR/$_branch" && git push origin "$_branch" 2>/dev/null) || true
+            }
+        else
+            # Agent didn't finish — push whatever it has to remote so code isn't lost
+            echo "[CLEANUP] Preserving unfinished agent $_branch (pushing to remote)"
+            (cd "$SWARM_DIR/$_branch" && git add -A && git commit -m "autopilot: preserve unfinished work" 2>/dev/null && git push origin "$_branch" 2>/dev/null) || true
+        fi
+    done
+
+    # Save state so a restart can resume
+    save_state 2>/dev/null || true
+
+    # Only clean up worktrees/branches that were SUCCESSFULLY merged
+    # (teardown.sh is too aggressive — it kills everything)
+    echo "[CLEANUP] Cleaning merged worktrees only..."
+    for _wt in "$SWARM_DIR"/agent-*; do
+        [ -d "$_wt" ] || continue
+        _branch=$(basename "$_wt")
+        # Check if this branch has been merged to main
+        if git branch --merged main 2>/dev/null | grep -q "$_branch"; then
+            git worktree remove "$_wt" --force 2>/dev/null || rm -rf "$_wt"
+            git branch -d "$_branch" 2>/dev/null || true
+            git push origin --delete "$_branch" 2>/dev/null || true
+            echo "  Cleaned merged branch: $_branch"
+        else
+            echo "  Preserved unmerged branch: $_branch (code safe on remote)"
+        fi
+    done
+
+    # Kill tmux session (agents are done or preserved)
+    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+    git worktree prune 2>/dev/null || true
+
+    echo "[CLEANUP] Done. Unmerged branches preserved on remote."
+    echo "  To resume: ./scripts/autopilot.sh (will restore state automatically)"
     exit $exit_code
 }
 trap cleanup_on_exit EXIT
@@ -502,18 +615,52 @@ echo "║  Dry run: $DRY_RUN  Safe mode: $SAFE_MODE                     ║"
 echo "╚═══════════════════════════════════════════════════════════════╝"
 echo ""
 
-# --- Phase 0: Auto-plan if --prompt given ---
-if [[ -n "$PROMPT_FILE" ]]; then
+# --- Phase -1: Try to resume from saved state ---
+if [[ "$RESUME" == "true" ]] || [[ -z "$PROMPT_FILE" && -f "$STATE_FILE" ]]; then
+    if load_state; then
+        log_status "Resumed from saved state (wave $WAVE, $TOTAL_MERGED merged, $TOTAL_DISPATCHED dispatched)"
+        # Recover OUTPUT_DIR from state if not specified
+        if [[ -z "$OUTPUT_DIR" ]]; then
+            OUTPUT_DIR=$(jq -r '.output_dir // empty' "$STATE_FILE" 2>/dev/null || true)
+        fi
+        if [[ -z "$PROMPT_FILE" ]]; then
+            PROMPT_FILE=$(jq -r '.prompt_file // empty' "$STATE_FILE" 2>/dev/null || true)
+        fi
+    fi
+fi
+
+# --- Phase 0: Auto-plan if --prompt given (skip if resuming with existing tasks) ---
+if [[ -n "$PROMPT_FILE" && "$RESUME" != "true" ]]; then
     if [[ ! -f "$PROMPT_FILE" ]]; then
         log_error "Prompt file not found: $PROMPT_FILE"
         exit 1
     fi
-    log_action "Auto-planning from: $PROMPT_FILE"
-    if [[ "$DRY_RUN" == "true" ]]; then
-        ./scripts/plan-tasks.sh "$PROMPT_FILE" --dry-run
-    else
-        ./scripts/plan-tasks.sh "$PROMPT_FILE"
+
+    # Auto-detect OUTPUT_DIR from prompt path (e.g., demos/coupled-decisions/PROMPT.md → demos/coupled-decisions)
+    if [[ -z "$OUTPUT_DIR" ]]; then
+        PROMPT_DIR=$(dirname "$PROMPT_FILE")
+        if [[ "$PROMPT_DIR" == demos/* ]]; then
+            OUTPUT_DIR="$PROMPT_DIR"
+            log_status "Auto-detected demo output directory: $OUTPUT_DIR"
+        fi
     fi
+
+    # Check if there are already open tasks (avoid re-planning on accidental restart)
+    EXISTING_TASKS=$(bd list --status open --json 2>/dev/null | jq 'length' 2>/dev/null || echo 0)
+    EXISTING_PROGRESS=$(bd list --status in_progress --json 2>/dev/null | jq 'length' 2>/dev/null || echo 0)
+    if (( EXISTING_TASKS + EXISTING_PROGRESS > 0 )); then
+        log_status "⚠ Found $((EXISTING_TASKS + EXISTING_PROGRESS)) existing open/in-progress tasks."
+        log_status "  Skipping re-planning. Use --resume or clear Beads first."
+    else
+        log_action "Auto-planning from: $PROMPT_FILE"
+        PLAN_ARGS=("$PROMPT_FILE")
+        [[ -n "$OUTPUT_DIR" ]] && PLAN_ARGS+=("--output-dir" "$OUTPUT_DIR")
+        if [[ "$DRY_RUN" == "true" ]]; then
+            PLAN_ARGS+=("--dry-run")
+        fi
+        ./scripts/plan-tasks.sh "${PLAN_ARGS[@]}"
+    fi
+
     # Set epic to in_progress
     EPIC_ID=$(bd list --json 2>/dev/null | jq -r '[.[] | select(.issue_type == "epic" and .status == "open")] | last | .id // empty')
     if [[ -n "$EPIC_ID" ]]; then
@@ -521,6 +668,10 @@ if [[ -n "$PROMPT_FILE" ]]; then
     fi
     log_status "Planning complete. Starting autopilot loop."
 fi
+
+# Export OUTPUT_DIR so spawn scripts can access it
+export SWARM_OUTPUT_DIR="${OUTPUT_DIR:-}"
+export SWARM_PROMPT_FILE="${PROMPT_FILE:-}"
 
 if [[ -n "$DASHBOARD_FILE" ]]; then
     log_status "Dashboard: tail -f $DASHBOARD_FILE"
@@ -567,6 +718,9 @@ while has_open_work; do
     # --- Dispatch newly ready tasks ---
     dispatch_ready
 
+    # --- Save state (crash recovery) ---
+    save_state
+
     # --- Update dashboard ---
     write_dashboard
 
@@ -595,11 +749,21 @@ fi
 # Final dashboard
 write_dashboard
 
-# --- Auto-cleanup: remove agent branches, worktrees, and tmux sessions ---
-log_action "Running automatic cleanup..."
-if [[ -x "./scripts/teardown.sh" ]]; then
-    ./scripts/teardown.sh 2>&1 | while IFS= read -r line; do log_status "$line"; done
-else
-    log_error "teardown.sh not found or not executable, skipping cleanup"
-fi
+# --- Auto-cleanup: safe cleanup of successfully completed work ---
+log_action "Running safe automatic cleanup (merged branches only)..."
+
+# Clean up remote branches that have been merged
+for _remote_branch in $(git branch -r --list 'origin/agent-*' 2>/dev/null); do
+    _local_name="${_remote_branch#origin/}"
+    if git branch --merged main 2>/dev/null | grep -q "$_local_name"; then
+        git push origin --delete "$_local_name" 2>/dev/null || true
+        log_status "  Cleaned remote: $_local_name"
+    fi
+done
+git remote prune origin 2>/dev/null || true
+git worktree prune 2>/dev/null || true
+
+# Remove the state file on successful completion
+rm -f "$STATE_FILE" 2>/dev/null || true
+
 log_status "Cleanup complete. Verify: git branch -a | grep agent  (should be empty)"
