@@ -79,6 +79,18 @@ MAX_AGENTS=$(echo "$CONFIG" | jq -r '.max_agents // 4')
 cd "$PROJECT_DIR"
 shopt -s nullglob   # globs that match nothing expand to nothing
 
+# --- Cleanup trap: ensure branches/worktrees are cleaned up on exit ---
+cleanup_on_exit() {
+    local exit_code=$?
+    echo ""
+    echo "[$(date '+%H:%M:%S')] [CLEANUP] Autopilot exiting (code=$exit_code), running cleanup..."
+    if [[ -x "./scripts/teardown.sh" ]]; then
+        ./scripts/teardown.sh 2>&1 || true
+    fi
+    exit $exit_code
+}
+trap cleanup_on_exit EXIT
+
 # --- State tracking ---
 declare -A AGENT_RETRIES        # branch -> retry count
 declare -A AGENT_SPAWN_TIME     # branch -> epoch seconds
@@ -507,3 +519,12 @@ fi
 
 # Final dashboard
 write_dashboard
+
+# --- Auto-cleanup: remove agent branches, worktrees, and tmux sessions ---
+log_action "Running automatic cleanup..."
+if [[ -x "./scripts/teardown.sh" ]]; then
+    ./scripts/teardown.sh 2>&1 | while IFS= read -r line; do log_status "$line"; done
+else
+    log_error "teardown.sh not found or not executable, skipping cleanup"
+fi
+log_status "Cleanup complete. Verify: git branch -a | grep agent  (should be empty)"

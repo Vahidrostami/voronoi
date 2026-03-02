@@ -26,10 +26,20 @@ done
 for branch in $(git branch --list "agent-*" 2>/dev/null); do
     branch=$(echo "$branch" | tr -d ' *')
     git branch -D "$branch" 2>/dev/null || true
-    echo "✓ Deleted branch: $branch"
+    echo "✓ Deleted local branch: $branch"
 done
 
-# 4. Prune worktree metadata
+# 4. Clean up remote agent branches
+echo ""
+echo "Cleaning remote agent branches..."
+for remote_branch in $(git branch -r --list 'origin/agent-*' 2>/dev/null); do
+    local_name="${remote_branch#origin/}"
+    git push origin --delete "$local_name" 2>/dev/null || true
+    echo "✓ Deleted remote branch: $local_name"
+done
+git remote prune origin 2>/dev/null || true
+
+# 5. Prune worktree metadata
 git worktree prune
 echo ""
 echo "=== Teardown complete. Beads data is preserved. ==="

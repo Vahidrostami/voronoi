@@ -135,23 +135,56 @@ Apply your same architecture (not just your code — your design pattern) to two
 
 Must discover the planted effect in each using the same pipeline architecture.
 
-### 4. Academic Paper
+### 4. Results Validation (Mandatory Gate Before Paper)
+
+All experimental results MUST pass through a multi-stage validation gate before the paper is written. No result may appear in the paper without surviving this gauntlet.
+
+**Stage 1 — Statistical Audit (Statistician role):**
+- Review every quantitative claim: verify effect sizes, confidence intervals, p-values, and sample sizes are correctly computed
+- Check statistical test appropriateness (e.g., are distributions normal? independence assumptions met?)
+- Verify multiple comparison corrections where experiments share data
+- Flag any result with CI wider than 50% of the effect size as LOW_CONFIDENCE
+- Recompute key metrics independently from the raw data — do NOT trust summaries
+
+**Stage 2 — Methodology Critique (Critic role):**
+- For each of the 5 planted ground-truth effects: verify the system's detection is genuine, not an artifact of data leakage or confirmation bias
+- Check that the ablation study actually disables components (not just degrades them slightly)
+- Verify that "siloed analysis misses" claims are real — run the siloed analysis independently and confirm it fails
+- Identify at least 3 potential confounds per experiment and document why they don't invalidate results
+- Check cross-domain generalization: are the secondary domains genuinely different, or trivially similar to BevCo?
+
+**Stage 3 — Reproducibility Check:**
+- Clear `.llm_cache/` and rerun at least one full experiment from scratch to verify determinism from cache
+- Confirm that results match within expected variance (effect sizes within original CIs)
+- Verify all raw data files exist and checksums match
+
+**Stage 4 — Adversarial Review:**
+- Attempt to construct an alternative explanation for each key finding
+- For ground-truth effects: verify the system discovers them for the RIGHT reason, not coincidentally
+- For the ablation: can a simpler system (e.g., rule-based heuristic) match performance?
+- Document every adversarial challenge and the evidence-based response
+
+**Gate Rule:** The paper phase CANNOT begin until ALL stages produce a PASS verdict. If any stage fails, the relevant experiment must be rerun or the claim must be weakened/removed. Results that fail validation are reported honestly in the paper as limitations, not silently dropped.
+
+**Validation Output:** `demos/coupled-decisions/output/validation_report.json` containing per-experiment verdicts, reviewer notes, and any unresolved concerns.
+
+### 5. Academic Paper
 
 Write a complete LaTeX paper with:
-- **Sections**: Introduction, Problem Characterization (the 3 invariants), Your Method (encoding + agents + pipeline), Experimental Setup, Results (all 4 experiments), Discussion, Generalization, Conclusion
+- **Sections**: Introduction, Problem Characterization (the 3 invariants), Your Method (encoding + agents + pipeline), Experimental Setup, Results (all 4 experiments), Validation (documenting all critic/statistician challenges and responses), Discussion, Limitations (honestly reporting what validation uncovered), Generalization, Conclusion
 - **Figures** (generated from real results): architecture diagram, ablation comparison, pipeline compression, encoding fidelity, quality scores, generalization comparison, and others as appropriate
 - **Tables**: ablation results, top interventions, generalization results, and others as appropriate
 - **Bibliography**: 30–40 relevant references
 - Compile to PDF if pdflatex is available
 
-### 5. Interactive Webapp
+### 6. Interactive Webapp
 
 Single self-contained HTML file (Chart.js + D3.js via CDN). Must include:
 - Visualization of the framework architecture
 - Interactive ablation comparison (toggle components on/off, see effect on results)
 - Pipeline compression visualization
 - Results from all experiments
-- Reads `output/results.json`, graceful fallback if missing
+- Reads `demos/coupled-decisions/output/results.json`, graceful fallback if missing
 
 ---
 
@@ -164,9 +197,11 @@ The system succeeds if:
 3. **Space reduction**: 10^18 → ≤15 recommendations with zero hard-constraint violations
 4. **Ablation is clear**: removing any major component degrades at least 2 metrics
 5. **Generalization**: discovers planted effects in 2/2 secondary domains
-6. **Paper**: compiles to PDF with all figures/tables populated from real experimental data
-7. **Webapp**: opens in browser with interactive results
-8. **Architecture justification**: the paper explains WHY the chosen architecture works, not just that it does
+6. **Validation passed**: ALL 4 validation stages (§4) produce PASS verdicts; `validation_report.json` exists with full audit trail
+7. **Paper**: compiles to PDF with all figures/tables populated from **validated** experimental data; includes Validation and Limitations sections
+8. **Webapp**: opens in browser with interactive results
+9. **Architecture justification**: the paper explains WHY the chosen architecture works, not just that it does
+10. **Clean exit**: after completion, `git branch -a | grep agent` returns empty, `git worktree list` shows only the main worktree, and all output is under `demos/coupled-decisions/` (nothing in repo root `output/`)
 
 ---
 
@@ -186,17 +221,24 @@ The system succeeds if:
 
 ## Output Structure
 
+All output MUST be written under `demos/coupled-decisions/`, NOT the repository root. Agents must use this as the working directory for all generated artifacts.
+
 ```
-output/
-  results.json          # All experiment results (format: your design)
-  paper/
-    paper.tex           # Main LaTeX document
-    paper.pdf           # Compiled PDF (if pdflatex available)
-    figures/            # Generated figure PDFs
-    tables/             # Generated LaTeX table fragments
-  index.html            # Interactive webapp
-  data/                 # Generated synthetic data files
+demos/coupled-decisions/
+  output/
+    results.json            # All experiment results (format: your design)
+    validation_report.json  # Validation gate results (from §4)
+    paper/
+      paper.tex             # Main LaTeX document
+      paper.pdf             # Compiled PDF (if pdflatex available)
+      figures/              # Generated figure PDFs
+      tables/               # Generated LaTeX table fragments
+    index.html              # Interactive webapp
+    data/                   # Generated synthetic data files
+  src/                      # All source code for this demo
 ```
+
+Do NOT write output to the repository root `output/` directory. That directory is for the swarm framework itself.
 
 ---
 
@@ -216,3 +258,41 @@ The following are **design decisions for the system to make**, not for this prom
 - ❌ How agents specialize across analytical dimensions
 
 The architecture is part of the contribution. The paper must justify the design choices by showing they lead to the experimental results.
+
+---
+
+## Cleanup Requirements
+
+When the demo run completes (whether successfully or not), ALL of the following MUST be cleaned up:
+
+### Branch Cleanup
+- Delete ALL local branches created during the run (pattern: `agent-*`)
+- Delete ALL remote branches created during the run: `git push origin --delete <branch>` for each
+- Verify with `git branch -a` that no `agent-*` branches remain
+
+### Worktree Cleanup
+- Remove ALL git worktrees created during the run
+- Run `git worktree prune` to clean stale references
+- Verify with `git worktree list` that only the main worktree remains
+
+### Session Cleanup
+- Kill any tmux sessions/windows created for agents
+- Clean up any `.agent-prompt.txt` files in worktree directories
+
+### Cache Policy
+- `.llm_cache/` MAY be preserved for reproducibility (it enables fast reruns)
+- Temporary files, intermediate data, and scratch directories MUST be removed
+
+### Automated Cleanup
+The cleanup SHOULD be automated as a final phase of the pipeline (not dependent on the user remembering to run teardown). If the agent orchestrator completes or crashes, a trap/finally handler should still attempt cleanup. The simplest implementation:
+
+```bash
+# At the end of the pipeline (or in a trap handler):
+scripts/teardown.sh                           # Handles worktrees + tmux + local branches
+for branch in $(git branch -r --list 'origin/agent-*'); do
+    git push origin --delete "${branch#origin/}" 2>/dev/null || true
+done
+git remote prune origin
+```
+
+**Success criterion for cleanup:** After the demo completes, `git branch -a | grep agent` returns nothing and `git worktree list` shows only the main worktree.
