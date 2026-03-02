@@ -109,22 +109,25 @@ Test that the multimodal encoding preserves information and enables cross-type r
 
 #### Experiment 2: Ablation Study — Invariants in Isolation
 
-Run the system in 4 configurations:
+Run the system in 4 configurations. **All configurations use the same LLM** — the only variable is what information the LLM receives and how it's structured. This isolates the framework's contribution from the LLM's raw capability.
 
 | Config | Lever Coupling | Knowledge Heterogeneity | Cognitive Assembly |
 |--------|---------------|------------------------|-------------------|
-| **Full system** | ✓ | ✓ | ✓ |
-| **No coupling** (independent lever optimization) | ✗ | ✓ | ✓ |
-| **No encoding** (raw text concatenation) | ✓ | ✗ | ✓ |
-| **No pipeline** (single-pass LLM) | ✓ | ✓ | ✗ |
+| **Full system** | ✓ (coupling graph in prompt) | ✓ (encoded representations) | ✓ (multi-agent pipeline) |
+| **No coupling** (independent lever optimization) | ✗ (agents see one lever at a time) | ✓ (encoded representations) | ✓ (multi-agent pipeline) |
+| **No encoding** (raw data in prompt) | ✓ (coupling graph in prompt) | ✗ (raw CSV/JSON/text dumped into prompt) | ✓ (multi-agent pipeline) |
+| **No pipeline** (single-pass LLM) | ✓ (coupling graph in prompt) | ✓ (encoded representations) | ✗ (one LLM call with everything, no staged agents) |
+
+**Why this ablation is now meaningful**: 
+- "No encoding" gives the **same LLM** raw data instead of encoded representations. If encoding helps, the LLM discovers more effects with structured input.
+- "No pipeline" gives the **same LLM** all encoded knowledge in a single prompt instead of staged diagnostic agents. If the pipeline helps, staged reasoning outperforms monolithic reasoning.
+- "No coupling" gives agents encoded data but **removes the coupling graph** so they analyze levers independently. If coupling helps, cross-lever effects are missed.
 
 **Metrics for each**:
 - Number of ground-truth effects discovered (out of 5)
 - Precision and recall of generated interventions vs. ground truth
 - Number of constraint violations in proposed interventions
 - Revenue impact of top-5 recommendations (simulated)
-
-This directly validates Contribution 1: that addressing invariants in isolation is insufficient.
 
 #### Experiment 3: Progressive Reduction Pipeline
 
@@ -219,16 +222,38 @@ The paper should demonstrate:
 
 ### Diagnostic Agents (src/agents/) — BUILD AFTER encoding
 
+**CRITICAL DESIGN PRINCIPLE**: Each diagnostic agent is an **LLM-powered reasoner**, not a deterministic algorithm. The agent receives encoded knowledge as structured context in its prompt, then uses LLM reasoning to analyze patterns, generate hypotheses, and produce evidence packets. This is the core of the paper's argument: the encoding layer transforms heterogeneous knowledge into representations that enable effective LLM reasoning across knowledge types.
+
+#### Why LLM Agents (Not Algorithms)?
+The paper's central claim is that the encoding layer enables *reasoning* over coupled decisions with heterogeneous knowledge. If agents are deterministic numpy functions, they don't *reason* — they compute. The encoding layer would be mere data preprocessing, not a reasoning enabler. By using LLM agents:
+- The **encoding layer's value** becomes testable: same LLM with encoded vs. raw knowledge → measurable difference in reasoning quality
+- The **ablation study** becomes meaningful: "no encoding" means the LLM gets raw data dumps instead of structured representations
+- **Cross-source conflicts** become genuine reasoning challenges, not just programmatic comparisons
+- The **cognitive assembly bottleneck** (Contribution 1) is directly addressed: LLMs perform the assembly that humans currently do ad-hoc
+
+#### Agent Architecture
+
 Each agent is a standalone module implementing:
 
 ```python
 class DiagnosticAgent:
-    def __init__(self, config, encoded_knowledge):
-        """Initialize with access to encoded knowledge sources."""
+    def __init__(self, config, encoded_knowledge, llm_client):
+        """Initialize with encoded knowledge and LLM client.
+        
+        The encoded_knowledge dict contains:
+          - 'quantitative': list[StatisticalProfile]  (structured numeric summaries)
+          - 'policy': list[ConstraintVector]           (tiered constraint representations)
+          - 'expert': list[TemporalBelief]             (confidence-weighted judgment objects)
+          - 'coupling': CouplingGraph                  (lever interaction structure)
+        
+        The llm_client provides:
+          - llm_client.reason(system_prompt, user_prompt) -> str
+        """
         pass
     
     def diagnose(self) -> list[EvidencePacket]:
-        """Run diagnostic analysis, return evidence packets."""
+        """Build a structured prompt from encoded knowledge, send to LLM,
+        parse the LLM's reasoning into typed EvidencePackets."""
         pass
     
     def get_pruned_space(self) -> dict:
@@ -236,21 +261,59 @@ class DiagnosticAgent:
         pass
 ```
 
-#### Agent modules:
-- `src/agents/elasticity_agent.py`: Analyzes own-price and cross-price elasticities. Identifies which SKU × region × lever combinations show significant sensitivity. Prunes insensitive combinations.
-- `src/agents/interaction_agent.py`: Tests for statistical interaction effects between all lever pairs using the encoded data. Uses a simple interaction detection method (check if effect of lever A × lever B ≠ effect of A + effect of B). Flags synergies and conflicts.
-- `src/agents/constraint_agent.py`: Maps the feasible region from encoded constraints. Identifies binding constraints, slack variables, and constraint-constraint conflicts. Prunes infeasible combinations.
-- `src/agents/temporal_agent.py`: Analyzes time series patterns — trends, seasonality, structural breaks. Identifies which levers are trending and which expert beliefs align/conflict with the data trajectory.
-- `src/agents/portfolio_agent.py`: Analyzes SKU-level effects — cannibalization, halo, substitution patterns. Identifies which assortment/pack-price changes cascade to other SKUs.
+#### LLM Client Abstraction (src/agents/llm_client.py)
+
+```python
+class LLMClient:
+    """Thin wrapper around LLM API with caching for reproducibility."""
+    def __init__(self, provider="openai", model="gpt-4o-mini", temperature=0.0, cache_dir=".llm_cache"):
+        """temperature=0 + response caching ensures reproducible experiments."""
+    def reason(self, system_prompt: str, user_prompt: str) -> str:
+        """Send prompt, return response. Cache by hash(system+user) for determinism."""
+    def reason_structured(self, system_prompt: str, user_prompt: str, schema: dict) -> dict:
+        """Same as reason() but with JSON schema enforcement for typed output."""
+```
+
+- Supports OpenAI, Anthropic, or local models via config
+- **Response caching**: Hash(system_prompt + user_prompt) → cached response file. Once an experiment runs once, it replays from cache for determinism.
+- **Fallback mode**: If no API key is set, falls back to a simple heuristic reasoner (the current numpy-based logic) so experiments can still run without LLM access. Results section should clearly distinguish "LLM mode" vs "fallback mode" runs.
+
+#### How Each Agent Uses the LLM
+
+Each agent follows the same pattern:
+1. **Format encoded knowledge into a structured prompt** — this is where encoding matters. The StatisticalProfile becomes a readable summary ("SKU-12 in Region-North: mean revenue $4.2K/week, declining trend -2.1%/week, seasonal peak Q3, structural break at week 67"). The ConstraintVector becomes "Hard constraint: minimum 25% margin on Category A (current: 23.1% — BINDING)". The TemporalBelief becomes "Expert [confidence: 0.8, basis: analysis, age: 3 months]: Premium segment is under-priced."
+2. **Ask the LLM a focused analytical question** specific to that agent's dimension
+3. **Parse the LLM's structured response** into typed EvidencePacket objects
+
+#### Agent Modules:
+
+- `src/agents/elasticity_agent.py`: **Prompt**: "Given these statistical profiles of SKU-level price sensitivity [encoded data], identify which SKU × region combinations show significant price elasticity. For each, state the direction, magnitude, confidence, and whether cross-price effects suggest substitution or complementarity." **LLM reasons** over the encoded profiles to identify patterns a human analyst would find — but across all 50 SKUs simultaneously.
+
+- `src/agents/interaction_agent.py`: **Prompt**: "Given these statistical profiles [encoded quant data] and this lever coupling structure [from CouplingGraph], identify lever pairs where the joint effect differs from the sum of independent effects. Watch for multi-collinearity (these pairs are correlated: [from encoding]) — distinguish genuine interactions from confounded signals." **LLM reasons** about interaction vs. confounding, which is genuinely hard reasoning that benefits from structured encoding.
+
+- `src/agents/constraint_agent.py`: **Prompt**: "Given these constraint vectors [encoded policies] and these statistical profiles [encoded data showing current state], identify: (1) which constraints are currently binding, (2) which have slack, (3) which pairs of constraints conflict, and (4) which expert beliefs [encoded experts] would violate constraints if followed." **LLM reasons** about constraint feasibility with full cross-source awareness.
+
+- `src/agents/temporal_agent.py`: **Prompt**: "Given these time series profiles [encoded with trend, seasonality, breaks] and these expert beliefs about temporal dynamics [encoded experts with decay], identify: (1) which expert beliefs align with or contradict the data trends, (2) which structural breaks suggest regime changes, (3) which seasonal patterns the experts are correctly or incorrectly accounting for." **LLM reasons** about temporal alignment across quantitative and expert sources.
+
+- `src/agents/portfolio_agent.py`: **Prompt**: "Given these cross-SKU elasticity profiles [encoded data] and pack-price architecture [encoded data], identify: (1) cannibalization pairs where one SKU's gain is another's loss, (2) halo effects where changes cascade positively, (3) portfolio-level effects of assortment changes. Consider the policy constraints [encoded policies] on minimum SKU counts." **LLM reasons** about portfolio-level effects that require synthesizing data and policy knowledge.
+
+#### The Encoding Difference (What the Ablation Tests)
+
+| What the LLM sees | "With Encoding" | "Without Encoding" (ablation) |
+|---|---|---|
+| Quantitative data | "SKU-12: mean=$4.2K, trend=-2.1%/wk, CI=[3.8K,4.6K], break@wk67" | Raw CSV rows: "12,North,47,4182.3,3.99,1,BOGO,0.3,0,4,6" × 10000 |
+| Policy | "HARD: margin≥25% on Cat-A (scope: all regions, binding at 23.1%)" | JSON: {"rule_id":"P3","type":"hard","lever":"pricing",...} |
+| Expert belief | "Expert [conf:0.8, analysis, 3mo]: 'Premium under-priced' → direction:increase, magnitude:moderate, CONFLICTS with margin constraint P3 on 9/12 SKUs" | "Premium segment is under-priced relative to market" |
+
+The encoded version gives the LLM *reasoning-ready* representations with cross-references already surfaced. The raw version forces the LLM to do its own parsing, aggregation, and cross-referencing — which it does poorly at scale.
 
 ### Causal Synthesis (src/synthesis/) — BUILD AFTER agents
 
-- `assembler.py`: Takes evidence packets from all 5 diagnostic agents and assembles them into candidate interventions.
-  - Groups evidence by lever and direction
-  - Identifies causal chains (if agent A found elasticity signal AND agent B found interaction AND agent C found no constraint violation → strong candidate)
-  - Produces `Intervention` objects: {lever, direction, magnitude, scope, mechanism, evidence_trail, confidence}
-  - Merges overlapping interventions
-  - Resolves conflicting evidence using epistemic hierarchy (quantitative > policy > expert, unless confidence-weighted override)
+- `assembler.py`: Takes evidence packets from all 5 diagnostic agents and **uses LLM reasoning** to assemble them into candidate interventions. This is the "cognitive assembly" step that the paper argues cannot be done by algorithms alone — it requires reasoning about causal chains across heterogeneous evidence.
+  - **Prompt pattern**: "Here are evidence packets from 5 independent diagnostic analyses: [structured evidence]. Identify causal chains: where does an elasticity signal + an interaction effect + no constraint violation combine to suggest a specific intervention? Where do temporal trends support or undermine the evidence? Where do expert beliefs add context that changes the interpretation?"
+  - The LLM assembles evidence into `Intervention` objects: {lever, direction, magnitude, scope, mechanism, evidence_trail, confidence}
+  - Merges overlapping interventions via LLM-judged similarity
+  - Resolves conflicting evidence: the LLM is given the epistemic hierarchy (quantitative > policy > expert) as a system prompt guideline, but can override when confidence-weighted evidence from a "lower" source is compelling — this is genuine reasoning, not a lookup table
 
 ### Quality Gate (src/quality/) — BUILD AFTER synthesis
 
@@ -466,7 +529,7 @@ A single self-contained HTML file that visualizes the framework and experimental
 - **Agent core**: src/__init__.py, src/core/__init__.py, src/core/types.py, src/core/encoding.py, src/core/coupling.py, src/core/config.py, src/core/utils.py
 - **Agent data**: src/data/__init__.py, src/data/generator.py, src/data/policies.py, src/data/experts.py, src/data/ground_truth.py
 - **Agent encoding**: src/encoding/__init__.py, src/encoding/statistical_profile.py, src/encoding/constraint_vector.py, src/encoding/temporal_belief.py, src/encoding/cross_encoder.py
-- **Agent elasticity**: src/agents/__init__.py, src/agents/elasticity_agent.py
+- **Agent elasticity**: src/agents/__init__.py, src/agents/llm_client.py, src/agents/elasticity_agent.py
 - **Agent interaction**: src/agents/interaction_agent.py
 - **Agent constraint**: src/agents/constraint_agent.py
 - **Agent temporal**: src/agents/temporal_agent.py
@@ -481,13 +544,15 @@ A single self-contained HTML file that visualizes the framework and experimental
 ## Technical Requirements
 
 - Python 3.11+
-- Only stdlib + matplotlib + numpy + scipy for computation (no ML frameworks, no LLM API calls during experiments)
-- All agents are deterministic given the same random seed
+- stdlib + matplotlib + numpy + scipy for computation + an LLM client library (openai or anthropic)
+- **LLM-powered agents**: Diagnostic agents and causal synthesis use LLM reasoning via API calls (OpenAI, Anthropic, or local models). Temperature=0 for reproducibility.
+- **Response caching**: All LLM calls are cached by prompt hash in `.llm_cache/`. Once experiments run once, subsequent runs replay from cache — making results deterministic and reproducible without additional API costs.
+- **Fallback mode**: If no API key is configured (`LLM_PROVIDER=none`), agents fall back to heuristic-based reasoning (numpy/scipy). Results section must clearly label which mode was used. The fallback exists so the codebase can be tested without API access, but the paper's primary results MUST use LLM mode.
 - Each agent module is self-contained (no cross-agent imports, only imports from src/core/)
 - Webapp is a single HTML file using Chart.js + D3.js via CDN
 - Paper compiles with standard pdflatex + bibtex
-- Total codebase under 5000 lines (Python) + ~600 lines (HTML/JS) + ~2000 lines (LaTeX)
-- Full experiment should complete in under 20 minutes on a modern CPU
+- Total codebase under 6000 lines (Python) + ~600 lines (HTML/JS) + ~2000 lines (LaTeX)
+- Full experiment should complete in under 30 minutes on a modern CPU (first run with API calls; <5 minutes from cache)
 
 ## Dependency Graph
 
