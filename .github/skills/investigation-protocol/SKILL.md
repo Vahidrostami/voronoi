@@ -1,3 +1,11 @@
+---
+name: investigation-protocol
+description: >
+  Skill for running the hypothesis → experiment → finding workflow in scientific
+  investigations. Covers pre-registration, sensitivity analysis, data integrity,
+  review gates, replication, and serendipity handling.
+---
+
 # Investigation Protocol Skill
 
 Hypothesis → Experiment → Finding workflow for scientific investigations.

@@ -1,3 +1,11 @@
+---
+name: evidence-system
+description: >
+  Skill for managing the evidence knowledge store: creating and querying findings,
+  maintaining belief maps and investigation journals, enforcing data integrity,
+  and running consistency checks across validated findings.
+---
+
 # Evidence System Skill
 
 Managing findings, belief maps, investigation journal, and raw data across the knowledge store.
