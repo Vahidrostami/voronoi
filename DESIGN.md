@@ -1547,3 +1547,304 @@ This section details every file that must be modified or created to implement th
 | User experience | One prompt — rigor and mode auto-detected |
 | Commands | Same 6 — richer output at higher rigor levels |
 | Config required | None — everything auto-classified |
+| Multi-project | Global hub + namespaced isolation + resource pool + epic scoping (§19) |
+
+---
+
+## 19. Multi-Project Scalability
+
+### The Problem
+
+The current architecture assumes **one active swarm per repository**. Every stateful artifact — `.swarm-config.json`, `.beads/beads.db`, tmux session names, worktree directories, branch prefixes, and the investigation journal — is scoped to a single project root. This creates three escalating failure modes:
+
+1. **Sequential bottleneck.** A user with 5 projects must finish one swarm before starting another. There's no way to run `project-A` and `project-B` simultaneously.
+2. **Cross-contamination.** If a user naively runs two swarms in the same repo (e.g., two epics), Beads tasks intermix, agents see each other's branches, and the journal becomes incoherent.
+3. **No global visibility.** Even when projects ARE in separate repos, the user has no single pane of glass to see all active swarms, total agent load, or cross-project dependencies.
+
+### Design Principles
+
+1. **Each project stays in its own repo.** The template is cloned per project — this natural isolation already prevents most contamination. The design reinforces this, not fights it.
+2. **A global hub provides cross-project coordination.** Resource limits, dashboards, and project discovery operate at the user level, not the repo level.
+3. **Namespace everything.** Every shared resource (tmux sessions, worktree paths, branch prefixes) includes a project-scoped identifier to prevent collision even if the user breaks convention.
+4. **Zero new config for single-project users.** Multi-project support is additive. Existing workflows work unchanged.
+
+### Architecture
+
+```
+~/.swarm/                                  # GLOBAL — user-level swarm home
+├── hub.json                               # Registry of all active projects
+├── resources.json                         # Global agent pool + rate limits
+└── projects/
+    ├── my-saas-app/                       # Per-project metadata (mirror)
+    │   ├── link → /path/to/my-saas-app    # Symlink to actual repo
+    │   └── status.json                    # Last-known state snapshot
+    └── ml-pipeline/
+        ├── link → /path/to/ml-pipeline
+        └── status.json
+
+/path/to/my-saas-app/                      # PROJECT A — its own repo
+├── .swarm-config.json                     # Now includes project_id
+├── .swarm/journal.md                      # Scoped to this project
+├── .beads/beads.db                        # Scoped to this project
+└── ...
+
+/path/to/ml-pipeline/                      # PROJECT B — its own repo
+├── .swarm-config.json
+├── .swarm/journal.md
+├── .beads/beads.db
+└── ...
+```
+
+### Layer 1: Project Identity
+
+Every project gets a unique **Project ID** — a slug derived from the repo directory name plus an optional disambiguator. This identifier scopes ALL shared resources.
+
+**`.swarm-config.json` gains `project_id`:**
+
+```json
+{
+  "project_id": "my-saas-app",
+  "project_name": "my-saas-app",
+  "project_dir": "/Users/dev/repos/my-saas-app",
+  "swarm_dir": "/Users/dev/.swarm/projects/my-saas-app/worktrees",
+  "tmux_session": "swarm-my-saas-app",
+  "branch_prefix": "swarm/my-saas-app/agent-",
+  "max_agents": 4,
+  "agent_command": "copilot",
+  "agent_flags": "--allow-all",
+  "created": "2026-03-02T10:00:00Z"
+}
+```
+
+**What changes:**
+
+| Resource | Before | After |
+|----------|--------|-------|
+| tmux session | `my-saas-app-swarm` | `swarm-my-saas-app` (prefixed, predictable) |
+| Worktree dir | `../my-saas-app-swarm/` | `~/.swarm/projects/my-saas-app/worktrees/` |
+| Branch names | `agent-auth` | `swarm/my-saas-app/agent-auth` |
+| Beads DB | `.beads/beads.db` (repo-local) | `.beads/beads.db` (unchanged — already isolated per repo) |
+| Journal | `.swarm/journal.md` | `.swarm/journal.md` (unchanged — already per repo) |
+
+**Collision protection:** Even if two repos have the same name (e.g., both called `app`), `swarm-init.sh` detects the conflict in `~/.swarm/hub.json` and appends a disambiguator: `app`, `app-2`, etc.
+
+### Layer 2: Global Hub
+
+`~/.swarm/hub.json` is the registry that provides cross-project visibility.
+
+```json
+{
+  "version": 1,
+  "global_max_agents": 8,
+  "projects": {
+    "my-saas-app": {
+      "project_dir": "/Users/dev/repos/my-saas-app",
+      "status": "active",
+      "agents_running": 3,
+      "max_agents": 4,
+      "tmux_session": "swarm-my-saas-app",
+      "mode": "build",
+      "rigor": "standard",
+      "convergence": 0.45,
+      "registered_at": "2026-03-02T10:00:00Z",
+      "last_heartbeat": "2026-03-02T14:30:00Z"
+    },
+    "ml-pipeline": {
+      "project_dir": "/Users/dev/repos/ml-pipeline",
+      "status": "active",
+      "agents_running": 2,
+      "max_agents": 3,
+      "tmux_session": "swarm-ml-pipeline",
+      "mode": "investigate",
+      "rigor": "scientific",
+      "convergence": 0.30,
+      "registered_at": "2026-03-02T11:00:00Z",
+      "last_heartbeat": "2026-03-02T14:28:00Z"
+    }
+  }
+}
+```
+
+**Hub operations:**
+
+| Action | Command | Description |
+|--------|---------|-------------|
+| List projects | `swarm hub` | Show all registered projects with status |
+| Switch context | `swarm hub switch <project-id>` | `cd` to project dir, attach tmux |
+| Pause a project | `swarm hub pause <project-id>` | Gracefully stop agents, save state |
+| Resume a project | `swarm hub resume <project-id>` | Re-dispatch from saved state |
+| Remove a project | `swarm hub remove <project-id>` | Deregister (does not delete repo) |
+| Dashboard | `swarm hub dashboard` | Multi-project TUI dashboard |
+
+**Heartbeat:** Each running autopilot writes a heartbeat timestamp to `hub.json` every poll interval. Projects with stale heartbeats (>5 minutes, no running tmux session) are auto-marked `stale`. The hub dashboard shows these as warnings.
+
+### Layer 3: Resource Management
+
+The critical multi-project problem is **agent contention** — each AI agent consumes API quota, CPU, and memory. Without coordination, 3 projects × 4 agents = 12 simultaneous agents hammering rate limits.
+
+**Global agent pool:**
+
+```json
+// ~/.swarm/resources.json
+{
+  "global_max_agents": 8,
+  "agent_api": {
+    "provider": "anthropic",
+    "max_concurrent_requests": 10,
+    "rate_limit_rpm": 60
+  },
+  "allocation_strategy": "proportional",
+  "priorities": {
+    "my-saas-app": 1,
+    "ml-pipeline": 2
+  }
+}
+```
+
+**Allocation strategies:**
+
+| Strategy | Description |
+|----------|-------------|
+| `proportional` | Each project gets agents proportional to its remaining work (`bd ready` count) |
+| `priority` | Higher-priority projects fill first, remainder goes to lower |
+| `equal` | Each project gets `global_max / active_projects` agents (rounded down) |
+| `manual` | User sets fixed `max_agents` per project; hub enforces total ≤ global_max |
+
+**How it works at spawn time:**
+
+```
+spawn-agent.sh:
+  1. Read project's .swarm-config.json (project_id, max_agents)
+  2. Read ~/.swarm/resources.json (global_max_agents, allocation_strategy)
+  3. Count active agents across ALL projects (query each tmux session)
+  4. If global limit reached → queue the task, log "WAITING: global agent limit"
+  5. If project limit reached → queue, log "WAITING: project agent limit"
+  6. If both ok → spawn
+```
+
+### Layer 4: Project Lifecycle
+
+```
+┌──────────┐    swarm-init.sh    ┌──────────┐    /swarm <task>    ┌──────────┐
+│ untracked│ ──────────────────► │registered│ ─────────────────► │  active  │
+└──────────┘                     └──────────┘                    └──────────┘
+                                      ▲                               │
+                                      │                    ┌──────────┤
+                                      │                    ▼          ▼
+                                 swarm hub resume    ┌──────────┐ ┌──────────┐
+                                      │              │  paused  │ │ complete │
+                                      └──────────────┤          │ └──────────┘
+                                                     └──────────┘      │
+                                                          │       /teardown
+                                                     swarm hub     ──────►
+                                                      remove     ┌──────────┐
+                                                          └─────►│ removed  │
+                                                                 └──────────┘
+```
+
+**`swarm-init.sh` changes:**
+
+1. Generate `project_id` from directory name (slugified)
+2. Create `~/.swarm/` and `hub.json` if they don't exist
+3. Register project in `hub.json` with status `registered`
+4. Create worktree directory at `~/.swarm/projects/${project_id}/worktrees/`
+5. Symlink `~/.swarm/projects/${project_id}/link → $(pwd)`
+6. Write `project_id` and namespaced paths into `.swarm-config.json`
+
+**`/teardown` changes:**
+
+1. Clean up worktrees from `~/.swarm/projects/${project_id}/worktrees/`
+2. Kill tmux session `swarm-${project_id}`
+3. Update `hub.json` status to `complete`
+4. Do NOT remove from hub (user can review history, explicitly `hub remove`)
+
+### Layer 5: Multi-Project Dashboard
+
+The existing `dashboard.py` shows one project. A new `hub-dashboard` mode shows all:
+
+```
+┌─ Swarm Hub ─────────────────────────────────────────────────┐
+│ Global: 5/8 agents active │ API: 42/60 rpm │ Strategy: prop │
+├─────────────────────────────────────────────────────────────┤
+│ PROJECT          STATUS   AGENTS  MODE         CONVERGE     │
+│ my-saas-app      active   3/4     build        45%          │
+│ ml-pipeline      active   2/3     investigate  30%          │
+│ data-viz         paused   0/2     build        80%          │
+│ research-nlp     stale    0/4     explore      15% ⚠        │
+├─────────────────────────────────────────────────────────────┤
+│ [1] Switch  [2] Pause  [3] Resume  [4] Detail  [q] Quit    │
+└─────────────────────────────────────────────────────────────┘
+```
+
+Selecting a project drills into the existing single-project dashboard view.
+
+### Layer 6: Concurrent Swarms in the Same Repo (Epic Isolation)
+
+Sometimes a user wants to run **two separate swarms in the same repo** — e.g., one epic for auth, another for billing, both building in parallel. This is more dangerous than cross-repo because they share the git history, Beads database, and working tree.
+
+**Solution: Epic Scoping**
+
+Each `/swarm` invocation creates a Beads epic. All tasks, findings, and journal entries are scoped to that epic ID. When the user runs `/swarm` again in the same repo:
+
+1. Orchestrator detects an active epic exists
+2. Asks: "Epic `bd-42` (Build auth system) is active with 3 agents. Options:
+   - **Continue** — resume the existing epic
+   - **New** — start a new epic (runs in parallel, separate branch namespace)
+   - **Replace** — teardown existing, start fresh"
+3. If "New": creates a second epic with a separate branch namespace (`swarm/${epic-id}/agent-*`), separate tmux windows (within the same session, prefixed), and separate journal section
+4. Beads naturally supports multiple epics — `bd ready --parent <epic-id>` scopes queries
+
+**Branch namespace per epic:**
+```
+swarm/bd-42/agent-auth       # Epic 1: auth system
+swarm/bd-42/agent-users      # Epic 1: user model
+swarm/bd-67/agent-billing    # Epic 2: billing system
+swarm/bd-67/agent-payments   # Epic 2: payment gateway
+```
+
+**Journal per epic:**
+```
+.swarm/
+├── journal.md               # Global project journal (Synthesizer writes here)
+├── journal-bd-42.md         # Epic-specific journal
+└── journal-bd-67.md         # Epic-specific journal
+```
+
+**Agent isolation:** Each agent's prompt includes its epic ID. The agent constitution (`CLAUDE.md`) gains a rule: "Work ONLY on tasks under your assigned epic. If you discover work for a different epic, file it under that epic, don't do it."
+
+### Summary of Changes for Multi-Project Support
+
+**Files to MODIFY:**
+
+| File | Change |
+|------|--------|
+| `scripts/swarm-init.sh` | Add project_id generation, hub registration, namespaced paths |
+| `scripts/spawn-agent.sh` | Read global resource limits, namespace branches/worktrees |
+| `scripts/spawn-agent-generic.sh` | Same namespacing as spawn-agent.sh |
+| `scripts/teardown.sh` | Clean up hub registration, namespaced resources |
+| `scripts/autopilot.sh` | Heartbeat to hub.json, respect global agent limits |
+| `scripts/dashboard.py` | Add hub mode (`--hub` flag) for multi-project view |
+| `CLAUDE.md` | Add epic scoping rule for agents |
+| `.swarm-config.json` schema | Add `project_id`, `branch_prefix`, namespaced `swarm_dir` |
+
+**Files to CREATE:**
+
+| File | Purpose |
+|------|---------|
+| `scripts/swarm-hub.sh` | CLI for hub operations (list, switch, pause, resume, remove) |
+| `~/.swarm/hub.json` | Global project registry (created by swarm-init.sh) |
+| `~/.swarm/resources.json` | Global resource allocation config |
+
+**Zero-cost for single-project users:** If `~/.swarm/hub.json` doesn't exist, all scripts fall back to current behavior. The hub is opt-in via running `swarm-init.sh` (which creates it). A user running one project at a time sees no difference.
+
+### Migration Path
+
+| Phase | Scope | Effort |
+|-------|-------|--------|
+| **Phase 1** | Project ID + namespaced branches/worktrees/tmux | Small — config + script changes |
+| **Phase 2** | Global hub registry + `swarm hub` command | Medium — new script + hub.json |
+| **Phase 3** | Resource management (global agent pool) | Medium — spawn-agent coordination |
+| **Phase 4** | Multi-project dashboard | Small — extend existing dashboard.py |
+| **Phase 5** | Same-repo epic isolation | Medium — Beads scoping + journal split |
+
+Phases 1–2 solve the core problem (run multiple projects without collision). Phases 3–5 add sophistication for power users.
