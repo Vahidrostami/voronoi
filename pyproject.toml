@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "voronoi"
-version = "0.1.0"
+version = "0.2.0"
 description = "Orchestrate multiple AI coding agents working in parallel"
 readme = "README.md"
 license = "MIT"
@@ -22,3 +22,8 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 voronoi = ["data/**/*"]
+
+# NOTE: Before building a distributable package (pip install . / python -m build),
+# run: ./scripts/sync-package-data.sh
+# This copies scripts/, demos/, .github/, CLAUDE.md, AGENTS.md into src/voronoi/data/.
+# Editable installs (pip install -e .) don't need this — the CLI finds the repo root.

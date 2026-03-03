@@ -13,7 +13,7 @@ from voronoi.cli import _find_data_dir
 
 def test_version():
     """Package version is consistent."""
-    assert __version__ == "0.1.0"
+    assert __version__ == "0.2.0"
 
 
 def test_cli_version():
@@ -25,7 +25,7 @@ def test_cli_version():
     )
     # argparse --version exits with 0
     assert result.returncode == 0
-    assert "0.1.0" in result.stdout
+    assert "0.2.0" in result.stdout
 
 
 def test_cli_help():
