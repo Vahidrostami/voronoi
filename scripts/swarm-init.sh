@@ -7,9 +7,16 @@ PROJECT_NAME=$(basename "$PROJECT_DIR")
 echo "=== Voronoi: Initializing $PROJECT_NAME ==="
 
 # 1. Check dependencies
-command -v bd   >/dev/null 2>&1 || { echo "Install beads: brew install beads"; exit 1; }
-command -v tmux >/dev/null 2>&1 || { echo "Install tmux: brew install tmux"; exit 1; }
-command -v gh   >/dev/null 2>&1 || { echo "Install GitHub CLI: brew install gh"; exit 1; }
+# Detect platform for install hints
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    PKG_HINT="brew install"
+else
+    PKG_HINT="apt install"  # or your distro's package manager
+fi
+
+command -v bd   >/dev/null 2>&1 || { echo "Install beads: $PKG_HINT beads"; exit 1; }
+command -v tmux >/dev/null 2>&1 || { echo "Install tmux: $PKG_HINT tmux"; exit 1; }
+command -v gh   >/dev/null 2>&1 && echo "✓ GitHub CLI found" || echo "⚠ GitHub CLI (gh) not found — optional, needed for PR workflows"
 
 # Detect agent CLI
 if command -v copilot >/dev/null 2>&1; then
