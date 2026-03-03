@@ -11,6 +11,9 @@ license = "MIT"
 requires-python = ">=3.10"
 keywords = ["ai", "agents", "swarm", "copilot", "claude"]
 
+[project.optional-dependencies]
+dashboard = ["rich>=13.0"]
+
 [project.scripts]
 voronoi = "voronoi.cli:main"
 

@@ -1,0 +1,136 @@
+"""Tests for voronoi CLI."""
+
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+import pytest
+
+from voronoi import __version__
+from voronoi.cli import _find_data_dir
+
+
+def test_version():
+    """Package version is consistent."""
+    assert __version__ == "0.1.0"
+
+
+def test_cli_version():
+    """CLI --version flag works."""
+    result = subprocess.run(
+        [sys.executable, "-m", "voronoi.cli", "--version"],
+        capture_output=True,
+        text=True,
+    )
+    # argparse --version exits with 0
+    assert result.returncode == 0
+    assert "0.1.0" in result.stdout
+
+
+def test_cli_help():
+    """CLI shows help without error."""
+    result = subprocess.run(
+        [sys.executable, "-m", "voronoi.cli", "--help"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert "voronoi" in result.stdout.lower()
+
+
+def test_find_data_dir():
+    """_find_data_dir locates repo root in editable install."""
+    data_dir = _find_data_dir()
+    # In editable mode, should return the repo root
+    assert (data_dir / "scripts").is_dir()
+    assert (data_dir / ".github" / "agents").is_dir()
+    assert (data_dir / "pyproject.toml").is_file()
+
+
+def test_init_creates_files():
+    """voronoi init scaffolds expected files into target directory."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Initialize a git repo first (init guards against running in source repo)
+        subprocess.run(["git", "init"], cwd=tmpdir, capture_output=True)
+
+        result = subprocess.run(
+            [sys.executable, "-m", "voronoi.cli", "init"],
+            cwd=tmpdir,
+            capture_output=True,
+            text=True,
+        )
+
+        target = Path(tmpdir)
+        # Core framework dirs should exist
+        assert (target / "scripts").is_dir()
+        # Framework files should exist
+        assert (target / "CLAUDE.md").is_file()
+        assert (target / "AGENTS.md").is_file()
+
+        # Key scripts should be present
+        assert (target / "scripts" / "autopilot.sh").is_file()
+        assert (target / "scripts" / "spawn-agent.sh").is_file()
+        assert (target / "scripts" / "plan-tasks.sh").is_file()
+
+        # .github agents, prompts, skills should be present
+        assert (target / ".github" / "agents").is_dir()
+        assert (target / ".github" / "prompts").is_dir()
+        assert (target / ".github" / "skills").is_dir()
+
+
+def test_init_blocks_inside_source_repo():
+    """voronoi init refuses to run inside its own source repo."""
+    repo_root = Path(__file__).resolve().parent.parent
+    result = subprocess.run(
+        [sys.executable, "-m", "voronoi.cli", "init"],
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "source repo" in result.stderr or "source repo" in result.stdout
+
+
+def test_upgrade_requires_existing_project():
+    """voronoi upgrade fails if no scripts/ dir exists."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        result = subprocess.run(
+            [sys.executable, "-m", "voronoi.cli", "upgrade"],
+            cwd=tmpdir,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode != 0
+
+
+def test_upgrade_preserves_user_files():
+    """voronoi upgrade keeps user-edited CLAUDE.md."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        subprocess.run(["git", "init"], cwd=tmpdir, capture_output=True)
+
+        # First init
+        subprocess.run(
+            [sys.executable, "-m", "voronoi.cli", "init"],
+            cwd=tmpdir,
+            capture_output=True,
+        )
+
+        # Modify CLAUDE.md
+        claude_path = Path(tmpdir) / "CLAUDE.md"
+        claude_path.write_text("# My Custom Config\n")
+
+        # Upgrade
+        result = subprocess.run(
+            [sys.executable, "-m", "voronoi.cli", "upgrade"],
+            cwd=tmpdir,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+
+        # CLAUDE.md should be preserved
+        assert claude_path.read_text() == "# My Custom Config\n"
+
+        # But scripts should be refreshed
+        assert (Path(tmpdir) / "scripts" / "autopilot.sh").is_file()

@@ -11,13 +11,11 @@ command -v bd   >/dev/null 2>&1 || { echo "Install beads: brew install beads"; e
 command -v tmux >/dev/null 2>&1 || { echo "Install tmux: brew install tmux"; exit 1; }
 command -v gh   >/dev/null 2>&1 || { echo "Install GitHub CLI: brew install gh"; exit 1; }
 
-# Detect agent CLI: prefer copilot, fall back to claude
+# Detect agent CLI
 if command -v copilot >/dev/null 2>&1; then
     AGENT_CMD="copilot"
-elif command -v claude >/dev/null 2>&1; then
-    AGENT_CMD="claude"
 else
-    echo "⚠ No agent CLI found (copilot or claude). Install one to dispatch agents."
+    echo "⚠ Copilot CLI not found. Install it to dispatch agents."
     AGENT_CMD="copilot"
 fi
 
@@ -29,19 +27,17 @@ else
     echo "✓ Beads already initialized"
 fi
 
-# 3. Set up Claude Code integration
-bd setup claude 2>/dev/null || echo "⚠ Claude Code hooks: set up manually if needed"
-
-# 4. Ensure CLAUDE.md exists
+# 3. Ensure CLAUDE.md exists
 if [ ! -f "CLAUDE.md" ]; then
-    cp templates/claude-md-template.md CLAUDE.md 2>/dev/null || echo "⚠ Create CLAUDE.md manually"
+    # CLAUDE.md should have been placed by 'voronoi init'; warn if missing
+    echo "⚠ CLAUDE.md not found. Run 'voronoi init' first or create it manually."
 fi
 
-# 5. Create swarm working directory (parent of worktrees)
+# 4. Create swarm working directory (parent of worktrees)
 SWARM_DIR="../${PROJECT_NAME}-swarm"
 mkdir -p "$SWARM_DIR"
 
-# 6. Create .swarm/ directory and investigation journal
+# 5. Create .swarm/ directory and investigation journal
 mkdir -p .swarm
 if [ ! -f ".swarm/journal.md" ]; then
     cat > .swarm/journal.md << 'JOURNAL'
@@ -54,14 +50,14 @@ JOURNAL
     echo "✓ Investigation journal initialized at .swarm/journal.md"
 fi
 
-# 6b. Warn about stale state from prior runs
+# 5b. Warn about stale state from prior runs
 if [ -f ".swarm/autopilot-state.json" ]; then
     echo "⚠ Found autopilot state from a prior run (.swarm/autopilot-state.json)"
     echo "  This means a previous autopilot session crashed or was interrupted."
     echo "  Use --resume to continue, or delete it to start fresh."
 fi
 
-# 7. Write swarm config
+# 6. Write swarm config
 cat > .swarm-config.json << EOF
 {
   "project_name": "$PROJECT_NAME",
@@ -95,4 +91,4 @@ EOF
 
 echo "✓ Swarm config written to .swarm-config.json"
 echo ""
-echo "=== Setup complete. Run: claude then /swarm <your task> ==="
+echo "=== Setup complete. Run: copilot then /swarm <your task> ==="

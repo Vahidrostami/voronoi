@@ -9,9 +9,11 @@ from pathlib import Path
 from voronoi import __version__
 
 # Framework files to copy into user projects
-FRAMEWORK_DIRS = ["scripts", "templates"]
+FRAMEWORK_DIRS = ["scripts"]
 FRAMEWORK_FILES = ["CLAUDE.md", "AGENTS.md"]
-CLAUDE_DIR = ".claude"
+
+# .github/ subdirectories to copy (agent definitions, prompts, skills)
+GITHUB_SUBDIRS = ["agents", "prompts", "skills"]
 
 # Files that should never be overwritten during upgrade
 USER_OWNED = {"CLAUDE.md", "AGENTS.md"}
@@ -63,11 +65,16 @@ def cmd_init(args: argparse.Namespace) -> None:
             _copy_dir(src, target / dirname)
             print(f"  ✓ {dirname}/")
 
-    # Copy .claude/ directory
-    claude_src = data / CLAUDE_DIR
-    if claude_src.is_dir():
-        _copy_dir(claude_src, target / CLAUDE_DIR)
-        print(f"  ✓ {CLAUDE_DIR}/")
+    # Copy .github/ subdirectories (agents, prompts, skills)
+    github_src = data / ".github"
+    if github_src.is_dir():
+        github_dst = target / ".github"
+        github_dst.mkdir(exist_ok=True)
+        for subdir in GITHUB_SUBDIRS:
+            src = github_src / subdir
+            if src.is_dir():
+                _copy_dir(src, github_dst / subdir)
+        print(f"  ✓ .github/ (agents, prompts, skills)")
 
     # Copy top-level framework files
     for filename in FRAMEWORK_FILES:
@@ -84,7 +91,7 @@ def cmd_init(args: argparse.Namespace) -> None:
         subprocess.run(["bash", str(init_script)], cwd=str(target))
 
     print("\nDone! Next steps:")
-    print("  1. Start your AI coding agent (copilot or claude)")
+    print("  1. Start your AI coding agent: copilot")
     print("  2. Run: /swarm <describe your task>")
 
 
@@ -99,18 +106,24 @@ def cmd_upgrade(args: argparse.Namespace) -> None:
 
     print(f"Upgrading voronoi to v{__version__}")
 
-    # Overwrite scripts and templates (framework-owned)
+    # Overwrite scripts (framework-owned)
     for dirname in FRAMEWORK_DIRS:
         src = data / dirname
         if src.is_dir():
             _copy_dir(src, target / dirname)
             print(f"  ✓ {dirname}/ (replaced)")
 
-    # Overwrite .claude/
-    claude_src = data / CLAUDE_DIR
-    if claude_src.is_dir():
-        _copy_dir(claude_src, target / CLAUDE_DIR)
-        print(f"  ✓ {CLAUDE_DIR}/ (replaced)")
+
+    # Overwrite .github/ subdirectories (agents, prompts, skills)
+    github_src = data / ".github"
+    if github_src.is_dir():
+        github_dst = target / ".github"
+        github_dst.mkdir(exist_ok=True)
+        for subdir in GITHUB_SUBDIRS:
+            src = github_src / subdir
+            if src.is_dir():
+                _copy_dir(src, github_dst / subdir)
+        print(f"  ✓ .github/ (agents, prompts, skills replaced)")
 
     # User-owned files: only copy if missing
     for filename in FRAMEWORK_FILES:

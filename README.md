@@ -27,8 +27,10 @@ That's it. The swarm plans the work, spawns isolated agents, and merges results 
 ```
 my-project/
 ├── scripts/           # Orchestration scripts (spawn, merge, standup, teardown)
-├── templates/         # Prompt templates for agent personas
-├── .claude/           # Slash commands (/swarm, /standup, /merge, etc.)
+├── .github/           # Agent definitions, prompts & skills for Copilot
+│   ├── agents/        # Specialized agent personas (orchestrator, worker, etc.)
+│   ├── prompts/       # Slash commands (/swarm, /standup, /merge, etc.)
+│   └── skills/        # Reusable domain knowledge modules
 ├── CLAUDE.md          # Agent constitution — edit to customize agent behavior
 └── AGENTS.md          # Agent configuration alias
 ```
@@ -79,7 +81,7 @@ cd my-project
 voronoi upgrade
 ```
 
-This replaces `scripts/`, `templates/`, and `.claude/` with the latest versions. Your `CLAUDE.md` is preserved (that's your customization point).
+This replaces `scripts/` and `.github/{agents,prompts,skills}` with the latest versions. Your `CLAUDE.md` is preserved (that's your customization point).
 
 ## Prerequisites
 
@@ -87,7 +89,7 @@ This replaces `scripts/`, `templates/`, and `.claude/` with the latest versions.
 - **[Beads (bd)](https://github.com/steveyegge/beads)** — dependency-aware task tracking
 - **[tmux](https://github.com/tmux/tmux)** — terminal multiplexer for agent sessions
 - **[GitHub CLI (gh)](https://cli.github.com/)** — GitHub integration
-- One of: **[Copilot CLI](https://githubnext.com/projects/copilot-cli/)** or **[Claude Code](https://docs.anthropic.com/en/docs/claude-code)**
+- **[Copilot CLI](https://githubnext.com/projects/copilot-cli/)** — AI coding agent
 
 ```bash
 # macOS
@@ -131,7 +133,9 @@ pytest
 
 Example scenarios in [demos/](demos/):
 
+- **[Coupled Decisions](demos/coupled-decisions/)** — Multi-agent reasoning over coupled commercial levers with planted ground truth
 - **[Emergent Ecosystem](demos/emergent-ecosystem/)** — Multi-species simulation built by 6 agents in 3 waves
+- **[Forgetting Cure](demos/forgetting-cure/)** — Brain-inspired anti-forgetting strategies for continual learning
 
 ## Design
 

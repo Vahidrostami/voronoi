@@ -332,7 +332,7 @@ Tasks declare file-level contracts in Beads notes:
 | **Information-gain prioritization** | Always test what teaches us most, not just what's marked P1. |
 | **Mandatory pre-registration** | Prevents p-hacking and post-hoc rationalization. |
 | **Serendipity budget (15%)** | Captures high-value outliers that strict scope would miss. |
-| **Platform-agnostic** | Works with Claude Code (`.claude/commands/`) and Copilot (`.github/agents/`). |
+| **Copilot-native** | Agent personas, prompts, and skills all live in `.github/` — the standard Copilot convention. |
 
 ---
 
