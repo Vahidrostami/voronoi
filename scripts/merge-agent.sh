@@ -27,6 +27,9 @@ else
         echo "  ⚠ Could not push $BRANCH_NAME to remote (may already be there)"
 fi
 
+# Load Telegram notifications (fire-and-forget, never fails the merge)
+source "${PROJECT_DIR}/scripts/notify-telegram.sh" 2>/dev/null || true
+
 # 1. Ensure we're on main
 git checkout main
 git pull --rebase
@@ -37,6 +40,7 @@ if git merge "$BRANCH_NAME" --no-ff -m "Merge $BRANCH_NAME: agent work complete"
 else
     echo "✗ Merge conflict detected. Branch $BRANCH_NAME is safely on remote."
     echo "  Resolve manually: git merge $BRANCH_NAME"
+    notify_telegram "merge_conflict" "⚠️ Merge conflict on \`${BRANCH_NAME}\` — needs manual resolve" 2>/dev/null || true
     exit 1
 fi
 
@@ -54,14 +58,52 @@ if [ -n "$TASK_ID" ]; then
     fi
 fi
 
-# 5. Clean up worktree (code is safely on main now)
+# 5. Notify Telegram: merge success with progress count
+TOTAL=$(bd list --json 2>/dev/null | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "?")
+CLOSED=$(bd list --status closed --json 2>/dev/null | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "?")
+notify_telegram "merge" "✅ Merged \`${BRANCH_NAME}\` (${CLOSED}/${TOTAL} tasks done)" 2>/dev/null || true
+
+# 6. Check for scientific findings and notify immediately
+if [ -n "$TASK_ID" ]; then
+    FINDING_MSG=$(bd show "$TASK_ID" --json 2>/dev/null | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    title = data.get('title', '')
+    notes = data.get('notes', '')
+    # Look for TYPE:finding in notes
+    if 'TYPE:finding' not in notes and 'FINDING' not in title.upper():
+        sys.exit(0)
+    parts = []
+    for line in notes.split('\\n'):
+        line = line.strip()
+        if not line:
+            continue
+        for key in ('EFFECT_SIZE', 'CI_95', 'N:', 'STAT_TEST', 'P:', 'VALENCE', 'CONFIDENCE'):
+            if key in line:
+                parts.append(line)
+                break
+    finding = title
+    if parts:
+        finding += '\\n' + '\\n'.join(parts[:4])  # max 4 lines of stats
+    print(finding)
+except Exception:
+    pass
+" 2>/dev/null || true)
+    if [ -n "$FINDING_MSG" ]; then
+        notify_telegram "finding" "🔬 *Finding* from \`${BRANCH_NAME}\`:\n${FINDING_MSG}" 2>/dev/null || true
+        echo "✓ Finding sent to Telegram"
+    fi
+fi
+
+# 7. Clean up worktree (code is safely on main now)
 git worktree remove "$WORKTREE_PATH" 2>/dev/null || rm -rf "$WORKTREE_PATH" 2>/dev/null || true
 git branch -d "$BRANCH_NAME" 2>/dev/null || true
 # Clean remote branch too
 git push origin --delete "$BRANCH_NAME" 2>/dev/null || true
 echo "✓ Worktree and branch cleaned up"
 
-# 6. Kill tmux window if it exists
+# 8. Kill tmux window if it exists
 tmux kill-window -t "$TMUX_SESSION:$BRANCH_NAME" 2>/dev/null || true
 echo "✓ Tmux window closed"
 
