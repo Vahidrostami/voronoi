@@ -1,4 +1,4 @@
-"""CLI entry point for agent-swarm."""
+"""CLI entry point for voronoi."""
 
 import argparse
 import shutil
@@ -6,7 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from agent_swarm import __version__
+from voronoi import __version__
 
 # Framework files to copy into user projects
 FRAMEWORK_DIRS = ["scripts", "templates"]
@@ -33,7 +33,7 @@ def _find_data_dir() -> Path:
     if bundled.is_dir():
         return bundled
 
-    print("Error: cannot find agent-swarm framework files.", file=sys.stderr)
+    print("Error: cannot find voronoi framework files.", file=sys.stderr)
     sys.exit(1)
 
 
@@ -45,16 +45,16 @@ def _copy_dir(src: Path, dst: Path) -> None:
 
 
 def cmd_init(args: argparse.Namespace) -> None:
-    """Scaffold agent-swarm into the current directory."""
+    """Scaffold voronoi into the current directory."""
     target = Path.cwd()
     data = _find_data_dir()
 
     # Guard: don't init inside the framework repo itself
-    if (target / "pyproject.toml").exists() and (target / "src" / "agent_swarm").is_dir():
-        print("Error: you're inside the agent-swarm source repo. cd to your project first.")
+    if (target / "pyproject.toml").exists() and (target / "src" / "voronoi").is_dir():
+        print("Error: you're inside the voronoi source repo. cd to your project first.")
         sys.exit(1)
 
-    print(f"Initializing agent-swarm v{__version__} in {target}")
+    print(f"Initializing voronoi v{__version__} in {target}")
 
     # Copy directories
     for dirname in FRAMEWORK_DIRS:
@@ -94,10 +94,10 @@ def cmd_upgrade(args: argparse.Namespace) -> None:
     data = _find_data_dir()
 
     if not (target / "scripts").is_dir():
-        print("Error: no agent-swarm project here. Run 'agent-swarm init' first.")
+        print("Error: no voronoi project here. Run 'voronoi init' first.")
         sys.exit(1)
 
-    print(f"Upgrading agent-swarm to v{__version__}")
+    print(f"Upgrading voronoi to v{__version__}")
 
     # Overwrite scripts and templates (framework-owned)
     for dirname in FRAMEWORK_DIRS:
@@ -126,18 +126,18 @@ def cmd_upgrade(args: argparse.Namespace) -> None:
 
 
 def cmd_version(args: argparse.Namespace) -> None:
-    print(f"agent-swarm {__version__}")
+    print(f"voronoi {__version__}")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        prog="agent-swarm",
+        prog="voronoi",
         description="Orchestrate multiple AI coding agents in parallel",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = parser.add_subparsers(dest="command")
 
-    sub.add_parser("init", help="Scaffold agent-swarm into the current directory")
+    sub.add_parser("init", help="Scaffold voronoi into the current directory")
     sub.add_parser("upgrade", help="Upgrade framework files (keeps your CLAUDE.md)")
     sub.add_parser("version", help="Print version")
 

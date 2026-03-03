@@ -3,7 +3,7 @@ requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "agent-swarm"
+name = "voronoi"
 version = "0.1.0"
 description = "Orchestrate multiple AI coding agents working in parallel"
 readme = "README.md"
@@ -12,10 +12,10 @@ requires-python = ">=3.10"
 keywords = ["ai", "agents", "swarm", "copilot", "claude"]
 
 [project.scripts]
-agent-swarm = "agent_swarm.cli:main"
+voronoi = "voronoi.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-agent_swarm = ["data/**/*"]
+voronoi = ["data/**/*"]

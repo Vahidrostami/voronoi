@@ -9,7 +9,7 @@ SWARM_DIR=$(echo "$CONFIG" | jq -r '.swarm_dir')
 cd "$PROJECT_DIR"
 
 echo "=============================================="
-echo " AGENT SWARM STANDUP — $(date '+%Y-%m-%d %H:%M')"
+echo " VORONOI STANDUP — $(date '+%Y-%m-%d %H:%M')"
 echo " Project: $PROJECT_NAME"
 echo "=============================================="
 echo ""

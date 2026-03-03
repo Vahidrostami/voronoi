@@ -4,7 +4,7 @@ set -euo pipefail
 PROJECT_DIR=$(pwd)
 PROJECT_NAME=$(basename "$PROJECT_DIR")
 
-echo "=== Agent Swarm: Initializing $PROJECT_NAME ==="
+echo "=== Voronoi: Initializing $PROJECT_NAME ==="
 
 # 1. Check dependencies
 command -v bd   >/dev/null 2>&1 || { echo "Install beads: brew install beads"; exit 1; }

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Cron-compatible standup runner
-# Add to crontab: 0 9 * * 1-5 /path/to/agent-swarm-template/scripts/cron-standup.sh
+# Add to crontab: 0 9 * * 1-5 /path/to/voronoi/scripts/cron-standup.sh
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"

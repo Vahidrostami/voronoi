@@ -1,11 +1,11 @@
-# Agent Swarm
+# Voronoi
 
 Orchestrate multiple AI coding agents working in parallel — with git worktree isolation, dependency-aware task tracking, and automatic merge workflows.
 
 ## Install
 
 ```bash
-pip install agent-swarm
+pip install voronoi
 ```
 
 ## Usage
@@ -13,7 +13,7 @@ pip install agent-swarm
 ```bash
 # In any git repo:
 cd my-project
-agent-swarm init
+voronoi init
 
 # Start your AI coding agent
 copilot                    # or: claude
@@ -22,7 +22,7 @@ copilot                    # or: claude
 
 That's it. The swarm plans the work, spawns isolated agents, and merges results back.
 
-## What `agent-swarm init` sets up
+## What `voronoi init` sets up
 
 ```
 my-project/
@@ -74,9 +74,9 @@ You ─► /swarm "Build X" ─► Orchestrator
 When a new version ships:
 
 ```bash
-pip install --upgrade agent-swarm
+pip install --upgrade voronoi
 cd my-project
-agent-swarm upgrade
+voronoi upgrade
 ```
 
 This replaces `scripts/`, `templates/`, and `.claude/` with the latest versions. Your `CLAUDE.md` is preserved (that's your customization point).
@@ -96,7 +96,7 @@ brew install beads tmux gh
 
 ## Configuration
 
-After `agent-swarm init`, a `.swarm-config.json` is generated:
+After `voronoi init`, a `.swarm-config.json` is generated:
 
 ```json
 {
@@ -112,18 +112,18 @@ The init script auto-detects which AI CLI you have installed.
 
 ```bash
 # Clone the source repo
-git clone https://github.com/yourorg/agent-swarm-template
-cd agent-swarm-template
+git clone https://github.com/Vahidrostami/voronoi
+cd voronoi
 
 # Install in editable mode — changes are live instantly
 pip install -e .
 
 # Now test against any project
 cd /tmp && mkdir test-project && cd test-project && git init
-agent-swarm init     # ← uses your live source files, no rebuild needed
+voronoi init     # ← uses your live source files, no rebuild needed
 
 # Run tests
-cd ~/agent-swarm-template
+cd ~/voronoi
 pytest
 ```
 

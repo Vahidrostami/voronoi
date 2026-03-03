@@ -1,6 +1,6 @@
-# Universal Agent Swarm — Science-First Design
+# Universal Voronoi — Science-First Design
 
-## Project Name: `agent-swarm-template`
+## Project Name: `voronoi`
 
 A production-ready template for orchestrating multiple AI agents in parallel. Designed from first principles around scientific rigor — science needs everything engineering needs (parallel execution, isolation, merging, task tracking) plus hypothesis management, experimental rigor, statistical validation, and bias prevention. Design for science; engineering works by skipping the science-specific gates.
 

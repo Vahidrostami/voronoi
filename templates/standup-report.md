@@ -1,4 +1,4 @@
-# Agent Swarm Standup Report
+# Voronoi Standup Report
 
 **Date:** {{DATE}}
 **Project:** {{PROJECT_NAME}}
