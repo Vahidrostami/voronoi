@@ -11,7 +11,7 @@ from voronoi import __version__
 
 # Framework files to copy into user projects
 FRAMEWORK_DIRS = ["scripts"]
-FRAMEWORK_FILES = ["CLAUDE.md", "AGENTS.md"]
+FRAMEWORK_FILES = ["CLAUDE.md", "AGENTS.md", ".env.example"]
 
 # .github/ subdirectories to copy (agent definitions, prompts, skills)
 GITHUB_SUBDIRS = ["agents", "prompts", "skills"]
