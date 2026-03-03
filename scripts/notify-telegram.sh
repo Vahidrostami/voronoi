@@ -52,9 +52,13 @@ _ntg_load_dotenv() {
             if [[ "$line" == *=* ]]; then
                 local key="${line%%=*}"
                 key=$(echo "$key" | xargs)  # trim whitespace
+                local val="${line#*=}"
+                val=$(echo "$val" | xargs)  # trim whitespace
                 # Only set if not already in environment
-                if [[ -z "${!key:-}" ]]; then
-                    export "$line" 2>/dev/null || true
+                local existing=""
+                existing=$(eval "echo \"\${${key}:-}\"" 2>/dev/null) || true
+                if [[ -z "$existing" ]]; then
+                    export "${key}=${val}" 2>/dev/null || true
                 fi
             fi
         done < "$env_file"
