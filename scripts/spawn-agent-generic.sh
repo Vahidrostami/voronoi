@@ -46,12 +46,17 @@ mkdir -p "$WORK_DIR/output"
 # 4. Claim the task in Beads
 bd update "$TASK_ID" --claim
 
-# 5. Create/attach tmux session
+# 5. Create/attach tmux session (guard against duplicate windows)
 if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
     tmux new-session -d -s "$TMUX_SESSION" -c "$WORK_DIR"
     tmux rename-window -t "$TMUX_SESSION" "$AGENT_NAME"
 else
-    tmux new-window -t "$TMUX_SESSION" -n "$AGENT_NAME" -c "$WORK_DIR"
+    # Check if a window with this name already exists — reuse it instead of creating a duplicate
+    if tmux list-windows -t "$TMUX_SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$AGENT_NAME"; then
+        echo "⚠ tmux window '$AGENT_NAME' already exists, reusing"
+    else
+        tmux new-window -t "$TMUX_SESSION" -n "$AGENT_NAME" -c "$WORK_DIR"
+    fi
 fi
 
 # 6. Build the agent prompt

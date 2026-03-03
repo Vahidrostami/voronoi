@@ -61,12 +61,17 @@ git worktree add "$WORKTREE_PATH" -b "$BRANCH_NAME" 2>/dev/null || {
 # 2. Claim the task in Beads
 bd update "$TASK_ID" --claim || echo "Warning: claim failed (may already be claimed)"
 
-# 3. Create/attach tmux session
+# 3. Create/attach tmux session (guard against duplicate windows)
 if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
     tmux new-session -d -s "$TMUX_SESSION" -c "$WORKTREE_PATH"
     tmux rename-window -t "$TMUX_SESSION" "$BRANCH_NAME"
 else
-    tmux new-window -t "$TMUX_SESSION" -n "$BRANCH_NAME" -c "$WORKTREE_PATH"
+    # Check if a window with this name already exists — reuse it instead of creating a duplicate
+    if tmux list-windows -t "$TMUX_SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$BRANCH_NAME"; then
+        echo "⚠ tmux window '$BRANCH_NAME' already exists, reusing"
+    else
+        tmux new-window -t "$TMUX_SESSION" -n "$BRANCH_NAME" -c "$WORKTREE_PATH"
+    fi
 fi
 
 # 4. Read artifact contract from Beads

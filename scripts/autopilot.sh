@@ -652,6 +652,19 @@ dispatch_ready() {
             continue
         fi
 
+        # Skip tasks already tracked by a running agent (prevents duplicate spawns)
+        local _already_tracked=false
+        local _existing_branch
+        for _existing_branch in "${!AGENT_TASK_MAP[@]}"; do
+            if [[ "${AGENT_TASK_MAP[$_existing_branch]}" == "$task_id" ]]; then
+                _already_tracked=true
+                break
+            fi
+        done
+        if [[ "$_already_tracked" == "true" ]]; then
+            continue
+        fi
+
         # Pre-flight artifact check: verify REQUIRES and GATE artifacts exist
         if ! preflight_check "$task_id"; then
             continue  # Skip this task — it's not truly ready (missing artifacts)
@@ -660,6 +673,11 @@ dispatch_ready() {
         # Generate branch name from title
         local branch
         branch="agent-$(echo "$title" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g' | sed 's/--*/-/g' | cut -c1-40)"
+
+        # Skip if a worktree or tmux window already exists for this branch
+        if [[ -d "$SWARM_DIR/$branch" ]] || tmux list-windows -t "$TMUX_SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$branch"; then
+            continue
+        fi
 
         if [[ "$DRY_RUN" == "true" ]]; then
             log_action "[DRY RUN] Would dispatch $branch for $task_id: $title"
