@@ -68,11 +68,25 @@ def cmd_init(args: argparse.Namespace) -> None:
 
     print(f"Initializing voronoi v{__version__} in {target}")
 
-    # Ensure it's a git repo (swarm-init.sh and agents expect git)
+    # Ensure it's a git repo with at least one commit (agents use git worktrees)
     if not (target / ".git").is_dir():
         print("  Initializing git repository...")
         subprocess.run(["git", "init"], cwd=str(target), capture_output=True)
         print("  ✓ git init")
+
+    # Ensure at least one commit exists (git worktree requires it)
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=str(target), capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        print("  Creating initial commit (required for agent worktrees)...")
+        subprocess.run(["git", "add", "-A"], cwd=str(target), capture_output=True)
+        subprocess.run(
+            ["git", "commit", "--allow-empty", "-m", "voronoi: initial commit"],
+            cwd=str(target), capture_output=True,
+        )
+        print("  ✓ initial commit")
 
     # Copy directories
     for dirname in FRAMEWORK_DIRS:

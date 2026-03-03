@@ -26,7 +26,15 @@ else
     AGENT_CMD="copilot"
 fi
 
-# 2. Initialize Beads
+# 2. Ensure at least one git commit exists (git worktree requires it)
+if ! git rev-parse HEAD >/dev/null 2>&1; then
+    echo "Creating initial commit (required for agent worktrees)..."
+    git add -A 2>/dev/null || true
+    git commit --allow-empty -m "voronoi: initial commit" >/dev/null 2>&1
+    echo "✓ Initial commit created"
+fi
+
+# 3. Initialize Beads
 if [ ! -d ".beads" ]; then
     bd init --quiet
     echo "✓ Beads initialized"
@@ -34,17 +42,17 @@ else
     echo "✓ Beads already initialized"
 fi
 
-# 3. Ensure CLAUDE.md exists
+# 4. Ensure CLAUDE.md exists
 if [ ! -f "CLAUDE.md" ]; then
     # CLAUDE.md should have been placed by 'voronoi init'; warn if missing
     echo "⚠ CLAUDE.md not found. Run 'voronoi init' first or create it manually."
 fi
 
-# 4. Create swarm working directory (parent of worktrees)
+# 5. Create swarm working directory (parent of worktrees)
 SWARM_DIR="../${PROJECT_NAME}-swarm"
 mkdir -p "$SWARM_DIR"
 
-# 5. Create .swarm/ directory and investigation journal
+# 6. Create .swarm/ directory and investigation journal
 mkdir -p .swarm
 if [ ! -f ".swarm/journal.md" ]; then
     cat > .swarm/journal.md << 'JOURNAL'
@@ -57,14 +65,14 @@ JOURNAL
     echo "✓ Investigation journal initialized at .swarm/journal.md"
 fi
 
-# 5b. Warn about stale state from prior runs
+# 6b. Warn about stale state from prior runs
 if [ -f ".swarm/autopilot-state.json" ]; then
     echo "⚠ Found autopilot state from a prior run (.swarm/autopilot-state.json)"
     echo "  This means a previous autopilot session crashed or was interrupted."
     echo "  Use --resume to continue, or delete it to start fresh."
 fi
 
-# 6. Write swarm config
+# 7. Write swarm config
 cat > .swarm-config.json << EOF
 {
   "project_name": "$PROJECT_NAME",

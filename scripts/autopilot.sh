@@ -290,6 +290,7 @@ declare -A AGENT_RETRIES        # branch -> retry count
 declare -A AGENT_SPAWN_TIME     # branch -> epoch seconds
 declare -A AGENT_TASK_MAP       # branch -> beads task id
 declare -A TASK_DESCRIPTION_MAP # task_id -> description
+declare -A FAILED_TASKS         # task_id -> 1 (permanently failed, don't redispatch)
 WAVE=0
 TOTAL_MERGED=0
 TOTAL_DISPATCHED=0
@@ -447,8 +448,14 @@ retry_agent() {
     local retry_count="${AGENT_RETRIES[$branch]:-0}"
 
     if (( retry_count >= MAX_RETRIES )); then
-        log_error "$branch failed after $MAX_RETRIES retries, skipping"
+        log_error "$branch failed after $MAX_RETRIES retries, giving up"
         bd update "$task_id" --notes "FAILED: Exhausted $MAX_RETRIES retries" 2>/dev/null || true
+        bd close "$task_id" --reason "Failed after $MAX_RETRIES retries" 2>/dev/null || true
+        FAILED_TASKS[$task_id]=1
+        # Clean up tracking so the main loop stops checking this agent
+        unset "AGENT_RETRIES[$branch]"
+        unset "AGENT_SPAWN_TIME[$branch]"
+        unset "AGENT_TASK_MAP[$branch]"
         return 1
     fi
 
@@ -649,6 +656,11 @@ dispatch_ready() {
         local issue_type
         issue_type=$(echo "$ready_json" | jq -r ".[$i].issue_type // \"task\"")
         if [[ "$issue_type" == "epic" ]]; then
+            continue
+        fi
+
+        # Skip permanently failed tasks
+        if [[ -n "${FAILED_TASKS[$task_id]:-}" ]]; then
             continue
         fi
 

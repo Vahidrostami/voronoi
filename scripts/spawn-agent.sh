@@ -58,6 +58,14 @@ git worktree add "$WORKTREE_PATH" -b "$BRANCH_NAME" 2>/dev/null || {
     git worktree add "$WORKTREE_PATH" "$BRANCH_NAME" 2>/dev/null || true
 }
 
+# Verify worktree actually exists (fails if repo has no commits)
+if [[ ! -d "$WORKTREE_PATH" ]]; then
+    echo "✗ Failed to create worktree at $WORKTREE_PATH"
+    echo "  This usually means the git repo has no commits yet."
+    echo "  Fix: git add -A && git commit -m 'initial commit'"
+    exit 1
+fi
+
 # 2. Claim the task in Beads
 bd update "$TASK_ID" --claim || echo "Warning: claim failed (may already be claimed)"
 
