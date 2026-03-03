@@ -40,11 +40,48 @@
 [[ -n "${_NOTIFY_TELEGRAM_LOADED:-}" ]] && return 0 2>/dev/null || true
 _NOTIFY_TELEGRAM_LOADED=1
 
+# --- Load .env file ---
+_ntg_load_dotenv() {
+    local env_file="${PROJECT_DIR:-.}/.env"
+    if [[ -f "$env_file" ]]; then
+        # Source .env, only exporting lines that look like KEY=VALUE (skip comments/blanks)
+        while IFS= read -r line; do
+            # Skip empty lines and comments
+            [[ -z "$line" || "$line" == \#* ]] && continue
+            # Only process lines with = that aren't already set
+            if [[ "$line" == *=* ]]; then
+                local key="${line%%=*}"
+                key=$(echo "$key" | xargs)  # trim whitespace
+                # Only set if not already in environment
+                if [[ -z "${!key:-}" ]]; then
+                    export "$line" 2>/dev/null || true
+                fi
+            fi
+        done < "$env_file"
+    fi
+}
+
 # --- Load config ---
 _ntg_load_config() {
+    # Load .env first (environment vars take precedence over .swarm-config.json)
+    _ntg_load_dotenv
+
     local config_file="${PROJECT_DIR:-.}/.swarm-config.json"
     if [[ ! -f "$config_file" ]]; then
-        return 1
+        # No config file — fall back to env vars only
+        _NTG_ENABLED="false"
+        _NTG_BOT_TOKEN="${VORONOI_TG_BOT_TOKEN:-}"
+        _NTG_CHAT_ID="${VORONOI_TG_CHAT_ID:-}"
+        _NTG_EVENTS="${VORONOI_TG_EVENTS:-}"
+        _NTG_MVCHA_URL="${VORONOI_TG_MVCHA_URL:-}"
+        _NTG_MVCHA_SECRET="${VORONOI_TG_MVCHA_SECRET:-}"
+        _NTG_PREFER_MVCHA="${VORONOI_TG_PREFER_MVCHA:-false}"
+        _NTG_PROJECT_NAME="voronoi"
+        # Auto-enable if token and chat_id are set
+        if [[ -n "$_NTG_BOT_TOKEN" && -n "$_NTG_CHAT_ID" ]]; then
+            _NTG_ENABLED="true"
+        fi
+        return 0
     fi
 
     # Read telegram notification config

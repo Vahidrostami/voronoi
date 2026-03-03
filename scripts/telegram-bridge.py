@@ -52,20 +52,51 @@ from pathlib import Path
 # Config
 # ---------------------------------------------------------------------------
 
+def load_dotenv(env_path: Path = None) -> None:
+    """Load .env file into os.environ (only sets vars not already set)."""
+    if env_path is None:
+        # Try CWD first, then script parent
+        for candidate in [Path.cwd() / ".env", Path(__file__).parent.parent / ".env"]:
+            if candidate.exists():
+                env_path = candidate
+                break
+    if env_path is None or not env_path.exists():
+        return
+    with open(env_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip()
+                # Remove inline comments
+                if "  #" in value:
+                    value = value[:value.index("  #")].strip()
+                elif "\t#" in value:
+                    value = value[:value.index("\t#")].strip()
+                if key not in os.environ:
+                    os.environ[key] = value
+
+
 def load_config(config_path: str = ".swarm-config.json") -> dict:
-    """Load notification config from .swarm-config.json."""
+    """Load config from .env and optionally .swarm-config.json."""
+    # Load .env first
+    load_dotenv()
+
     path = Path(config_path)
     if not path.exists():
         # Try relative to script location
         path = Path(__file__).parent.parent / config_path
-    if not path.exists():
-        print(f"Config not found: {config_path}", file=sys.stderr)
-        sys.exit(1)
 
-    with open(path) as f:
-        config = json.load(f)
+    config = {}
+    tg = {}
+    if path.exists():
+        with open(path) as f:
+            config = json.load(f)
+        tg = config.get("notifications", {}).get("telegram", {})
 
-    tg = config.get("notifications", {}).get("telegram", {})
     return {
         "bot_token": os.environ.get("VORONOI_TG_BOT_TOKEN", tg.get("bot_token", "")),
         "chat_id": os.environ.get("VORONOI_TG_CHAT_ID", tg.get("chat_id", "")),
