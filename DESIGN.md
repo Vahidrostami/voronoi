@@ -1,32 +1,19 @@
-# Agent Swarm Orchestrator — Design Document
+# Universal Voronoi — Science-First Design
 
-## Project Name: `agent-swarm-template`
+## Project Name: `voronoi`
 
-A production-ready template repository for orchestrating multiple AI coding agents working in parallel using git worktrees, Beads (bd) for persistent memory and task tracking, tmux for session management, and an AI coding CLI (Copilot CLI or Claude Code) for execution.
+A production-ready template for orchestrating multiple AI agents in parallel. Designed from first principles around scientific rigor — science needs everything engineering needs (parallel execution, isolation, merging, task tracking) plus hypothesis management, experimental rigor, statistical validation, and bias prevention. Design for science; engineering works by skipping the science-specific gates.
+
+**The user types one prompt.** The system classifies, adapts, and executes.
 
 ---
 
-## 1. Vision
+## 1. Design Philosophy
 
-A single developer types:
-
-```
-claude
-> /swarm Build a full-stack SaaS app with auth, billing, dashboard, and API
-```
-
-The orchestrator agent:
-
-1. Breaks the task into an epic with subtasks in Beads
-2. Sets up dependency graph (billing depends on auth, dashboard depends on API)
-3. Creates isolated git worktrees for each unblocked task
-4. Opens a tmux session with one pane per agent
-5. Dispatches Claude Code agents into each pane
-6. Monitors progress, runs daily standups
-7. Merges completed work, promotes newly unblocked tasks
-8. Repeats until the epic is done
-
-The human reviews standup reports, approves merges, and steers direction. The agents do the grinding.
+- **Science is a superset of engineering.** Engineering is a scientific workflow with rigor gates turned off.
+- **Zero user burden.** `/swarm <prompt>` auto-detects mode and rigor. Same 6 commands. Richer output only when warranted.
+- **Evidence over opinion.** Every quantitative claim requires effect size, CI, sample size, and statistical test. Raw data preserved. Negative results valued equally.
+- **Convergence over completion.** Engineering is done when tasks close. Science is done when hypotheses are resolved, the causal model accounts for all observations, and a novel prediction is confirmed.
 
 ---
 
@@ -34,376 +21,374 @@ The human reviews standup reports, approves merges, and steers direction. The ag
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                      HUMAN (you)                            │
-│         /swarm  /standup  /merge  /progress                 │
-└──────────────────────┬──────────────────────────────────────┘
-                       │
-                       ▼
-┌─────────────────────────────────────────────────────────────┐
-│                   ORCHESTRATOR AGENT                        │
-│                                                             │
-│  ┌──────────┐  ┌──────────┐  ┌───────────┐  ┌───────────┐  │
-│  │ Planner  │  │ Spawner  │  │  Monitor  │  │  Merger   │  │
-│  └──────────┘  └──────────┘  └───────────┘  └───────────┘  │
-│                                                             │
-│                    ┌──────────┐                              │
-│                    │  Beads   │  ← single source of truth   │
-│                    │  (bd)    │                              │
-│                    └──────────┘                              │
-└──────────────────────┬──────────────────────────────────────┘
-                       │
-          ┌────────────┼────────────┐
-          ▼            ▼            ▼
-   ┌─────────────┐ ┌────────────┐ ┌─────────────┐
-   │ tmux pane 0 │ │ tmux pane 1│ │ tmux pane 2 │
-   │ worktree:   │ │ worktree:  │ │ worktree:   │
-   │ agent/auth  │ │ agent/api  │ │ agent/dash  │
-   │ copilot -p  │ │ copilot -p │ │ copilot -p  │
-   │ or claude   │ │ or claude  │ │ or claude   │
-   └─────────────┘ └────────────┘ └─────────────┘
-        │                │              │
-        └────────────────┼──────────────┘
-                         ▼
-                  ┌─────────────┐
-                  │   main      │  ← merges land here
-                  └─────────────┘
+│  UX LAYER — One prompt, same 6 commands, zero config        │
+├─────────────────────────────────────────────────────────────┤
+│  CLASSIFIER — Intent → Workflow Mode + Rigor Level          │
+├─────────────────────────────────────────────────────────────┤
+│  WORKFLOW ENGINE — OODA loop with science-aware decisions    │
+│  ┌─────────┐ ┌──────────┐ ┌──────────┐ ┌─────────────────┐ │
+│  │ Observe │→│  Orient  │→│  Decide  │→│  Act            │ │
+│  └─────────┘ └──────────┘ └──────────┘ └─────────────────┘ │
+│                                              ↓              │
+│  FINAL EVALUATION — Score output vs. original abstract      │
+│  Max 2 improvement rounds · Diminishing returns detection   │
+├─────────────────────────────────────────────────────────────┤
+│  ROLE REGISTRY — 11 roles, auto-selected by task type       │
+├─────────────────────────────────────────────────────────────┤
+│  EVIDENCE SYSTEM — Findings, raw data, journal, beliefs     │
+│  Strategic Context — Decision rationale, dead ends, gaps    │
+├─────────────────────────────────────────────────────────────┤
+│  INFRASTRUCTURE — Worktrees · Beads · tmux · git            │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 3. Repository Structure
+## 3. The Classifier
 
-```
-agent-swarm-template/
-├── README.md                          # Quick start guide
-├── DESIGN.md                          # This file
-├── LICENSE                            # MIT
-├── CLAUDE.md                          # Agent instructions (read by all agents)
-├── AGENTS.md                          # Compatibility alias → points to CLAUDE.md
-├── .claude/
-│   ├── settings.json                  # Claude Code project settings
-│   ├── commands/                      # Claude Code slash commands
-│   │   ├── swarm.md                   # Main orchestrator
-│   │   ├── standup.md                 # Daily standup
-│   │   ├── progress.md               # Quick progress check
-│   │   ├── spawn.md                   # Spawn a single agent
-│   │   ├── merge.md                   # Merge completed branches
-│   │   └── teardown.md               # Clean up everything
-│   └── hooks/
-│       └── session-start.sh           # Auto-runs bd prime on session start
-├── .github/
-│   ├── agents/                        # GitHub Copilot custom agents
-│   │   ├── swarm-orchestrator.agent.md
-│   │   └── worker-agent.agent.md
-│   ├── skills/                        # GitHub Copilot agent skills
-│   │   ├── task-planning/SKILL.md
-│   │   ├── git-worktree-management/SKILL.md
-│   │   ├── beads-tracking/SKILL.md
-│   │   ├── agent-standup/SKILL.md
-│   │   └── branch-merging/SKILL.md
-│   ├── prompts/                       # GitHub Copilot reusable prompts
-│   │   ├── swarm.prompt.md
-│   │   ├── standup.prompt.md
-│   │   ├── spawn.prompt.md
-│   │   ├── merge.prompt.md
-│   │   ├── progress.prompt.md
-│   │   └── teardown.prompt.md
-│   └── workflows/
-│       ├── daily-standup.yml          # Automated daily standup
-│       └── agent-ci.yml              # CI for agent branches
-├── scripts/
-│   ├── swarm-init.sh                  # One-time project setup
-│   ├── spawn-agent.sh                 # Create worktree + tmux + launch agent
-│   ├── standup.sh                     # Run standup across all agents
-│   ├── merge-agent.sh                 # Merge a completed agent branch
-│   ├── teardown.sh                    # Nuclear cleanup
-│   └── cron-standup.sh               # Cron-compatible standup runner
-├── templates/
-│   ├── agent-prompt.md                # Template for worker agent prompts
-│   ├── standup-report.md              # Template for standup output
-│   └── epic-template.md              # Template for epic planning
-└── .beads/                            # Created by bd init (gitignored)
-    └── beads.db                       # Beads database
-```
+### Workflow Mode
+
+| Mode | Description | Example |
+|------|-------------|---------|
+| **Build** | Implement software artifacts | "Build a REST API with auth" |
+| **Investigate** | Answer questions with evidence | "Why is our API latency 3x higher?" |
+| **Explore** | Evaluate options against criteria | "Which database should we migrate to?" |
+| **Hybrid** | Multiple phases with mode transitions | "Figure out the bottleneck and fix it" |
+
+### Rigor Level
+
+| Level | Activates | Example Signal |
+|-------|-----------|----------------|
+| **Standard** | Builder, Critic | "build", "create", "ship" |
+| **Analytical** | + Scout, Statistician | "optimize", "improve", "compare" |
+| **Scientific** | + Methodologist, Theorist, all gates | "why", "investigate", "root cause" |
+| **Experimental** | Full pipeline + replication | "test whether", "experiment" |
+
+The user never sees rigor levels. Build → Standard. Investigate → Scientific. Explore → Analytical. Hybrid → highest of its phases. **When in doubt, classify higher** — gates can be skipped but not added retroactively.
+
+**Scout activation:** Mandatory for Investigate/Explore/Hybrid. Skipped for Build (unless ambiguous).
+
+**Override:** User can override at plan presentation (`/swarm --mode build`) or mid-flight. Escalation is automatic; de-escalation requires user confirmation.
 
 ---
 
-## 4. GitHub Copilot Integration
+## 4. Role Registry
 
-This template leverages the newest GitHub Copilot features for agent customization:
-
-### 4.1 Custom Agents (`.github/agents/`)
-
-Each `.agent.md` file defines a Copilot agent persona with YAML frontmatter:
-
-- **`swarm-orchestrator.agent.md`** — The main coordinator that plans, dispatches, monitors, and merges
-- **`worker-agent.agent.md`** — Individual worker agents with strict scope discipline
-
-Agents specify their `name`, `description`, `tools`, and behavioral instructions.
-
-### 4.2 Agent Skills (`.github/skills/`)
-
-Skills are modular instruction sets that Copilot loads contextually:
-
-| Skill | Purpose |
-|-------|---------|
-| `task-planning` | Decomposing features into Beads epics and subtasks |
-| `git-worktree-management` | Creating and managing isolated worktrees |
-| `beads-tracking` | Using bd for task lifecycle management |
-| `agent-standup` | Running progress reports across agents |
-| `branch-merging` | Safely merging agent branches to main |
-
-Each skill has a `SKILL.md` with YAML frontmatter and step-by-step instructions.
-
-### 4.3 Reusable Prompts (`.github/prompts/`)
-
-Prompt files (`.prompt.md`) provide quick-trigger workflows:
-
-| Prompt | Trigger |
-|--------|---------|
-| `swarm` | Plan and dispatch multi-agent workload |
-| `standup` | Daily standup report |
-| `spawn` | Launch a single agent |
-| `merge` | Merge completed branches |
-| `progress` | Quick status check |
-| `teardown` | Full cleanup |
+| Role | Trigger | Key Responsibility |
+|------|---------|-------------------|
+| **Builder** 🔨 | Build tasks | Implements code in isolated worktree |
+| **Investigator** 🔬 | Analytical+ investigation | Tests hypotheses, collects data, reports with evidence. Pre-registers outcomes. Runs sensitivity analysis (2+ parameter variations at Scientific+). Commits raw data with SHA-256 hash. |
+| **Scout** 🔍 | Phase 0 of Investigate/Explore/Hybrid | Researches existing knowledge before work starts. Produces structured brief with known results, failed approaches, suggested hypotheses. Identifies SOTA methodology at Scientific+. |
+| **Critic** ⚖️ | Before any merge or finding acceptance | Stress-tests output. Inline review for Build; full agent at Scientific+. Uses Structured Checklist (§6.8). Partially blinded at Scientific+ (sees data but not hypothesis). Adversarial loop up to 3 rounds. |
+| **Synthesizer** 🧩 | 2+ agents complete related tasks | Integrates results, produces final deliverable (`.swarm/deliverable.md`), maintains journal and belief map. Runs pairwise consistency checks at Scientific+. |
+| **Evaluator** 🎯 | Before convergence at Analytical+ | Scores deliverable: Completeness (30%), Coherence (25%), Strength (25%), Actionability (20%). Generates improvement tasks on IMPROVE/FAIL. Max 2 improvement rounds. |
+| **Explorer** 🧭 | Explore-mode tasks | Generates and evaluates options against criteria with comparison matrices |
+| **Theorist** 🧬 | Scientific+, after belief map update | Builds causal models, generates testable predictions (which become new tasks). Must propose competing theories with discriminating predictions. Monitors for paradigm stress. |
+| **Methodologist** 📐 | Scientific+, before investigation starts | Reviews experimental designs. Checks controls, sample sizes, stat tests, confounds. Requires power analysis. Compares against SOTA. Batch-reviews multiple designs in one pass. |
+| **Statistician** 📊 | Analytical+, on quantitative findings | Reviews CI, effect sizes, test appropriateness. Verifies data integrity (SHA-256). Applies family-wise error correction. Flags p-hacking indicators. |
+| **Worker** | Generic tasks | General-purpose agent for tasks that don't fit specialized roles |
 
 ---
 
-## 5. Core Components
+## 5. Task Types
 
-### 5.1 CLAUDE.md — The Agent Constitution
-
-Every agent reads this file on boot. It defines mandatory behavior for task tracking,
-git discipline, multi-agent awareness, and quality standards.
-
-### 5.2 Scripts
-
-| Script | Purpose |
-|--------|---------|
-| `swarm-init.sh` | One-time project setup (checks deps, inits Beads, writes config) |
-| `spawn-agent.sh` | Creates worktree, opens tmux pane, launches agent (code domain) |
-| `spawn-agent-generic.sh` | Creates directory, opens tmux pane, launches agent (research/generic) |
-| `standup.sh` | Queries Beads + git for comprehensive progress report |
-| `merge-agent.sh` | Merges agent branch to main, cleans up worktree/tmux |
-| `merge-agent-generic.sh` | Assembles output files from generic agent into project |
-| `autopilot.sh` | Autonomous daemon: polls, merges, dispatches — no human needed |
-| `plan-tasks.sh` | LLM-powered task decomposition from prompt file |
-| `quality-gate.sh` | Pluggable validation (tests, conflicts, custom hooks) |
-| `dashboard.py` | Rich terminal UI for live swarm monitoring |
-| `teardown.sh` | Removes all worktrees, kills tmux, prunes branches |
-| `cron-standup.sh` | Cron-compatible wrapper that writes reports and posts issues |
-
-### 5.3 Configuration (`.swarm-config.json`)
-
-Generated by `swarm-init.sh`:
-
-```json
-{
-  "project_name": "my-app",
-  "project_dir": "/path/to/project",
-  "swarm_dir": "/path/to/project-swarm",
-  "tmux_session": "my-app-swarm",
-  "max_agents": 4,
-  "agent_command": "copilot",
-  "agent_flags": "--allow-all",
-  "agent_flags_safe": [
-    "--allow-tool", "shell(git*)",
-    "--allow-tool", "shell(python*)",
-    "--allow-tool", "shell(bd*)",
-    "--deny-tool", "shell(curl*)",
-    "--deny-tool", "shell(ssh*)",
-    "--deny-tool", "shell(sudo*)"
-  ],
-  "created": "2026-03-01T12:00:00Z"
-}
+```
+TASK_TYPE:  build | investigation | exploration | review | replication | theory
+RIGOR:      standard | analytical | scientific | experimental
+STATUS:     open | claimed | in_progress | review | closed | abandoned
+RESULT:     success | negative | inconclusive | refuted | N/A
 ```
 
-### Safe Mode
+**Investigation tasks at Scientific+ rigor** require pre-registration fields: HYPOTHESIS, METHOD, CONTROLS, EXPECTED_RESULT, CONFOUNDS, STAT_TEST, SAMPLE_SIZE, POWER_ANALYSIS, SENSITIVITY_PLAN.
 
-By default, agents run with `--allow-all` (full autonomy). For unattended or server
-deployments, use **safe mode** to restrict agent capabilities via granular tool permissions:
+**Gate chain (Scientific+):**
+1. Methodologist reviews design (including power analysis + SOTA compliance)
+2. Investigator executes, commits raw data with SHA-256 hash
+3. Investigator runs sensitivity analysis (2+ parameter variations)
+4. Statistician verifies data integrity + reviews quantitative results
+5. Critic performs partially-blinded adversarial review
+6. If objection: Adversarial Loop (up to 3 rounds)
+7. Synthesizer runs consistency check against existing findings
+8. Finding enters knowledge store
 
-```bash
-# Autopilot with safe mode:
-./scripts/autopilot.sh --prompt PROMPT.md --safe
+**Build tasks:** Builder executes → Critic reviews (inline) → Merge. Up to 3 rejection-retry cycles before user escalation.
 
-# Single agent with safe mode:
-./scripts/spawn-agent.sh --safe <task-id> <branch> "<description>"
-```
-
-**What safe mode does:**
-- ✅ Allows: git, python, npm, node, bd, file operations, sbatch/squeue (Slurm)
-- ❌ Blocks: curl, wget, ssh, scp, sudo, dd, rm -rf /, chmod 777, eval, netcat
-- Deny rules override allow rules — agents can't bypass restrictions
-- Configured via `agent_flags_safe` array in `.swarm-config.json`
-
-**When to use each mode:**
-
-| Scenario | Mode | Flag |
-|---|---|---|
-| Interactive, watching agents | `--allow-all` | _(default)_ |
-| Unattended server (tmux + SSH) | safe | `--safe` |
-| CI/CD pipeline | safe | `--safe` |
-| Docker sandbox | `--allow-all` | _(sandbox provides isolation)_ |
+**Replication policy:** Triggered when a finding would change direction, has wide CI (>30% of effect), contradicts the model, or has quality score <0.7. Max 2 replications per finding. Agreement requires overlapping 95% CIs or TOST equivalence test.
 
 ---
 
-## 6. Workflow: End to End
+## 6. Scientific Rigor Framework
 
-### Step 0 — Clone and initialize
-```bash
-git clone https://github.com/yourorg/agent-swarm-template my-app
-cd my-app
-./scripts/swarm-init.sh
+### 6.1 Evidence Layers
+
+| Layer | Location | Purpose |
+|-------|----------|---------|
+| **Findings** | Beads entries with structured notes | Unit of knowledge: effect size, CI, N, stat test, data hash, robustness |
+| **Raw Data** | `<worktree>/data/raw/` | CSV/JSON committed per experiment; referenced by findings |
+| **Journal** | `.swarm/journal.md` | Narrative continuity across OODA cycles — state, key findings, next actions |
+| **Belief Map** | Beads entry | Hypothesis probabilities updated per cycle; drives information-gain prioritization |
+| **Strategic Context** | `.swarm/strategic-context.md` | Decision rationale, dead ends, gaps, progress velocity |
+| **Deliverable** | `.swarm/deliverable.md` | Final output artifact scored by Evaluator |
+
+### 6.2 Consistency Gate
+
+After integrating a new finding, Synthesizer performs pairwise comparison against all validated findings. Contradictions flag `CONSISTENCY_CONFLICT` which **blocks convergence** until resolved via re-experiment, moderating variable identification, or causal model update.
+
+### 6.3 Sensitivity Analysis
+
+Every finding must test 2+ parameter variations (±50% default). A finding is **ROBUST** if the conclusion holds across all variations, **FRAGILE** if it breaks (with documented conditions). All findings must be ROBUST or FRAGILE-with-conditions for convergence.
+
+### 6.4 Adversarial Loop
+
+Critic objects → Investigator responds with data → Critic evaluates → up to 3 rounds → unresolved = CONTESTED (cannot contribute to convergence). Arbitration by Methodologist + Statistician if round 3 fails.
+
+### 6.5 Partial Blinding (Scientific+)
+
+Critic receives raw data, methodology, and stat results — but NOT the hypothesis direction. Critic forms independent interpretation before the hypothesis is revealed. Conflicts trigger the adversarial loop.
+
+### 6.6 SOTA Anchoring
+
+Scout identifies best-known methodology for the domain. Methodologist enforces compliance — deviations from SOTA require documented justification.
+
+### 6.7 Power Analysis (Scientific+)
+
+Every experiment requires: minimum detectable effect size, alpha, target power (≥0.80), and computed minimum N. Experiments without power analysis cannot produce findings above CONFIDENCE:medium.
+
+### 6.8 Structured Critic Checklist
+
+Every Critic review addresses all five checks explicitly:
+
+| Check | Question | Verdict |
+|-------|----------|---------|
+| CONFOUNDS | Uncontrolled variables that could explain the result? | PASS / CONCERN / FAIL |
+| ALT_EXPLANATIONS | Alternative theories that could produce the same data? | PASS / CONCERN / FAIL |
+| DATA_QUALITY | Outliers, missing data, floor/ceiling effects? | PASS / CONCERN / FAIL |
+| STAT_VALIDITY | Statistical test assumptions met and appropriate? | PASS / CONCERN / FAIL |
+| GENERALIZABILITY | Conditions under which this finding might NOT hold? | PASS / CONCERN / FAIL |
+
+A single FAIL triggers the adversarial loop.
+
+### 6.9 Competing Theories (Scientific+)
+
+Theorist must propose ≥2 competing causal models with discriminating predictions. At least one discriminating experiment must run. Investigation cannot converge with only one theory considered.
+
+### 6.10 Data Integrity Chain
+
+Investigator computes SHA-256 of raw data files immediately after collection. Statistician independently verifies hash before review. Mismatch → finding quarantined.
+
+### 6.11 Convergence Feedback Loop (Scientific Workflows)
+
+Validation results feed back into the pipeline rather than being a terminal gate. The loop:
+
+```
+Experiments → Validation → Convergence Judge → (PASS → Paper) or (FAIL → Diagnose → Improve → Re-run)
 ```
 
-### Step 1 — Plan and dispatch
-```
-claude
-> /swarm Build a full-stack task management app with auth, REST API, React frontend, and PostgreSQL backend
-```
+**Components:**
 
-### Step 2 — Monitor
-```bash
-tmux attach -t my-app-swarm    # Watch agents work in real time
-> /progress                     # Quick check from Claude
-```
+| Script | Role |
+|--------|------|
+| `scripts/convergence-judge.sh` | Orchestrator's scientific mental model — reads validation, decides iterate/converge/exhaust |
+| `scripts/validation-feedback.sh` | Diagnoses failures via LLM, creates improvement tasks in Beads |
+| `scripts/lab-notebook.sh` | Structured record of every iteration: hypothesis, action, result, metrics |
 
-### Step 3 — Standup
-```
-> /standup
-```
+**Decision tree:**
 
-### Step 4 — Merge and re-dispatch
-```
-> /merge
-> /swarm continue
-```
+1. Validation PASS → `CONVERGED` → write `convergence.json` → unblock paper task
+2. Validation FAIL, iterations < max → `ITERATE` → create improvement tasks → re-dispatch
+3. Validation FAIL, iterations ≥ max → `EXHAUSTED` → proceed with honest limitations
+4. Last 2 iterations improved <5% → `DIMINISHING_RETURNS` → proceed with quality disclosure
 
-### Step 5 — Repeat until epic is done
+**Lab Notebook** (`.swarm/lab-notebook.json`): Each entry records iteration number, phase, verdict, metrics snapshot, failure details, and next steps. Agents on improvement tasks receive this context to avoid repeating failed approaches.
 
-### Step 6 — Cleanup
-```
-> /teardown
-```
+**Convergence Gate**: Paper/report tasks are gated on `convergence.json` (not just `validation_report.json`). The quality gate checks both file existence and converged=true status.
+
+### 6.12 Scientific Prompt Detection
+
+`plan-tasks.sh` auto-detects scientific/exploratory prompts via keyword matching (experiment, validate, hypothesis, ablation, etc.) and:
+- Marks validation tasks with `CONVERGENCE_CHECKPOINT`
+- Gates paper tasks on `convergence.json`
+- Autopilot runs `convergence-judge.sh` after each validation merge
 
 ---
 
-## 7. Key Design Decisions
+## 7. Workflow Engine — OODA Loop
+
+### Investigation Bootstrap (before first cycle)
+
+1. **Scout** → knowledge brief (known results, failed approaches, suggested hypotheses)
+2. **Orchestrator** generates 3–7 hypotheses with priors, testability, impact
+3. **Theorist** (Scientific+ only) refines hypotheses, adjusts priors, adds non-obvious ones
+4. **Belief Map** created with all hypotheses and priors
+5. **Tasks created** for top-priority hypotheses ranked by `uncertainty × impact × testability`
+6. **Methodologist** (Scientific+) batch-reviews all designs
+7. **Enter OODA loop**
+
+Build mode skips bootstrap — decomposes prompt into build tasks directly.
+
+### OODA Cycle
+
+**Observe:** Read Beads status, knowledge store (new findings), journal, belief map, git activity.
+
+**Orient:** Classify events (completion, finding, negative result, conflict, stall, paradigm stress). Run bias check (confirmed/refuted ratio >0.8 with sample >5 = warning). Run convergence check.
+
+**Decide (priority order):**
+1. Statistical review of pending findings
+2. Methodological review of pending designs
+3. Critic review of high-impact findings
+4. Replication of direction-changing findings
+5. Synthesis (when 2+ new findings available)
+6. Theory building (when synthesis updated belief map)
+7. New investigation dispatch (highest information-gain hypothesis)
+8. New build dispatch
+9. Serendipity pursuit (15% budget)
+10. Scout re-check (surprising findings)
+
+**Act:** Spawn/restart agents, merge work, accept findings, update belief map, append journal, notify user only on plan approval, strategic pivot, convergence, or paradigm stress.
+
+### Multi-Wave Rebase (Build Mode)
+
+Wave N completes → merge to main → spawn Wave N+1 from updated main. Prefer spawning fresh over rebasing existing worktrees.
+
+### Information-Gain Hypothesis Selection
+
+```
+priority(H) = uncertainty(H) × impact(H) × testability(H)
+```
+
+Where `uncertainty(H) = 1 - |prior - 0.5| × 2` (highest at 0.5, zero at 0/1).
+
+### Paradigm Check (Scientific+)
+
+If 3+ findings contradict the working model → `PARADIGM_STRESS` flag → user notified with options to revise model, run targeted experiments, or re-scout.
+
+### Serendipity Budget
+
+Reserve 15% of agent capacity for unexpected leads. Snapshot worktree, pursue for 2 cycles, absorb or restore.
+
+---
+
+## 8. Dependencies and Gates
+
+### Relationship Types
+
+| Type | Description |
+|------|-------------|
+| **blocks** | B cannot start until A closes |
+| **informs** | A's results change how B should be done; B can start speculatively |
+| **validates** | B independently checks A (replication); both run in parallel |
+| **competes** | Alternative approaches; orchestrator picks winner |
+| **requires_review** | B needs review agent approval of A's output |
+| **predicts** | A (theory) predicts B's result; mismatch → theory revision |
+
+### Artifact Contracts (File-Level Dependencies)
+
+Tasks declare file-level contracts in Beads notes:
+
+| Property | Meaning |
+|----------|---------|
+| `PRODUCES:file1, file2` | Files task MUST create before passing quality gate |
+| `REQUIRES:file1, file2` | Files that MUST exist before task dispatches |
+| `GATE:path/to/report.json` | Validation file that must exist AND contain PASS verdicts |
+
+**Enforcement:** Pre-flight check (before dispatch) verifies REQUIRES/GATE. Quality gate (before merge) verifies PRODUCES. Agent prompt includes the contract.
+
+---
+
+## 9. Convergence Criteria
+
+| Rigor | Criteria |
+|-------|----------|
+| **Standard** | All build tasks closed and merged. Tests passing. |
+| **Analytical** | All questions answered with quantitative evidence. Statistician reviewed all findings. No contradictions. |
+| **Scientific** | All hypotheses resolved. Causal model accounts for all findings. No PARADIGM_STRESS. ≥1 novel prediction tested. No CONSISTENCY_CONFLICTs. ≥1 competing theory ruled out. All findings ROBUST or FRAGILE-documented. |
+| **Experimental** | All Scientific criteria + all high-impact findings replicated (formal agreement). Pre-reg compliance verified. Meta-analysis complete. Raw data archived with verified hashes. All adversarial loops resolved. Power analysis documented for every experiment. |
+
+**Convergence can regress** — new contradictions reopen hypotheses, failed replications revert confirmed findings. The orchestrator shows direction, reason, and action taken.
+
+**Replication termination:** Max 2 replications per finding (3 total measurements). 2/3 agree → majority wins. All 3 disagree → CONTESTED + user attention.
+
+### Final Evaluation (Analytical+)
+
+1. Synthesizer produces deliverable (`.swarm/deliverable.md`)
+2. Evaluator scores: COMPLETENESS (0.30) + COHERENCE (0.25) + STRENGTH (0.25) + ACTIONABILITY (0.20)
+3. ≥0.75 → PASS. 0.50–0.74 → IMPROVE (targeted tasks, 1–2 more cycles). <0.50 → FAIL + user flag.
+4. Max 2 improvement rounds. If last 2 rounds each improved <5% → DIMINISHING_RETURNS → deliver with quality disclosure.
+
+---
+
+## 10. Key Design Decisions
 
 | Decision | Rationale |
 |----------|-----------|
-| **Beads over markdown plans** | Structured dependency graph with hash-based IDs; `bd ready` answers in milliseconds |
-| **Git worktrees over clones** | Shared `.git` directory; faster, less disk space; natural `git diff` across branches |
-| **tmux over background processes** | Visual observability; scroll output; intervene in real time |
-| **Agent CLI `-p` flag** | Non-interactive execution; agent receives instructions, does work, exits. Supports both `copilot -p` and `claude -p` (configurable via `agent_command` in `.swarm-config.json`) |
-| **Max 4 agents** | Balances merge complexity, database contention, and human review overhead |
+| **Science-first architecture** | Engineering is a simplified path through the science system. Zero overhead for build-only projects. |
+| **Auto-classified rigor** | Users don't configure rigor. System infers and can escalate. |
+| **OODA over linear pipeline** | Investigations are iterative — hypothesis revision, replication, paradigm shifts need loops. |
+| **Evidence as first-class** | Findings with raw data, quality scores, and review chains differ fundamentally from task status. |
+| **11 roles auto-selected** | Standard build = 2 roles. Full investigation = all 11. No configuration. |
+| **Beads over markdown plans** | Structured dependency graph; `bd ready` in milliseconds. |
+| **Git worktrees over clones** | Shared `.git`, faster, less disk, natural cross-branch diff. |
+| **tmux for observability** | Visual monitoring, scroll output, real-time intervention. |
+| **Information-gain prioritization** | Always test what teaches us most, not just what's marked P1. |
+| **Mandatory pre-registration** | Prevents p-hacking and post-hoc rationalization. |
+| **Serendipity budget (15%)** | Captures high-value outliers that strict scope would miss. |
+| **Platform-agnostic** | Works with Claude Code (`.claude/commands/`) and Copilot (`.github/agents/`). |
 
 ---
 
-## 8. Autopilot Mode
+## 11. Autopilot Mode
 
-The `scripts/autopilot.sh` daemon eliminates human-in-the-loop orchestration by implementing a continuous poll-merge-dispatch cycle.
+`scripts/autopilot.sh` — continuous poll-merge-dispatch daemon:
 
-### How It Works
+1. Dispatch all `bd ready` tasks (up to `max_agents`)
+2. Sleep `poll_interval` (30s)
+3. Check active agents: closed → quality gate → merge; timeout → retry (3x max)
+4. Dispatch newly unblocked tasks
+5. Repeat until no open work
 
-```
-User runs: ./scripts/autopilot.sh [--dashboard /tmp/swarm.txt]
+**Quality gates** (`quality-gate.sh`): Branch has commits, Beads task closed, no merge conflicts, tests pass, PRODUCES artifacts exist, custom hook passes.
 
-┌─────────────────────────────────────────────────────────┐
-│                   AUTOPILOT LOOP                        │
-│                                                         │
-│  1. Dispatch all bd-ready tasks (up to max_agents)      │
-│  2. Sleep poll_interval (30s)                           │
-│  3. For each active agent:                              │
-│     ├─ Beads task closed? → quality gate → merge        │
-│     ├─ tmux window gone?  → check results → merge/retry │
-│     └─ Timeout exceeded?  → kill → retry (up to 3x)    │
-│  4. Check bd ready for newly unblocked tasks            │
-│  5. Dispatch next wave                                  │
-│  6. Repeat until no open work remains                   │
-└─────────────────────────────────────────────────────────┘
-```
-
-### Quality Gates
-
-`scripts/quality-gate.sh` runs before every merge:
-1. Branch must have commits
-2. Beads task must be closed
-3. No merge conflicts with main
-4. Tests must pass (auto-detects Python pytest / Node npm test)
-5. Custom gate hook (`.swarm-quality-gate.sh`) if present
-
-Failed gates trigger a retry with error context (up to `--max-retries`).
-
-### Usage
-
-```bash
-# ZERO-TOUCH: From prompt file to finished project
-./scripts/autopilot.sh --prompt PROMPT.md --dashboard /tmp/swarm.txt
-
-# Research domain (plain directories, no git branching):
-./scripts/autopilot.sh --prompt research-brief.md --domain research
-
-# Pre-planned tasks (Beads already populated):
-./scripts/autopilot.sh
-
-# With live TUI dashboard (separate terminal):
-python3 scripts/dashboard.py --refresh 3
-
-# Dry run — see what would happen:
-./scripts/autopilot.sh --prompt PROMPT.md --dry-run
-
-# Custom timeouts and notification:
-./scripts/autopilot.sh --timeout 900 --notify "say 'swarm complete'"
-```
-
-### Domain Support
-
-| Domain | Isolation | Merge Strategy | Quality Gate |
-|--------|-----------|---------------|--------------|
-| `code` (default) | Git worktrees | `git merge` | Tests + conflict check |
-| `research` | Plain directories | File assembly | Summary check |
-| `generic` | Plain directories | File assembly | Custom hook |
-
-### LLM Auto-Planner
-
-`scripts/plan-tasks.sh` calls the agent CLI to decompose a prompt into structured tasks:
-
-```bash
-./scripts/plan-tasks.sh PROMPT.md              # Auto-plan
-./scripts/plan-tasks.sh PROMPT.md --dry-run    # Preview only
-```
-
-The planner outputs JSON, creates Beads epic + tasks + dependency graph automatically.
-
-### Live Dashboard
-
-`scripts/dashboard.py` provides a rich terminal UI:
-
-```
-┌─ 🐝 Swarm Dashboard ─────────────────────────────────────────┐
-│ my-project  ████████░░░░░░ 60%  ✓3 ◐2 ○1 ⚡1 ready  🤖2  ⏱5m │
-├───────────────────────────────────────────────────────────────┤
-│ 📋 Task Graph          │ 🤖 Active Agents                    │
-│ ✓ world-engine   P1    │ agent-ants     2 commits  🟢 running │
-│ ◐ ants           P2    │ agent-birds    1 commit   🟢 running │
-│ ○ runner         P2    │                                      │
-└───────────────────────────────────────────────────────────────┘
-```
+**Domains:** `code` (worktrees, git merge), `research`/`generic` (plain directories, file assembly).
 
 ---
 
-## 9. Future Extensions
+## 12. Multi-Project Scalability
 
-- Autopilot TUI dashboard (rich terminal UI with live agent status)
-- Event-driven completion (fswatch/inotify instead of polling)
-- LLM-powered auto-planning (agent decomposes prompt into Beads graph)
-- Adaptive retry with failure analysis (LLM reviews errors before retrying)
-- Non-code domain support (research papers, business reports, course creation)
-- MCP Agent Mail for inter-agent messaging
-- Beads Formulas for pre-built epic templates
-- Cost tracking per agent per task
-- Slack/Discord integration for standup reports
-- Multi-repo support for microservice orchestration
+### Problem
+
+One swarm per repo creates sequential bottlenecks, cross-contamination risk, and no global visibility across projects.
+
+### Solution: Namespace + Global Hub
+
+- **Project ID** scopes all shared resources (tmux sessions, worktrees, branches)
+- **`~/.swarm/hub.json`** — global registry of all active projects with status, agent count, convergence
+- **Resource pool** — `~/.swarm/resources.json` enforces global agent limits across projects (proportional, priority, equal, or manual allocation)
+- **Epic isolation** — concurrent swarms in the same repo via Beads epic scoping with separate branch namespaces (`swarm/<epic-id>/agent-*`) and per-epic journals
+
+### Hub Operations
+
+`swarm hub list | switch <id> | pause <id> | resume <id> | remove <id> | dashboard`
+
+### Key Properties
+
+- Zero-cost for single-project users (hub is created on first `swarm-init.sh`, all scripts fall back without it)
+- Each project stays in its own repo — natural isolation
+- Heartbeat-based stale project detection
+- Collision protection via disambiguated project IDs
+
+---
+
+## 13. Summary
+
+| Dimension | Design |
+|-----------|--------|
+| Roles | 11 (builder, investigator, scout, critic, synthesizer, evaluator, explorer, theorist, methodologist, statistician, worker) |
+| Workflow modes | 4 (build, investigate, explore, hybrid) |
+| Rigor levels | 4 (standard, analytical, scientific, experimental) — auto-classified |
+| Task types | 6 (build, investigation, exploration, review, replication, theory) |
+| Evidence | Findings + raw data + belief maps + journal + strategic context |
+| Decision logic | OODA loop with information-gain prioritization |
+| Convergence | Rigor-appropriate: tasks → findings → theory → prediction |
+| User experience | One prompt — everything auto-detected |
+| Commands | Same 6 — richer output at higher rigor |
+| Config required | None |
