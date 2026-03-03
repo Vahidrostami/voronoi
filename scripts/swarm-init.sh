@@ -92,10 +92,29 @@ cat > .swarm-config.json << EOF
     "require_statistician": "analytical",
     "require_adversarial_review": "scientific"
   },
+  "notifications": {
+    "telegram": {
+      "enabled": false,
+      "bot_token": "",
+      "chat_id": "",
+      "events": ["swarm_start", "wave_dispatch", "merge", "quality_gate_fail", "convergence", "swarm_complete", "agent_timeout", "agent_retry", "swarm_abort", "inbox_command"],
+      "mvcha_gateway_url": "",
+      "mvcha_api_secret": "",
+      "prefer_mvcha": false,
+      "bridge_enabled": true
+    }
+  },
   "created": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 EOF
 
 echo "✓ Swarm config written to .swarm-config.json"
 echo ""
-echo "=== Setup complete. Run: copilot then /swarm <your task> ==="
+echo "=== Setup complete ==="
+echo ""
+echo "To enable Telegram notifications:"
+echo "  1. Set bot_token and chat_id in .swarm-config.json → notifications.telegram"
+echo "  2. Set enabled: true"
+echo "  3. (Optional) Start the bridge: python3 scripts/telegram-bridge.py"
+echo ""
+echo "Run: copilot then /swarm <your task>"

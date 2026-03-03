@@ -16,6 +16,12 @@ BRANCH="$1"
 TASK_ID="$2"
 WORKTREE="$3"
 
+# Source Telegram notification helper
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [[ -f "$SCRIPT_DIR/notify-telegram.sh" ]]; then
+    source "$SCRIPT_DIR/notify-telegram.sh"
+fi
+
 echo "--- Quality Gate: $BRANCH ---"
 
 PASS=true
@@ -137,8 +143,10 @@ fi
 echo ""
 if [[ "$PASS" == "true" ]]; then
     echo "  ✅ Quality gate PASSED"
+    notify_quality_gate "$BRANCH" "pass" "$TASK_ID" 2>/dev/null || true
     exit 0
 else
     echo "  ❌ Quality gate FAILED"
+    notify_quality_gate "$BRANCH" "fail" "$TASK_ID" 2>/dev/null || true
     exit 1
 fi

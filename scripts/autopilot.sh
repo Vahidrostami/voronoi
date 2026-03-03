@@ -90,6 +90,12 @@ MAX_AGENTS=$(echo "$CONFIG" | jq -r '.max_agents // 4')
 cd "$PROJECT_DIR"
 shopt -s nullglob   # globs that match nothing expand to nothing
 
+# --- Source Telegram notification helper ---
+NOTIFY_SCRIPT="$PROJECT_DIR/scripts/notify-telegram.sh"
+if [[ -f "$NOTIFY_SCRIPT" ]]; then
+    source "$NOTIFY_SCRIPT"
+fi
+
 # --- Initialize lab notebook for scientific tracking ---
 "$PROJECT_DIR/scripts/lab-notebook.sh" init 2>/dev/null || true
 
@@ -385,6 +391,7 @@ agent_is_complete() {
         # Kill the tmux window
         tmux kill-window -t "$TMUX_SESSION:$branch" 2>/dev/null || true
         bd update "$task_id" --notes "TIMEOUT: Agent killed after ${AGENT_TIMEOUT}s" 2>/dev/null || true
+        notify_agent_timeout "$branch" "$task_id" "$AGENT_TIMEOUT" 2>/dev/null || true
         return 0
     fi
 
@@ -448,6 +455,7 @@ retry_agent() {
     retry_count=$((retry_count + 1))
     AGENT_RETRIES[$branch]=$retry_count
     log_action "Retrying $branch (attempt $retry_count/$MAX_RETRIES)"
+    notify_agent_retry "$branch" "$retry_count" "$MAX_RETRIES" 2>/dev/null || true
 
     # Clean up old worktree
     git worktree remove "$SWARM_DIR/$branch" 2>/dev/null || true
@@ -500,6 +508,7 @@ merge_agent() {
         unset "AGENT_SPAWN_TIME[$branch]"
         unset "AGENT_TASK_MAP[$branch]"
         log_status "✅ Merged $branch successfully"
+        notify_merge "$branch" "$task_id" "$TOTAL_MERGED" 2>/dev/null || true
         return 0
     else
         log_error "Merge failed for $branch — may need manual conflict resolution"
@@ -575,15 +584,22 @@ check_convergence() {
     # Record check time
     echo "$vr_mtime" > "$last_check"
 
+    # Get iteration info for notification
+    local _conv_iter
+    _conv_iter=$("$PROJECT_DIR/scripts/lab-notebook.sh" get-iteration 2>/dev/null || echo "?")
+
     case $judge_exit in
         0)
             log_status "✅ Convergence judge: CONVERGED"
+            notify_convergence "CONVERGED" "$_conv_iter" "$MAX_ITERATIONS" 2>/dev/null || true
             ;;
         1)
             log_status "🔄 Convergence judge: ITERATE — new improvement tasks created"
+            notify_convergence "ITERATE" "$_conv_iter" "$MAX_ITERATIONS" 2>/dev/null || true
             ;;
         2)
             log_status "⚠ Convergence judge: EXHAUSTED/DIMINISHING — proceeding with limitations"
+            notify_convergence "EXHAUSTED" "$_conv_iter" "$MAX_ITERATIONS" 2>/dev/null || true
             ;;
     esac
 }
@@ -614,6 +630,7 @@ dispatch_ready() {
 
     WAVE=$((WAVE + 1))
     log_status "=== Wave $WAVE: $ready_count tasks ready, $slots slots available ==="
+    notify_wave_dispatch "$WAVE" "$slots" "$ready_count" 2>/dev/null || true
 
     local dispatched=0
     for i in $(seq 0 $((ready_count - 1))); do
@@ -668,6 +685,91 @@ dispatch_ready() {
             fi
         fi
     done
+}
+
+# --- Process operator inbox (commands from Telegram bridge) ---
+INBOX_DIR="${PROJECT_DIR}/.swarm/inbox"
+INBOX_PROCESSED_DIR="${PROJECT_DIR}/.swarm/inbox/processed"
+ABORT_REQUESTED=false
+
+process_inbox() {
+    [[ -d "$INBOX_DIR" ]] || return 0
+    mkdir -p "$INBOX_PROCESSED_DIR"
+
+    local cmd_file
+    for cmd_file in "$INBOX_DIR"/*.json; do
+        [[ -f "$cmd_file" ]] || continue
+
+        local action params message target
+        action=$(jq -r '.action // ""' "$cmd_file" 2>/dev/null || echo "")
+        params=$(jq -r '.params // {}' "$cmd_file" 2>/dev/null || echo "{}")
+        message=$(jq -r '.message // ""' "$cmd_file" 2>/dev/null || echo "")
+
+        [[ -z "$action" ]] && { mv "$cmd_file" "$INBOX_PROCESSED_DIR/" 2>/dev/null; continue; }
+
+        log_status "📨 Inbox command: $action"
+        notify_inbox_command "$action" "$message" 2>/dev/null || true
+
+        case "$action" in
+            reprioritize)
+                target=$(echo "$params" | jq -r '.target // ""')
+                local priority
+                priority=$(echo "$params" | jq -r '.priority // 2')
+                if [[ -n "$target" ]]; then
+                    bd update "$target" --priority "$priority" 2>/dev/null || true
+                    log_action "Reprioritized $target to P$priority"
+                fi
+                ;;
+            pause)
+                target=$(echo "$params" | jq -r '.target // ""')
+                if [[ -n "$target" ]]; then
+                    bd update "$target" --notes "BLOCKED: Paused by operator" 2>/dev/null || true
+                    log_action "Paused $target"
+                fi
+                ;;
+            resume)
+                target=$(echo "$params" | jq -r '.target // ""')
+                if [[ -n "$target" ]]; then
+                    bd update "$target" --status open 2>/dev/null || true
+                    log_action "Resumed $target"
+                fi
+                ;;
+            add_task)
+                local title
+                title=$(echo "$params" | jq -r '.title // "Operator task"')
+                if [[ -n "$title" ]]; then
+                    log_action "New operator task: $title"
+                fi
+                # Task was already created by telegram-bridge via bd create
+                ;;
+            abort)
+                log_status "🛑 Abort requested by operator"
+                ABORT_REQUESTED=true
+                ;;
+            pivot)
+                log_action "🔀 Strategic pivot received: $(echo "$message" | head -c 100)"
+                # Guidance file already written by telegram-bridge
+                ;;
+            guide)
+                log_action "📝 Operator guidance: $(echo "$message" | head -c 100)"
+                # Guidance file already written by telegram-bridge
+                ;;
+            *)
+                log_status "Unknown inbox command: $action"
+                ;;
+        esac
+
+        # Move to processed
+        mv "$cmd_file" "$INBOX_PROCESSED_DIR/" 2>/dev/null || true
+    done
+
+    # Handle abort by breaking out of the main loop
+    if [[ "$ABORT_REQUESTED" == "true" ]]; then
+        log_status "🛑 Aborting swarm (operator request)..."
+        notify_telegram "swarm_abort" "🛑 Swarm aborted by operator" 2>/dev/null || true
+        # Let the cleanup trap handle the rest
+        exit 0
+    fi
 }
 
 # --- Check if there's still work ---
@@ -753,6 +855,10 @@ if [[ -n "$PROMPT_FILE" && "$RESUME" != "true" ]]; then
         bd update "$EPIC_ID" --status in_progress 2>/dev/null || true
     fi
     log_status "Planning complete. Starting autopilot loop."
+
+    # Notify: swarm starting
+    PLANNED_COUNT=$(bd list --json 2>/dev/null | jq '[.[] | select(.issue_type != "epic")] | length' 2>/dev/null || echo "?")
+    notify_swarm_start "$PLANNED_COUNT" "$DOMAIN" 2>/dev/null || true
 fi
 
 # Export OUTPUT_DIR so spawn scripts can access it
@@ -804,6 +910,9 @@ while has_open_work; do
     # --- Check convergence after merges ---
     check_convergence
 
+    # --- Process operator inbox commands (from Telegram bridge) ---
+    process_inbox
+
     # --- Dispatch newly ready tasks ---
     dispatch_ready
 
@@ -834,6 +943,9 @@ echo ""
 if [[ -n "$NOTIFY_CMD" ]]; then
     eval "$NOTIFY_CMD" 2>/dev/null || true
 fi
+
+# Send Telegram notification
+notify_swarm_complete "$WAVE" "$TOTAL_MERGED" "$ELAPSED_MIN" 2>/dev/null || true
 
 # Final dashboard
 write_dashboard
