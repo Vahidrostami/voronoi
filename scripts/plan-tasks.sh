@@ -272,9 +272,63 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
     done
 done
 
+# --- Detect scientific/exploratory prompts and add convergence checkpoint ---
+IS_SCIENTIFIC=false
+SCIENTIFIC_KEYWORDS="experiment|validate|planted.ground.truth|hypothesis|prove|ablation|statistical|reproducib|cross.domain|generalization|scientific"
+if echo "$PROMPT_CONTENT" | grep -qiE "$SCIENTIFIC_KEYWORDS"; then
+    IS_SCIENTIFIC=true
+fi
+
+if [[ "$IS_SCIENTIFIC" == "true" ]]; then
+    echo ""
+    echo "🔬 Scientific prompt detected — adding convergence checkpoint"
+
+    # Find the validation task (looks for tasks with validation/validate in title)
+    VALIDATION_TASK_ID=""
+    for plan_id in "${!TASK_ID_MAP[@]}"; do
+        beads_id="${TASK_ID_MAP[$plan_id]}"
+        task_title=$(echo "$PLAN_JSON" | jq -r ".tasks[] | select(.id==\"$plan_id\") | .title" 2>/dev/null || true)
+        if echo "$task_title" | grep -qiE "validat"; then
+            VALIDATION_TASK_ID="$beads_id"
+            break
+        fi
+    done
+
+    # Find the paper/report task (should depend on convergence)
+    PAPER_TASK_ID=""
+    for plan_id in "${!TASK_ID_MAP[@]}"; do
+        beads_id="${TASK_ID_MAP[$plan_id]}"
+        task_title=$(echo "$PLAN_JSON" | jq -r ".tasks[] | select(.id==\"$plan_id\") | .title" 2>/dev/null || true)
+        if echo "$task_title" | grep -qiE "paper|report|write.up|latex|deliverable"; then
+            PAPER_TASK_ID="$beads_id"
+            break
+        fi
+    done
+
+    # Determine convergence gate path
+    CONV_GATE_PATH="output/convergence.json"
+    [[ -n "$OUTPUT_DIR" ]] && CONV_GATE_PATH="${OUTPUT_DIR}/output/convergence.json"
+
+    # Mark validation task with convergence metadata
+    if [[ -n "$VALIDATION_TASK_ID" ]]; then
+        bd update "$VALIDATION_TASK_ID" --notes "CONVERGENCE_CHECKPOINT | TRIGGERS_JUDGE:true" 2>/dev/null || true
+        echo "  ✓ Marked $VALIDATION_TASK_ID as convergence checkpoint"
+    fi
+
+    # If there's a paper task, add convergence.json as its GATE
+    if [[ -n "$PAPER_TASK_ID" ]]; then
+        bd update "$PAPER_TASK_ID" --notes "GATE:$CONV_GATE_PATH" 2>/dev/null || true
+        echo "  ✓ Paper task $PAPER_TASK_ID gated on convergence"
+    fi
+
+    echo "  Convergence gate: $CONV_GATE_PATH"
+    echo "  Autopilot will run convergence-judge.sh after validation completes"
+fi
+
 echo ""
 echo "═══════════════════════════════════════"
 echo "✅ Plan created: $EPIC_ID with $TASK_COUNT tasks"
+[[ "$IS_SCIENTIFIC" == "true" ]] && echo "   🔬 Scientific mode: convergence loop enabled"
 echo ""
 echo "Next steps:"
 echo "  bd list                    # Review the plan"

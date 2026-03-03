@@ -71,3 +71,20 @@ When `TASK_TYPE` is `investigation`, `exploration`, `replication`, or `review`:
 - Write tests for everything you build
 - Follow existing code patterns and conventions
 - Leave the codebase cleaner than you found it
+
+## Iteration & Improvement Context (Scientific Workflows)
+
+If this is an **improvement task** from a convergence iteration:
+
+1. **Read the lab notebook** at `.swarm/lab-notebook.json` — it contains what was tried before
+2. **Do NOT repeat** failed approaches from previous iterations
+3. **Be surgical** — fix the specific root cause identified in your task description
+4. **Verify your fix** — run the relevant experiment and check the validation stage passes
+5. **Document your results** in Beads:
+   ```
+   bd update {{TASK_ID}} --notes "CHANGE: [what you changed] | EFFECT: [result] | METRICS: [before→after]"
+   ```
+6. If your fix doesn't work, document why:
+   ```
+   bd update {{TASK_ID}} --notes "ATTEMPTED: [approach] | RESULT: [what happened] | NEXT: [suggestion]"
+   ```

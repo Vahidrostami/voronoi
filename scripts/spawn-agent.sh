@@ -118,6 +118,34 @@ $PROMPT_EXCERPT
 ---"
 fi
 
+# 4d. Include lab notebook context for improvement/iteration tasks
+LAB_NOTEBOOK_CONTEXT=""
+IS_IMPROVEMENT=$(echo "$TASK_NOTES" | grep -c 'IMPROVEMENT_TASK\|CONVERGENCE' || true)
+NOTEBOOK_FILE="${PROJECT_DIR}/.swarm/lab-notebook.json"
+if [[ "$IS_IMPROVEMENT" -gt 0 && -f "$NOTEBOOK_FILE" ]]; then
+    LAB_NOTEBOOK_SUMMARY=$(python3 -c "
+import json
+with open('$NOTEBOOK_FILE') as f: nb = json.load(f)
+iters = nb.get('iterations', [])
+lines = []
+for it in iters:
+    v = it.get('verdict', '?')
+    p = it.get('phase', '?')
+    fails = it.get('failures', [])
+    steps = it.get('next_steps', [])
+    lines.append(f'Iteration {it.get(\"iteration\",\"?\")}: {v}')
+    for fail in fails[:3]:
+        issue = fail.get('issue','') if isinstance(fail,dict) else str(fail)
+        lines.append(f'  FAILED: {issue[:150]}')
+    for step in steps[:2]:
+        lines.append(f'  NEXT: {step[:100]}')
+print('\n'.join(lines[-30:]))  # Last 30 lines max
+" 2>/dev/null || echo "No lab notebook data available")
+    LAB_NOTEBOOK_CONTEXT="
+ITERATION CONTEXT (from lab notebook — DO NOT repeat failed approaches):
+$LAB_NOTEBOOK_SUMMARY"
+fi
+
 # 5. Build the agent prompt
 AGENT_PROMPT=$(cat <<PROMPT
 You are a worker agent in a multi-agent swarm.
@@ -140,6 +168,7 @@ RULES:
 7. If you are blocked, update Beads:
    bd update $TASK_ID --notes "BLOCKED: [reason]"$ARTIFACT_RULES
 $PROMPT_CONTEXT
+$LAB_NOTEBOOK_CONTEXT
 PROMPT
 )
 

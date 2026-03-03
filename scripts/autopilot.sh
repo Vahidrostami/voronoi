@@ -55,6 +55,7 @@ DOMAIN="code"
 SAFE_MODE=false
 OUTPUT_DIR=""        # Demo-scoped output directory (auto-detected from --prompt path)
 RESUME=false          # If true, skip planning and resume from saved state
+MAX_ITERATIONS=3      # Max convergence iterations for scientific workflows
 
 # --- Parse args ---
 while [[ $# -gt 0 ]]; do
@@ -72,6 +73,7 @@ while [[ $# -gt 0 ]]; do
         --domain)        DOMAIN="$2"; shift 2 ;;
         --safe)          SAFE_MODE=true; shift ;;
         --output-dir)    OUTPUT_DIR="$2"; shift 2 ;;
+        --max-iterations) MAX_ITERATIONS="$2"; shift 2 ;;
         --resume)        RESUME=true; shift ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
@@ -87,6 +89,9 @@ MAX_AGENTS=$(echo "$CONFIG" | jq -r '.max_agents // 4')
 
 cd "$PROJECT_DIR"
 shopt -s nullglob   # globs that match nothing expand to nothing
+
+# --- Initialize lab notebook for scientific tracking ---
+"$PROJECT_DIR/scripts/lab-notebook.sh" init 2>/dev/null || true
 
 # --- State persistence file (survives crashes) ---
 STATE_FILE="${PROJECT_DIR}/.swarm/autopilot-state.json"
@@ -502,6 +507,87 @@ merge_agent() {
     fi
 }
 
+# --- Check for convergence checkpoint after validation completes ---
+# Scans recently-merged tasks for CONVERGENCE_CHECKPOINT notes and runs
+# the convergence judge if a validation report exists.
+check_convergence() {
+    # Find validation report — look in OUTPUT_DIR first, then common paths
+    local vr=""
+    local rd=""
+    for candidate in \
+        "${OUTPUT_DIR:-__none__}/output/validation_report.json" \
+        "${OUTPUT_DIR:-__none__}/validation_report.json" \
+        "output/validation_report.json" \
+        ".swarm/validation_report.json"; do
+        if [[ -f "$candidate" ]]; then
+            vr="$candidate"
+            rd="$(dirname "$candidate")"
+            break
+        fi
+    done
+    [[ -z "$vr" ]] && return 0  # No validation report yet
+
+    # Check if convergence already decided
+    local conv_marker="${rd}/convergence.json"
+    if [[ -f "$conv_marker" ]]; then
+        local already
+        already=$(python3 -c "import json; print(json.load(open('$conv_marker')).get('converged',False))" 2>/dev/null || echo "False")
+        if [[ "$already" == "True" ]]; then
+            return 0  # Already converged
+        fi
+    fi
+
+    # Check if validation report is newer than last convergence check
+    local vr_mtime
+    vr_mtime=$(stat -f %m "$vr" 2>/dev/null || stat -c %Y "$vr" 2>/dev/null || echo 0)
+    local last_check="${PROJECT_DIR}/.swarm/.last_convergence_check"
+    local last_mtime=0
+    if [[ -f "$last_check" ]]; then
+        last_mtime=$(cat "$last_check")
+    fi
+    if [[ "$vr_mtime" -le "$last_mtime" ]]; then
+        return 0  # Already checked this version
+    fi
+
+    log_status "🔬 Validation report detected — running convergence judge"
+
+    # Find results.json
+    local results_json=""
+    for rcandidate in \
+        "${OUTPUT_DIR:-__none__}/output/results.json" \
+        "${rd}/results.json" \
+        "output/results.json"; do
+        if [[ -f "$rcandidate" ]]; then
+            results_json="$rcandidate"
+            break
+        fi
+    done
+
+    # Run convergence judge
+    local judge_args=("$vr" "${results_json:-/dev/null}")
+    judge_args+=("--max-iterations" "$MAX_ITERATIONS")
+    [[ -n "$OUTPUT_DIR" ]] && judge_args+=("--output-dir" "$OUTPUT_DIR")
+    [[ -n "$PROMPT_FILE" ]] && judge_args+=("--prompt-file" "$PROMPT_FILE")
+
+    local judge_exit=0
+    "$PROJECT_DIR/scripts/convergence-judge.sh" "${judge_args[@]}" || judge_exit=$?
+
+    # Record check time
+    echo "$vr_mtime" > "$last_check"
+
+    case $judge_exit in
+        0)
+            log_status "✅ Convergence judge: CONVERGED"
+            ;;
+        1)
+            log_status "🔄 Convergence judge: ITERATE — new improvement tasks created"
+            ;;
+        2)
+            log_status "⚠ Convergence judge: EXHAUSTED/DIMINISHING — proceeding with limitations"
+            ;;
+    esac
+}
+
 # --- Dispatch ready tasks ---
 dispatch_ready() {
     # Count active agents
@@ -714,6 +800,9 @@ while has_open_work; do
             fi
         fi
     done
+
+    # --- Check convergence after merges ---
+    check_convergence
 
     # --- Dispatch newly ready tasks ---
     dispatch_ready

@@ -1,8 +1,11 @@
 
 __pycache__/
 .agent-prompt.txt
+.beads/
 .DS_Store
 .idea/
+.llm_cache/
+.swarm/
 .swarm-config.json
 .venv/
 .vscode/

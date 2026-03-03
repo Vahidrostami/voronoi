@@ -176,6 +176,40 @@ Theorist must propose ≥2 competing causal models with discriminating predictio
 
 Investigator computes SHA-256 of raw data files immediately after collection. Statistician independently verifies hash before review. Mismatch → finding quarantined.
 
+### 6.11 Convergence Feedback Loop (Scientific Workflows)
+
+Validation results feed back into the pipeline rather than being a terminal gate. The loop:
+
+```
+Experiments → Validation → Convergence Judge → (PASS → Paper) or (FAIL → Diagnose → Improve → Re-run)
+```
+
+**Components:**
+
+| Script | Role |
+|--------|------|
+| `scripts/convergence-judge.sh` | Orchestrator's scientific mental model — reads validation, decides iterate/converge/exhaust |
+| `scripts/validation-feedback.sh` | Diagnoses failures via LLM, creates improvement tasks in Beads |
+| `scripts/lab-notebook.sh` | Structured record of every iteration: hypothesis, action, result, metrics |
+
+**Decision tree:**
+
+1. Validation PASS → `CONVERGED` → write `convergence.json` → unblock paper task
+2. Validation FAIL, iterations < max → `ITERATE` → create improvement tasks → re-dispatch
+3. Validation FAIL, iterations ≥ max → `EXHAUSTED` → proceed with honest limitations
+4. Last 2 iterations improved <5% → `DIMINISHING_RETURNS` → proceed with quality disclosure
+
+**Lab Notebook** (`.swarm/lab-notebook.json`): Each entry records iteration number, phase, verdict, metrics snapshot, failure details, and next steps. Agents on improvement tasks receive this context to avoid repeating failed approaches.
+
+**Convergence Gate**: Paper/report tasks are gated on `convergence.json` (not just `validation_report.json`). The quality gate checks both file existence and converged=true status.
+
+### 6.12 Scientific Prompt Detection
+
+`plan-tasks.sh` auto-detects scientific/exploratory prompts via keyword matching (experiment, validate, hypothesis, ablation, etc.) and:
+- Marks validation tasks with `CONVERGENCE_CHECKPOINT`
+- Gates paper tasks on `convergence.json`
+- Autopilot runs `convergence-judge.sh` after each validation merge
+
 ---
 
 ## 7. Workflow Engine — OODA Loop

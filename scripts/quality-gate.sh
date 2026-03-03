@@ -92,7 +92,37 @@ else
     echo "  ⊘ No artifact contract (PRODUCES not set)"
 fi
 
-# --- Gate 6: Custom gate hook (if exists) ---
+# --- Gate 6: Convergence gate — for tasks gated on validation convergence ---
+CONV_GATE=$(bd show "$TASK_ID" --json 2>/dev/null | jq -r '.[0].notes // ""' | grep -o 'CONVERGENCE_CHECKPOINT' || true)
+if [[ -n "$CONV_GATE" ]]; then
+    echo "  🔬 Convergence checkpoint detected — triggering convergence judge"
+    # The convergence judge will be run by autopilot's check_convergence function
+    # after this branch merges. Mark it so autopilot knows to check.
+    echo "  ✓ Convergence check will run after merge"
+fi
+
+# --- Gate 7: Validation report gate — block if validation failed and convergence not reached ---
+TASK_GATE=$(bd show "$TASK_ID" --json 2>/dev/null | jq -r '.[0].notes // ""' | sed -n 's/.*GATE:\([^ ]*\).*/\1/p' | head -1 || true)
+if [[ -n "$TASK_GATE" && "$TASK_GATE" == *convergence* ]]; then
+    if [[ -f "$TASK_GATE" ]]; then
+        CONV_STATUS=$(python3 -c "
+import json
+with open('$TASK_GATE') as f: c = json.load(f)
+print('true' if c.get('converged', False) else 'false')
+" 2>/dev/null || echo "false")
+        if [[ "$CONV_STATUS" == "true" ]]; then
+            echo "  ✓ Convergence gate passed ($TASK_GATE)"
+        else
+            echo "  ✗ Convergence gate: not yet converged ($TASK_GATE)"
+            PASS=false
+        fi
+    else
+        echo "  ✗ Convergence gate: file missing ($TASK_GATE)"
+        PASS=false
+    fi
+fi
+
+# --- Gate 8: Custom gate hook (if exists) ---
 CUSTOM_GATE=".swarm-quality-gate.sh"
 if [[ -x "$CUSTOM_GATE" ]]; then
     echo "  Running custom quality gate..."
