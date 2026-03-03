@@ -186,11 +186,12 @@ Experiments → Validation → Convergence Judge → (PASS → Paper) or (FAIL �
 
 **Components:**
 
-| Script | Role |
-|--------|------|
-| `scripts/convergence-judge.sh` | Orchestrator's scientific mental model — reads validation, decides iterate/converge/exhaust |
-| `scripts/validation-feedback.sh` | Diagnoses failures via LLM, creates improvement tasks in Beads |
-| `scripts/lab-notebook.sh` | Structured record of every iteration: hypothesis, action, result, metrics |
+The convergence feedback loop is handled natively by the Copilot orchestrator, which:
+
+1. Reads validation results and diagnoses failures
+2. Decides whether to iterate, converge, or exhaust
+3. Creates targeted improvement tasks in Beads
+4. Tracks iteration history to avoid repeating failed approaches
 
 **Decision tree:**
 
@@ -205,10 +206,10 @@ Experiments → Validation → Convergence Judge → (PASS → Paper) or (FAIL �
 
 ### 6.12 Scientific Prompt Detection
 
-`plan-tasks.sh` auto-detects scientific/exploratory prompts via keyword matching (experiment, validate, hypothesis, ablation, etc.) and:
+The orchestrator auto-detects scientific/exploratory prompts and:
 - Marks validation tasks with `CONVERGENCE_CHECKPOINT`
 - Gates paper tasks on `convergence.json`
-- Autopilot runs `convergence-judge.sh` after each validation merge
+- Runs convergence judgment after each validation merge
 
 ---
 
@@ -336,19 +337,29 @@ Tasks declare file-level contracts in Beads notes:
 
 ---
 
-## 11. Autopilot Mode
+## 11. Orchestration
 
-`scripts/autopilot.sh` — continuous poll-merge-dispatch daemon:
+Orchestration is handled by the Copilot orchestrator — a structured prompt that makes the LLM the decision-maker. Shell scripts handle only deterministic infrastructure plumbing.
 
-1. Dispatch all `bd ready` tasks (up to `max_agents`)
-2. Sleep `poll_interval` (30s)
-3. Check active agents: closed → quality gate → merge; timeout → retry (3x max)
-4. Dispatch newly unblocked tasks
-5. Repeat until no open work
+**Orchestrator responsibilities:**
+1. Read project brief and plan tasks in Beads
+2. Dispatch agents via `spawn-agent.sh` (git worktree + tmux plumbing)
+3. Monitor progress via Beads and git
+4. Merge completed work via `merge-agent.sh`
+5. Handle failures with judgment (not blind retries)
+6. Dispatch newly unblocked tasks
+7. Repeat until all work is done
 
-**Quality gates** (`quality-gate.sh`): Branch has commits, Beads task closed, no merge conflicts, tests pass, PRODUCES artifacts exist, custom hook passes.
+**Infrastructure scripts (plumbing only):**
 
-**Domains:** `code` (worktrees, git merge), `research`/`generic` (plain directories, file assembly).
+| Script | Purpose |
+|--------|---------|
+| `swarm-init.sh` | One-time setup: git, Beads, tmux, config |
+| `spawn-agent.sh` | Create git worktree + tmux window, launch agent |
+| `merge-agent.sh` | Merge agent branch → main, push, clean up |
+| `teardown.sh` | Kill sessions, prune worktrees/branches |
+
+**Quality checks** are performed by the orchestrator before merging: branch has commits, Beads task closed, PRODUCES artifacts exist. The orchestrator can also inspect tmux output and git logs to diagnose failures — something a rigid bash gate cannot do.
 
 ---
 

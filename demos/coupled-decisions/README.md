@@ -26,22 +26,21 @@ Generates a synthetic beverage company dataset ("BevCo") with 5 planted cross-le
 
 ## How to Run
 
-### Option A: Autopilot (fully automated)
+### Option A: CLI (recommended)
 
 ```bash
-./scripts/swarm-init.sh
-./scripts/autopilot.sh --prompt demos/coupled-decisions/PROMPT.md --safe
+voronoi demo run coupled-decisions
 ```
 
-Watch progress:
+Watch agents:
 ```bash
-python3 scripts/dashboard.py
+tmux attach -t $(basename $(pwd))-swarm
 ```
 
 ### Option B: Interactive
 
 ```bash
-./scripts/swarm-init.sh
+voronoi init
 copilot
 > /swarm Build from demos/coupled-decisions/PROMPT.md
 ```

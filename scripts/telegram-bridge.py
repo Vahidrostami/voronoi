@@ -3,7 +3,7 @@
 telegram-bridge.py — Bridge between Telegram and Voronoi swarm
 
 Listens for /voronoi commands on Telegram and translates them into
-.swarm/inbox/ command files that autopilot.sh polls and executes.
+.swarm/inbox/ command files that the orchestrator can process.
 
 Can also run bd (beads) commands directly.
 
@@ -11,7 +11,7 @@ Usage:
     python3 scripts/telegram-bridge.py [--config .swarm-config.json]
 
 Telegram Commands:
-    /voronoi status              — Get swarm status (runs standup.sh)
+    /voronoi status              — Get swarm status via Beads
     /voronoi reprioritize <id> <priority> — Change task priority
     /voronoi pause <id>          — Pause/block a task
     /voronoi resume <id>         — Resume a paused task
@@ -175,15 +175,7 @@ def run_script(script: str, *args, cwd=None) -> tuple[int, str]:
 
 async def handle_status(config: dict) -> str:
     """Get swarm status."""
-    standup = Path(config["project_dir"]) / "scripts" / "standup.sh"
-    if standup.exists():
-        code, output = run_script(str(standup), cwd=config["project_dir"])
-        # Truncate for Telegram (max 4096 chars)
-        if len(output) > 3500:
-            output = output[:3500] + "\n\n… (truncated)"
-        return f"📊 *Swarm Status*\n\n```\n{output}\n```"
-
-    # Fallback: basic bd status
+    # Use bd commands directly for status
     _, ready = run_bd("ready", "--json", cwd=config["project_dir"])
     _, open_tasks = run_bd("list", "--status", "open", "--json", cwd=config["project_dir"])
 

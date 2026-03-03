@@ -68,10 +68,10 @@ def test_init_creates_files():
         assert (target / "CLAUDE.md").is_file()
         assert (target / "AGENTS.md").is_file()
 
-        # Key scripts should be present
-        assert (target / "scripts" / "autopilot.sh").is_file()
+        # Key scripts should be present (plumbing only — orchestration is Copilot's job)
         assert (target / "scripts" / "spawn-agent.sh").is_file()
-        assert (target / "scripts" / "plan-tasks.sh").is_file()
+        assert (target / "scripts" / "merge-agent.sh").is_file()
+        assert (target / "scripts" / "swarm-init.sh").is_file()
 
         # .github agents, prompts, skills should be present
         assert (target / ".github" / "agents").is_dir()
@@ -133,4 +133,4 @@ def test_upgrade_preserves_user_files():
         assert claude_path.read_text() == "# My Custom Config\n"
 
         # But scripts should be refreshed
-        assert (Path(tmpdir) / "scripts" / "autopilot.sh").is_file()
+        assert (Path(tmpdir) / "scripts" / "spawn-agent.sh").is_file()

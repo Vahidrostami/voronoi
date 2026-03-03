@@ -49,23 +49,15 @@ brew install beads tmux gh
 ./scripts/swarm-init.sh
 ```
 
-### Option A — Fully Automated (Autopilot)
-
-One command, zero interaction:
+### Option A — CLI (recommended)
 
 ```bash
-./scripts/autopilot.sh --prompt demos/emergent-ecosystem/PROMPT.md \
-  --dashboard /tmp/ecosystem-swarm.txt \
-  --notify "say 'ecosystem complete'"
+voronoi demo run emergent-ecosystem
 ```
 
-Watch progress in another terminal:
+Watch agents:
 ```bash
-# Live dashboard
-python3 scripts/dashboard.py
-
-# Or simple tail
-tail -f /tmp/ecosystem-swarm.txt
+tmux attach -t $(basename $(pwd))-swarm
 ```
 
 ### Option B — Interactive (Human-in-the-Loop)

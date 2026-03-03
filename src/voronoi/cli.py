@@ -1,6 +1,7 @@
 """CLI entry point for voronoi."""
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -54,6 +55,73 @@ def _ensure_executable(directory: Path) -> None:
         return
     for sh_file in directory.rglob("*.sh"):
         sh_file.chmod(sh_file.stat().st_mode | 0o755)
+
+
+def _build_orchestrator_prompt(
+    prompt_path: str, output_dir: str, safe: bool, max_agents: int = 4,
+) -> str:
+    """Build the prompt that makes Copilot the swarm orchestrator.
+
+    Replaces the rigid 1000-line bash autopilot with Copilot's own judgment:
+    it reads the project brief, plans tasks in Beads, spawns worker agents,
+    monitors progress, merges completed work, and handles failures.
+    """
+    safe_flag = "--safe " if safe else ""
+    return (
+        "You are the Voronoi swarm orchestrator. Your job: read the project brief, "
+        "plan tasks, spawn parallel worker agents, monitor their progress, merge "
+        "completed work, and repeat until the project is done.\n\n"
+        f"PROJECT BRIEF: Read `{prompt_path}` completely before planning — every line matters.\n"
+        f"OUTPUT DIR: All work scoped under `{output_dir}/` "
+        f"(source in `{output_dir}/src/`, output in `{output_dir}/output/`).\n"
+        f"MAX CONCURRENT AGENTS: {max_agents}.\n\n"
+        "## Tools\n\n"
+        "Task tracking (Beads):\n"
+        "  bd prime                       # Load context at start\n"
+        "  bd create \"title\" -t task -p <1-3> --description \"...\" --json\n"
+        "  bd create \"title\" -t epic -p 1 --json\n"
+        "  bd dep add <child-id> <parent-id>\n"
+        "  bd ready --json                # Unblocked tasks\n"
+        "  bd update <id> --notes \"PRODUCES:file1,file2\"  # Artifact contract\n"
+        "  bd update <id> --notes \"REQUIRES:file1,file2\"  # Input contract\n"
+        "  bd close <id> --reason \"summary\"\n"
+        "  bd list --json / bd show <id> --json\n\n"
+        "Spawn a worker agent:\n"
+        "  1. Write the worker's prompt to a temp file, e.g. /tmp/prompt-<branch>.txt\n"
+        "  2. Run: ./scripts/spawn-agent.sh "
+        f"{safe_flag}<task-id> <branch-name> /tmp/prompt-<branch>.txt\n\n"
+        "Merge completed work:\n"
+        "  ./scripts/merge-agent.sh <branch-name> <task-id>\n\n"
+        "Monitor agents:\n"
+        "  bd show <id> --json                                    # Task status\n"
+        "  git log main..<branch> --oneline                      # Commits\n"
+        "  tmux capture-pane -t $(jq -r .tmux_session .swarm-config.json):<branch> -p 2>/dev/null | tail -20\n\n"
+        "## Workflow\n\n"
+        f"1. Read `{prompt_path}` completely — understand deliverables, success criteria, constraints\n"
+        "2. Run `bd prime`, then create an epic + tasks with dependencies and artifact contracts\n"
+        "   (each task: PRODUCES files it must create, REQUIRES files it needs, clear file scope)\n"
+        "3. OODA loop:\n"
+        "   - Observe:  `bd ready --json` for tasks to dispatch, check agent status\n"
+        "   - Orient:   Any agents done? Failed? Stuck? New tasks unblocked?\n"
+        "   - Decide:   What to spawn, merge, retry, or fix\n"
+        "   - Act:      Spawn agents (with rich prompts), merge completed work, \n"
+        "               diagnose failures, dispatch newly unblocked tasks\n"
+        "   - Repeat until all tasks are done\n"
+        "4. Verify deliverables exist, `git push origin main`, report results\n\n"
+        "## Writing Worker Prompts — CRITICAL\n\n"
+        "Each worker agent is autonomous — it only knows what you tell it. Include:\n"
+        "- WHAT to build: specific files, functions, data structures, algorithms\n"
+        "- FULL relevant context from the project brief (copy sections verbatim)\n"
+        "- Input files with full paths, output files matching PRODUCES artifact contract\n"
+        "- Acceptance criteria: how the agent knows it's done\n"
+        "- Completion: `bd close <task-id> --reason \"...\"` then `git push origin <branch>`\n\n"
+        "## Rules\n"
+        "- Read the FULL project brief before planning\n"
+        "- No overlapping file scopes between agents\n"
+        "- Write detailed, context-rich worker prompts — agents can't infer what you don't provide\n"
+        "- Diagnose failures (check git log, tmux output) before retrying\n"
+        "- Push all completed work to remote when done\n"
+    )
 
 
 def cmd_init(args: argparse.Namespace) -> None:
@@ -250,30 +318,55 @@ def cmd_demo(args: argparse.Namespace) -> None:
         if args.dry_run:
             print(f"\n--dry-run: demo copied but not started.")
             print(f"To run manually:")
-            print(f"  ./scripts/autopilot.sh --prompt {prompt_path} --safe")
+            print(f"  copilot --allow-all -p \"$(cat .swarm/orchestrator-prompt.txt)\"")
             return
 
-        # Build the autopilot command
-        autopilot = target / "scripts" / "autopilot.sh"
-        if not autopilot.exists():
-            print(f"Error: scripts/autopilot.sh not found.", file=sys.stderr)
+        # Read config for agent settings
+        config = {}
+        config_path = target / ".swarm-config.json"
+        if config_path.exists():
+            config = json.loads(config_path.read_text())
+
+        agent_cmd = config.get("agent_command", "copilot")
+        max_agents = config.get("max_agents", 4)
+
+        # Verify agent CLI exists
+        agent_bin = agent_cmd.split()[0]
+        if not shutil.which(agent_bin):
+            print(f"Error: agent CLI not found: {agent_bin}", file=sys.stderr)
+            print("  Install Copilot CLI or update agent_command in .swarm-config.json", file=sys.stderr)
             sys.exit(1)
 
-        cmd = ["bash", str(autopilot), "--prompt", prompt_path]
-        if args.safe:
-            cmd.append("--safe")
+        # Build orchestrator prompt
+        prompt = _build_orchestrator_prompt(
+            prompt_path=prompt_path,
+            output_dir=f"demos/{name}",
+            safe=args.safe,
+            max_agents=max_agents,
+        )
 
-        print(f"\nLaunching autopilot...\n")
-        print(f"  Command: {' '.join(cmd)}")
-        print(f"  Monitor: python3 scripts/dashboard.py")
-        print(f"  Agents:  tmux attach -t $(basename $(pwd))-swarm")
+        # Write prompt to file for reference/debugging
+        swarm_dir = target / ".swarm"
+        swarm_dir.mkdir(parents=True, exist_ok=True)
+        (swarm_dir / "orchestrator-prompt.txt").write_text(prompt)
+
+        # Launch orchestrator — Copilot IS the autopilot now
+        agent_flags = "--allow-all"
+        cmd = [agent_cmd] + agent_flags.split() + ["-p", prompt]
+
+        project_name = target.name
+        print(f"\nLaunching orchestrator...\n")
+        print(f"  Agent:  {agent_cmd}")
+        print(f"  Prompt: .swarm/orchestrator-prompt.txt")
+        print(f"  Agents: tmux attach -t {project_name}-swarm")
         print()
 
         try:
             subprocess.run(cmd, cwd=str(target))
         except KeyboardInterrupt:
-            print("\n\nAutopilot interrupted. Resume with:")
-            print(f"  ./scripts/autopilot.sh --resume")
+            print(f"\n\nOrchestrator interrupted.")
+            print(f"  Agent work preserved in tmux: tmux attach -t {project_name}-swarm")
+            print(f"  Re-run: voronoi demo run {name}")
 
     elif args.demo_action == "clean":
         name = args.name
