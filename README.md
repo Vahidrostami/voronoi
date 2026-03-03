@@ -1,28 +1,54 @@
-# Agent Swarm Template
+# Voronoi
 
-A production-ready template for orchestrating multiple AI coding agents working in parallel using git worktrees, [Beads](https://github.com/steveyegge/beads) for task tracking, tmux for session management, and an AI coding CLI ([Copilot CLI](https://githubnext.com/projects/copilot-cli/) or [Claude Code](https://docs.anthropic.com/en/docs/claude-code)) for execution.
+Orchestrate multiple AI coding agents working in parallel — with git worktree isolation, dependency-aware task tracking, and automatic merge workflows.
 
-Clone → initialize → start shipping features 10x faster with a self-organizing team of AI agents.
-
-## Quick Start
+## Install
 
 ```bash
-# 1. Clone and enter
-git clone https://github.com/yourorg/agent-swarm-template my-app
-cd my-app
+pip install voronoi
+```
 
-# 2. Install dependencies
-brew install beads tmux gh
+## Usage
 
-# 3. Initialize
-./scripts/swarm-init.sh
+```bash
+# In any git repo:
+cd my-project
+voronoi init
 
-# 4. Launch the swarm
-claude
+# Start your AI coding agent
+copilot                    # or: claude
 > /swarm Build a full-stack SaaS app with auth, billing, dashboard, and API
 ```
 
-## How It Works
+That's it. The swarm plans the work, spawns isolated agents, and merges results back.
+
+## What `voronoi init` sets up
+
+```
+my-project/
+├── scripts/           # Orchestration scripts (spawn, merge, standup, teardown)
+├── templates/         # Prompt templates for agent personas
+├── .claude/           # Slash commands (/swarm, /standup, /merge, etc.)
+├── CLAUDE.md          # Agent constitution — edit to customize agent behavior
+└── AGENTS.md          # Agent configuration alias
+```
+
+**Everything is local files.** No daemon, no server, no account. Agents are coordinated through git branches, [Beads](https://github.com/steveyegge/beads) for task tracking, and tmux sessions.
+
+## Commands
+
+Once initialized, use these from inside your AI coding agent:
+
+| Command | What it does |
+|---------|-------------|
+| `/swarm <task>` | Decompose task → spawn parallel agents |
+| `/standup` | Status report across all agents |
+| `/progress` | Quick overview |
+| `/spawn <id>` | Launch a single agent on a specific task |
+| `/merge` | Merge completed agent branches into current branch |
+| `/teardown` | Kill all agents, clean up worktrees |
+
+## How it works
 
 ```
 You ─► /swarm "Build X" ─► Orchestrator
@@ -34,96 +60,82 @@ You ─► /swarm "Build X" ─► Orchestrator
                   │           │           │
                   └───────────┼───────────┘
                               ▼
-                         main branch
+                        your branch
 ```
 
-1. **Plan** — The orchestrator decomposes your task into an epic with subtasks in Beads
-2. **Dispatch** — Unblocked tasks get isolated git worktrees + tmux panes + Claude Code agents
-3. **Monitor** — Run `/standup` or `/progress` to check agent status
-4. **Merge** — Run `/merge` to land completed work and unblock downstream tasks
-5. **Repeat** — Until the epic is done
+1. **Plan** — Orchestrator decomposes your task into subtasks with dependencies
+2. **Dispatch** — Each unblocked task gets its own git worktree + agent
+3. **Monitor** — `/standup` or `/progress` to check on agents
+4. **Merge** — `/merge` to land completed work and unblock the next wave
+5. **Repeat** — Until done
 
-## Commands
+## Upgrade
 
-| Command | Description |
-|---------|-------------|
-| `/swarm <task>` | Plan and dispatch a multi-agent workload |
-| `/standup` | Daily standup across all agents |
-| `/progress` | Quick status check |
-| `/spawn <id>` | Spawn a single agent on a task |
-| `/merge` | Merge completed agent branches |
-| `/teardown` | Clean up all worktrees and sessions |
+When a new version ships:
 
-## GitHub Copilot Integration
-
-This template includes support for the newest GitHub Copilot features:
-
-- **`.github/agents/`** — Custom Copilot agents (orchestrator + worker personas)
-- **`.github/skills/`** — Modular agent skills (task planning, worktree management, etc.)
-- **`.github/prompts/`** — Reusable prompt templates for common workflows
-
-## Repository Structure
-
+```bash
+pip install --upgrade voronoi
+cd my-project
+voronoi upgrade
 ```
-agent-swarm-template/
-├── .claude/commands/          # Claude Code slash commands
-├── .github/
-│   ├── agents/                # Copilot custom agents
-│   ├── skills/                # Copilot agent skills
-│   ├── prompts/               # Copilot reusable prompts
-│   └── workflows/             # CI + automated standup
-├── scripts/                   # Shell scripts for orchestration
-├── templates/                 # Prompt and report templates
-├── CLAUDE.md                  # Agent constitution
-├── AGENTS.md                  # → CLAUDE.md alias
-└── DESIGN.md                  # Full design document
-```
+
+This replaces `scripts/`, `templates/`, and `.claude/` with the latest versions. Your `CLAUDE.md` is preserved (that's your customization point).
 
 ## Prerequisites
 
-- [Beads (bd)](https://github.com/steveyegge/beads) — Task tracking with dependency graphs
-- [tmux](https://github.com/tmux/tmux) — Terminal multiplexer for agent sessions
-- [GitHub CLI (gh)](https://cli.github.com/) — GitHub integration
-- One of: [Copilot CLI](https://githubnext.com/projects/copilot-cli/) or [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — AI coding agent (must support `-p` flag for non-interactive mode)
+- **Python 3.10+**
+- **[Beads (bd)](https://github.com/steveyegge/beads)** — dependency-aware task tracking
+- **[tmux](https://github.com/tmux/tmux)** — terminal multiplexer for agent sessions
+- **[GitHub CLI (gh)](https://cli.github.com/)** — GitHub integration
+- One of: **[Copilot CLI](https://githubnext.com/projects/copilot-cli/)** or **[Claude Code](https://docs.anthropic.com/en/docs/claude-code)**
 
-## Why Not Just `/fleet`?
-
-Copilot's `/fleet` command is great for parallelizing short-lived tasks within a single session — like writing tests for 10 files. But it doesn't solve multi-day epics: subagents share a working directory (risking file conflicts), task state vanishes when the session ends, and there's no merge workflow or human oversight. This template gives you **git worktree isolation** so agents can't step on each other, **Beads for persistent task tracking** that survives across sessions and reboots, **explicit branch merges** with conflict detection, and **standup reports** so you stay in control. Think of `/fleet` as a turbo button for one agent's subtask; this is the full command center for a team of agents shipping a feature over days.
+```bash
+# macOS
+brew install beads tmux gh
+```
 
 ## Configuration
 
-After running `swarm-init.sh`, edit `.swarm-config.json`:
+After `voronoi init`, a `.swarm-config.json` is generated:
 
 ```json
 {
   "max_agents": 4,
   "agent_command": "copilot",
-  "agent_flags": "--allow-all",
-  "auto_merge": false,
-  "branch_prefix": "agent-"
+  "agent_flags": "--allow-all"
 }
 ```
 
-| Field | Purpose |
-|-------|---------|
-| `agent_command` | CLI binary to dispatch agents (`"copilot"` or `"claude"`). The spawn script appends `-p` automatically. |
-| `agent_flags` | Flags for headless execution (e.g. `"--allow-all"` to grant all permissions without prompting). |
+The init script auto-detects which AI CLI you have installed.
 
-The init script auto-detects which CLI is installed. Override manually if needed.
+## For Contributors
 
-## Design
+```bash
+# Clone the source repo
+git clone https://github.com/Vahidrostami/voronoi
+cd voronoi
 
-See [DESIGN.md](DESIGN.md) for the full architecture, workflow diagrams, and design decisions.
+# Install in editable mode — changes are live instantly
+pip install -e .
+
+# Now test against any project
+cd /tmp && mkdir test-project && cd test-project && git init
+voronoi init     # ← uses your live source files, no rebuild needed
+
+# Run tests
+cd ~/voronoi
+pytest
+```
 
 ## Demos
 
-Ready-to-run scenarios in [demos/](demos/):
+Example scenarios in [demos/](demos/):
 
-- **[Emergent Ecosystem](demos/emergent-ecosystem/)** — 4 species with different communication strategies compete on a shared grid. 6 agents across 3 waves. Run it with Copilot CLI or Claude Code:
-  ```bash
-  copilot
-  > /swarm @swarm-orchestrator Build an emergent multi-species ecosystem simulation. Details in demos/emergent-ecosystem/PROMPT.md
-  ```
+- **[Emergent Ecosystem](demos/emergent-ecosystem/)** — Multi-species simulation built by 6 agents in 3 waves
+
+## Design
+
+See [DESIGN.md](DESIGN.md) for architecture and design decisions.
 
 ## License
 

@@ -16,6 +16,17 @@ cd "$PROJECT_DIR"
 
 echo "--- Merging agent: $BRANCH_NAME ---"
 
+# 0. Safety: push agent branch to remote first (code survives even if merge fails)
+echo "  Pushing $BRANCH_NAME to remote (safety net)..."
+if [[ -d "$WORKTREE_PATH" ]]; then
+    (cd "$WORKTREE_PATH" && git push origin "$BRANCH_NAME" 2>/dev/null) || \
+        git push origin "$BRANCH_NAME" 2>/dev/null || \
+        echo "  ⚠ Could not push $BRANCH_NAME to remote (may already be there)"
+else
+    git push origin "$BRANCH_NAME" 2>/dev/null || \
+        echo "  ⚠ Could not push $BRANCH_NAME to remote (may already be there)"
+fi
+
 # 1. Ensure we're on main
 git checkout main
 git pull --rebase
@@ -24,7 +35,8 @@ git pull --rebase
 if git merge "$BRANCH_NAME" --no-ff -m "Merge $BRANCH_NAME: agent work complete"; then
     echo "✓ Merged successfully"
 else
-    echo "✗ Merge conflict detected. Resolve manually, then re-run."
+    echo "✗ Merge conflict detected. Branch $BRANCH_NAME is safely on remote."
+    echo "  Resolve manually: git merge $BRANCH_NAME"
     exit 1
 fi
 
@@ -32,15 +44,21 @@ fi
 git push origin main
 echo "✓ Pushed to main"
 
-# 4. Close the Beads task if provided
+# 4. Close the Beads task if provided (and not already closed)
 if [ -n "$TASK_ID" ]; then
-    bd close "$TASK_ID" --reason "Merged to main from $BRANCH_NAME"
-    echo "✓ Beads task $TASK_ID closed"
+    if bd show "$TASK_ID" --json 2>/dev/null | jq -e '.status == "closed"' >/dev/null 2>&1; then
+        echo "✓ Beads task $TASK_ID already closed"
+    else
+        bd close "$TASK_ID" --reason "Merged to main from $BRANCH_NAME"
+        echo "✓ Beads task $TASK_ID closed"
+    fi
 fi
 
-# 5. Clean up worktree
-git worktree remove "$WORKTREE_PATH" 2>/dev/null || true
+# 5. Clean up worktree (code is safely on main now)
+git worktree remove "$WORKTREE_PATH" 2>/dev/null || rm -rf "$WORKTREE_PATH" 2>/dev/null || true
 git branch -d "$BRANCH_NAME" 2>/dev/null || true
+# Clean remote branch too
+git push origin --delete "$BRANCH_NAME" 2>/dev/null || true
 echo "✓ Worktree and branch cleaned up"
 
 # 6. Kill tmux window if it exists
