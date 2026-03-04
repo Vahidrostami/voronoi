@@ -25,7 +25,7 @@ Design, build, experimentally validate, and write up a system that fulfils the a
 2. The solution has a multimodal encoding layer that preserves epistemic differences across knowledge types
 3. The solution has a progressive space-reduction pipeline with parallel diagnosis → causal synthesis → quality gating
 4. The primary instantiation domain is Revenue Growth Management
-5. The paper must demonstrate cross-domain generalizability
+5. The paper should briefly discuss cross-domain applicability (but this is secondary to encoding and pipeline validation)
 
 **What is yours to decide** (these are the research and engineering contributions):
 
@@ -37,7 +37,7 @@ Design, build, experimentally validate, and write up a system that fulfils the a
 - The quality gate's dimensions and scoring
 - The experimental design that convincingly validates each claim
 - The synthetic data scenarios — what effects to plant, how many, what makes them hard
-- The cross-domain instantiation (choose 2+ domains from: precision medicine, materials discovery, supply chain, financial risk, or others)
+- The cross-domain discussion (optionally sketch 1–2 other domains — precision medicine, materials discovery, supply chain, financial risk, or others — but keep it brief)
 - The paper's narrative arc and how to present the results compellingly
 
 ---
@@ -55,6 +55,15 @@ This is a paper, not a software demo. Every section must meet academic standards
 ### Encoding Layer (Contribution 2)
 - Design representations for each knowledge type that are machine-readable yet preserve native semantics
 - The key insight to validate: conflicts between knowledge sources become *diagnostic signals* rather than noise. Design experiments that demonstrate this
+- **Head-to-head baseline — raw table dump**: The strongest skeptic objection is "why not just paste the CSV into an LLM prompt?" You MUST include a baseline that serializes the same data as a plain numeric table (CSV/markdown) and sends it to the same LLM with an equivalent task prompt. Compare against your structured encoding on identical scenarios. If your encoding doesn't clearly win, the contribution is not established.
+- **Encoding ablation ladder**: Test at least these representation strategies, all using the same LLM and prompt structure:
+  1. *Raw table dump* — flat CSV / markdown table of numbers, no semantic annotation
+  2. *Narrated table* — raw numbers plus natural-language column descriptions
+  3. *Type-collapsed encoding* — all knowledge types forced into a single representation (e.g., everything as text, or everything as feature vectors)
+  4. *Full structured encoding* — your proposed statistical profiles + constraint vectors + temporal belief objects
+- For each level, measure: (a) discovery precision/recall of planted cross-lever effects, (b) frequency of hallucinated or spurious effects, (c) ability to detect conflicts between knowledge sources, (d) quality of causal mechanism explanations
+- Report pairwise effect sizes (Cohen's d or equivalent) with 95% CIs between each adjacent rung and between raw-table-dump vs full-encoding
+- Show at least one scenario where the raw table dump *actively misleads* the LLM (e.g., Simpson's paradox, confounded correlation, unit mismatch) while the structured encoding surfaces the correct interpretation
 - Show that collapsing knowledge types into a single representation (e.g., converting everything to text, or everything to numbers) loses critical information
 
 ### Progressive Pipeline (Contribution 3)
@@ -66,10 +75,10 @@ This is a paper, not a software demo. Every section must meet academic standards
 Design experiments that are *genuinely convincing* to a skeptical reviewer. At minimum:
 
 - **Ablation**: Remove each major component and show degradation. The full system must meaningfully outperform every ablated variant
-- **Encoding fidelity**: Show that your representations enable reasoning that raw data does not
+- **Encoding fidelity (primary experiment)**: Run the full encoding ablation ladder (raw table → narrated table → type-collapsed → full encoding) on identical synthetic scenarios. This is the paper's most critical experiment — allocate the most scenarios and the most careful analysis here. The full encoding must statistically significantly outperform the raw table dump on at least precision, recall, and hallucination rate.
 - **Cross-source reasoning**: Show that the system discovers effects that require synthesizing multiple knowledge types — and that siloed analysis misses them
 - **Space reduction**: Quantify compression at each pipeline stage
-- **Generalization**: Apply the same framework (not just code — the conceptual architecture) to at least 2 additional domains
+- **Generalization** *(secondary, brief)*: Sketch applicability to 1–2 additional domains to show the architecture is not RGM-specific, but keep this concise — a short qualitative discussion is sufficient. Do not invest significant experimental effort here.
 
 For all experiments: report effect sizes, confidence intervals, and statistical tests. Negative or weak results must be reported honestly.
 
@@ -140,7 +149,7 @@ The paper succeeds if a skeptical reviewer would agree that:
 3. **Cross-source reasoning works** — the system discovers effects that require synthesizing multiple knowledge types, and siloed analysis misses them
 4. **The pipeline compresses effectively** — a combinatorial space is reduced by orders of magnitude to a tractable set of interventions with zero hard-constraint violations
 5. **Ablation is convincing** — removing any major component produces measurable degradation
-6. **Generalization is demonstrated** — the framework works across at least 3 domains (primary + 2 secondary) without domain-specific modifications to the core architecture
+6. **Generalization is plausible** — a brief discussion argues the architecture applies beyond RGM, but deep multi-domain experiments are not required
 7. **Results are validated** — all claims pass statistical audit, methodology critique, and adversarial review before appearing in the paper
 8. **Limitations are honest** — the paper reports what didn't work, what was weak, and what assumptions might not hold
 
