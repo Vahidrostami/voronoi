@@ -84,7 +84,18 @@ For all experiments: report effect sizes, confidence intervals, and statistical 
 
 ### Synthetic Data
 You must generate your own synthetic data with *planted ground truth* so you can rigorously measure discovery performance. Design the data to be:
-- **Realistic**: Reflect actual characteristics of the domain (correlations, noise, missing data, confounders)
+- **Large-scale**: Generate datasets that mimic the volume and granularity of real enterprise data. Minimum requirements:
+  - **Transaction-level data**: ≥100,000 rows per scenario (e.g., weekly store×SKU observations across 50+ stores, 200+ SKUs, 2+ years)
+  - **Multiple scenarios**: At least 8–10 distinct synthetic scenarios, each with different planted effects, coupling structures, and noise profiles
+  - **High dimensionality**: Each scenario should include ≥15 decision levers/features with realistic covariance structure
+  - The sample sizes must be large enough that statistical tests have adequate power (≥0.8) to detect the planted effects at their true magnitudes
+- **Realistic — mimic real-world data characteristics**: The synthetic data must be indistinguishable in structure from what an analyst would encounter in practice:
+  - Reproduce real-world distributional shapes: skewed revenue distributions, fat-tailed promotional lifts, zero-inflated sparse assortment matrices
+  - Include temporal structure: seasonality (weekly, monthly, annual cycles), trend, promotional calendar effects, holiday spikes
+  - Inject realistic noise: measurement error, reporting lags, missing data (MCAR, MAR, and MNAR patterns at 5–15% rates), outliers, and data entry errors
+  - Model realistic confounders: price–promotion correlation, store-size effects, geographic clustering, brand-level halo effects
+  - Include heterogeneous sub-populations (e.g., urban vs. rural stores, premium vs. value segments) with different response functions
+  - Generate companion policy documents and expert judgment data with realistic ambiguity, contradictions, and varying confidence levels
 - **Challenging**: Include effects that require cross-lever and cross-source reasoning to discover
 - **Measurable**: Every planted effect has a known ground-truth magnitude so you can compute precision/recall
 - **Non-trivial**: A naive approach (analyzing each lever independently) must fail to discover at least some effects. This is how you prove coupling matters.
@@ -104,9 +115,16 @@ Keep the ground-truth specification completely separate from the reasoning syste
 
 - Python 3.11+
 - Only stdlib + matplotlib + numpy + scipy (no ML frameworks, no pip install openai/anthropic)
-- **Copilot CLI is mandatory** for all LLM reasoning: `copilot -p "<prompt>" -s --no-color --allow-all`. The system MUST use Copilot — there is no heuristic fallback. If `copilot` is not in PATH, the pipeline should fail immediately with a clear error message rather than silently degrading.
+- **Copilot CLI is mandatory** for ALL reasoning, analysis, synthesis, and evaluation: `copilot -p "<prompt>" -s --no-color --allow-all`. Every component that performs judgment, interpretation, or inference MUST route through the LLM — there is NO heuristic fallback, NO rule-based shortcut, and NO hard-coded scoring logic anywhere in the pipeline. Specifically:
+  - Diagnostic agents MUST use LLM calls to analyze data and generate findings — not statistical heuristics or threshold-based rules
+  - Causal synthesis MUST use LLM reasoning to assemble evidence into interventions — not template filling or pattern matching
+  - Quality gating MUST use LLM evaluation to score candidates — not weighted-sum heuristics or rule engines
+  - Encoding evaluation and conflict detection MUST use LLM interpretation — not string matching or numeric comparisons
+  - If `copilot` is not in PATH, the pipeline MUST fail immediately with a clear error message rather than silently degrading to heuristics
+  - Any code path that makes a judgment call without an LLM invocation is a bug
+- **Model identification is mandatory**: At startup, the pipeline MUST query `copilot -p "What model are you? Reply with only your model name and version." -s --no-color --allow-all`, parse the response, and record the model name (e.g., "GPT-4o", "Claude 3.5 Sonnet") in `results.json` under a top-level `"model"` key. The paper MUST report this model name in the Experimental Setup section so readers know exactly which LLM produced the results.
 - All LLM calls cached in `.llm_cache/` by prompt hash for reproducibility. First run hits the LLM; subsequent runs replay from cache.
-- Full pipeline should complete in <30 minutes first run, <5 minutes from cache
+- Full pipeline should complete in <60 minutes first run, <5 minutes from cache (increased budget to accommodate large-scale data generation and LLM-intensive evaluation)
 - Paper compiles with standard pdflatex + bibtex
 
 ---
