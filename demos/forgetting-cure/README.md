@@ -19,15 +19,14 @@ Tests whether neuroscience-inspired mechanisms prevent catastrophic forgetting:
 
 ## How to Run
 
-### Option A: Autopilot (fully automated)
+### Option A: CLI (recommended)
 ```bash
-./scripts/swarm-init.sh
-./scripts/autopilot.sh --prompt demos/forgetting-cure/PROMPT.md --safe
+voronoi demo run forgetting-cure
 ```
 
 ### Option B: Interactive
 ```bash
-./scripts/swarm-init.sh
+voronoi init
 copilot
 > /swarm Build from demos/forgetting-cure/PROMPT.md
 ```

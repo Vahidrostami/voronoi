@@ -13,16 +13,27 @@ all active agents in the swarm.
 
 ## Running a Standup
 
+Use Beads and git directly to gather status:
+
 ```bash
-./scripts/standup.sh
+# Task status
+bd list --json | jq -r '.[] | "[\(.id)] \(.status) P\(.priority) \(.title)"'
+
+# Ready tasks
+bd ready
+
+# Per-branch activity
+for wt in ../$(basename $(pwd))-swarm/agent-*; do
+  [ -d "$wt" ] || continue
+  b=$(basename "$wt")
+  echo "$b: $(git log main..$b --oneline 2>/dev/null | wc -l | tr -d ' ') commits"
+done
 ```
 
-This script generates a comprehensive report covering:
-
-1. **Task Summary** — Open, in-progress, ready, and recently closed tasks from Beads
-2. **Agent Branches** — Per-branch commit counts, file changes, and last activity time
-3. **Conflict Check** — Detects potential merge conflicts between agent branches
-4. **Recommendations** — Suggested next actions
+Or run the dashboard for live monitoring:
+```bash
+python3 scripts/dashboard.py
+```
 
 ## Interpreting Results
 
@@ -53,6 +64,5 @@ bd update <id> --notes "Standup $(date +%Y-%m-%d): [status summary]"
 
 ## Automated Standups
 
-Standups can run automatically via:
-- **GitHub Actions:** `.github/workflows/daily-standup.yml` (weekdays at 9am UTC)
-- **Cron:** `scripts/cron-standup.sh` — writes report and optionally posts as GitHub Issue
+Standups run as part of the orchestrator's OODA loop — the orchestrator Copilot
+checks agent status continuously and acts on stalls, blocks, and completions.

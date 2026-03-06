@@ -12,7 +12,18 @@ You are running a standup meeting across all active agents.
 
 ## Process
 
-1. Run `./scripts/standup.sh` and read the output
+1. Gather agent status using Beads and git:
+
+   ```bash
+   bd list --json
+   bd ready --json
+   ```
+
+   For each active agent branch:
+   ```bash
+   git log main..<branch> --oneline
+   git log <branch> -1 --format="%ar"
+   ```
 
 2. Interpret the results and provide a human-friendly report:
 

@@ -1,207 +1,113 @@
 # Navigating Coupled Decision Spaces with Fragmented and Heterogeneous Knowledge: A System of Agents for Reasoning
 
-Build a multi-agent system that reasons over coupled decision levers using heterogeneous knowledge sources, validate it experimentally against planted ground truth, and write a complete academic paper with the results.
+Produce a complete academic paper — with synthetic experimental evidence — that introduces a multi-agent framework for reasoning over coupled decision levers under heterogeneous knowledge. The paper must be rigorous enough for a top-tier venue (AAAI, NeurIPS, ICML workshop, or Management Science).
 
 ---
 
-## The Research Problem
+## Abstract
 
-A broad class of applied decision problems share three structural invariants:
+> A broad class of applied decision problems — including revenue growth management, precision medicine, materials discovery, supply chain design, and financial risk management — share a common underlying structure. In these settings, the decision space is combinatorial over interdependent levers, the feasible region is constrained by hard operational limits, and the knowledge required to navigate the space is fragmented across sources with incompatible semantics, noise characteristics, and epistemic status. Adjusting one decision variable alters the optimal configuration of others, rendering independent optimization invalid. At the same time, the heterogeneity of available knowledge — ranging from quantitative measurements and codified rules to expert judgment — creates a representational bottleneck that prevents joint reasoning and forces reliance on ad‑hoc human cognitive synthesis.
+>
+> This paper makes three contributions. First, we formally characterize this problem class through three structural invariants: lever coupling, knowledge heterogeneity, and the cognitive assembly bottleneck. We show that approaches addressing any single invariant in isolation necessarily produce incomplete solutions. This characterization defines the structural conditions under which a unified framework can generalize across domains. Second, we introduce a multimodal encoding layer that transforms each knowledge type into a reasoning‑ready representation while preserving its native semantics: quantitative data are encoded as statistical profiles, policy knowledge as tiered constraint vectors, and expert judgment as temporal belief objects equipped with confidence and decay functions. By preserving epistemic differences rather than collapsing them, the framework enables agents to reason jointly across all knowledge types. Conflicts between sources — such as quantitative signals contradicting established heuristics — become diagnostic signals of potential structural change rather than unresolvable noise. Third, we present a progressive space‑reduction pipeline operating over coupled levers in three stages. Parallel diagnostic agents prune the combinatorial space along complementary analytical dimensions; a causal synthesis layer assembles the surviving evidence into structured interventions specifying lever, direction, scope, and mechanism; and a multidimensional quality gate filters candidates based on evidence density, constraint alignment, actionability, testability, and novelty.
+>
+> We instantiate the framework in the domain of Revenue Growth Management, where commercial levers — including pricing, promotion, assortment, distribution, and pack‑price architecture — are deeply coupled and where knowledge is distributed across numerical data, policy documents, and subject‑matter expertise. We show that the encoding layer enables cross‑type reasoning that reveals interaction effects invisible to siloed analyses, and that the progressive reduction pipeline efficiently compresses a large candidate space into a focused set of causally grounded, testable hypotheses. We conclude by identifying the structural conditions under which the framework generalizes to other domains characterized by coupled decision levers.
 
-1. **Lever Coupling**: Adjusting one decision variable alters the optimal configuration of others. Independent optimization is invalid.
-2. **Knowledge Heterogeneity**: The information needed to navigate the space is fragmented across sources with incompatible semantics — quantitative measurements, codified rules, and expert judgment.
-3. **Cognitive Assembly Bottleneck**: No single source or analysis is sufficient. Someone (or something) must synthesize across all sources to reach sound decisions. Today this is done ad-hoc by humans.
-
-**The thesis**: A system of LLM-powered agents, given knowledge that has been encoded to preserve epistemic differences across types, can perform this cognitive assembly — discovering interaction effects that siloed analysis misses.
-
-**Your job**: Design and build such a system, then prove it works.
+This abstract is the contract. Every claim made above must be substantiated in the paper.
 
 ---
 
-## The Experimental Scenario: "BevCo"
+## Your Mission
 
-A simulated beverage company. This is your testbed — the data is synthetic with **known ground truth** so you can measure whether your system actually discovers what's planted.
+Design, build, experimentally validate, and write up a system that fulfils the abstract's three contributions. You own the entire research pipeline — from problem formalization through synthetic-data generation, system architecture, experimental design, analysis, and paper writing.
 
-### Scale
-- 50 SKUs across 5 categories (A–E)
-- 200 retail stores in 4 regions
-- 104 weeks (2 years) of data
-- ~1M transaction rows
+**What is fixed** (the intellectual commitments from the abstract):
+1. The problem is characterized by three structural invariants — lever coupling, knowledge heterogeneity, and the cognitive assembly bottleneck
+2. The solution has a multimodal encoding layer that preserves epistemic differences across knowledge types
+3. The solution has a progressive space-reduction pipeline with parallel diagnosis → causal synthesis → quality gating
+4. The primary instantiation domain is Revenue Growth Management
+5. The paper should briefly discuss cross-domain applicability (but this is secondary to encoding and pipeline validation)
 
-### The 5 Commercial Levers
+**What is yours to decide** (these are the research and engineering contributions):
 
-| Lever | Variables | Range | Key Couplings |
-|-------|-----------|-------|---------------|
-| **Pricing** | Base price per SKU per region | $0.50–$8.00 | Promotion (discount depth), pack-price (per-unit economics) |
-| **Promotion** | Type × frequency × depth per SKU | 12 types × 0–4/month × 10–50% off | Pricing (margin erosion), distribution (display allocation) |
-| **Assortment** | SKU inclusion per store cluster | Binary per SKU × 20 clusters | Distribution (shelf space), pricing (portfolio margin) |
-| **Distribution** | Coverage × shelf facings × display | Coverage %, 1–8 facings, display binary | Assortment (space allocation), promotion (display lift) |
-| **Pack-Price Architecture** | Pack sizes × price points per SKU | 3–6 sizes, price ladders | Pricing (cannibalization), assortment (portfolio coherence) |
-
-**Total naive decision space**: ~10^18 combinations.
-
-### Planted Ground-Truth Effects (5 total)
-
-These are embedded in the synthetic data. Your system should discover them; siloed analysis should miss them.
-
-1. **Price-Promotion Trap**: Category A SKUs show positive promo ROI when analyzed independently, but a 5% base-price reduction with no promotions yields 12% higher net revenue. The promo effect is an artifact of subsidizing price-insensitive loyal customers.
-
-2. **Assortment-Distribution Synergy**: Removing 8 low-velocity SKUs frees shelf space that, when reallocated to top SKUs, increases category revenue by 9%. Neither lever alone works — assortment change alone loses 3%, distribution change alone gains only 2%.
-
-3. **Pack-Price Cannibalization Mask**: A 12-pack at $9.99 appears to grow volume +15%, but cannibalizes the 6-pack at $5.99 by 22%, net destroying $0.43/unit margin. Only visible when pack-price and pricing data are analyzed jointly.
-
-4. **Cross-Source Signal**: Quantitative data shows declining Category B sales. Policy mandates 30% shelf share for Category B. Expert says "Category B decline is seasonal, will reverse in Q3." The correct intervention requires synthesizing all three sources — no single source gives the right answer.
-
-5. **Constraint-Coupling Conflict**: An expert recommends aggressive premium pricing, but policy constrains minimum margin at 25%. The correct answer: the expert is directionally right but must be scoped to only 3 of 12 premium SKUs where margin headroom exists.
-
-### Three Knowledge Sources
-
-**Source 1 — Quantitative Data (Numerical)**
-- `sales_transactions.csv`: ~1M rows (week, store_id, sku_id, region, category, units_sold, revenue, price_paid, promo_flag, promo_type, promo_depth, display_flag, facings, pack_size)
-- `price_elasticity.csv`: Own-price and cross-price elasticities per SKU pair per region. Include noise (σ=0.15) and systematically biased estimates.
-- `market_share.csv`: Weekly category-level market share by region with competitor effects.
-
-**Planted multi-collinearity** (realistic — levers rarely move independently):
-- Price–Promotion: ρ ≈ –0.6 (deeper promos correlate with higher base prices)
-- Assortment–Distribution: ρ ≈ 0.5 (more SKUs → fewer facings per SKU)
-- Promotion–Display: ρ ≈ 0.7 (promoted SKUs get display placement — confounding)
-- Pack-Size–Price: ρ ≈ 0.85 (larger packs → lower per-unit price — near-linear)
-
-**Source 2 — Policy Knowledge (Codified Rules)**
-- `policies.json`: ~15 rules, each with: `{rule_id, type: "hard"|"soft", lever, scope, threshold, rationale}`
-- Includes: minimum margin thresholds (hard), max promo frequency (soft), shelf space minimums (hard), pricing corridor rules, brand portfolio rules
-
-**Source 3 — Expert Judgment (Qualitative)**
-- `expert_beliefs.json`: 15–20 statements, each with: `{statement, confidence: 0.0–1.0, recency: date, domain: [levers], basis: "experience"|"analysis"|"intuition"}`
-- Mix of correct, outdated/wrong, and conditionally-correct beliefs
+- The formal definitions of the three invariants and proof that addressing them in isolation is insufficient
+- The specific encoding representations (the abstract suggests statistical profiles, constraint vectors, and temporal belief objects — but the exact design is yours)
+- The number, specialization, and interaction pattern of reasoning agents
+- The dimensions along which diagnostic agents prune the space
+- The causal synthesis mechanism
+- The quality gate's dimensions and scoring
+- The experimental design that convincingly validates each claim
+- The synthetic data scenarios — what effects to plant, how many, what makes them hard
+- The cross-domain discussion (optionally sketch 1–2 other domains — precision medicine, materials discovery, supply chain, financial risk, or others — but keep it brief)
+- The paper's narrative arc and how to present the results compellingly
 
 ---
 
-## What to Build
+## Research Quality Standards
 
-### 1. Data Generator
-Generate the synthetic BevCo scenario with all 5 ground-truth effects and multi-collinearity structures embedded. Deterministic with seed. The ground truth definitions must be kept separate and never exposed to the reasoning agents.
+This is a paper, not a software demo. Every section must meet academic standards:
 
-### 2. Multi-Agent Reasoning System
+### Problem Characterization (Contribution 1)
+- Formally define each structural invariant with mathematical precision
+- Prove (constructively or by counterexample) that approaches addressing any single invariant in isolation are incomplete — this is a core theoretical claim
+- Survey existing approaches and show where each falls short against the three invariants (this becomes your Related Work)
+- The characterization must be domain-independent; the invariants should be recognizable in any coupled-decision domain
 
-**This is the core design problem.** Build a system of LLM-powered agents that:
-- Transforms the three knowledge sources into representations suitable for LLM reasoning
-- Analyzes the coupled decision space using one or more reasoning agents
-- Produces a ranked set of recommended interventions
+### Encoding Layer (Contribution 2)
+- Design representations for each knowledge type that are machine-readable yet preserve native semantics
+- The key insight to validate: conflicts between knowledge sources become *diagnostic signals* rather than noise. Design experiments that demonstrate this
+- **Head-to-head baseline — raw table dump**: The strongest skeptic objection is "why not just paste the CSV into an LLM prompt?" You MUST include a baseline that serializes the same data as a plain numeric table (CSV/markdown) and sends it to the same LLM with an equivalent task prompt. Compare against your structured encoding on identical scenarios. If your encoding doesn't clearly win, the contribution is not established.
+- **Encoding ablation ladder**: Test at least these representation strategies, all using the same LLM and prompt structure:
+  1. *Raw table dump* — flat CSV / markdown table of numbers, no semantic annotation
+  2. *Narrated table* — raw numbers plus natural-language column descriptions
+  3. *Type-collapsed encoding* — all knowledge types forced into a single representation (e.g., everything as text, or everything as feature vectors)
+  4. *Full structured encoding* — your proposed statistical profiles + constraint vectors + temporal belief objects
+- For each level, measure: (a) discovery precision/recall of planted cross-lever effects, (b) frequency of hallucinated or spurious effects, (c) ability to detect conflicts between knowledge sources, (d) quality of causal mechanism explanations
+- Report pairwise effect sizes (Cohen's d or equivalent) with 95% CIs between each adjacent rung and between raw-table-dump vs full-encoding
+- Show at least one scenario where the raw table dump *actively misleads* the LLM (e.g., Simpson's paradox, confounded correlation, unit mismatch) while the structured encoding surfaces the correct interpretation
+- Show that collapsing knowledge types into a single representation (e.g., converting everything to text, or everything to numbers) loses critical information
 
-**Design decisions that are YOURS to make:**
-- How to encode/represent each knowledge type for LLM consumption
-- How many agents, what each one does, and how they're specialized
-- Whether and how agents communicate with each other
-- How to structure the reasoning pipeline (single-pass, multi-round, debate, etc.)
-- How to synthesize agent outputs into final recommendations
-- How to score and filter recommendations
+### Progressive Pipeline (Contribution 3)
+- The pipeline must demonstrably compress a combinatorial space by orders of magnitude
+- Each stage must be independently evaluable — you should be able to measure what each stage contributes
+- Final outputs should be structured interventions (not just "raise price") — specify lever, direction, magnitude, scope, mechanism, and supporting evidence
 
-**Constraints you MUST satisfy:**
-- Agents must use Copilot CLI for all LLM reasoning: `copilot -p "<prompt>" -s --no-color --allow-all`
-- All LLM calls must be cached by prompt hash in `.llm_cache/` for reproducibility
-- If `copilot` is not available, fall back to heuristic-based reasoning (numpy/scipy) so experiments can still run. Label which mode produced results.
-- Only stdlib + numpy + scipy + matplotlib (no ML frameworks, no direct LLM API libraries)
-- The system must reduce ~10^18 combinations to ≤15 recommendations with zero hard-constraint violations
+### Experimental Validation
+Design experiments that are *genuinely convincing* to a skeptical reviewer. At minimum:
 
-### 3. Experiments
+- **Ablation**: Remove each major component and show degradation. The full system must meaningfully outperform every ablated variant
+- **Encoding fidelity (primary experiment)**: Run the full encoding ablation ladder (raw table → narrated table → type-collapsed → full encoding) on identical synthetic scenarios. This is the paper's most critical experiment — allocate the most scenarios and the most careful analysis here. The full encoding must statistically significantly outperform the raw table dump on at least precision, recall, and hallucination rate.
+- **Cross-source reasoning**: Show that the system discovers effects that require synthesizing multiple knowledge types — and that siloed analysis misses them
+- **Space reduction**: Quantify compression at each pipeline stage
+- **Generalization** *(secondary, brief)*: Sketch applicability to 1–2 additional domains to show the architecture is not RGM-specific, but keep this concise — a short qualitative discussion is sufficient. Do not invest significant experimental effort here.
 
-Run these four experiments. How you implement them is up to you — what matters is the measurements.
+For all experiments: report effect sizes, confidence intervals, and statistical tests. Negative or weak results must be reported honestly.
 
-**Experiment 1: Encoding Validation**
-Does your knowledge encoding help LLM agents reason better than raw data?
-- Design 20 queries requiring reasoning across 2+ knowledge types
-- Measure: your encoding vs. raw data concatenation vs. single LLM call with everything
-- Measure: how many of the 5 planted cross-source conflicts does the system detect?
+### Synthetic Data
+You must generate your own synthetic data with *planted ground truth* so you can rigorously measure discovery performance. Design the data to be:
+- **Large-scale**: Generate datasets that mimic the volume and granularity of real enterprise data. Minimum requirements:
+  - **Transaction-level data**: ≥100,000 rows per scenario (e.g., weekly store×SKU observations across 50+ stores, 200+ SKUs, 2+ years)
+  - **Multiple scenarios**: At least 8–10 distinct synthetic scenarios, each with different planted effects, coupling structures, and noise profiles
+  - **High dimensionality**: Each scenario should include ≥15 decision levers/features with realistic covariance structure
+  - The sample sizes must be large enough that statistical tests have adequate power (≥0.8) to detect the planted effects at their true magnitudes
+- **Realistic — mimic real-world data characteristics**: The synthetic data must be indistinguishable in structure from what an analyst would encounter in practice:
+  - Reproduce real-world distributional shapes: skewed revenue distributions, fat-tailed promotional lifts, zero-inflated sparse assortment matrices
+  - Include temporal structure: seasonality (weekly, monthly, annual cycles), trend, promotional calendar effects, holiday spikes
+  - Inject realistic noise: measurement error, reporting lags, missing data (MCAR, MAR, and MNAR patterns at 5–15% rates), outliers, and data entry errors
+  - Model realistic confounders: price–promotion correlation, store-size effects, geographic clustering, brand-level halo effects
+  - Include heterogeneous sub-populations (e.g., urban vs. rural stores, premium vs. value segments) with different response functions
+  - Generate companion policy documents and expert judgment data with realistic ambiguity, contradictions, and varying confidence levels
+- **Challenging**: Include effects that require cross-lever and cross-source reasoning to discover
+- **Measurable**: Every planted effect has a known ground-truth magnitude so you can compute precision/recall
+- **Non-trivial**: A naive approach (analyzing each lever independently) must fail to discover at least some effects. This is how you prove coupling matters.
 
-**Experiment 2: Ablation Study**
-Which components of your system are necessary? Run at least these configurations:
-- **Full system**: everything you built
-- **No encoding**: agents get raw CSV/JSON/text instead of your encoded representations
-- **No coupling awareness**: agents analyze levers independently
-- **No multi-agent pipeline**: single LLM call with all information
+Keep the ground-truth specification completely separate from the reasoning system. The system must never see the answer key.
 
-For each: effects discovered (out of 5), precision/recall vs. ground truth, constraint violations, simulated revenue impact.
-
-**The key validation**: Full system must discover ≥4/5 effects. Removing any major component must degrade to ≤3/5.
-
-**Experiment 3: Progressive Reduction**
-How does your system compress the decision space at each stage? Measure the candidate count and ground-truth coverage at each step of your pipeline.
-
-**Experiment 4: Cross-Domain Generalization**
-Apply your same architecture (not just your code — your design pattern) to two mini-domains:
-- **Precision Medicine**: 3 coupled treatment levers (drug, dose, timing), 100 synthetic patients, 1 planted cross-lever effect
-- **Supply Chain**: 3 coupled levers (sourcing, inventory, routing), 50 synthetic nodes, 1 planted effect
-
-Must discover the planted effect in each using the same pipeline architecture.
-
-### 4. Results Validation (Mandatory Gate Before Paper)
-
-All experimental results MUST pass through a multi-stage validation gate before the paper is written. No result may appear in the paper without surviving this gauntlet.
-
-**Stage 1 — Statistical Audit (Statistician role):**
-- Review every quantitative claim: verify effect sizes, confidence intervals, p-values, and sample sizes are correctly computed
-- Check statistical test appropriateness (e.g., are distributions normal? independence assumptions met?)
-- Verify multiple comparison corrections where experiments share data
-- Flag any result with CI wider than 50% of the effect size as LOW_CONFIDENCE
-- Recompute key metrics independently from the raw data — do NOT trust summaries
-
-**Stage 2 — Methodology Critique (Critic role):**
-- For each of the 5 planted ground-truth effects: verify the system's detection is genuine, not an artifact of data leakage or confirmation bias
-- Check that the ablation study actually disables components (not just degrades them slightly)
-- Verify that "siloed analysis misses" claims are real — run the siloed analysis independently and confirm it fails
-- Identify at least 3 potential confounds per experiment and document why they don't invalidate results
-- Check cross-domain generalization: are the secondary domains genuinely different, or trivially similar to BevCo?
-
-**Stage 3 — Reproducibility Check:**
-- Clear `.llm_cache/` and rerun at least one full experiment from scratch to verify determinism from cache
-- Confirm that results match within expected variance (effect sizes within original CIs)
-- Verify all raw data files exist and checksums match
-
-**Stage 4 — Adversarial Review:**
-- Attempt to construct an alternative explanation for each key finding
-- For ground-truth effects: verify the system discovers them for the RIGHT reason, not coincidentally
-- For the ablation: can a simpler system (e.g., rule-based heuristic) match performance?
-- Document every adversarial challenge and the evidence-based response
-
-**Gate Rule:** The paper phase CANNOT begin until ALL stages produce a PASS verdict. If any stage fails, the relevant experiment must be rerun or the claim must be weakened/removed. Results that fail validation are reported honestly in the paper as limitations, not silently dropped.
-
-**Validation Output:** `demos/coupled-decisions/output/validation_report.json` containing per-experiment verdicts, reviewer notes, and any unresolved concerns.
-
-### 5. Academic Paper
-
-Write a complete LaTeX paper with:
-- **Sections**: Introduction, Problem Characterization (the 3 invariants), Your Method (encoding + agents + pipeline), Experimental Setup, Results (all 4 experiments), Validation (documenting all critic/statistician challenges and responses), Discussion, Limitations (honestly reporting what validation uncovered), Generalization, Conclusion
-- **Figures** (generated from real results): architecture diagram, ablation comparison, pipeline compression, encoding fidelity, quality scores, generalization comparison, and others as appropriate
-- **Tables**: ablation results, top interventions, generalization results, and others as appropriate
-- **Bibliography**: 30–40 relevant references
+### Paper Writing
+- Full LaTeX paper: Introduction, Related Work, Problem Characterization, Method, Experimental Setup, Results, Discussion, Limitations, Conclusion
+- All figures generated from real experimental output — no hand-drawn mockups
+- Bibliography: 30–40 references covering combinatorial optimization, multi-agent systems, knowledge representation, the application domain, and LLM-based reasoning
+- Honest limitations section — what the system cannot do, where validation was weak, what assumptions might not hold
 - Compile to PDF if pdflatex is available
-
-### 6. Interactive Webapp
-
-Single self-contained HTML file (Chart.js + D3.js via CDN). Must include:
-- Visualization of the framework architecture
-- Interactive ablation comparison (toggle components on/off, see effect on results)
-- Pipeline compression visualization
-- Results from all experiments
-- Reads `demos/coupled-decisions/output/results.json`, graceful fallback if missing
-
----
-
-## Success Criteria
-
-The system succeeds if:
-
-1. **Full system discovers ≥4/5 planted ground-truth effects**; best ablation discovers ≤3/5
-2. **Encoding matters**: ≥80% cross-type query accuracy with encoding vs. ≤50% without
-3. **Space reduction**: 10^18 → ≤15 recommendations with zero hard-constraint violations
-4. **Ablation is clear**: removing any major component degrades at least 2 metrics
-5. **Generalization**: discovers planted effects in 2/2 secondary domains
-6. **Validation passed**: ALL 4 validation stages (§4) produce PASS verdicts; `validation_report.json` exists with full audit trail
-7. **Paper**: compiles to PDF with all figures/tables populated from **validated** experimental data; includes Validation and Limitations sections
-8. **Webapp**: opens in browser with interactive results
-9. **Architecture justification**: the paper explains WHY the chosen architecture works, not just that it does
-10. **Clean exit**: after completion, `git branch -a | grep agent` returns empty, `git worktree list` shows only the main worktree, and all output is under `demos/coupled-decisions/` (nothing in repo root `output/`)
 
 ---
 
@@ -209,90 +115,69 @@ The system succeeds if:
 
 - Python 3.11+
 - Only stdlib + matplotlib + numpy + scipy (no ML frameworks, no pip install openai/anthropic)
-- **Copilot CLI** (`copilot` in PATH) for all LLM reasoning — no API keys needed
-- All LLM calls cached in `.llm_cache/` by prompt hash for reproducibility
-- Heuristic fallback if copilot unavailable (must label results accordingly)
-- Deterministic from cache (first run hits LLM, subsequent runs replay)
-- Full experiment should complete in <30 minutes first run, <5 minutes from cache
+- **Copilot CLI is mandatory** for ALL reasoning, analysis, synthesis, and evaluation: `copilot -p "<prompt>" -s --no-color --allow-all`. Every component that performs judgment, interpretation, or inference MUST route through the LLM — there is NO heuristic fallback, NO rule-based shortcut, and NO hard-coded scoring logic anywhere in the pipeline. Specifically:
+  - Diagnostic agents MUST use LLM calls to analyze data and generate findings — not statistical heuristics or threshold-based rules
+  - Causal synthesis MUST use LLM reasoning to assemble evidence into interventions — not template filling or pattern matching
+  - Quality gating MUST use LLM evaluation to score candidates — not weighted-sum heuristics or rule engines
+  - Encoding evaluation and conflict detection MUST use LLM interpretation — not string matching or numeric comparisons
+  - If `copilot` is not in PATH, the pipeline MUST fail immediately with a clear error message rather than silently degrading to heuristics
+  - Any code path that makes a judgment call without an LLM invocation is a bug
+- **Model identification is mandatory**: At startup, the pipeline MUST query `copilot -p "What model are you? Reply with only your model name and version." -s --no-color --allow-all`, parse the response, and record the model name (e.g., "GPT-4o", "Claude 3.5 Sonnet") in `results.json` under a top-level `"model"` key. The paper MUST report this model name in the Experimental Setup section so readers know exactly which LLM produced the results.
+- All LLM calls cached in `.llm_cache/` by prompt hash for reproducibility. First run hits the LLM; subsequent runs replay from cache.
+- Full pipeline should complete in <60 minutes first run, <5 minutes from cache (increased budget to accommodate large-scale data generation and LLM-intensive evaluation)
 - Paper compiles with standard pdflatex + bibtex
-- Webapp is a single HTML file, no build step
 
 ---
 
-## Output Structure
+## Deliverables
 
-All output MUST be written under `demos/coupled-decisions/`, NOT the repository root. Agents must use this as the working directory for all generated artifacts.
+All output MUST be written under `demos/coupled-decisions/`, NOT the repository root.
 
 ```
 demos/coupled-decisions/
   output/
-    results.json            # All experiment results (format: your design)
-    validation_report.json  # Validation gate results (from §4)
+    results.json            # All experimental results
+    validation_report.json  # Validation gate verdicts and audit trail
     paper/
-      paper.tex             # Main LaTeX document
-      paper.pdf             # Compiled PDF (if pdflatex available)
-      figures/              # Generated figure PDFs
-      tables/               # Generated LaTeX table fragments
-    index.html              # Interactive webapp
-    data/                   # Generated synthetic data files
-  src/                      # All source code for this demo
+      paper.tex
+      paper.pdf             
+      figures/
+      tables/
+    index.html              # Interactive webapp (single HTML, Chart.js + D3.js via CDN)
+    data/                   # Generated synthetic data
+  src/                      # All source code
 ```
 
-Do NOT write output to the repository root `output/` directory. That directory is for the swarm framework itself.
+### Interactive Webapp
+Single self-contained HTML file. Must include:
+- Framework architecture visualization
+- Interactive ablation comparison
+- Pipeline compression visualization
+- Results from all experiments
+- Reads `results.json`, graceful fallback if missing
 
 ---
 
-## What This Prompt Does NOT Specify (Intentionally)
+## Success Criteria
 
-The following are **design decisions for the system to make**, not for this prompt to dictate:
+The paper succeeds if a skeptical reviewer would agree that:
 
-- ❌ Number of agents or what each one analyzes
-- ❌ Agent communication pattern (independent, shared memory, debate, hierarchical)
-- ❌ Exact encoding representations (StatisticalProfile, ConstraintVector, etc.)
-- ❌ Class hierarchy or interface definitions
-- ❌ File/module structure within `src/`
-- ❌ Pipeline stage count or architecture
-- ❌ Prompt templates for LLM agents
-- ❌ Quality scoring dimensions or weights
-- ❌ Synthesis algorithm
-- ❌ How agents specialize across analytical dimensions
-
-The architecture is part of the contribution. The paper must justify the design choices by showing they lead to the experimental results.
+1. **The problem characterization is rigorous** — the three invariants are formally defined and the incompleteness of partial approaches is demonstrated
+2. **The encoding layer matters** — reasoning with encoded representations significantly outperforms reasoning with raw data
+3. **Cross-source reasoning works** — the system discovers effects that require synthesizing multiple knowledge types, and siloed analysis misses them
+4. **The pipeline compresses effectively** — a combinatorial space is reduced by orders of magnitude to a tractable set of interventions with zero hard-constraint violations
+5. **Ablation is convincing** — removing any major component produces measurable degradation
+6. **Generalization is plausible** — a brief discussion argues the architecture applies beyond RGM, but deep multi-domain experiments are not required
+7. **Results are validated** — all claims pass statistical audit, methodology critique, and adversarial review before appearing in the paper
+8. **Limitations are honest** — the paper reports what didn't work, what was weak, and what assumptions might not hold
 
 ---
 
 ## Cleanup Requirements
 
-When the demo run completes (whether successfully or not), ALL of the following MUST be cleaned up:
-
-### Branch Cleanup
-- Delete ALL local branches created during the run (pattern: `agent-*`)
-- Delete ALL remote branches created during the run: `git push origin --delete <branch>` for each
-- Verify with `git branch -a` that no `agent-*` branches remain
-
-### Worktree Cleanup
-- Remove ALL git worktrees created during the run
-- Run `git worktree prune` to clean stale references
-- Verify with `git worktree list` that only the main worktree remains
-
-### Session Cleanup
+When the demo run completes (whether successfully or not):
+- Delete ALL local and remote agent branches (`agent-*` pattern)
+- Remove ALL git worktrees created during the run; run `git worktree prune`
 - Kill any tmux sessions/windows created for agents
-- Clean up any `.agent-prompt.txt` files in worktree directories
-
-### Cache Policy
-- `.llm_cache/` MAY be preserved for reproducibility (it enables fast reruns)
-- Temporary files, intermediate data, and scratch directories MUST be removed
-
-### Automated Cleanup
-The cleanup SHOULD be automated as a final phase of the pipeline (not dependent on the user remembering to run teardown). If the agent orchestrator completes or crashes, a trap/finally handler should still attempt cleanup. The simplest implementation:
-
-```bash
-# At the end of the pipeline (or in a trap handler):
-scripts/teardown.sh                           # Handles worktrees + tmux + local branches
-for branch in $(git branch -r --list 'origin/agent-*'); do
-    git push origin --delete "${branch#origin/}" 2>/dev/null || true
-done
-git remote prune origin
-```
-
-**Success criterion for cleanup:** After the demo completes, `git branch -a | grep agent` returns nothing and `git worktree list` shows only the main worktree.
+- `.llm_cache/` MAY be preserved for reproducibility
+- Verify: `git branch -a | grep agent` returns nothing, `git worktree list` shows only main worktree

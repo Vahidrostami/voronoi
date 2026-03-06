@@ -4,15 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "voronoi"
-version = "0.2.0"
+version = "0.3.0"
 description = "Orchestrate multiple AI coding agents working in parallel"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
-keywords = ["ai", "agents", "swarm", "copilot", "claude"]
+keywords = ["ai", "agents", "swarm", "copilot", "claude", "science"]
 
 [project.optional-dependencies]
 dashboard = ["rich>=13.0"]
+telegram = ["python-telegram-bot>=20.0"]
 
 [project.scripts]
 voronoi = "voronoi.cli:main"

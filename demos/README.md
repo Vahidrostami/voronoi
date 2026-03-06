@@ -10,17 +10,16 @@ Example scenarios to test the agent swarm orchestrator. Each demo includes a rea
 
 ## Running a Demo
 
-### Autopilot (recommended — fully automated)
+### CLI (recommended)
 
 ```bash
-./scripts/swarm-init.sh                                    # one-time setup
-./scripts/autopilot.sh --prompt demos/emergent-ecosystem/PROMPT.md
+voronoi demo run emergent-ecosystem
 ```
 
 ### Interactive (human-in-the-loop)
 
 ```bash
-./scripts/swarm-init.sh
+voronoi init
 copilot
 > /swarm Build from demos/emergent-ecosystem/PROMPT.md
 ```
