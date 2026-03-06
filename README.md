@@ -68,15 +68,18 @@ Set up once on a server. Text questions from your phone forever.
 # 1. Install
 pip install voronoi
 
-# 2. Initialize the server
+# 2. Initialize the server (creates ~/.voronoi/)
 voronoi server init
 
-# 3. Set your credentials
-export VORONOI_TG_BOT_TOKEN="your-bot-token"    # from @BotFather
-export VORONOI_TG_CHAT_ID="your-chat-id"         # optional: restrict to one chat
+# 3. Set your credentials in ~/.voronoi/.env
+cp ~/.voronoi/.env.example ~/.voronoi/.env
+# Edit ~/.voronoi/.env — fill in:
+#   GH_TOKEN=ghp_...                  (GitHub PAT for cloning/publishing)
+#   VORONOI_TG_BOT_TOKEN=...          (from @BotFather)
+#   VORONOI_TG_CHAT_ID=...            (optional: restrict to one chat)
 
 # 4. Start the Telegram bridge
-python scripts/telegram-bridge.py
+voronoi server start
 ```
 
 Now open Telegram and text:
@@ -421,15 +424,15 @@ Multi-agent reasoning over 5 coupled commercial levers. Planted ground truth acr
 
 ```bash
 # 1. Get a bot token from @BotFather on Telegram
-# 2. Set credentials:
-export VORONOI_TG_BOT_TOKEN="your-bot-token"
-export VORONOI_TG_CHAT_ID="your-chat-id"      # optional: restrict to one chat
+# 2. Set credentials in ~/.voronoi/.env:
+#    VORONOI_TG_BOT_TOKEN=your-bot-token
+#    VORONOI_TG_CHAT_ID=your-chat-id      # optional: restrict to one chat
 
 # 3. Start the bridge:
-python scripts/telegram-bridge.py
+voronoi server start
 ```
 
-Or add to `.env` and let `swarm-init.sh` start it automatically.
+Credentials can also be set via environment variables or in a project `.env`.
 
 Free-text intent detection works in group chats — just ask a question, no `/voronoi` prefix needed.
 

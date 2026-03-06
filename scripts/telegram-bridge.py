@@ -96,13 +96,17 @@ def load_dotenv(env_path: Path = None) -> None:
 
 def load_config(config_path: str = ".swarm-config.json") -> dict:
     """Load config from .env and optionally .swarm-config.json."""
-    # Load .env first
+    # Load .env first (checks CWD, then script parent, then ~/.voronoi/)
     load_dotenv()
+    load_dotenv(Path.home() / ".voronoi" / ".env")
 
     path = Path(config_path)
     if not path.exists():
         # Try relative to script location
         path = Path(__file__).parent.parent / config_path
+    if not path.exists():
+        # Try server mode: ~/.voronoi/.swarm-config.json
+        path = Path.home() / ".voronoi" / ".swarm-config.json"
 
     config = {}
     tg = {}

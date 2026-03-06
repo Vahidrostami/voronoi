@@ -491,6 +491,8 @@ def cmd_server(args: argparse.Namespace) -> None:
 
     if args.server_action == "init":
         _server_init(args)
+    elif args.server_action == "start":
+        _server_start(args)
     elif args.server_action == "status":
         _server_status(args)
     elif args.server_action == "prune":
@@ -498,7 +500,7 @@ def cmd_server(args: argparse.Namespace) -> None:
     elif args.server_action == "config":
         _server_config(args)
     else:
-        print("Usage: voronoi server {init|status|prune|config}")
+        print("Usage: voronoi server {init|start|status|prune|config}")
         sys.exit(1)
 
 
@@ -557,9 +559,115 @@ def _server_init(args: argparse.Namespace) -> None:
                 print(f"    → Found {alt} instead. Set VORONOI_AGENT_COMMAND={alt} in .env")
                 break
 
-    print(f"\nServer ready. Edit {config.config_path} to configure.")
-    print("Copy .env.example to .env for credentials.")
-    print("Start the Telegram bridge: python scripts/telegram-bridge.py")
+    # Copy .env.example into ~/.voronoi/ for easy editing
+    env_example_src = _find_data_dir() / ".env.example"
+    env_example_dst = config.base_dir / ".env.example"
+    env_dst = config.base_dir / ".env"
+    if env_example_src.is_file() and not env_example_dst.exists():
+        shutil.copy2(env_example_src, env_example_dst)
+        print(f"  ✓ .env.example copied to {env_example_dst}")
+
+    print(f"\nServer ready.")
+    print(f"  1. Edit {config.base_dir / '.env'} with your credentials")
+    if not env_dst.exists():
+        print(f"     cp {env_example_dst} {env_dst}")
+    print(f"  2. voronoi server start          # launch Telegram bridge")
+
+
+def _server_start(args: argparse.Namespace) -> None:
+    """Start the Telegram bridge using server config."""
+    from voronoi.server.runner import ServerConfig
+
+    config = ServerConfig()
+
+    if not config.base_dir.exists():
+        print("Server not initialized. Run: voronoi server init")
+        sys.exit(1)
+
+    # Load .env from ~/.voronoi/ if it exists
+    env_file = config.base_dir / ".env"
+    if env_file.exists():
+        _load_dotenv(env_file)
+        print(f"  ✓ Loaded {env_file}")
+
+    # Verify bot token is available
+    bot_token = os.environ.get("VORONOI_TG_BOT_TOKEN", "")
+    if not bot_token:
+        print("Error: No Telegram bot token configured.", file=sys.stderr)
+        print(f"  Set VORONOI_TG_BOT_TOKEN in {env_file}", file=sys.stderr)
+        sys.exit(1)
+
+    # Find the bridge script
+    bridge_script = _find_bridge_script()
+    if bridge_script is None:
+        print("Error: telegram-bridge.py not found.", file=sys.stderr)
+        sys.exit(1)
+
+    # Create a minimal .swarm config pointing to the server base dir
+    server_config = {
+        "project_name": "voronoi-server",
+        "project_dir": str(config.base_dir),
+        "agent_command": config.agent_command,
+        "notifications": {
+            "telegram": {
+                "bot_token": bot_token,
+                "chat_id": os.environ.get("VORONOI_TG_CHAT_ID", ""),
+                "bridge_enabled": True,
+                "free_text_in_groups": True,
+            }
+        },
+    }
+
+    # Write server swarm config
+    server_swarm_config = config.base_dir / ".swarm-config.json"
+    server_swarm_config.write_text(json.dumps(server_config, indent=2))
+
+    # Ensure inbox directory exists
+    (config.base_dir / ".swarm" / "inbox").mkdir(parents=True, exist_ok=True)
+
+    print(f"\n🤖 Starting Telegram bridge...")
+    print(f"   Server: {config.base_dir}")
+    print(f"   Press Ctrl+C to stop\n")
+
+    try:
+        subprocess.run(
+            [sys.executable, str(bridge_script), "--config", str(server_swarm_config)],
+            cwd=str(config.base_dir),
+        )
+    except KeyboardInterrupt:
+        print("\nTelegram bridge stopped.")
+
+
+def _load_dotenv(env_path: Path) -> None:
+    """Load a .env file into os.environ (only sets vars not already set)."""
+    with open(env_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip()
+                # Strip inline comments
+                for sep in ("  #", "\t#"):
+                    if sep in value:
+                        value = value[:value.index(sep)].strip()
+                if key not in os.environ:
+                    os.environ[key] = value
+
+
+def _find_bridge_script() -> Path | None:
+    """Locate telegram-bridge.py in data dir or repo."""
+    data = _find_data_dir()
+    candidates = [
+        data / "scripts" / "telegram-bridge.py",
+        Path(__file__).resolve().parent.parent.parent / "scripts" / "telegram-bridge.py",
+    ]
+    for c in candidates:
+        if c.is_file():
+            return c
+    return None
 
 
 def _server_status(args: argparse.Namespace) -> None:
@@ -674,6 +782,7 @@ def main() -> None:
     server_sub = server_parser.add_subparsers(dest="server_action")
     server_init = server_sub.add_parser("init", help="Initialize server at ~/.voronoi/")
     server_init.add_argument("--base-dir", dest="base_dir", help="Custom base directory")
+    server_sub.add_parser("start", help="Start Telegram bridge")
     server_sub.add_parser("status", help="Show server status")
     server_prune = server_sub.add_parser("prune", help="Clean up old workspaces")
     server_prune.add_argument("--force", action="store_true", help="Actually remove workspaces")
