@@ -548,8 +548,40 @@ def handle_finding(config: dict, finding_id: str) -> str:
     return "\n".join(lines)
 
 
+def _is_greeting_or_intro(text: str) -> bool:
+    """Detect greetings or 'what can you do' type messages."""
+    t = text.lower().strip().rstrip("?!.")
+    greetings = {"hi", "hello", "hey", "yo", "sup", "hi there", "hello there", "hey there"}
+    if t in greetings:
+        return True
+    intro_phrases = [
+        "what can you do", "what do you do", "who are you",
+        "how do you work", "how does this work", "what is voronoi",
+        "what is this", "help", "help me", "what are you",
+        "introduce yourself", "capabilities",
+    ]
+    return any(phrase in t for phrase in intro_phrases)
+
+
+_INTRO_MESSAGE = (
+    "🔬 *Voronoi — Ask a question. Get evidence.*\n\n"
+    "I'm your personal research lab in a chat window. "
+    "Drop me a question — anything from _\"why is our model degrading?\"_ "
+    "to _\"does EWC beat replay for catastrophic forgetting?\"_ — and I'll "
+    "dispatch a swarm of AI agents to investigate it.\n\n"
+    "Hypotheses. Experiments. Statistical validation. Belief maps. "
+    "Findings with effect sizes and confidence intervals. "
+    "The whole scientific method, on autopilot. 🧪\n\n"
+    "_Send_ `/voronoi` _for commands, or just ask me something._ 🧠"
+)
+
+
 def handle_free_text_science(config: dict, text: str, chat_id: str):
     """Classify free-text for scientific intent. Returns reply or None if not science."""
+    # Handle greetings / "what can you do" questions
+    if _is_greeting_or_intro(text):
+        return _INTRO_MESSAGE
+
     try:
         from voronoi.gateway.intent import classify, WorkflowMode
     except ImportError:
@@ -654,30 +686,30 @@ def run_bot(config: dict):
         args = context.args or []
         if not args:
             await update.message.reply_text(
-                "🔷 *Voronoi Commands*\n\n"
-                "*Science Workflows:*\n"
-                "`/voronoi investigate <question>` — Scientific investigation\n"
-                "`/voronoi explore <question>` — Compare options\n"
-                "`/voronoi build <desc>` — Build something\n"
-                "`/voronoi experiment <hypothesis>` — Experiment (max rigor)\n\n"
-                "*Knowledge:*\n"
-                "`/voronoi recall <query>` — Search past findings\n"
-                "`/voronoi belief` — Current belief map\n"
-                "`/voronoi journal` — Recent journal entries\n"
-                "`/voronoi finding <id>` — Show finding details\n\n"
-                "*Task Management:*\n"
-                "`/voronoi status` — Swarm status\n"
-                "`/voronoi tasks` — Open tasks\n"
-                "`/voronoi ready` — Ready tasks\n"
-                "`/voronoi reprioritize <id> <0-4>` — Change priority\n"
-                "`/voronoi pause <id>` — Pause task\n"
-                "`/voronoi resume <id>` — Resume task\n"
-                "`/voronoi add <title>` — Add task\n\n"
-                "*Control:*\n"
-                "`/voronoi guide <msg>` — Send guidance\n"
-                "`/voronoi pivot <msg>` — Strategic pivot\n"
-                "`/voronoi abort` — Graceful shutdown\n\n"
-                "_Or just ask a question — I'll detect the intent!_",
+                "� *Hey! I'm Voronoi.*\n\n"
+                "I orchestrate AI agents to run scientific investigations, "
+                "build software, and explore ideas — all from this chat.\n\n"
+                "*Just ask me anything:*\n"
+                "  → _Why is our model accuracy dropping?_\n"
+                "  → _Compare Redis vs Memcached for our workload_\n"
+                "  → _Build a REST API with auth and billing_\n\n"
+                "I'll figure out what to do — classify intent, pick the right "
+                "rigor level, spawn parallel agents, and deliver findings with "
+                "effect sizes and confidence intervals.\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                "*Or use commands:*\n\n"
+                "🧪 *Workflows*\n"
+                "`/voronoi investigate <question>`\n"
+                "`/voronoi explore <question>`\n"
+                "`/voronoi build <description>`\n"
+                "`/voronoi experiment <hypothesis>`\n\n"
+                "📚 *Knowledge*\n"
+                "`/voronoi recall <query>` · `belief` · `journal` · `finding <id>`\n\n"
+                "📋 *Tasks*\n"
+                "`/voronoi status` · `tasks` · `ready`\n\n"
+                "🎛 *Control*\n"
+                "`/voronoi guide <msg>` · `pivot <msg>` · `abort`\n\n"
+                "_In groups, @mention me or reply to my messages._",
                 parse_mode="Markdown",
             )
             return
@@ -685,7 +717,12 @@ def run_bot(config: dict):
         subcommand = args[0].lower()
 
         try:
-            if subcommand == "status":
+            if subcommand in ("help", "hi", "hello", "hey"):
+                # Re-trigger the intro message
+                args.clear()
+                await cmd_voronoi(update, context)
+                return
+            elif subcommand == "status":
                 reply = handle_status(config)
             elif subcommand == "tasks":
                 reply = handle_tasks(config)
@@ -777,8 +814,13 @@ def run_bot(config: dict):
             text = text.replace(f"@{_bot_username[0]}", "").strip()
 
         if is_private:
-            # Private chats: guidance (original behavior)
-            reply = handle_guide(config, text)
+            # Private chats: check for greetings/intro first, then try science, then guidance
+            if _is_greeting_or_intro(text):
+                reply = _INTRO_MESSAGE
+            else:
+                reply = handle_free_text_science(config, text, chat_id)
+                if reply is None:
+                    reply = handle_guide(config, text)
         elif is_group:
             # Group chats: try scientific intent detection
             reply = handle_free_text_science(config, text, chat_id)
