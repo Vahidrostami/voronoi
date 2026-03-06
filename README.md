@@ -8,6 +8,16 @@
 
 <br/>
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/voronoi-banner.svg" />
+  <source media="(prefers-color-scheme: light)" srcset="assets/voronoi-banner-light.svg" />
+  <img alt="Voronoi — 11 specialized agent roles partitioning the problem space" src="assets/voronoi-banner-light.svg" width="900" />
+</picture>
+
+<sub><em>Each cell is an agent. Each agent owns a slice of the problem. No overlaps. No gaps.</em></sub>
+
+<br/>
+
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
 [![Copilot](https://img.shields.io/badge/GitHub_Copilot-Powered-000?style=flat-square&logo=github&logoColor=white)](https://github.com/features/copilot)
 [![Telegram](https://img.shields.io/badge/Telegram-26A5E4?style=flat-square&logo=telegram&logoColor=white)](https://core.telegram.org/bots)
@@ -23,10 +33,6 @@
 <br/>
 
 > **Voronoi** orchestrates multiple AI agents in parallel — with hypothesis management, statistical rigor, convergence feedback loops, and evidence preservation. Engineering is science with the rigor gates turned off.
-
-### Why "Voronoi"?
-
-A [Voronoi diagram](https://en.wikipedia.org/wiki/Voronoi_diagram) partitions space into cells — each point belongs to exactly one region, with no overlaps and no gaps. That's what this framework does with problems: each agent owns a non-overlapping slice of the investigation, works in isolation, and the cells merge into a complete picture. The boundaries between cells are where the interesting science happens — just like in the math.
 
 ---
 
