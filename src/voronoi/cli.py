@@ -481,6 +481,272 @@ def cmd_version(args: argparse.Namespace) -> None:
     print(f"voronoi {__version__}")
 
 
+# ---------------------------------------------------------------------------
+# Server commands
+# ---------------------------------------------------------------------------
+
+def cmd_server(args: argparse.Namespace) -> None:
+    """Handle server subcommands."""
+    from voronoi.server.runner import ServerConfig
+
+    if args.server_action == "init":
+        _server_init(args)
+    elif args.server_action == "start":
+        _server_start(args)
+    elif args.server_action == "status":
+        _server_status(args)
+    elif args.server_action == "prune":
+        _server_prune(args)
+    elif args.server_action == "config":
+        _server_config(args)
+    else:
+        print("Usage: voronoi server {init|start|status|prune|config}")
+        sys.exit(1)
+
+
+def _server_init(args: argparse.Namespace) -> None:
+    """Initialize the Voronoi server at ~/.voronoi/."""
+    from voronoi.server.runner import ServerConfig
+
+    base_dir = getattr(args, "base_dir", None)
+    config = ServerConfig(base_dir=base_dir)
+
+    print(f"Initializing Voronoi server at {config.base_dir}")
+
+    config.base_dir.mkdir(parents=True, exist_ok=True)
+    (config.base_dir / "objects").mkdir(exist_ok=True)
+    (config.base_dir / "active").mkdir(exist_ok=True)
+
+    if not config.config_path.exists():
+        config.save()
+        print(f"  ✓ Config written to {config.config_path}")
+    else:
+        print(f"  ⊘ Config already exists at {config.config_path}")
+
+    # Check dependencies
+    for cmd, label in [("docker", "Docker"), ("gh", "GitHub CLI"), ("git", "Git"),
+                        ("tmux", "tmux"), ("bd", "Beads")]:
+        if shutil.which(cmd):
+            print(f"  ✓ {label} found")
+        else:
+            print(f"  ⚠ {label} not found ({cmd})")
+
+    # Check GitHub auth
+    gh_token = os.environ.get("GH_TOKEN", "")
+    if gh_token:
+        print(f"  ✓ GH_TOKEN set")
+    elif shutil.which("gh"):
+        result = subprocess.run(
+            ["gh", "auth", "status"], capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            print(f"  ✓ GitHub authenticated via gh CLI")
+        else:
+            print(f"  ⚠ gh not authenticated — run: gh auth login")
+    else:
+        print(f"  ⚠ No GitHub auth — set GH_TOKEN in .env or run: gh auth login")
+
+    # Check agent CLI
+    agent_cmd = os.environ.get("VORONOI_AGENT_COMMAND", config.agent_command)
+    agent_bin = agent_cmd.split()[0]
+    if shutil.which(agent_bin):
+        print(f"  ✓ Agent CLI found: {agent_bin}")
+    else:
+        print(f"  ⚠ Agent CLI not found: {agent_bin}")
+        # Try fallbacks
+        for alt in ["copilot", "claude"]:
+            if alt != agent_bin and shutil.which(alt):
+                print(f"    → Found {alt} instead. Set VORONOI_AGENT_COMMAND={alt} in .env")
+                break
+
+    # Copy .env.example into ~/.voronoi/ for easy editing
+    env_example_src = _find_data_dir() / ".env.example"
+    env_example_dst = config.base_dir / ".env.example"
+    env_dst = config.base_dir / ".env"
+    if env_example_src.is_file() and not env_example_dst.exists():
+        shutil.copy2(env_example_src, env_example_dst)
+        print(f"  ✓ .env.example copied to {env_example_dst}")
+
+    print(f"\nServer ready.")
+    print(f"  1. Edit {config.base_dir / '.env'} with your credentials")
+    if not env_dst.exists():
+        print(f"     cp {env_example_dst} {env_dst}")
+    print(f"  2. voronoi server start          # launch Telegram bridge")
+
+
+def _server_start(args: argparse.Namespace) -> None:
+    """Start the Telegram bridge using server config."""
+    from voronoi.server.runner import ServerConfig
+
+    config = ServerConfig()
+
+    if not config.base_dir.exists():
+        print("Server not initialized. Run: voronoi server init")
+        sys.exit(1)
+
+    # Load .env from ~/.voronoi/ if it exists
+    env_file = config.base_dir / ".env"
+    if env_file.exists():
+        _load_dotenv(env_file)
+        print(f"  ✓ Loaded {env_file}")
+
+    # Verify bot token is available
+    bot_token = os.environ.get("VORONOI_TG_BOT_TOKEN", "")
+    if not bot_token:
+        print("Error: No Telegram bot token configured.", file=sys.stderr)
+        print(f"  Set VORONOI_TG_BOT_TOKEN in {env_file}", file=sys.stderr)
+        sys.exit(1)
+
+    # Find the bridge script
+    bridge_script = _find_bridge_script()
+    if bridge_script is None:
+        print("Error: telegram-bridge.py not found.", file=sys.stderr)
+        sys.exit(1)
+
+    # Create a minimal .swarm config pointing to the server base dir
+    server_config = {
+        "project_name": "voronoi-server",
+        "project_dir": str(config.base_dir),
+        "agent_command": config.agent_command,
+        "notifications": {
+            "telegram": {
+                "bot_token": bot_token,
+                "user_allowlist": os.environ.get("VORONOI_TG_USER_ALLOWLIST", ""),
+                "bridge_enabled": True,
+            }
+        },
+    }
+
+    # Write server swarm config
+    server_swarm_config = config.base_dir / ".swarm-config.json"
+    server_swarm_config.write_text(json.dumps(server_config, indent=2))
+
+    # Ensure inbox directory exists
+    (config.base_dir / ".swarm" / "inbox").mkdir(parents=True, exist_ok=True)
+
+    print(f"\n🤖 Starting Telegram bridge...")
+    print(f"   Server: {config.base_dir}")
+    print(f"   Press Ctrl+C to stop\n")
+
+    try:
+        subprocess.run(
+            [sys.executable, str(bridge_script), "--config", str(server_swarm_config)],
+            cwd=str(config.base_dir),
+        )
+    except KeyboardInterrupt:
+        print("\nTelegram bridge stopped.")
+
+
+def _load_dotenv(env_path: Path) -> None:
+    """Load a .env file into os.environ (only sets vars not already set)."""
+    with open(env_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip()
+                # Strip inline comments
+                for sep in ("  #", "\t#"):
+                    if sep in value:
+                        value = value[:value.index(sep)].strip()
+                if key not in os.environ:
+                    os.environ[key] = value
+
+
+def _find_bridge_script() -> Path | None:
+    """Locate telegram-bridge.py in data dir or repo."""
+    data = _find_data_dir()
+    candidates = [
+        data / "scripts" / "telegram-bridge.py",
+        Path(__file__).resolve().parent.parent.parent / "scripts" / "telegram-bridge.py",
+    ]
+    for c in candidates:
+        if c.is_file():
+            return c
+    return None
+
+
+def _server_status(args: argparse.Namespace) -> None:
+    """Show server status."""
+    from voronoi.server.queue import InvestigationQueue
+    from voronoi.server.runner import ServerConfig
+    from voronoi.server.workspace import WorkspaceManager
+
+    config = ServerConfig()
+    queue_path = config.base_dir / "queue.db"
+
+    if not config.base_dir.exists():
+        print("Server not initialized. Run: voronoi server init")
+        sys.exit(1)
+
+    wm = WorkspaceManager(config.base_dir)
+    active = wm.list_active()
+
+    print(f"Voronoi Server — {config.base_dir}")
+    print(f"  Active workspaces: {len(active)}")
+    print(f"  Max concurrent: {config.max_concurrent}")
+    print(f"  Sandbox: {'enabled' if config.sandbox.enabled else 'disabled'}")
+
+    if queue_path.exists():
+        queue = InvestigationQueue(queue_path)
+        running = queue.get_running()
+        queued = queue.get_queued()
+        print(f"\n  Running: {len(running)}")
+        for inv in running:
+            elapsed = (time.time() - (inv.started_at or inv.created_at)) / 60
+            label = inv.repo or inv.slug
+            print(f"    ⚡ #{inv.id} {label} ({elapsed:.0f}min)")
+        print(f"  Queued: {len(queued)}")
+        for inv in queued:
+            label = inv.repo or inv.slug
+            print(f"    ⏳ #{inv.id} {label}")
+
+
+def _server_prune(args: argparse.Namespace) -> None:
+    """Clean up old investigation workspaces."""
+    from voronoi.server.runner import ServerConfig
+    from voronoi.server.workspace import WorkspaceManager
+
+    config = ServerConfig()
+    wm = WorkspaceManager(config.base_dir)
+    active = wm.list_active()
+
+    if not active:
+        print("No workspaces to prune.")
+        return
+
+    print(f"Active workspaces: {len(active)}")
+    for name in active:
+        print(f"  {name}")
+
+    if not getattr(args, "force", False):
+        print(f"\nRun with --force to remove all workspaces.")
+        return
+
+    for name in active:
+        p = config.base_dir / "active" / name
+        if p.exists():
+            shutil.rmtree(p)
+            print(f"  ✓ Removed {name}")
+
+    print("Done.")
+
+
+def _server_config(args: argparse.Namespace) -> None:
+    """Show server configuration."""
+    from voronoi.server.runner import ServerConfig
+
+    config = ServerConfig()
+    if not config.config_path.exists():
+        print("No config found. Run: voronoi server init")
+        sys.exit(1)
+
+    print(config.config_path.read_text())
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="voronoi",
@@ -510,6 +776,17 @@ def main() -> None:
     sub.add_parser("clean", help="Remove all voronoi artifacts from this directory")
     sub.add_parser("version", help="Print version")
 
+    # Server subcommand
+    server_parser = sub.add_parser("server", help="Manage the Voronoi server")
+    server_sub = server_parser.add_subparsers(dest="server_action")
+    server_init = server_sub.add_parser("init", help="Initialize server at ~/.voronoi/")
+    server_init.add_argument("--base-dir", dest="base_dir", help="Custom base directory")
+    server_sub.add_parser("start", help="Start Telegram bridge")
+    server_sub.add_parser("status", help="Show server status")
+    server_prune = server_sub.add_parser("prune", help="Clean up old workspaces")
+    server_prune.add_argument("--force", action="store_true", help="Actually remove workspaces")
+    server_sub.add_parser("config", help="Show server configuration")
+
     args = parser.parse_args()
 
     if args.command == "init":
@@ -525,6 +802,11 @@ def main() -> None:
         cmd_clean(args)
     elif args.command == "version":
         cmd_version(args)
+    elif args.command == "server":
+        if not hasattr(args, "server_action") or args.server_action is None:
+            server_parser.print_help()
+        else:
+            cmd_server(args)
     else:
         parser.print_help()
 

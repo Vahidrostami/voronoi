@@ -17,12 +17,36 @@ fi
 command -v bd   >/dev/null 2>&1 || { echo "Install beads: $PKG_HINT beads"; exit 1; }
 command -v tmux >/dev/null 2>&1 || { echo "Install tmux: $PKG_HINT tmux"; exit 1; }
 command -v gh   >/dev/null 2>&1 && echo "✓ GitHub CLI found" || echo "⚠ GitHub CLI (gh) not found — optional, needed for PR workflows"
+command -v docker >/dev/null 2>&1 && echo "✓ Docker found" || echo "⚠ Docker not found — agent code will run on host (no sandbox)"
 
-# Detect agent CLI
-if command -v copilot >/dev/null 2>&1; then
-    AGENT_CMD="copilot"
+# Load .env if present (before any checks that depend on env vars)
+if [[ -f "$PROJECT_DIR/.env" ]]; then
+    set -a
+    source "$PROJECT_DIR/.env"
+    set +a
+    echo "✓ Loaded .env"
+fi
+
+# Check GitHub auth (needed for cloning repos and publishing results)
+if [[ -n "${GH_TOKEN:-}" ]]; then
+    echo "✓ GH_TOKEN set"
+elif command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+    echo "✓ GitHub authenticated via gh CLI"
 else
-    echo "⚠ Copilot CLI not found. Install it to dispatch agents."
+    echo "⚠ No GitHub auth found. Set GH_TOKEN in .env or run: gh auth login"
+    echo "  Needed for: cloning repos, publishing results to voronoi-lab org"
+fi
+
+# Detect agent CLI (env var overrides auto-detection)
+if [[ -n "${VORONOI_AGENT_COMMAND:-}" ]]; then
+    AGENT_CMD="$VORONOI_AGENT_COMMAND"
+    echo "✓ Agent CLI from env: $AGENT_CMD"
+elif command -v copilot >/dev/null 2>&1; then
+    AGENT_CMD="copilot"
+elif command -v claude >/dev/null 2>&1; then
+    AGENT_CMD="claude"
+else
+    echo "⚠ No agent CLI found (copilot/claude). Install one to dispatch agents."
     AGENT_CMD="copilot"
 fi
 
@@ -116,19 +140,12 @@ echo "✓ Swarm config written to .swarm-config.json"
 
 # 8. Auto-start Telegram bridge if credentials are configured
 _tg_bot_token="${VORONOI_TG_BOT_TOKEN:-}"
-_tg_chat_id="${VORONOI_TG_CHAT_ID:-}"
-
-# Try loading from .env if not already in environment
-if [[ -z "$_tg_bot_token" && -f "$PROJECT_DIR/.env" ]]; then
-    _tg_bot_token=$(grep -E '^VORONOI_TG_BOT_TOKEN=' "$PROJECT_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- | xargs)
-    _tg_chat_id=$(grep -E '^VORONOI_TG_CHAT_ID=' "$PROJECT_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- | xargs)
-fi
 
 TMUX_SESSION="${PROJECT_NAME}-swarm"
 
-if [[ -n "$_tg_bot_token" && -n "$_tg_chat_id" ]]; then
+if [[ -n "$_tg_bot_token" ]]; then
     echo ""
-    echo "✓ Telegram credentials found"
+    echo "✓ Telegram bot token found"
     # Ensure tmux session exists
     if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
         tmux new-session -d -s "$TMUX_SESSION" -n "orchestrator"
@@ -142,11 +159,11 @@ if [[ -n "$_tg_bot_token" && -n "$_tg_chat_id" ]]; then
 else
     echo ""
     echo "To enable Telegram notifications:"
-    echo "  1. Copy .env.example to .env and fill in your bot token and chat ID"
-    echo "  2. Re-run swarm-init or manually: python3 scripts/telegram-bridge.py"
+    echo "  1. Copy .env.example to .env and fill in your credentials"
+    echo "  2. Re-run swarm-init or: voronoi server start"
 fi
 
 echo ""
 echo "=== Setup complete ==="
 echo ""
-echo "Run: copilot then /swarm <your task>"
+echo "Run: $AGENT_CMD then /swarm <your task>"
