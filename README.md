@@ -76,7 +76,7 @@ cp ~/.voronoi/.env.example ~/.voronoi/.env
 # Edit ~/.voronoi/.env — fill in:
 #   GH_TOKEN=ghp_...                  (GitHub PAT for cloning/publishing)
 #   VORONOI_TG_BOT_TOKEN=...          (from @BotFather)
-#   VORONOI_TG_CHAT_ID=...            (optional: restrict to one chat)
+#   VORONOI_TG_USER_ALLOWLIST=...     (optional: restrict to specific users)
 
 # 4. Start the Telegram bridge
 voronoi server start
@@ -426,13 +426,18 @@ Multi-agent reasoning over 5 coupled commercial levers. Planted ground truth acr
 # 1. Get a bot token from @BotFather on Telegram
 # 2. Set credentials in ~/.voronoi/.env:
 #    VORONOI_TG_BOT_TOKEN=your-bot-token
-#    VORONOI_TG_CHAT_ID=your-chat-id      # optional: restrict to one chat
+#    VORONOI_TG_USER_ALLOWLIST=your_username    # optional: restrict access
 
-# 3. Start the bridge:
+# 3. Disable privacy mode (for free-text in groups):
+#    @BotFather → /setprivacy → Disable
+
+# 4. Start the bridge:
 voronoi server start
 ```
 
 Credentials can also be set via environment variables or in a project `.env`.
+
+In groups, the bot only responds when **@mentioned** or **replied to** — no spam.
 
 Free-text intent detection works in group chats — just ask a question, no `/voronoi` prefix needed.
 

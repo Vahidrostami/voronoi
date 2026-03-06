@@ -140,13 +140,12 @@ echo "✓ Swarm config written to .swarm-config.json"
 
 # 8. Auto-start Telegram bridge if credentials are configured
 _tg_bot_token="${VORONOI_TG_BOT_TOKEN:-}"
-_tg_chat_id="${VORONOI_TG_CHAT_ID:-}"
 
 TMUX_SESSION="${PROJECT_NAME}-swarm"
 
-if [[ -n "$_tg_bot_token" && -n "$_tg_chat_id" ]]; then
+if [[ -n "$_tg_bot_token" ]]; then
     echo ""
-    echo "✓ Telegram credentials found"
+    echo "✓ Telegram bot token found"
     # Ensure tmux session exists
     if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
         tmux new-session -d -s "$TMUX_SESSION" -n "orchestrator"
@@ -161,7 +160,7 @@ else
     echo ""
     echo "To enable Telegram notifications:"
     echo "  1. Copy .env.example to .env and fill in your credentials"
-    echo "  2. Re-run swarm-init or manually: python3 scripts/telegram-bridge.py"
+    echo "  2. Re-run swarm-init or: voronoi server start"
 fi
 
 echo ""

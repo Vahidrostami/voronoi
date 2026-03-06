@@ -115,11 +115,14 @@ def load_config(config_path: str = ".swarm-config.json") -> dict:
             config = json.load(f)
         tg = config.get("notifications", {}).get("telegram", {})
 
+    # Parse user allowlist (comma-separated user IDs or usernames)
+    raw_allowlist = os.environ.get("VORONOI_TG_USER_ALLOWLIST", tg.get("user_allowlist", ""))
+    user_allowlist = [u.strip().lower() for u in raw_allowlist.split(",") if u.strip()] if raw_allowlist else []
+
     return {
         "bot_token": os.environ.get("VORONOI_TG_BOT_TOKEN", tg.get("bot_token", "")),
-        "chat_id": os.environ.get("VORONOI_TG_CHAT_ID", tg.get("chat_id", "")),
+        "user_allowlist": user_allowlist,
         "bridge_enabled": tg.get("bridge_enabled", True),
-        "free_text_in_groups": tg.get("free_text_in_groups", True),
         "project_dir": config.get("project_dir", os.getcwd()),
         "project_name": config.get("project_name", "voronoi"),
         "swarm_dir": config.get("swarm_dir", ""),
@@ -601,21 +604,47 @@ def run_bot(config: dict):
     from telegram.ext import MessageHandler, filters
 
     bot_token = config["bot_token"]
-    allowed_chat = config["chat_id"]
+    user_allowlist = config.get("user_allowlist", [])
 
     if not bot_token:
         print("No bot_token configured", file=sys.stderr)
         sys.exit(1)
 
-    def is_allowed(update: Update) -> bool:
-        """Check if the message is from the allowed chat."""
-        if not allowed_chat:
-            return True  # No restriction
-        return str(update.effective_chat.id) == str(allowed_chat)
+    # Resolve bot username once at startup (used for @mention detection in groups)
+    _bot_username = [None]  # mutable container for closure
+
+    def is_user_allowed(update: Update) -> bool:
+        """Check if the user is in the allowlist. No allowlist = open to all."""
+        if not user_allowlist:
+            return True
+        user = update.effective_user
+        if user is None:
+            return False
+        uid = str(user.id).lower()
+        uname = (user.username or "").lower()
+        return uid in user_allowlist or uname in user_allowlist
+
+    def is_group_directed(update: Update) -> bool:
+        """In groups, only respond if @mentioned or replied to."""
+        msg = update.message
+        if msg is None:
+            return False
+        # Check if user replied to one of our messages
+        if msg.reply_to_message and msg.reply_to_message.from_user:
+            if msg.reply_to_message.from_user.is_bot and _bot_username[0]:
+                if msg.reply_to_message.from_user.username == _bot_username[0]:
+                    return True
+        # Check if bot is @mentioned in text
+        text = msg.text or ""
+        if _bot_username[0] and f"@{_bot_username[0]}" in text:
+            return True
+        return False
 
     async def cmd_voronoi(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /voronoi commands."""
-        if not is_allowed(update):
+        if not is_user_allowed(update):
+            if update.message:
+                await update.message.reply_text("You are not authorized to use this bot.")
             return
 
         # Persist the chat ID so outbound notifications target this chat
@@ -720,16 +749,13 @@ def run_bot(config: dict):
         """Handle free-text messages.
 
         In private chats: treated as guidance notes (original behavior).
-        In group chats: classified for scientific intent if free_text_in_groups is enabled.
+        In group chats: only responds if @mentioned or replied to.
         """
-        if not is_allowed(update):
+        if not is_user_allowed(update):
             return
 
         if update.message is None:
             return
-
-        # Persist chat ID
-        save_chat_id(config["project_dir"], update.message.chat_id)
 
         text = (update.message.text or "").strip()
         if not text:
@@ -737,17 +763,29 @@ def run_bot(config: dict):
 
         chat_id = str(update.message.chat_id)
         is_private = update.message.chat.type == "private"
+        is_group = update.message.chat.type in ("group", "supergroup")
+
+        # In groups, only respond if @mentioned or replied to
+        if is_group and not is_group_directed(update):
+            return
+
+        # Persist chat ID for outbound notifications
+        save_chat_id(config["project_dir"], update.message.chat_id)
+
+        # Strip @botname from text if present
+        if _bot_username[0]:
+            text = text.replace(f"@{_bot_username[0]}", "").strip()
 
         if is_private:
             # Private chats: guidance (original behavior)
             reply = handle_guide(config, text)
-        elif config.get("free_text_in_groups", True):
+        elif is_group:
             # Group chats: try scientific intent detection
             reply = handle_free_text_science(config, text, chat_id)
             if reply is None:
-                return  # Not a science question, stay silent
+                reply = handle_guide(config, text)
         else:
-            return  # Group text disabled
+            return
 
         # Save bot reply to memory
         _save_bot_reply(config, chat_id, reply)
@@ -759,15 +797,24 @@ def run_bot(config: dict):
 
     # Build and run the bot
     app = Application.builder().token(bot_token).build()
+
+    # Resolve bot username for @mention detection
+    async def _post_init(application):
+        me = await application.bot.get_me()
+        _bot_username[0] = me.username
+        print(f"   Bot username: @{me.username}")
+
+    app.post_init = _post_init
     app.add_handler(CommandHandler("voronoi", cmd_voronoi))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
+    allowlist_str = ", ".join(user_allowlist) if user_allowlist else "any"
     print(f"🤖 Telegram bridge started for {config['project_name']}")
-    print(f"   Chat filter: {allowed_chat or 'any'}")
+    print(f"   Allowed users: {allowlist_str}")
     print(f"   Inbox dir: {INBOX_DIR}")
     print(f"   Project: {config['project_dir']}")
-    print(f"   Send /voronoi help in Telegram to see commands")
-    print(f"   Plain text DMs are forwarded as operator guidance")
+    print(f"   /voronoi commands work everywhere")
+    print(f"   In groups: responds to @mentions and replies")
     # run_polling() is a synchronous convenience method that manages its own
     # event loop — it must NOT be awaited from inside an async context.
     app.run_polling(drop_pending_updates=True)

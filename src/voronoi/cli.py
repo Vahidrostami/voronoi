@@ -611,9 +611,8 @@ def _server_start(args: argparse.Namespace) -> None:
         "notifications": {
             "telegram": {
                 "bot_token": bot_token,
-                "chat_id": os.environ.get("VORONOI_TG_CHAT_ID", ""),
+                "user_allowlist": os.environ.get("VORONOI_TG_USER_ALLOWLIST", ""),
                 "bridge_enabled": True,
-                "free_text_in_groups": True,
             }
         },
     }

@@ -55,24 +55,24 @@ class TestConfig:
         mod, tmp_path = setup_bridge
         config = mod.load_config(str(tmp_path / "nonexistent.json"))
         assert config["bridge_enabled"] is True
-        assert config["free_text_in_groups"] is True
+        assert config["user_allowlist"] == []
 
-    def test_load_config_with_free_text_disabled(self, setup_bridge, tmp_path):
+    def test_load_config_with_user_allowlist(self, setup_bridge, tmp_path, monkeypatch):
         mod, _ = setup_bridge
+        monkeypatch.setenv("VORONOI_TG_USER_ALLOWLIST", "112423044,vahidrostami")
         config_data = {
             "notifications": {
                 "telegram": {
                     "bot_token": "test",
-                    "chat_id": "123",
                     "bridge_enabled": True,
-                    "free_text_in_groups": False,
                 }
             }
         }
         config_path = tmp_path / "config.json"
         config_path.write_text(json.dumps(config_data))
         config = mod.load_config(str(config_path))
-        assert config["free_text_in_groups"] is False
+        assert "112423044" in config["user_allowlist"]
+        assert "vahidrostami" in config["user_allowlist"]
 
 
 # ---------------------------------------------------------------------------
