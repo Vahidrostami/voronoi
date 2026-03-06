@@ -129,18 +129,18 @@ voronoi init
 
 # Start your AI coding agent
 copilot                    # or: claude
-> /swarm Build a full-stack SaaS app with auth, billing, dashboard, and API
-```
-
-The swarm plans the work, spawns isolated agents, and merges results back.
-
-For science:
-
-```bash
 > /swarm Why is our recommendation model's CTR dropping 15% after each retrain?
 ```
 
 Voronoi classifies this as **Investigate** (Scientific rigor), spawns a Scout, generates hypotheses, dispatches parallel Investigators, validates findings with a Statistician, and delivers a research report with evidence.
+
+For engineering:
+
+```bash
+> /swarm Build a REST API with auth, billing, and dashboard
+```
+
+The swarm plans the work, spawns isolated agents, and merges results back.
 
 ---
 
@@ -148,13 +148,13 @@ Voronoi classifies this as **Investigate** (Scientific rigor), spawns a Scout, g
 
 ```mermaid
 graph TD
-    Q["🧑 You: 'Why is latency 3x higher?'"] --> C["🏷️ Classifier"]
+    Q["🧑 You: 'Why do transformers lose calibration<br/>after fine-tuning?'"] --> C["🏷️ Classifier"]
     C -->|"Investigate · Scientific rigor"| S["🔍 Scout — Phase 0"]
     S -->|"Knowledge brief: known results,<br/>failed approaches, hypotheses"| O["🧠 Orchestrator"]
 
-    O -->|"H1: Feature drift (P=0.40)"| I1["🔬 Investigator 1<br/><i>git worktree</i>"]
-    O -->|"H2: Data contamination (P=0.35)"| I2["🔬 Investigator 2<br/><i>git worktree</i>"]
-    O -->|"H3: Serving timeout (P=0.25)"| I3["🔬 Investigator 3<br/><i>git worktree</i>"]
+    O -->|"H1: Logit-scale distribution shift (P=0.40)"| I1["🔬 Investigator 1<br/><i>git worktree</i>"]
+    O -->|"H2: Overfitting to label noise (P=0.35)"| I2["🔬 Investigator 2<br/><i>git worktree</i>"]
+    O -->|"H3: Attention entropy collapse (P=0.25)"| I3["🔬 Investigator 3<br/><i>git worktree</i>"]
 
     I1 --> F1["📊 Finding — d, CI, N, p"]
     I2 --> F2["📊 Finding — d, CI, N, p"]
@@ -168,25 +168,26 @@ graph TD
     E -->|"Completeness · Coherence · Strength"| D["📄 deliverable.md<br/><i>research paper with full evidence trail</i>"]
 ```
 
-For **engineering tasks**, the system simplifies automatically:
+Tasks form a **dependency graph**, not a flat queue. When the planner decomposes work, it preserves the dependency structure — downstream agents automatically wait for their prerequisites to complete:
 
 ```mermaid
 graph TD
-    Q["🧑 You: 'Build a REST API with auth'"] --> C["🏷️ Classifier"]
-    C -->|"Build · Standard rigor"| P["📋 Planner"]
+    Q["🧑 You: 'Compare forgetting mitigation strategies<br/>for sequential task learning'"] --> C["🏷️ Classifier"]
+    C -->|"Explore · Analytical rigor"| P["📋 Planner"]
 
-    P --> A1["🔨 agent-auth<br/><i>worktree</i>"]
-    P --> A2["🔨 agent-api<br/><i>worktree</i>"]
-    P --> A3["🔨 agent-dash<br/><i>worktree</i>"]
+    P --> A1["🔬 agent-baseline<br/><i>Sequential training</i>"]
+    P --> A2["🔬 agent-ewc<br/><i>Elastic Weight Consolidation</i>"]
+    P --> A3["🔬 agent-replay<br/><i>Experience Replay</i>"]
 
-    A1 --> CR["⚖️ Critic Review"]
-    A2 --> CR
-    A3 --> CR
+    A1 --> A4["🔬 agent-hybrid<br/><i>EWC + Replay (needs baselines)</i>"]
+    A2 --> A4
+    A3 --> A4
 
-    CR --> M["🔀 Merge to main"]
+    A4 --> CR["⚖️ Statistician + Critic Review"]
+    CR --> D["📄 Comparative report<br/><i>with effect sizes and evidence</i>"]
 ```
 
-Same framework. Same commands. Rigor gates activate only when warranted.
+Agents `baseline`, `ewc`, and `replay` run in parallel. Agent `hybrid` is blocked until all three complete — its experiment depends on their results. Same framework handles both flat parallelism and deep dependency chains.
 
 ### Under the Hood: tmux × Copilot CLI
 
@@ -334,12 +335,12 @@ Auto-classified. _"Build X"_ → Standard. _"Why X?"_ → Scientific. When in do
 Every finding is a first-class artifact with a complete evidence trail:
 
 ```
-📊 FINDING bd-42: Redis outperforms Memcached for our workload
-   Effect: d=2.3, CI [1.9, 2.8], N=10,000 requests
-   Test: Welch t-test, p<0.001
-   Robust: YES (3 parameter variations tested)
-   Data: data/raw/cache_benchmark.csv (SHA-256: a3f2...)
-   Replicated: 2/2 agree (overlapping 95% CIs)
+📊 FINDING bd-42: Attention entropy collapse predicts calibration loss
+   Effect: r²=0.87, CI [0.81, 0.92], N=200 fine-tuned checkpoints
+   Test: Pearson correlation, p<0.001
+   Robust: YES (3 learning rates × 4 datasets tested)
+   Data: data/raw/calibration_entropy.csv (SHA-256: a3f2...)
+   Replicated: 2/2 seeds agree (overlapping 95% CIs)
 ```
 
 | Layer | Location | Purpose |
@@ -602,11 +603,11 @@ Voronoi is the **science brain**. [Anton (MVCHA)](https://github.com/shyamsridha
 
 ```mermaid
 graph TD
-    V["🔬 Voronoi investigates:<br/>'Why is our API slow?'"]
-    V --> RC["🔍 Root cause: N+1 query in /users<br/>Expected fix: 3x reduction, CI [2.1x, 4.2x]"]
+    V["🔬 Voronoi investigates:<br/>'Why does our model lose accuracy after 3 epochs?'"]
+    V --> RC["🔍 Root cause: Learning rate too high for final layers<br/>Expected fix: d=1.2 accuracy gain, CI [0.8, 1.6]"]
     RC --> S["📋 Structured spec → GitHub issue<br/><i>labeled voronoi-spec</i>"]
-    S --> A["🔧 Anton picks it up:<br/>Clone → implement → test → PR"]
-    A --> Val["✅ Voronoi validates:<br/>Re-runs experiment → '2.8x improvement, within CI'"]
+    S --> A["🔧 Anton picks it up:<br/>Clone → implement layer-wise LR schedule → test → PR"]
+    A --> Val["✅ Voronoi validates:<br/>Re-runs experiment → 'd=1.1, within CI'"]
 ```
 
 They can coexist in the same Telegram group — Voronoi handles _"why"_ questions, Anton handles _"fix"_ commands.
