@@ -481,6 +481,136 @@ def cmd_version(args: argparse.Namespace) -> None:
     print(f"voronoi {__version__}")
 
 
+# ---------------------------------------------------------------------------
+# Server commands
+# ---------------------------------------------------------------------------
+
+def cmd_server(args: argparse.Namespace) -> None:
+    """Handle server subcommands."""
+    from voronoi.server.runner import ServerConfig
+
+    if args.server_action == "init":
+        _server_init(args)
+    elif args.server_action == "status":
+        _server_status(args)
+    elif args.server_action == "prune":
+        _server_prune(args)
+    elif args.server_action == "config":
+        _server_config(args)
+    else:
+        print("Usage: voronoi server {init|status|prune|config}")
+        sys.exit(1)
+
+
+def _server_init(args: argparse.Namespace) -> None:
+    """Initialize the Voronoi server at ~/.voronoi/."""
+    from voronoi.server.runner import ServerConfig
+
+    base_dir = getattr(args, "base_dir", None)
+    config = ServerConfig(base_dir=base_dir)
+
+    print(f"Initializing Voronoi server at {config.base_dir}")
+
+    config.base_dir.mkdir(parents=True, exist_ok=True)
+    (config.base_dir / "objects").mkdir(exist_ok=True)
+    (config.base_dir / "active").mkdir(exist_ok=True)
+
+    if not config.config_path.exists():
+        config.save()
+        print(f"  ✓ Config written to {config.config_path}")
+    else:
+        print(f"  ⊘ Config already exists at {config.config_path}")
+
+    # Check dependencies
+    for cmd, label in [("docker", "Docker"), ("gh", "GitHub CLI"), ("git", "Git"),
+                        ("tmux", "tmux")]:
+        if shutil.which(cmd):
+            print(f"  ✓ {label} found")
+        else:
+            print(f"  ⚠ {label} not found ({cmd})")
+
+    print(f"\nServer ready. Edit {config.config_path} to configure.")
+    print("Start the Telegram bridge: python scripts/telegram-bridge.py")
+
+
+def _server_status(args: argparse.Namespace) -> None:
+    """Show server status."""
+    from voronoi.server.queue import InvestigationQueue
+    from voronoi.server.runner import ServerConfig
+    from voronoi.server.workspace import WorkspaceManager
+
+    config = ServerConfig()
+    queue_path = config.base_dir / "queue.db"
+
+    if not config.base_dir.exists():
+        print("Server not initialized. Run: voronoi server init")
+        sys.exit(1)
+
+    wm = WorkspaceManager(config.base_dir)
+    active = wm.list_active()
+
+    print(f"Voronoi Server — {config.base_dir}")
+    print(f"  Active workspaces: {len(active)}")
+    print(f"  Max concurrent: {config.max_concurrent}")
+    print(f"  Sandbox: {'enabled' if config.sandbox.enabled else 'disabled'}")
+
+    if queue_path.exists():
+        queue = InvestigationQueue(queue_path)
+        running = queue.get_running()
+        queued = queue.get_queued()
+        print(f"\n  Running: {len(running)}")
+        for inv in running:
+            elapsed = (time.time() - (inv.started_at or inv.created_at)) / 60
+            label = inv.repo or inv.slug
+            print(f"    ⚡ #{inv.id} {label} ({elapsed:.0f}min)")
+        print(f"  Queued: {len(queued)}")
+        for inv in queued:
+            label = inv.repo or inv.slug
+            print(f"    ⏳ #{inv.id} {label}")
+
+
+def _server_prune(args: argparse.Namespace) -> None:
+    """Clean up old investigation workspaces."""
+    from voronoi.server.runner import ServerConfig
+    from voronoi.server.workspace import WorkspaceManager
+
+    config = ServerConfig()
+    wm = WorkspaceManager(config.base_dir)
+    active = wm.list_active()
+
+    if not active:
+        print("No workspaces to prune.")
+        return
+
+    print(f"Active workspaces: {len(active)}")
+    for name in active:
+        print(f"  {name}")
+
+    if not getattr(args, "force", False):
+        print(f"\nRun with --force to remove all workspaces.")
+        return
+
+    for name in active:
+        p = config.base_dir / "active" / name
+        if p.exists():
+            shutil.rmtree(p)
+            print(f"  ✓ Removed {name}")
+
+    print("Done.")
+
+
+def _server_config(args: argparse.Namespace) -> None:
+    """Show server configuration."""
+    from voronoi.server.runner import ServerConfig
+
+    config = ServerConfig()
+    if not config.config_path.exists():
+        print("No config found. Run: voronoi server init")
+        sys.exit(1)
+
+    print(config.config_path.read_text())
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="voronoi",
@@ -510,6 +640,16 @@ def main() -> None:
     sub.add_parser("clean", help="Remove all voronoi artifacts from this directory")
     sub.add_parser("version", help="Print version")
 
+    # Server subcommand
+    server_parser = sub.add_parser("server", help="Manage the Voronoi server")
+    server_sub = server_parser.add_subparsers(dest="server_action")
+    server_init = server_sub.add_parser("init", help="Initialize server at ~/.voronoi/")
+    server_init.add_argument("--base-dir", dest="base_dir", help="Custom base directory")
+    server_sub.add_parser("status", help="Show server status")
+    server_prune = server_sub.add_parser("prune", help="Clean up old workspaces")
+    server_prune.add_argument("--force", action="store_true", help="Actually remove workspaces")
+    server_sub.add_parser("config", help="Show server configuration")
+
     args = parser.parse_args()
 
     if args.command == "init":
@@ -525,6 +665,11 @@ def main() -> None:
         cmd_clean(args)
     elif args.command == "version":
         cmd_version(args)
+    elif args.command == "server":
+        if not hasattr(args, "server_action") or args.server_action is None:
+            server_parser.print_help()
+        else:
+            cmd_server(args)
     else:
         parser.print_help()
 

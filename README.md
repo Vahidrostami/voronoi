@@ -60,11 +60,57 @@ Text a question in your Telegram group. Voronoi classifies intent, dispatches ag
 
 <h2 id="quickstart">Quickstart</h2>
 
-```bash
-pip install voronoi
-```
+### Option A: Server Mode (Telegram-first — recommended)
+
+Set up once on a server. Text questions from your phone forever.
 
 ```bash
+# 1. Install
+pip install voronoi
+
+# 2. Initialize the server
+voronoi server init
+
+# 3. Set your credentials
+export VORONOI_TG_BOT_TOKEN="your-bot-token"    # from @BotFather
+export VORONOI_TG_CHAT_ID="your-chat-id"         # optional: restrict to one chat
+
+# 4. Start the Telegram bridge
+python scripts/telegram-bridge.py
+```
+
+Now open Telegram and text:
+
+```
+You:     Why is accuracy dropping in github.com/acme/ml-model?
+Voronoi: 🔬 Investigation #1 queued. Cloning acme/ml-model...
+         🔍 Scout analyzing 342 files... 3 hypotheses generated.
+         ⚡ 3 investigators dispatched in parallel.
+         [2 hours later]
+         🧪 ROOT CAUSE: Training pipeline introduced 12% label noise.
+         📄 Paper: github.com/voronoi-lab/acme-ml-accuracy-inv1
+
+You:     Does EWC prevent catastrophic forgetting better than replay?
+Voronoi: 🔬 Investigation #2 queued. Creating lab workspace...
+         [4 hours later]
+         📄 Paper + raw data: github.com/voronoi-lab/ewc-vs-replay-inv2
+
+You:     What did we learn about forgetting?
+Voronoi: 📚 3 findings from investigation #2:
+         1. EWC+Replay hybrid: backward transfer 0.81 (REPLICATED)
+         2. EWC alone: d=0.34 over replay, needs N>50k
+         3. Naive sequential: catastrophic at task 3+
+```
+
+**That's it.** No SSH, no CLI, no `cd`. Just text a question and get a research paper.
+
+### Option B: Local Mode (CLI-first)
+
+Work directly inside a project on your machine.
+
+```bash
+pip install voronoi
+
 cd my-project
 voronoi init
 
@@ -73,7 +119,7 @@ copilot                    # or: claude
 > /swarm Build a full-stack SaaS app with auth, billing, dashboard, and API
 ```
 
-That's it. The swarm plans the work, spawns isolated agents, and merges results back.
+The swarm plans the work, spawns isolated agents, and merges results back.
 
 For science:
 
@@ -268,22 +314,33 @@ Every finding is a first-class artifact with a complete evidence trail:
 ```
 voronoi/
 ├── src/voronoi/
-│   ├── cli.py                  # CLI entry point (init, upgrade, demo)
-│   └── gateway/                # Telegram science interface
-│       ├── intent.py           # Free-text → workflow mode + rigor classifier
-│       ├── memory.py           # Per-chat conversation memory (SQLite)
-│       ├── knowledge.py        # Knowledge store queries (findings, beliefs)
-│       ├── progress.py         # Real-time OODA progress relay
-│       └── handoff.py          # Voronoi → Anton/MVCHA handoff protocol
+│   ├── cli.py                  # CLI: init, upgrade, demo, server
+│   ├── gateway/                # Telegram science interface
+│   │   ├── intent.py           # Free-text → workflow mode + rigor classifier
+│   │   ├── memory.py           # Per-chat conversation memory (SQLite)
+│   │   ├── knowledge.py        # Knowledge store queries (findings, beliefs)
+│   │   ├── progress.py         # Real-time OODA progress relay
+│   │   └── handoff.py          # Voronoi → Anton/MVCHA handoff protocol
+│   └── server/                 # Server mode infrastructure
+│       ├── repo_url.py         # GitHub URL extraction from free text
+│       ├── workspace.py        # Auto-clone with --reference, lab creation
+│       ├── queue.py            # Investigation queue (SQLite, concurrency control)
+│       ├── runner.py           # Queue runner, server config
+│       ├── sandbox.py          # Docker sandbox per investigation
+│       └── publisher.py        # Push results to GitHub (voronoi-lab/ org)
 │
 ├── scripts/                    # Infrastructure plumbing
-│   ├── swarm-init.sh           # One-time setup: git, Beads, tmux
+│   ├── swarm-init.sh           # One-time project setup
 │   ├── spawn-agent.sh          # Git worktree + tmux, launch agent
 │   ├── merge-agent.sh          # Merge branch → main, clean up
 │   ├── teardown.sh             # Kill sessions, prune worktrees
+│   ├── sandbox-exec.sh         # Run commands in Docker sandbox (fallback to host)
 │   ├── notify-telegram.sh      # Outbound Telegram notifications
 │   ├── telegram-bridge.py      # Inbound Telegram command bridge
 │   └── dashboard.py            # Live terminal monitoring (Rich)
+│
+├── docker/
+│   └── voronoi-python.Dockerfile  # Python 3.11 + scipy + matplotlib + git
 │
 ├── .github/
 │   ├── agents/                 # Specialized agent personas
@@ -294,7 +351,32 @@ voronoi/
 └── DESIGN.md                   # Full design philosophy
 ```
 
-**Everything is local files.** No daemon, no server, no account. Agents are coordinated through git branches, [Beads](https://github.com/steveyegge/beads) for task tracking, and tmux sessions. Orchestration is Copilot's native reasoning — shell scripts are pure plumbing.
+### Server Mode Layout
+
+```
+~/.voronoi/                          # created by: voronoi server init
+├── config.json                      # server settings
+├── knowledge.db                     # ALL findings across ALL investigations
+├── conversations.db                 # Telegram chat history
+├── queue.db                         # investigation queue
+│
+├── objects/                         # shared git object store
+│   ├── acme--ml-model.git           # bare clone (reused across investigations)
+│   └── acme--api.git
+│
+└── active/                          # one workspace per running investigation
+    ├── inv-1-acme-ml-accuracy/      # repo-bound (cloned with --reference)
+    │   ├── .swarm/                  # science state, journal, beliefs
+    │   ├── .sandbox-id              # Docker container ID
+    │   └── (repo files)
+    └── inv-2-ewc-vs-replay/         # pure science (git init from scratch)
+        ├── .swarm/
+        ├── PROMPT.md                # the original question
+        ├── src/                     # generated experiment code
+        └── data/raw/                # committed experimental data
+```
+
+**Everything is local files.** Agents are coordinated through git branches, [Beads](https://github.com/steveyegge/beads) for task tracking, and tmux sessions. Code execution is sandboxed in Docker.
 
 ---
 
@@ -349,7 +431,62 @@ python scripts/telegram-bridge.py
 
 Or add to `.env` and let `swarm-init.sh` start it automatically.
 
-**New in v0.3:** Free-text intent detection in group chats. Just ask a question — no `/voronoi` prefix needed. The classifier detects scientific intent and dispatches automatically.
+Free-text intent detection works in group chats — just ask a question, no `/voronoi` prefix needed.
+
+---
+
+## Docker Sandbox
+
+Agent code execution runs in Docker containers — isolated, resource-limited, reproducible.
+
+```bash
+# Build the science image (one time)
+docker build -t voronoi-python:latest -f docker/voronoi-python.Dockerfile .
+
+# Or pull pre-built:
+docker pull python:3.11-slim   # minimal fallback
+```
+
+The **orchestrator runs on the host** (needs git, tmux, Beads). The **experiments run in Docker** (safe, capped at 4 CPUs / 8 GB RAM / 12 hour timeout).
+
+```
+Host                           Docker Container
+┌──────────────────┐           ┌──────────────────────────┐
+│ Orchestrator     │           │ voronoi-inv-12            │
+│ (copilot/claude) │──exec───►│ Python 3.11 + scipy      │
+│ git, tmux, bd    │           │ /workspace (mounted)     │
+│                  │◄──files──│ experiments run here      │
+└──────────────────┘           └──────────────────────────┘
+```
+
+If Docker is unavailable, Voronoi falls back to host execution automatically.
+
+Configure in `~/.voronoi/config.json`:
+
+```json
+{
+  "sandbox": {
+    "enabled": true,
+    "image": "voronoi-python:latest",
+    "cpus": 4,
+    "memory": "8g",
+    "timeout_hours": 12,
+    "network": true,
+    "fallback_to_host": true
+  }
+}
+```
+
+---
+
+## Server Management
+
+```bash
+voronoi server init              # Create ~/.voronoi/, write config
+voronoi server status            # Running/queued investigations, workspace count
+voronoi server config            # Show current config
+voronoi server prune --force     # Clean completed workspaces
+```
 
 ---
 
@@ -427,7 +564,7 @@ voronoi upgrade    # Replaces scripts/ and .github/ — your CLAUDE.md is preser
 git clone https://github.com/Vahidrostami/voronoi
 cd voronoi
 pip install -e .
-pytest              # 135 tests
+pytest              # 218 tests
 ```
 
 Voronoi uses [Beads](https://github.com/steveyegge/beads) for issue tracking:
