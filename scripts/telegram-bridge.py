@@ -850,6 +850,91 @@ def run_bot(config: dict):
     app.add_handler(CommandHandler("voronoi", cmd_voronoi))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
+    # ------------------------------------------------------------------
+    # Investigation dispatcher — processes inbox, launches & monitors
+    # ------------------------------------------------------------------
+    _dispatcher = [None]  # mutable container for closure
+
+    def _init_dispatcher():
+        """Initialize the investigation dispatcher (lazy, best-effort)."""
+        if _dispatcher[0] is not None:
+            return _dispatcher[0]
+        try:
+            from voronoi.server.dispatcher import InvestigationDispatcher, DispatcherConfig
+            from voronoi.server.runner import ServerConfig
+
+            server_config = ServerConfig()
+            dc = DispatcherConfig(
+                base_dir=server_config.base_dir,
+                max_concurrent=server_config.max_concurrent,
+                max_agents=server_config.max_agents_per_investigation,
+                agent_command=server_config.agent_command,
+                agent_flags=server_config.agent_flags,
+            )
+
+            # The send_message callback — sends to the last active chat
+            def _send_to_telegram(text: str):
+                """Queue a message to send via the bot."""
+                chat_id_file = Path(config["project_dir"]) / ".telegram-chat-id"
+                if not chat_id_file.exists():
+                    return
+                chat_id = chat_id_file.read_text().strip()
+                if not chat_id:
+                    return
+                import asyncio
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        asyncio.ensure_future(_async_send(chat_id, text))
+                    else:
+                        loop.run_until_complete(_async_send(chat_id, text))
+                except Exception:
+                    pass  # Best-effort
+
+            async def _async_send(chat_id: str, text: str):
+                try:
+                    await app.bot.send_message(
+                        chat_id=chat_id, text=text,
+                        parse_mode="Markdown",
+                        disable_web_page_preview=True,
+                    )
+                except Exception:
+                    try:
+                        await app.bot.send_message(
+                            chat_id=chat_id, text=text,
+                            disable_web_page_preview=True,
+                        )
+                    except Exception:
+                        pass
+
+            _dispatcher[0] = InvestigationDispatcher(dc, _send_to_telegram)
+            print("   ✓ Investigation dispatcher initialized")
+        except Exception as e:
+            print(f"   ⚠ Dispatcher not available: {e}")
+        return _dispatcher[0]
+
+    async def _job_poll_inbox(context):
+        """Periodic job: check inbox for new commands."""
+        d = _init_dispatcher()
+        if d:
+            try:
+                d.poll_inbox()
+            except Exception as e:
+                print(f"Inbox poll error: {e}")
+
+    async def _job_poll_progress(context):
+        """Periodic job: check progress of running investigations."""
+        d = _init_dispatcher()
+        if d:
+            try:
+                d.poll_progress()
+            except Exception as e:
+                print(f"Progress poll error: {e}")
+
+    # Schedule periodic jobs
+    app.job_queue.run_repeating(_job_poll_inbox, interval=10, first=5)
+    app.job_queue.run_repeating(_job_poll_progress, interval=30, first=15)
+
     allowlist_str = ", ".join(user_allowlist) if user_allowlist else "any"
     print(f"🤖 Telegram bridge started for {config['project_name']}")
     print(f"   Allowed users: {allowlist_str}")
@@ -857,6 +942,7 @@ def run_bot(config: dict):
     print(f"   Project: {config['project_dir']}")
     print(f"   /voronoi commands work everywhere")
     print(f"   In groups: responds to @mentions and replies")
+    print(f"   Dispatcher: polling inbox every 10s, progress every 30s")
     # run_polling() is a synchronous convenience method that manages its own
     # event loop — it must NOT be awaited from inside an async context.
     app.run_polling(drop_pending_updates=True)

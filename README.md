@@ -16,13 +16,17 @@
 
 <br/>
 
-<a href="#quickstart"><strong>Quickstart</strong></a>&nbsp;&nbsp;&middot;&nbsp;&nbsp;<a href="#how-it-works"><strong>How It Works</strong></a>&nbsp;&nbsp;&middot;&nbsp;&nbsp;<a href="#commands"><strong>Commands</strong></a>&nbsp;&nbsp;&middot;&nbsp;&nbsp;<a href="#telegram"><strong>Telegram</strong></a>&nbsp;&nbsp;&middot;&nbsp;&nbsp;<a href="#demos"><strong>Demos</strong></a>&nbsp;&nbsp;&middot;&nbsp;&nbsp;<a href="DESIGN.md"><strong>Design</strong></a>
+<a href="#quickstart"><strong>Quickstart</strong></a>&nbsp;&nbsp;&middot;&nbsp;&nbsp;<a href="#how-it-works"><strong>How It Works</strong></a>&nbsp;&nbsp;&middot;&nbsp;&nbsp;<a href="#commands"><strong>Commands</strong></a>&nbsp;&nbsp;&middot;&nbsp;&nbsp;<a href="#telegram"><strong>Telegram</strong></a>&nbsp;&nbsp;&middot;&nbsp;&nbsp;<a href="#demos"><strong>Demos</strong></a>&nbsp;&nbsp;&middot;&nbsp;&nbsp;<a href="#comparison"><strong>Comparison</strong></a>&nbsp;&nbsp;&middot;&nbsp;&nbsp;<a href="DESIGN.md"><strong>Design</strong></a>
 
 </div>
 
 <br/>
 
 > **Voronoi** orchestrates multiple AI agents in parallel — with hypothesis management, statistical rigor, convergence feedback loops, and evidence preservation. Engineering is science with the rigor gates turned off.
+
+### Why "Voronoi"?
+
+A [Voronoi diagram](https://en.wikipedia.org/wiki/Voronoi_diagram) partitions space into cells — each point belongs to exactly one region, with no overlaps and no gaps. That's what this framework does with problems: each agent owns a non-overlapping slice of the investigation, works in isolation, and the cells merge into a complete picture. The boundaries between cells are where the interesting science happens — just like in the math.
 
 ---
 
@@ -136,69 +140,44 @@ Voronoi classifies this as **Investigate** (Scientific rigor), spawns a Scout, g
 
 <h2 id="how-it-works">How It Works</h2>
 
-```
-You ─► "Why is latency 3x higher?"
-         │
-         ▼
-    ┌─────────────┐
-    │  Classifier  │──► Investigate · Scientific rigor
-    └──────┬──────┘
-           │
-    ┌──────▼──────┐     ┌─────────────────────────────────────────┐
-    │    Scout     │────►│  Knowledge brief: known results,        │
-    │   (Phase 0)  │     │  failed approaches, suggested hypotheses│
-    └──────┬──────┘     └─────────────────────────────────────────┘
-           │
-    ┌──────▼──────────────────────────────┐
-    │  Orchestrator generates hypotheses   │
-    │  H1: Feature drift       (P=0.40)   │
-    │  H2: Data contamination  (P=0.35)   │
-    │  H3: Serving timeout     (P=0.25)   │
-    └──────┬──────────────────────────────┘
-           │
-    ┌──────┼──────────────┐
-    ▼      ▼              ▼
- ┌──────┐ ┌──────┐    ┌──────┐
- │Inv-1 │ │Inv-2 │    │Inv-3 │     ◄── parallel agents
- │(H1)  │ │(H2)  │    │(H3)  │         in git worktrees
- └──┬───┘ └──┬───┘    └──┬───┘
-    │        │            │
-    ▼        ▼            ▼
- FINDING  FINDING      FINDING       ◄── effect size, CI, N, p-value
-    │        │            │
-    └────────┼────────────┘
-             ▼
-    ┌────────────────┐
-    │  Statistician   │──► Reviews CI, tests, data integrity
-    │  Critic         │──► Adversarial review (partially blinded)
-    │  Synthesizer    │──► Integrates findings, updates belief map
-    └────────┬───────┘
-             │
-             ▼
-    ┌────────────────┐
-    │  Evaluator      │──► Completeness · Coherence · Strength · Actionability
-    └────────┬───────┘
-             │
-             ▼
-      📄 deliverable.md        ◄── research paper with full evidence trail
+```mermaid
+graph TD
+    Q["🧑 You: 'Why is latency 3x higher?'"] --> C["🏷️ Classifier"]
+    C -->|"Investigate · Scientific rigor"| S["🔍 Scout — Phase 0"]
+    S -->|"Knowledge brief: known results,<br/>failed approaches, hypotheses"| O["🧠 Orchestrator"]
+
+    O -->|"H1: Feature drift (P=0.40)"| I1["🔬 Investigator 1<br/><i>git worktree</i>"]
+    O -->|"H2: Data contamination (P=0.35)"| I2["🔬 Investigator 2<br/><i>git worktree</i>"]
+    O -->|"H3: Serving timeout (P=0.25)"| I3["🔬 Investigator 3<br/><i>git worktree</i>"]
+
+    I1 --> F1["📊 Finding — d, CI, N, p"]
+    I2 --> F2["📊 Finding — d, CI, N, p"]
+    I3 --> F3["📊 Finding — d, CI, N, p"]
+
+    F1 --> R["⚖️ Review Gate"]
+    F2 --> R
+    F3 --> R
+
+    R -->|"Statistician · Critic · Synthesizer"| E["🎯 Evaluator"]
+    E -->|"Completeness · Coherence · Strength"| D["📄 deliverable.md<br/><i>research paper with full evidence trail</i>"]
 ```
 
 For **engineering tasks**, the system simplifies automatically:
 
-```
-You ─► "Build a REST API with auth"
-         │
-         ▼
-    Classifier ──► Build · Standard rigor
-         │
-    ┌────┼────────────┐
-    ▼    ▼            ▼
- agent-auth  agent-api  agent-dash     ◄── parallel builders
- (worktree)  (worktree)  (worktree)
-    │         │           │
-    └────────┬────────────┘
-             ▼
-       Critic review ──► Merge to main
+```mermaid
+graph TD
+    Q["🧑 You: 'Build a REST API with auth'"] --> C["🏷️ Classifier"]
+    C -->|"Build · Standard rigor"| P["📋 Planner"]
+
+    P --> A1["🔨 agent-auth<br/><i>worktree</i>"]
+    P --> A2["🔨 agent-api<br/><i>worktree</i>"]
+    P --> A3["🔨 agent-dash<br/><i>worktree</i>"]
+
+    A1 --> CR["⚖️ Critic Review"]
+    A2 --> CR
+    A3 --> CR
+
+    CR --> M["🔀 Merge to main"]
 ```
 
 Same framework. Same commands. Rigor gates activate only when warranted.
@@ -420,6 +399,61 @@ Multi-agent reasoning over 5 coupled commercial levers. Planted ground truth acr
 
 ---
 
+<h2 id="comparison">How Voronoi Compares</h2>
+
+| Capability | **Voronoi** | CrewAI | AutoGen | MetaGPT |
+|:-----------|:----------:|:------:|:-------:|:-------:|
+| Parallel agents in git worktrees | ✅ | — | — | — |
+| Hypothesis management & belief maps | ✅ | — | — | — |
+| Statistical rigor gates (CI, p-values) | ✅ | — | — | — |
+| Pre-registration & replication | ✅ | — | — | — |
+| Evidence system (raw data + SHA-256) | ✅ | — | — | — |
+| Auto intent classification | ✅ | — | ✅ | ✅ |
+| Telegram-native interface | ✅ | — | — | — |
+| Docker-sandboxed execution | ✅ | — | ✅ | — |
+| Role-based agent specialization | ✅ (11 roles) | ✅ | ✅ | ✅ (6 roles) |
+| Task dependency tracking | ✅ (Beads) | — | — | ✅ |
+| Deliverable scoring (Evaluator) | ✅ | — | — | — |
+| Works with any LLM agent | ✅ | ✅ | ✅ | — |
+
+Other frameworks orchestrate **code generation**. Voronoi orchestrates **investigations** — where the output is evidence, not just software.
+
+---
+
+## Sample Output
+
+What a finding actually looks like after the review gates:
+
+```
+╔══════════════════════════════════════════════════════════════════════╗
+║  FINDING bd-127: Sleep Replay + EWC hybrid outperforms all         ║
+║  individual anti-forgetting strategies                             ║
+╠══════════════════════════════════════════════════════════════════════╣
+║                                                                    ║
+║  Hypothesis:  H3 — Combining complementary mechanisms preserves    ║
+║               more knowledge than any single approach              ║
+║  Verdict:     ✅ SUPPORTED                                         ║
+║                                                                    ║
+║  Effect:      d = 1.47, 95% CI [1.12, 1.83]                       ║
+║  Baseline:    Naive sequential — 12% Task 1 accuracy at Task 5    ║
+║  Treatment:   Sleep Replay + EWC hybrid — 89% accuracy retained    ║
+║  N:           5 sequential MNIST tasks × 3 seeds                   ║
+║  Test:        Welch t-test, p < 0.001                              ║
+║                                                                    ║
+║  Robust:      YES — tested with λ ∈ {0.1, 1.0, 10.0},             ║
+║               replay ratios ∈ {10%, 25%, 50%}                      ║
+║  Data:        data/raw/forgetting_benchmark.csv                    ║
+║  Hash:        sha256:e7b3f...                                      ║
+║  Replicated:  2/2 seeds agree (overlapping 95% CIs)                ║
+║                                                                    ║
+║  REVIEWED BY: Statistician ✅ · Critic ✅ · Methodologist ✅        ║
+╚══════════════════════════════════════════════════════════════════════╝
+```
+
+This isn't a mock-up — it's the format every Voronoi finding ships in. Effect sizes, not vibes.
+
+---
+
 ## Telegram Setup
 
 ```bash
@@ -457,14 +491,16 @@ docker pull python:3.11-slim   # minimal fallback
 
 The **orchestrator runs on the host** (needs git, tmux, Beads). The **experiments run in Docker** (safe, capped at 4 CPUs / 8 GB RAM / 12 hour timeout).
 
-```
-Host                           Docker Container
-┌──────────────────┐           ┌──────────────────────────┐
-│ Orchestrator     │           │ voronoi-inv-12            │
-│ (copilot/claude) │──exec───►│ Python 3.11 + scipy      │
-│ git, tmux, bd    │           │ /workspace (mounted)     │
-│                  │◄──files──│ experiments run here      │
-└──────────────────┘           └──────────────────────────┘
+```mermaid
+graph LR
+    subgraph Host
+        O["🧠 Orchestrator<br/><i>copilot / claude</i><br/>git, tmux, bd"]
+    end
+    subgraph Docker["🐳 Docker Container"]
+        W["voronoi-inv-12<br/>Python 3.11 + scipy<br/>/workspace (mounted)"]
+    end
+    O -->|"exec"| W
+    W -->|"files"| O
 ```
 
 If Docker is unavailable, Voronoi falls back to host execution automatically.
@@ -502,21 +538,13 @@ voronoi server prune --force     # Clean completed workspaces
 
 Voronoi is the **science brain**. [Anton (MVCHA)](https://github.com/shyamsridhar123/MVCHA) is the **engineering hands**.
 
-```
-Voronoi investigates:  "Why is our API slow?"
-         │
-         ▼
-    Root cause found: N+1 query in /users endpoint
-    Expected fix: 3x latency reduction, CI [2.1x, 4.2x]
-         │
-         ▼
-    Creates structured spec → GitHub issue labeled voronoi-spec
-         │
-         ▼
-Anton picks it up:  Clone → implement fix → run tests → open PR
-         │
-         ▼
-Voronoi validates:  Re-runs experiment → "✅ 2.8x improvement, within CI"
+```mermaid
+graph TD
+    V["🔬 Voronoi investigates:<br/>'Why is our API slow?'"]
+    V --> RC["🔍 Root cause: N+1 query in /users<br/>Expected fix: 3x reduction, CI [2.1x, 4.2x]"]
+    RC --> S["📋 Structured spec → GitHub issue<br/><i>labeled voronoi-spec</i>"]
+    S --> A["🔧 Anton picks it up:<br/>Clone → implement → test → PR"]
+    A --> Val["✅ Voronoi validates:<br/>Re-runs experiment → '2.8x improvement, within CI'"]
 ```
 
 They can coexist in the same Telegram group — Voronoi handles _"why"_ questions, Anton handles _"fix"_ commands.
@@ -585,6 +613,18 @@ bd ready            # Find available work
 ## Design
 
 See [DESIGN.md](DESIGN.md) for architecture, workflow modes, rigor levels, evidence layers, and convergence criteria.
+
+---
+
+## Star History
+
+<a href="https://star-history.com/#Vahidrostami/voronoi&Date">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=Vahidrostami/voronoi&type=Date&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=Vahidrostami/voronoi&type=Date" />
+   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=Vahidrostami/voronoi&type=Date" />
+ </picture>
+</a>
 
 ---
 
