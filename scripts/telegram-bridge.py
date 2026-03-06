@@ -931,9 +931,13 @@ def run_bot(config: dict):
             except Exception as e:
                 print(f"Progress poll error: {e}")
 
-    # Schedule periodic jobs
-    app.job_queue.run_repeating(_job_poll_inbox, interval=10, first=5)
-    app.job_queue.run_repeating(_job_poll_progress, interval=30, first=15)
+    # Schedule periodic jobs (requires python-telegram-bot[job-queue])
+    if app.job_queue is not None:
+        app.job_queue.run_repeating(_job_poll_inbox, interval=10, first=5)
+        app.job_queue.run_repeating(_job_poll_progress, interval=30, first=15)
+    else:
+        print("⚠️  JobQueue not available. Install with: pip install 'python-telegram-bot[job-queue]'")
+        print("   Dispatcher inbox/progress polling disabled.")
 
     allowlist_str = ", ".join(user_allowlist) if user_allowlist else "any"
     print(f"🤖 Telegram bridge started for {config['project_name']}")
