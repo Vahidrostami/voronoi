@@ -141,7 +141,11 @@ def save_chat_id(project_dir: str, chat_id: int | str) -> None:
     The .env VORONOI_TG_CHAT_ID serves as the fallback default.
     """
     chat_file = Path(project_dir) / ".telegram-chat-id"
-    chat_file.write_text(str(chat_id).strip() + "\n")
+    try:
+        chat_file.parent.mkdir(parents=True, exist_ok=True)
+        chat_file.write_text(str(chat_id).strip() + "\n")
+    except OSError:
+        pass  # Best-effort; fallback is VORONOI_TG_CHAT_ID in .env
 
 
 # ---------------------------------------------------------------------------
