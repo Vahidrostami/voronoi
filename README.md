@@ -188,6 +188,62 @@ graph TD
 
 Same framework. Same commands. Rigor gates activate only when warranted.
 
+### Under the Hood: tmux × Copilot CLI
+
+Every agent is a **full Copilot CLI session** running in its own **tmux window** with its own **git worktree**. The orchestrator doesn't use APIs — it opens terminals and types commands.
+
+```mermaid
+graph LR
+    subgraph tmux["🖥️ tmux session: project-swarm"]
+        direction TB
+        W0["orchestrator"]
+        W1["agent-hypothesis-1"]
+        W2["agent-hypothesis-2"]
+        W3["agent-hypothesis-3"]
+    end
+
+    subgraph worktrees["📁 git worktrees"]
+        WT1["worktree/agent-hypothesis-1/"]
+        WT2["worktree/agent-hypothesis-2/"]
+        WT3["worktree/agent-hypothesis-3/"]
+    end
+
+    W1 -.- WT1
+    W2 -.- WT2
+    W3 -.- WT3
+
+    W0 -->|"spawn-agent.sh"| W1
+    W0 -->|"spawn-agent.sh"| W2
+    W0 -->|"spawn-agent.sh"| W3
+
+    W1 -->|"copilot --allow-all -p ..."| C1["🤖 Copilot CLI"]
+    W2 -->|"copilot --allow-all -p ..."| C2["🤖 Copilot CLI"]
+    W3 -->|"copilot --allow-all -p ..."| C3["🤖 Copilot CLI"]
+```
+
+<table>
+<tr>
+<td width="50%">
+
+**Why tmux?**
+- Process isolation — one crash doesn't kill the swarm
+- `tmux attach` to watch any agent think in real-time
+- Dashboard polls `capture-pane` for live status
+- No custom IPC — agents communicate through git + Beads
+
+</td>
+<td width="50%">
+
+**Why full Copilot CLI?**
+- Each agent gets the complete toolkit (bash, edit, grep, git)
+- Not a stripped-down API subset — real terminal sessions
+- Works with Claude CLI too — swap with one config line
+- Same agent you use manually, running autonomously
+
+</td>
+</tr>
+</table>
+
 ---
 
 <h2 id="commands">Commands</h2>

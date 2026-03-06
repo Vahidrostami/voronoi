@@ -1,0 +1,93 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 340" width="900" height="340">
+  <defs>
+    <linearGradient id="bg-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0d1117;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#161b22;stop-opacity:1" />
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="2" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <style>
+      .cell-label { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; font-size: 11px; font-weight: 600; fill: #c9d1d9; }
+      .cell-emoji { font-size: 22px; }
+      .title-text { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; font-size: 13px; fill: #8b949e; font-weight: 400; letter-spacing: 0.5px; }
+    </style>
+  </defs>
+  
+  <!-- Background -->
+  <rect width="900" height="340" rx="12" fill="url(#bg-grad)"/>
+  <!-- Scout cell -->
+  <path d="M 155.7,100.0 L 163.5,127.1 L 141.1,144.4 L 120.0,155.0 L 101.0,164.5 L 80.0,175.0 L 50.9,189.5 L 8.0,199.1 L 8.0,152.3 L 8.0,123.4 L 8.0,100.0 L 8.0,76.6 L 8.0,47.7 L 13.2,8.0 L 50.1,8.0 L 80.0,8.0 L 109.9,8.0 L 134.3,25.2 L 142.7,54.4 L 149.3,77.5 Z" fill="#E8F0FE" fill-opacity="0.07" stroke="#4A90D9" stroke-width="1" stroke-opacity="0.4"/>
+  <!-- Investigator cell -->
+  <path d="M 296.3,60.0 L 293.2,83.8 L 289.6,110.6 L 277.1,138.6 L 250.2,152.9 L 220.0,160.0 L 192.0,146.0 L 166.7,133.4 L 157.3,105.6 L 150.7,82.5 L 144.3,60.0 L 136.5,32.9 L 148.4,8.0 L 182.2,8.0 L 203.1,8.0 L 220.0,8.0 L 236.9,8.0 L 257.8,8.0 L 291.6,8.0 L 299.8,34.1 Z" fill="#FEF3E8" fill-opacity="0.07" stroke="#E67E22" stroke-width="1" stroke-opacity="0.4"/>
+  <!-- Builder cell -->
+  <path d="M 447.1,80.0 L 451.5,106.5 L 440.9,131.5 L 420.2,149.1 L 398.4,167.5 L 370.0,167.0 L 345.0,157.0 L 321.0,147.4 L 292.8,136.1 L 290.2,105.9 L 293.7,80.0 L 296.8,56.2 L 300.4,29.4 L 317.7,8.0 L 346.6,8.0 L 370.0,8.0 L 393.4,8.0 L 422.3,8.0 L 438.8,30.0 L 443.1,56.2 Z" fill="#E8FEF0" fill-opacity="0.07" stroke="#27AE60" stroke-width="1" stroke-opacity="0.4"/>
+  <!-- Critic cell -->
+  <path d="M 597.1,55.0 L 593.1,78.8 L 588.8,105.0 L 582.7,141.3 L 549.3,145.2 L 520.0,137.7 L 495.2,131.3 L 469.4,124.6 L 451.2,105.0 L 446.9,78.8 L 442.9,55.0 L 438.5,28.5 L 455.3,8.0 L 485.9,8.0 L 504.7,8.0 L 520.0,8.0 L 535.3,8.0 L 554.1,8.0 L 584.7,8.0 L 601.5,28.5 Z" fill="#F3E8FE" fill-opacity="0.07" stroke="#8E44AD" stroke-width="1" stroke-opacity="0.4"/>
+  <!-- Statistician cell -->
+  <path d="M 743.2,80.0 L 738.4,102.2 L 733.4,126.0 L 726.5,157.8 L 697.5,164.7 L 670.0,161.2 L 644.6,158.1 L 615.9,154.5 L 582.3,143.7 L 588.5,106.5 L 592.9,80.0 L 596.9,56.2 L 601.2,30.0 L 617.7,8.0 L 646.6,8.0 L 670.0,8.0 L 693.4,8.0 L 722.3,8.0 L 756.7,17.0 L 748.7,54.4 Z" fill="#FEE8E8" fill-opacity="0.07" stroke="#E74C3C" stroke-width="1" stroke-opacity="0.4"/>
+  <!-- Synthesizer cell -->
+  <path d="M 892.0,110.0 L 892.0,136.6 L 892.0,169.6 L 863.9,184.2 L 833.4,182.0 L 810.0,180.4 L 787.7,178.8 L 761.4,176.9 L 726.5,170.7 L 731.3,135.6 L 736.8,110.0 L 741.6,87.8 L 746.6,64.0 L 753.5,32.2 L 776.9,8.0 L 810.0,8.0 L 843.1,8.0 L 884.1,8.0 L 892.0,50.4 L 892.0,83.4 Z" fill="#E8FEFA" fill-opacity="0.07" stroke="#16A085" stroke-width="1" stroke-opacity="0.4"/>
+  <!-- Evaluator cell -->
+  <path d="M 225.3,220.0 L 223.7,247.2 L 221.8,279.4 L 218.9,328.6 L 176.4,332.0 L 140.0,332.0 L 103.6,332.0 L 58.6,332.0 L 8.0,315.9 L 8.0,262.9 L 8.0,220.0 L 49.1,190.5 L 78.9,175.6 L 100.0,165.0 L 119.0,155.5 L 140.0,145.0 L 168.0,134.0 L 193.3,146.6 L 221.5,160.8 L 227.0,191.7 Z" fill="#FEF9E8" fill-opacity="0.07" stroke="#F39C12" stroke-width="1" stroke-opacity="0.4"/>
+  <!-- Theorist cell -->
+  <path d="M 396.2,230.0 L 399.6,259.1 L 404.2,298.5 L 384.1,332.0 L 343.1,332.0 L 310.0,332.0 L 276.9,332.0 L 235.9,332.0 L 220.9,294.7 L 223.0,258.3 L 224.7,230.0 L 226.3,202.8 L 228.2,170.6 L 252.9,151.4 L 279.8,137.1 L 310.0,143.0 L 335.0,153.0 L 359.0,162.6 L 387.2,173.9 L 393.0,203.0 Z" fill="#E8EFFE" fill-opacity="0.07" stroke="#2980B9" stroke-width="1" stroke-opacity="0.4"/>
+  <!-- Methodologist cell -->
+  <path d="M 567.6,210.0 L 562.9,236.9 L 557.7,266.4 L 550.5,307.1 L 519.6,332.0 L 480.0,332.0 L 440.4,332.0 L 405.8,312.1 L 400.6,267.7 L 397.0,237.0 L 393.8,210.0 L 390.4,180.9 L 409.1,158.5 L 429.8,140.9 L 451.6,122.5 L 480.0,127.3 L 504.8,133.7 L 530.6,140.4 L 564.0,149.0 L 573.0,179.8 Z" fill="#FEF0E8" fill-opacity="0.07" stroke="#D35400" stroke-width="1" stroke-opacity="0.4"/>
+  <!-- Explorer cell -->
+  <path d="M 725.3,240.0 L 723.7,264.0 L 721.9,292.2 L 716.8,332.0 L 679.9,332.0 L 650.0,332.0 L 620.1,332.0 L 583.2,332.0 L 549.5,313.0 L 557.0,270.2 L 562.4,240.0 L 567.1,213.1 L 572.3,183.6 L 585.1,150.6 L 622.5,155.3 L 650.0,158.8 L 675.4,161.9 L 704.1,165.5 L 729.2,182.5 L 727.0,215.0 Z" fill="#E8FEFC" fill-opacity="0.07" stroke="#1ABC9C" stroke-width="1" stroke-opacity="0.4"/>
+  <!-- Worker cell -->
+  <path d="M 892.0,250.0 L 892.0,279.9 L 892.0,316.8 L 859.6,332.0 L 826.6,332.0 L 800.0,332.0 L 773.4,332.0 L 740.4,332.0 L 720.8,307.5 L 723.0,275.0 L 724.7,250.0 L 726.3,226.0 L 728.1,197.8 L 746.1,175.8 L 776.6,178.0 L 800.0,179.6 L 822.3,181.2 L 848.6,183.1 L 888.2,185.9 L 892.0,220.1 Z" fill="#F0F0F0" fill-opacity="0.07" stroke="#7F8C8D" stroke-width="1" stroke-opacity="0.4"/>
+  <text x="80" y="92" text-anchor="middle" class="cell-emoji">🔍</text>
+  <text x="80" y="114" text-anchor="middle" class="cell-label" fill="#4A90D9">Scout</text>
+  <text x="220" y="52" text-anchor="middle" class="cell-emoji">🔬</text>
+  <text x="220" y="74" text-anchor="middle" class="cell-label" fill="#E67E22">Investigator</text>
+  <text x="370" y="72" text-anchor="middle" class="cell-emoji">🔨</text>
+  <text x="370" y="94" text-anchor="middle" class="cell-label" fill="#27AE60">Builder</text>
+  <text x="520" y="47" text-anchor="middle" class="cell-emoji">⚖️</text>
+  <text x="520" y="69" text-anchor="middle" class="cell-label" fill="#8E44AD">Critic</text>
+  <text x="670" y="72" text-anchor="middle" class="cell-emoji">📊</text>
+  <text x="670" y="94" text-anchor="middle" class="cell-label" fill="#E74C3C">Statistician</text>
+  <text x="810" y="102" text-anchor="middle" class="cell-emoji">🧩</text>
+  <text x="810" y="124" text-anchor="middle" class="cell-label" fill="#16A085">Synthesizer</text>
+  <text x="140" y="212" text-anchor="middle" class="cell-emoji">🎯</text>
+  <text x="140" y="234" text-anchor="middle" class="cell-label" fill="#F39C12">Evaluator</text>
+  <text x="310" y="222" text-anchor="middle" class="cell-emoji">🧬</text>
+  <text x="310" y="244" text-anchor="middle" class="cell-label" fill="#2980B9">Theorist</text>
+  <text x="480" y="202" text-anchor="middle" class="cell-emoji">📐</text>
+  <text x="480" y="224" text-anchor="middle" class="cell-label" fill="#D35400">Methodologist</text>
+  <text x="650" y="232" text-anchor="middle" class="cell-emoji">🧭</text>
+  <text x="650" y="254" text-anchor="middle" class="cell-label" fill="#1ABC9C">Explorer</text>
+  <text x="800" y="242" text-anchor="middle" class="cell-emoji">⚙️</text>
+  <text x="800" y="264" text-anchor="middle" class="cell-label" fill="#7F8C8D">Worker</text>
+  <line x1="80" y1="100" x2="220" y2="60" stroke="#30363d" stroke-width="0.5" stroke-dasharray="4,4" opacity="0.5"/>
+  <line x1="220" y1="60" x2="370" y2="80" stroke="#30363d" stroke-width="0.5" stroke-dasharray="4,4" opacity="0.5"/>
+  <line x1="370" y1="80" x2="520" y2="55" stroke="#30363d" stroke-width="0.5" stroke-dasharray="4,4" opacity="0.5"/>
+  <line x1="520" y1="55" x2="670" y2="80" stroke="#30363d" stroke-width="0.5" stroke-dasharray="4,4" opacity="0.5"/>
+  <line x1="670" y1="80" x2="810" y2="110" stroke="#30363d" stroke-width="0.5" stroke-dasharray="4,4" opacity="0.5"/>
+  <line x1="80" y1="100" x2="140" y2="220" stroke="#30363d" stroke-width="0.5" stroke-dasharray="4,4" opacity="0.5"/>
+  <line x1="220" y1="60" x2="140" y2="220" stroke="#30363d" stroke-width="0.5" stroke-dasharray="4,4" opacity="0.5"/>
+  <line x1="370" y1="80" x2="310" y2="230" stroke="#30363d" stroke-width="0.5" stroke-dasharray="4,4" opacity="0.5"/>
+  <line x1="520" y1="55" x2="480" y2="210" stroke="#30363d" stroke-width="0.5" stroke-dasharray="4,4" opacity="0.5"/>
+  <line x1="670" y1="80" x2="650" y2="240" stroke="#30363d" stroke-width="0.5" stroke-dasharray="4,4" opacity="0.5"/>
+  <line x1="810" y1="110" x2="800" y2="250" stroke="#30363d" stroke-width="0.5" stroke-dasharray="4,4" opacity="0.5"/>
+  <line x1="140" y1="220" x2="310" y2="230" stroke="#30363d" stroke-width="0.5" stroke-dasharray="4,4" opacity="0.5"/>
+  <line x1="310" y1="230" x2="480" y2="210" stroke="#30363d" stroke-width="0.5" stroke-dasharray="4,4" opacity="0.5"/>
+  <line x1="480" y1="210" x2="650" y2="240" stroke="#30363d" stroke-width="0.5" stroke-dasharray="4,4" opacity="0.5"/>
+  <line x1="650" y1="240" x2="800" y2="250" stroke="#30363d" stroke-width="0.5" stroke-dasharray="4,4" opacity="0.5"/>
+  <circle cx="80" cy="126" r="2" fill="#4A90D9" opacity="0.6"/>
+  <circle cx="220" cy="86" r="2" fill="#E67E22" opacity="0.6"/>
+  <circle cx="370" cy="106" r="2" fill="#27AE60" opacity="0.6"/>
+  <circle cx="520" cy="81" r="2" fill="#8E44AD" opacity="0.6"/>
+  <circle cx="670" cy="106" r="2" fill="#E74C3C" opacity="0.6"/>
+  <circle cx="810" cy="136" r="2" fill="#16A085" opacity="0.6"/>
+  <circle cx="140" cy="246" r="2" fill="#F39C12" opacity="0.6"/>
+  <circle cx="310" cy="256" r="2" fill="#2980B9" opacity="0.6"/>
+  <circle cx="480" cy="236" r="2" fill="#D35400" opacity="0.6"/>
+  <circle cx="650" cy="266" r="2" fill="#1ABC9C" opacity="0.6"/>
+  <circle cx="800" cy="276" r="2" fill="#7F8C8D" opacity="0.6"/>
+</svg>
