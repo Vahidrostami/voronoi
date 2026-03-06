@@ -177,12 +177,22 @@ def write_inbox_command(action: str, params: dict, message: str = "") -> str:
 # ---------------------------------------------------------------------------
 
 def run_bd(*args, cwd=None) -> tuple[int, str]:
-    """Run a bd command, return (exit_code, output)."""
+    """Run a bd command, return (exit_code, output).
+
+    Sets BEADS_DIR so bd finds the database even when the subprocess
+    inherits an environment without it (e.g. server started outside the
+    project directory).
+    """
+    env = os.environ.copy()
+    if cwd and "BEADS_DIR" not in env:
+        beads_dir = os.path.join(cwd, ".beads")
+        if os.path.isdir(beads_dir):
+            env["BEADS_DIR"] = beads_dir
     try:
         result = subprocess.run(
             ["bd", *args],
             capture_output=True, text=True, timeout=30,
-            cwd=cwd,
+            cwd=cwd, env=env,
         )
         return result.returncode, (result.stdout + result.stderr).strip()
     except FileNotFoundError:

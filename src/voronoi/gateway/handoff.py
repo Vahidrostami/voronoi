@@ -8,6 +8,7 @@ Anton (MVCHA) can pick up and execute.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -78,9 +79,14 @@ class FixSpec:
 
 def _run_cmd(cmd: list[str], cwd: Optional[str] = None) -> tuple[int, str]:
     """Run a command and return (exit_code, output)."""
+    env = os.environ.copy()
+    if cwd and "BEADS_DIR" not in env:
+        beads_dir = os.path.join(cwd, ".beads")
+        if os.path.isdir(beads_dir):
+            env["BEADS_DIR"] = beads_dir
     try:
         result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=30, cwd=cwd,
+            cmd, capture_output=True, text=True, timeout=30, cwd=cwd, env=env,
         )
         return result.returncode, (result.stdout + result.stderr).strip()
     except FileNotFoundError:

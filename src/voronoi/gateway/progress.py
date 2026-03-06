@@ -38,6 +38,15 @@ class ProgressRelay:
         self._last_inbox_files: set[str] = set()
         self._seen_findings: set[str] = set()
 
+    def _bd_env(self) -> dict[str, str]:
+        """Build env dict that sets BEADS_DIR if .beads exists in project."""
+        env = os.environ.copy()
+        if "BEADS_DIR" not in env:
+            beads_dir = str(self.project_dir / ".beads")
+            if os.path.isdir(beads_dir):
+                env["BEADS_DIR"] = beads_dir
+        return env
+
     def poll(self) -> list[ProgressEvent]:
         """Check for new progress events. Returns events since last poll."""
         events: list[ProgressEvent] = []
@@ -56,7 +65,7 @@ class ProgressRelay:
             result = subprocess.run(
                 ["bd", "list", "--json"],
                 capture_output=True, text=True, timeout=15,
-                cwd=str(self.project_dir),
+                cwd=str(self.project_dir), env=self._bd_env(),
             )
             if result.returncode != 0:
                 return events
@@ -146,7 +155,7 @@ class ProgressRelay:
             result = subprocess.run(
                 ["bd", "list", "--json"],
                 capture_output=True, text=True, timeout=15,
-                cwd=str(self.project_dir),
+                cwd=str(self.project_dir), env=self._bd_env(),
             )
             if result.returncode != 0:
                 return events
