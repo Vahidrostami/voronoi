@@ -39,7 +39,6 @@ Requirements:
 """
 
 import argparse
-import asyncio
 import json
 import os
 import subprocess
@@ -105,6 +104,17 @@ def load_config(config_path: str = ".swarm-config.json") -> dict:
         "project_name": config.get("project_name", "voronoi"),
         "swarm_dir": config.get("swarm_dir", ""),
     }
+
+
+def save_chat_id(project_dir: str, chat_id: int | str) -> None:
+    """Persist the active Telegram chat ID so notify-telegram.sh can read it.
+
+    Written every time a user sends a /voronoi command so that outbound
+    notifications are routed to whichever chat the user is interacting from.
+    The .env VORONOI_TG_CHAT_ID serves as the fallback default.
+    """
+    chat_file = Path(project_dir) / ".telegram-chat-id"
+    chat_file.write_text(str(chat_id).strip() + "\n")
 
 
 # ---------------------------------------------------------------------------
@@ -173,7 +183,7 @@ def run_script(script: str, *args, cwd=None) -> tuple[int, str]:
 # Command handlers
 # ---------------------------------------------------------------------------
 
-async def handle_status(config: dict) -> str:
+def handle_status(config: dict) -> str:
     """Get swarm status."""
     # Use bd commands directly for status
     _, ready = run_bd("ready", "--json", cwd=config["project_dir"])
@@ -191,7 +201,7 @@ async def handle_status(config: dict) -> str:
     return f"📊 *Swarm Status*\nReady: {ready_count}\nOpen: {open_count}"
 
 
-async def handle_tasks(config: dict) -> str:
+def handle_tasks(config: dict) -> str:
     """List open tasks."""
     code, output = run_bd("list", "--status", "open", "--json", cwd=config["project_dir"])
     if code != 0:
@@ -219,7 +229,7 @@ async def handle_tasks(config: dict) -> str:
     return "\n".join(lines)
 
 
-async def handle_ready(config: dict) -> str:
+def handle_ready(config: dict) -> str:
     """List ready (unblocked) tasks."""
     code, output = run_bd("ready", "--json", cwd=config["project_dir"])
     if code != 0:
@@ -243,7 +253,7 @@ async def handle_ready(config: dict) -> str:
     return "\n".join(lines)
 
 
-async def handle_reprioritize(config: dict, task_id: str, priority: str) -> str:
+def handle_reprioritize(config: dict, task_id: str, priority: str) -> str:
     """Change task priority."""
     code, output = run_bd("update", task_id, "--priority", priority, cwd=config["project_dir"])
     if code != 0:
@@ -253,21 +263,21 @@ async def handle_reprioritize(config: dict, task_id: str, priority: str) -> str:
     return f"✅ Task `{task_id}` priority set to {priority}"
 
 
-async def handle_pause(config: dict, task_id: str) -> str:
+def handle_pause(config: dict, task_id: str) -> str:
     """Pause/block a task."""
     code, output = run_bd("update", task_id, "--notes", "BLOCKED: Paused by operator via Telegram", cwd=config["project_dir"])
     write_inbox_command("pause", {"target": task_id}, "Paused by operator")
     return f"⏸ Task `{task_id}` paused"
 
 
-async def handle_resume(config: dict, task_id: str) -> str:
+def handle_resume(config: dict, task_id: str) -> str:
     """Resume a paused task."""
     code, output = run_bd("update", task_id, "--status", "open", cwd=config["project_dir"])
     write_inbox_command("resume", {"target": task_id}, "Resumed by operator")
     return f"▶️ Task `{task_id}` resumed"
 
 
-async def handle_add(config: dict, title: str, description: str = "") -> str:
+def handle_add(config: dict, title: str, description: str = "") -> str:
     """Create a new task."""
     args = ["create", title]
     if description:
@@ -288,13 +298,13 @@ async def handle_add(config: dict, title: str, description: str = "") -> str:
     return f"✅ Created task `{new_id}`: {title}"
 
 
-async def handle_abort(config: dict) -> str:
+def handle_abort(config: dict) -> str:
     """Request graceful swarm abort."""
     write_inbox_command("abort", {}, "Operator requested abort via Telegram")
     return "🛑 *Abort requested* — autopilot will shut down gracefully after current agents complete"
 
 
-async def handle_pivot(config: dict, message: str) -> str:
+def handle_pivot(config: dict, message: str) -> str:
     """Strategic pivot — creates guidance note for agents."""
     write_inbox_command("pivot", {"message": message}, message)
     # Also write a strategic guidance file
@@ -309,7 +319,7 @@ async def handle_pivot(config: dict, message: str) -> str:
     return f"🔀 *Pivot recorded*\n\nGuidance written to `.swarm/operator-guidance.md`\nAgents will read this on next dispatch."
 
 
-async def handle_guide(config: dict, message: str) -> str:
+def handle_guide(config: dict, message: str) -> str:
     """Free-form guidance note."""
     write_inbox_command("guide", {"message": message}, message)
 
@@ -328,7 +338,7 @@ async def handle_guide(config: dict, message: str) -> str:
 # Telegram bot
 # ---------------------------------------------------------------------------
 
-async def run_bot(config: dict):
+def run_bot(config: dict):
     """Main bot loop using python-telegram-bot."""
     try:
         from telegram import Update
@@ -336,12 +346,12 @@ async def run_bot(config: dict):
             Application,
             CommandHandler,
             ContextTypes,
-            MessageHandler,
-            filters,
         )
     except ImportError:
         print("python-telegram-bot not installed. Run: pip install python-telegram-bot", file=sys.stderr)
         sys.exit(1)
+
+    from telegram.ext import MessageHandler, filters
 
     bot_token = config["bot_token"]
     allowed_chat = config["chat_id"]
@@ -360,6 +370,10 @@ async def run_bot(config: dict):
         """Handle /voronoi commands."""
         if not is_allowed(update):
             return
+
+        # Persist the chat ID so outbound notifications target this chat
+        if update.message and update.message.chat_id:
+            save_chat_id(config["project_dir"], update.message.chat_id)
 
         args = context.args or []
         if not args:
@@ -383,28 +397,28 @@ async def run_bot(config: dict):
 
         try:
             if subcommand == "status":
-                reply = await handle_status(config)
+                reply = handle_status(config)
             elif subcommand == "tasks":
-                reply = await handle_tasks(config)
+                reply = handle_tasks(config)
             elif subcommand == "ready":
-                reply = await handle_ready(config)
+                reply = handle_ready(config)
             elif subcommand == "reprioritize" and len(args) >= 3:
-                reply = await handle_reprioritize(config, args[1], args[2])
+                reply = handle_reprioritize(config, args[1], args[2])
             elif subcommand == "pause" and len(args) >= 2:
-                reply = await handle_pause(config, args[1])
+                reply = handle_pause(config, args[1])
             elif subcommand == "resume" and len(args) >= 2:
-                reply = await handle_resume(config, args[1])
+                reply = handle_resume(config, args[1])
             elif subcommand == "add" and len(args) >= 2:
                 title = " ".join(args[1:])
-                reply = await handle_add(config, title)
+                reply = handle_add(config, title)
             elif subcommand == "abort":
-                reply = await handle_abort(config)
+                reply = handle_abort(config)
             elif subcommand == "pivot" and len(args) >= 2:
                 message = " ".join(args[1:])
-                reply = await handle_pivot(config, message)
+                reply = handle_pivot(config, message)
             elif subcommand == "guide" and len(args) >= 2:
                 message = " ".join(args[1:])
-                reply = await handle_guide(config, message)
+                reply = handle_guide(config, message)
             else:
                 reply = f"❓ Unknown command: `{subcommand}`\nSend `/voronoi` for help."
         except Exception as e:
@@ -417,20 +431,28 @@ async def run_bot(config: dict):
             await update.message.reply_text(reply)
 
     async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle free-text messages (treat as guidance)."""
+        """Handle free-text messages in private chats as guidance notes.
+
+        In group chats: silently ignore to avoid noise.
+        """
         if not is_allowed(update):
             return
 
-        text = update.message.text
+        if update.message is None:
+            return
+
+        # Only respond in private (DM) chats
+        if update.message.chat.type != "private":
+            return
+
+        # Persist chat ID
+        save_chat_id(config["project_dir"], update.message.chat_id)
+
+        text = (update.message.text or "").strip()
         if not text:
             return
 
-        # Only respond to messages that reference voronoi or the project
-        keywords = ["voronoi", "swarm", "agent", "task", config["project_name"].lower()]
-        if not any(kw in text.lower() for kw in keywords):
-            return
-
-        reply = await handle_guide(config, text)
+        reply = handle_guide(config, text)
         try:
             await update.message.reply_text(reply, parse_mode="Markdown")
         except Exception:
@@ -445,28 +467,11 @@ async def run_bot(config: dict):
     print(f"   Chat filter: {allowed_chat or 'any'}")
     print(f"   Inbox dir: {INBOX_DIR}")
     print(f"   Project: {config['project_dir']}")
-
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling(drop_pending_updates=True)
-
-    # Keep running until interrupted
-    stop_event = asyncio.Event()
-
-    def signal_handler():
-        stop_event.set()
-
-    import signal
-    loop = asyncio.get_event_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, signal_handler)
-
-    await stop_event.wait()
-
-    await app.updater.stop()
-    await app.stop()
-    await app.shutdown()
-    print("\n🛑 Telegram bridge stopped")
+    print(f"   Send /voronoi help in Telegram to see commands")
+    print(f"   Plain text DMs are forwarded as operator guidance")
+    # run_polling() is a synchronous convenience method that manages its own
+    # event loop — it must NOT be awaited from inside an async context.
+    app.run_polling(drop_pending_updates=True)
 
 
 # ---------------------------------------------------------------------------
@@ -489,7 +494,7 @@ def main():
               file=sys.stderr)
         sys.exit(1)
 
-    asyncio.run(run_bot(config))
+    run_bot(config)
 
 
 if __name__ == "__main__":

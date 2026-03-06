@@ -70,13 +70,25 @@ _ntg_load_config() {
     # Load .env first (environment vars take precedence over .swarm-config.json)
     _ntg_load_dotenv
 
+    _NTG_BOT_TOKEN="${VORONOI_TG_BOT_TOKEN:-}"
+    _NTG_CHAT_ID="${VORONOI_TG_CHAT_ID:-}"
+    _NTG_EVENTS="${VORONOI_TG_EVENTS:-}"
+    _NTG_ENABLED="false"
+
+    # Prefer the dynamic chat ID saved by telegram-bridge.py (the chat
+    # the user last interacted from), falling back to .env default.
+    local chat_id_file="${PROJECT_DIR:-.}/.telegram-chat-id"
+    if [[ -f "$chat_id_file" ]]; then
+        local dynamic_id
+        dynamic_id=$(cat "$chat_id_file" 2>/dev/null | tr -d '[:space:]')
+        if [[ -n "$dynamic_id" ]]; then
+            _NTG_CHAT_ID="$dynamic_id"
+        fi
+    fi
+
     local config_file="${PROJECT_DIR:-.}/.swarm-config.json"
     if [[ ! -f "$config_file" ]]; then
         # No config file — fall back to env vars only
-        _NTG_ENABLED="false"
-        _NTG_BOT_TOKEN="${VORONOI_TG_BOT_TOKEN:-}"
-        _NTG_CHAT_ID="${VORONOI_TG_CHAT_ID:-}"
-        _NTG_EVENTS="${VORONOI_TG_EVENTS:-}"
         _NTG_MVCHA_URL="${VORONOI_TG_MVCHA_URL:-}"
         _NTG_MVCHA_SECRET="${VORONOI_TG_MVCHA_SECRET:-}"
         _NTG_PREFER_MVCHA="${VORONOI_TG_PREFER_MVCHA:-false}"

@@ -113,11 +113,40 @@ cat > .swarm-config.json << EOF
 EOF
 
 echo "✓ Swarm config written to .swarm-config.json"
+
+# 8. Auto-start Telegram bridge if credentials are configured
+_tg_bot_token="${VORONOI_TG_BOT_TOKEN:-}"
+_tg_chat_id="${VORONOI_TG_CHAT_ID:-}"
+
+# Try loading from .env if not already in environment
+if [[ -z "$_tg_bot_token" && -f "$PROJECT_DIR/.env" ]]; then
+    _tg_bot_token=$(grep -E '^VORONOI_TG_BOT_TOKEN=' "$PROJECT_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- | xargs)
+    _tg_chat_id=$(grep -E '^VORONOI_TG_CHAT_ID=' "$PROJECT_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- | xargs)
+fi
+
+TMUX_SESSION="${PROJECT_NAME}-swarm"
+
+if [[ -n "$_tg_bot_token" && -n "$_tg_chat_id" ]]; then
+    echo ""
+    echo "✓ Telegram credentials found"
+    # Ensure tmux session exists
+    if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+        tmux new-session -d -s "$TMUX_SESSION" -n "orchestrator"
+    fi
+    # Kill any existing bridge pane/window to avoid duplicates
+    tmux kill-window -t "${TMUX_SESSION}:telegram" 2>/dev/null || true
+    # Start bridge in a dedicated tmux window
+    tmux new-window -t "$TMUX_SESSION" -n "telegram" \
+        "cd '$PROJECT_DIR' && python3 scripts/telegram-bridge.py; read -p 'Bridge exited. Press enter to close.'"
+    echo "✓ Telegram bridge started in tmux window '${TMUX_SESSION}:telegram'"
+else
+    echo ""
+    echo "To enable Telegram notifications:"
+    echo "  1. Copy .env.example to .env and fill in your bot token and chat ID"
+    echo "  2. Re-run swarm-init or manually: python3 scripts/telegram-bridge.py"
+fi
+
 echo ""
 echo "=== Setup complete ==="
-echo ""
-echo "To enable Telegram notifications:"
-echo "  1. Copy .env.example to .env and fill in your bot token and chat ID"
-echo "  2. (Optional) Start the bridge: python3 scripts/telegram-bridge.py"
 echo ""
 echo "Run: copilot then /swarm <your task>"
