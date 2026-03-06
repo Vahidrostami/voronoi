@@ -523,13 +523,42 @@ def _server_init(args: argparse.Namespace) -> None:
 
     # Check dependencies
     for cmd, label in [("docker", "Docker"), ("gh", "GitHub CLI"), ("git", "Git"),
-                        ("tmux", "tmux")]:
+                        ("tmux", "tmux"), ("bd", "Beads")]:
         if shutil.which(cmd):
             print(f"  ✓ {label} found")
         else:
             print(f"  ⚠ {label} not found ({cmd})")
 
+    # Check GitHub auth
+    gh_token = os.environ.get("GH_TOKEN", "")
+    if gh_token:
+        print(f"  ✓ GH_TOKEN set")
+    elif shutil.which("gh"):
+        result = subprocess.run(
+            ["gh", "auth", "status"], capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            print(f"  ✓ GitHub authenticated via gh CLI")
+        else:
+            print(f"  ⚠ gh not authenticated — run: gh auth login")
+    else:
+        print(f"  ⚠ No GitHub auth — set GH_TOKEN in .env or run: gh auth login")
+
+    # Check agent CLI
+    agent_cmd = os.environ.get("VORONOI_AGENT_COMMAND", config.agent_command)
+    agent_bin = agent_cmd.split()[0]
+    if shutil.which(agent_bin):
+        print(f"  ✓ Agent CLI found: {agent_bin}")
+    else:
+        print(f"  ⚠ Agent CLI not found: {agent_bin}")
+        # Try fallbacks
+        for alt in ["copilot", "claude"]:
+            if alt != agent_bin and shutil.which(alt):
+                print(f"    → Found {alt} instead. Set VORONOI_AGENT_COMMAND={alt} in .env")
+                break
+
     print(f"\nServer ready. Edit {config.config_path} to configure.")
+    print("Copy .env.example to .env for credentials.")
     print("Start the Telegram bridge: python scripts/telegram-bridge.py")
 
 

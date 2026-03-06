@@ -32,5 +32,6 @@ done
 # Top-level framework files
 cp "$REPO_ROOT/CLAUDE.md" "$DATA_DIR/CLAUDE.md"
 cp "$REPO_ROOT/AGENTS.md" "$DATA_DIR/AGENTS.md"
+cp "$REPO_ROOT/.env.example" "$DATA_DIR/.env.example"
 
 echo "✓ Done. $(find "$DATA_DIR" -type f | wc -l | tr -d ' ') files synced."

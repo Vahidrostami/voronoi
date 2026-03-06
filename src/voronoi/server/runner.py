@@ -7,6 +7,7 @@ launch orchestrator → stream progress → publish results.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -47,36 +48,75 @@ class ServerConfig:
         self._load()
 
     def _load(self) -> None:
-        if not self.config_path.exists():
-            return
-        try:
-            data = json.loads(self.config_path.read_text())
-            self.max_concurrent = data.get("server", {}).get("max_concurrent", self.max_concurrent)
-            self.max_agents_per_investigation = data.get("server", {}).get(
-                "max_agents_per_investigation", self.max_agents_per_investigation
-            )
-            self.agent_command = data.get("server", {}).get("agent_command", self.agent_command)
-            self.agent_flags = data.get("server", {}).get("agent_flags", self.agent_flags)
-            self.workspace_retention_days = data.get("server", {}).get(
-                "workspace_retention_days", self.workspace_retention_days
-            )
-            gh = data.get("github", {})
-            self.github_lab_org = gh.get("lab_org", self.github_lab_org)
-            self.github_visibility = gh.get("default_visibility", self.github_visibility)
-            self.github_auto_publish = gh.get("auto_publish", self.github_auto_publish)
+        if self.config_path.exists():
+            try:
+                data = json.loads(self.config_path.read_text())
+                self.max_concurrent = data.get("server", {}).get("max_concurrent", self.max_concurrent)
+                self.max_agents_per_investigation = data.get("server", {}).get(
+                    "max_agents_per_investigation", self.max_agents_per_investigation
+                )
+                self.agent_command = data.get("server", {}).get("agent_command", self.agent_command)
+                self.agent_flags = data.get("server", {}).get("agent_flags", self.agent_flags)
+                self.workspace_retention_days = data.get("server", {}).get(
+                    "workspace_retention_days", self.workspace_retention_days
+                )
+                gh = data.get("github", {})
+                self.github_lab_org = gh.get("lab_org", self.github_lab_org)
+                self.github_visibility = gh.get("default_visibility", self.github_visibility)
+                self.github_auto_publish = gh.get("auto_publish", self.github_auto_publish)
 
-            sb = data.get("sandbox", {})
-            self.sandbox = SandboxConfig(
-                enabled=sb.get("enabled", True),
-                image=sb.get("image", "voronoi-python:latest"),
-                cpus=sb.get("cpus", 4),
-                memory=sb.get("memory", "8g"),
-                timeout_hours=sb.get("timeout_hours", 12),
-                network=sb.get("network", True),
-                fallback_to_host=sb.get("fallback_to_host", True),
-            )
-        except (json.JSONDecodeError, KeyError):
-            pass
+                sb = data.get("sandbox", {})
+                self.sandbox = SandboxConfig(
+                    enabled=sb.get("enabled", True),
+                    image=sb.get("image", "voronoi-python:latest"),
+                    cpus=sb.get("cpus", 4),
+                    memory=sb.get("memory", "8g"),
+                    timeout_hours=sb.get("timeout_hours", 12),
+                    network=sb.get("network", True),
+                    fallback_to_host=sb.get("fallback_to_host", True),
+                )
+            except (json.JSONDecodeError, KeyError):
+                pass
+
+        # Environment variables override config file values
+        self._apply_env_overrides()
+
+    def _apply_env_overrides(self) -> None:
+        """Apply VORONOI_* environment variable overrides."""
+        env = os.environ.get
+
+        if env("VORONOI_AGENT_COMMAND"):
+            self.agent_command = env("VORONOI_AGENT_COMMAND")
+        if env("VORONOI_AGENT_FLAGS"):
+            self.agent_flags = env("VORONOI_AGENT_FLAGS")
+        if env("VORONOI_MAX_CONCURRENT"):
+            self.max_concurrent = int(env("VORONOI_MAX_CONCURRENT"))
+        if env("VORONOI_MAX_AGENTS"):
+            self.max_agents_per_investigation = int(env("VORONOI_MAX_AGENTS"))
+        if env("VORONOI_WORKSPACE_RETENTION_DAYS"):
+            self.workspace_retention_days = int(env("VORONOI_WORKSPACE_RETENTION_DAYS"))
+
+        if env("VORONOI_GITHUB_LAB_ORG"):
+            self.github_lab_org = env("VORONOI_GITHUB_LAB_ORG")
+        if env("VORONOI_GITHUB_VISIBILITY"):
+            self.github_visibility = env("VORONOI_GITHUB_VISIBILITY")
+        if env("VORONOI_GITHUB_AUTO_PUBLISH") is not None:
+            self.github_auto_publish = env("VORONOI_GITHUB_AUTO_PUBLISH").lower() in ("true", "1", "yes")
+
+        if env("VORONOI_SANDBOX_ENABLED") is not None:
+            self.sandbox.enabled = env("VORONOI_SANDBOX_ENABLED").lower() in ("true", "1", "yes")
+        if env("VORONOI_SANDBOX_IMAGE"):
+            self.sandbox.image = env("VORONOI_SANDBOX_IMAGE")
+        if env("VORONOI_SANDBOX_CPUS"):
+            self.sandbox.cpus = int(env("VORONOI_SANDBOX_CPUS"))
+        if env("VORONOI_SANDBOX_MEMORY"):
+            self.sandbox.memory = env("VORONOI_SANDBOX_MEMORY")
+        if env("VORONOI_SANDBOX_TIMEOUT_HOURS"):
+            self.sandbox.timeout_hours = int(env("VORONOI_SANDBOX_TIMEOUT_HOURS"))
+        if env("VORONOI_SANDBOX_NETWORK") is not None:
+            self.sandbox.network = env("VORONOI_SANDBOX_NETWORK").lower() in ("true", "1", "yes")
+        if env("VORONOI_SANDBOX_FALLBACK_TO_HOST") is not None:
+            self.sandbox.fallback_to_host = env("VORONOI_SANDBOX_FALLBACK_TO_HOST").lower() in ("true", "1", "yes")
 
     def save(self) -> None:
         """Persist current config to disk."""

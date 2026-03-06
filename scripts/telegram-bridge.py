@@ -119,6 +119,10 @@ def load_config(config_path: str = ".swarm-config.json") -> dict:
         "project_dir": config.get("project_dir", os.getcwd()),
         "project_name": config.get("project_name", "voronoi"),
         "swarm_dir": config.get("swarm_dir", ""),
+        "agent_command": os.environ.get(
+            "VORONOI_AGENT_COMMAND", config.get("agent_command", "copilot"),
+        ),
+        "gh_token": os.environ.get("GH_TOKEN", ""),
     }
 
 
