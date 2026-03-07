@@ -19,6 +19,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
+from voronoi.gateway.progress import (
+    MODE_EMOJI, MODE_VERB, progress_bar, estimate_remaining,
+    voronoi_header, phase_label,
+)
+
 logger = logging.getLogger("voronoi.dispatcher")
 
 
@@ -100,7 +105,7 @@ class InvestigationDispatcher:
             logger.error("Failed to launch investigation #%d: %s", inv.id, e, exc_info=True)
             self.queue.fail(inv.id, str(e))
             self.send_message(
-                f"💀 *Investigation #{inv.id} failed to launch*\n\nError: `{e}`"
+                f"💀 *Voronoi #{inv.id} failed to launch*\n\nError: `{e}`"
             )
 
     def _launch_investigation(self, inv) -> None:
@@ -114,12 +119,6 @@ class InvestigationDispatcher:
 
         workspace_path = Path(ws.path)
         self.queue.start(inv.id, ws.path)
-
-        self.send_message(
-            f"🧫 *Lab workspace ready* — Investigation #{inv.id}\n\n"
-            f"📂 `{workspace_path.name}`\n"
-            f"🔬 Launching orchestrator..."
-        )
 
         prompt = self._build_prompt(inv, workspace_path)
         prompt_file = workspace_path / ".swarm" / "orchestrator-prompt.txt"
@@ -140,27 +139,30 @@ class InvestigationDispatcher:
         logger.info("Investigation #%d LIVE in tmux=%s workspace=%s",
                     inv.id, tmux_session, workspace_path)
 
+        mode_emoji = MODE_EMOJI.get(inv.mode, "🔷")
+        verb = MODE_VERB.get(inv.mode, inv.mode)
         self.send_message(
-            f"⚡ *Investigation #{inv.id} is LIVE*\n\n"
+            f"🟢 *Voronoi #{inv.id}* {mode_emoji} is LIVE\n\n"
             f"_{inv.question}_\n\n"
-            f"🤖 Orchestrator dispatched — planning tasks, generating hypotheses...\n"
-            f"I'll send updates as agents make progress. 🔥"
+            f"Orchestrator is planning tasks and spawning agents.\n"
+            f"First progress update in ~30s."
         )
 
     def _build_prompt(self, inv, workspace_path: Path) -> str:
+        verb = MODE_VERB.get(inv.mode, inv.mode)
         return (
-            "You are the Voronoi swarm orchestrator. Your job: read the investigation question, "
+            "You are the Voronoi swarm orchestrator. Your job: read the question, "
             "plan tasks, spawn parallel worker agents, monitor their progress, merge "
-            "completed work, and repeat until the investigation is complete.\n\n"
-            f"## Investigation\n\n"
+            "completed work, and repeat until done.\n\n"
+            f"## {verb.title()}\n\n"
             f"**Question:** {inv.question}\n"
             f"**Mode:** {inv.mode}\n"
             f"**Rigor:** {inv.rigor}\n"
             f"**Workspace:** {workspace_path}\n\n"
             "## Personality — IMPORTANT\n\n"
             "Your Telegram notifications should be EXCITED, high-energy, and fun — like a hype crew "
-            "that genuinely loves watching agents crush it. Use fire emojis, exclamation marks, "
-            "celebrate wins, make science feel epic. But always stay INFORMATIVE — every message "
+            "that genuinely loves watching agents crush it. Use fire emojis, celebrate wins, "
+            "make the work feel epic. But always stay INFORMATIVE — every message "
             "must include real numbers (task counts, progress, findings). Never fluff without facts.\n\n"
             "## Workflow\n\n"
             "1. Read PROMPT.md — understand the question fully\n"
@@ -311,7 +313,7 @@ class InvestigationDispatcher:
                 for line in notes.split("\n"):
                     if any(k in line.upper() for k in ("EFFECT_SIZE", "CI_95", "VALENCE")):
                         effect += f"\n  {line.strip()}"
-                msg = f"🧪 *FINDING!*\n{title}"
+                msg = f"� *NEW FINDING*\n{title}"
                 if effect:
                     msg += f"\n{effect}"
                 events.append({"type": "finding", "msg": msg})
@@ -335,12 +337,7 @@ class InvestigationDispatcher:
                 run.phase = "planning"
 
         if run.phase != old_phase:
-            phase_msg = {
-                "planning": "🗺️ *Planning phase* — Orchestrator is decomposing tasks...",
-                "investigating": "🔬 *Investigation phase* — Agents running in parallel!",
-                "synthesizing": "🧩 *Synthesis phase* — Integrating findings...",
-                "complete": "📄 *Wrapping up* — Writing deliverable...",
-            }.get(run.phase, f"Phase: {run.phase}")
+            phase_msg = phase_label(run.mode, run.phase)
             events.append({"type": "phase", "msg": phase_msg})
         return events
 
@@ -351,12 +348,22 @@ class InvestigationDispatcher:
         progress = [e for e in events if e["type"] == "progress"]
         tasks = [e for e in events if e["type"] in ("task_done", "task_started", "task_new")]
 
-        lines = [f"📡 *Investigation #{run.investigation_id}* ({elapsed:.0f}min)\n"]
+        mode_emoji = MODE_EMOJI.get(run.mode, "🔷")
+        lines = [f"📡 *Voronoi #{run.investigation_id}* {mode_emoji} · {elapsed:.0f}min\n"]
+
+        # Progress bar first — instant status at a glance
+        total = len(run.task_snapshot)
+        closed = sum(1 for t in run.task_snapshot.values() if t["status"] == "closed")
+        if total > 0:
+            bar = progress_bar(closed, total)
+            eta = estimate_remaining(time.time() - run.started_at, closed, total)
+            eta_str = f" · {eta}" if eta else ""
+            lines.append(f"{bar}{eta_str}")
+
         for e in phases:
-            lines.append(e["msg"])
-        for e in findings:
-            lines.append("")
-            lines.append(e["msg"])
+            lines.append(f"\n{e['msg']}")
+
+        # Activity timeline — show what happened (up to 5 items)
         if len(tasks) <= 5:
             for e in tasks:
                 lines.append(e["msg"])
@@ -372,6 +379,11 @@ class InvestigationDispatcher:
             if new:
                 parts.append(f"{new} new")
             lines.append(f"📋 Tasks: {', '.join(parts)}")
+
+        for e in findings:
+            lines.append("")
+            lines.append(e["msg"])
+
         for e in progress:
             lines.append(e["msg"])
 
@@ -398,7 +410,7 @@ class InvestigationDispatcher:
         total_tasks = len(run.task_snapshot)
         closed = sum(1 for t in run.task_snapshot.values() if t["status"] == "closed")
 
-        logger.info("Investigation #%d complete: %d/%d tasks in %.1fmin",
+        logger.info("Voronoi #%d complete: %d/%d tasks in %.1fmin",
                     run.investigation_id, closed, total_tasks, elapsed)
         self.queue.complete(run.investigation_id)
 
@@ -408,6 +420,7 @@ class InvestigationDispatcher:
         teaser = rg.build_teaser(
             run.investigation_id, run.question,
             total_tasks, closed, elapsed,
+            mode=run.mode,
         )
         self.send_message(teaser)
 
@@ -420,7 +433,7 @@ class InvestigationDispatcher:
             if chat_id:
                 self.send_document(
                     chat_id, report_path,
-                    f"Investigation #{run.investigation_id} — Full {doc_type}",
+                    f"Voronoi #{run.investigation_id} — {doc_type}",
                 )
 
         self._try_publish(run)
@@ -434,7 +447,7 @@ class InvestigationDispatcher:
             slug = run.workspace_path.name
             ok, url = publisher.publish(str(run.workspace_path), slug)
             if ok:
-                self.send_message(f"📦 Published: [{slug}]({url})")
+                self.send_message(f"📦 *Published:* [{slug}]({url})")
         except Exception:
             pass
 
@@ -445,5 +458,5 @@ class InvestigationDispatcher:
                 capture_output=True,
             )
             self.queue.fail(inv_id, "Aborted by operator")
-            self.send_message(f"🛑 Investigation #{inv_id} aborted")
+            self.send_message(f"🛑 Voronoi #{inv_id} aborted")
         self.running.clear()

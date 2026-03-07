@@ -103,4 +103,4 @@ echo "✓ Agent spawned: $BRANCH_NAME (tmux: $TMUX_SESSION)"
 
 # 6. Notify Telegram (fire-and-forget)
 source "${PROJECT_DIR}/scripts/notify-telegram.sh" 2>/dev/null || true
-notify_telegram "agent_spawn" "🚀 Spawned \`${BRANCH_NAME}\` for task ${TASK_ID}" 2>/dev/null || true
+notify_telegram "agent_spawn" "⚡ Agent spawned: \`${BRANCH_NAME}\` → task ${TASK_ID}" 2>/dev/null || true

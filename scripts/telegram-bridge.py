@@ -42,8 +42,8 @@ from voronoi.gateway.router import CommandRouter  # noqa: E402
 def run_bot(config: dict) -> None:
     """Build and start the Telegram bot."""
     try:
-        from telegram import Update
-        from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+        from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+        from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, CallbackQueryHandler, filters
     except ImportError:
         print("python-telegram-bot not installed. Run: pip install 'python-telegram-bot[job-queue]'", file=sys.stderr)
         sys.exit(1)
@@ -84,12 +84,20 @@ def run_bot(config: dict) -> None:
             return True
         return False
 
-    async def _reply(update: Update, text: str, file_path: Path | None = None) -> None:
-        """Send a text reply, optionally followed by a document."""
+    async def _reply(update: Update, text: str, file_path: Path | None = None,
+                     buttons: list[list[tuple[str, str]]] | None = None) -> None:
+        """Send a text reply, optionally with inline buttons and/or a document."""
+        reply_markup = None
+        if buttons:
+            keyboard = [
+                [InlineKeyboardButton(label, callback_data=data) for label, data in row]
+                for row in buttons
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
         try:
-            await update.message.reply_text(text, parse_mode="Markdown")
+            await update.message.reply_text(text, parse_mode="Markdown", reply_markup=reply_markup)
         except Exception:
-            await update.message.reply_text(text)
+            await update.message.reply_text(text, reply_markup=reply_markup)
         if file_path and file_path.exists():
             try:
                 with open(file_path, "rb") as f:
@@ -118,7 +126,15 @@ def run_bot(config: dict) -> None:
         logger.info("CMD /voronoi %s %s (chat=%s)", subcommand, " ".join(sub_args), chat_id)
         reply_text, reply_file = router.route(subcommand, sub_args, chat_id)
         logger.debug("Reply: %s", reply_text[:120])
-        await _reply(update, reply_text, reply_file)
+
+        # Contextual inline buttons for command responses
+        buttons = None
+        if subcommand in ("investigate", "explore", "build", "experiment") and sub_args:
+            buttons = [[("📊 Status", "status"), ("🛑 Abort", "abort")]]
+        elif subcommand == "status":
+            buttons = [[("📋 Tasks", "tasks"), ("⚡ Ready", "status")]]
+
+        await _reply(update, reply_text, reply_file, buttons=buttons)
 
     async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not _is_allowed(update) or update.message is None:
@@ -159,6 +175,41 @@ def run_bot(config: dict) -> None:
     app.add_handler(CommandHandler("voronoi", cmd_voronoi))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
+    # -- inline button callback handler ------------------------------------
+
+    async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle inline keyboard button presses."""
+        query = update.callback_query
+        if query is None:
+            return
+        await query.answer()
+        data = query.data or ""
+        chat_id = str(query.message.chat_id) if query.message else "unknown"
+
+        # Route button presses through the same command router
+        if data == "status":
+            reply_text, _ = router.route("status", [], chat_id)
+        elif data == "tasks":
+            reply_text, _ = router.route("tasks", [], chat_id)
+        elif data == "abort":
+            reply_text, _ = router.route("abort", [], chat_id)
+        elif data == "belief":
+            reply_text, _ = router.route("belief", [], chat_id)
+        elif data.startswith("results_"):
+            inv_id = data.split("_", 1)[1]
+            reply_text, _ = router.route("results", [inv_id], chat_id)
+        elif data == "guide_prompt":
+            reply_text = "_Send a message and I'll record it as guidance for the agents._"
+        else:
+            reply_text = f"Unknown action: {data}"
+
+        try:
+            await query.message.reply_text(reply_text, parse_mode="Markdown")
+        except Exception:
+            await query.message.reply_text(reply_text)
+
+    app.add_handler(CallbackQueryHandler(handle_callback))
+
     # -- dispatcher jobs ----------------------------------------------------
 
     _dispatcher_instance: list = [None]
@@ -197,11 +248,35 @@ def run_bot(config: dict) -> None:
                     pass
 
             async def _async_send(cid: str, text: str) -> None:
+                # Add contextual inline buttons based on message content
+                reply_markup = None
                 try:
-                    await app.bot.send_message(chat_id=cid, text=text, parse_mode="Markdown", disable_web_page_preview=True)
+                    if "is LIVE" in text:
+                        reply_markup = InlineKeyboardMarkup([
+                            [InlineKeyboardButton("📊 Status", callback_data="status"),
+                             InlineKeyboardButton("🛑 Abort", callback_data="abort")],
+                        ])
+                    elif "📡" in text:  # progress update
+                        reply_markup = InlineKeyboardMarkup([
+                            [InlineKeyboardButton("📋 Tasks", callback_data="tasks"),
+                             InlineKeyboardButton("📝 Guide", callback_data="guide_prompt"),
+                             InlineKeyboardButton("🛑 Abort", callback_data="abort")],
+                        ])
+                    elif "COMPLETE" in text:
+                        reply_markup = InlineKeyboardMarkup([
+                            [InlineKeyboardButton("📊 Findings", callback_data="status"),
+                             InlineKeyboardButton("🧠 Belief Map", callback_data="belief")],
+                        ])
+                except Exception:
+                    pass  # buttons are best-effort
+
+                try:
+                    await app.bot.send_message(chat_id=cid, text=text, parse_mode="Markdown",
+                                               disable_web_page_preview=True, reply_markup=reply_markup)
                 except Exception:
                     try:
-                        await app.bot.send_message(chat_id=cid, text=text, disable_web_page_preview=True)
+                        await app.bot.send_message(chat_id=cid, text=text,
+                                                   disable_web_page_preview=True, reply_markup=reply_markup)
                     except Exception:
                         pass
 

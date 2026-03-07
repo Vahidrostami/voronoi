@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Optional
 
 from voronoi.gateway.intent import ClassifiedIntent, WorkflowMode, classify
+from voronoi.gateway.progress import MODE_EMOJI, RIGOR_DESCRIPTIONS, MODE_VERB
 from voronoi.server.queue import Investigation, InvestigationQueue
 from voronoi.server.runner import make_slug
 
@@ -319,32 +320,18 @@ def handle_guide(project_dir: str, message: str) -> str:
 # Science workflow handlers — enqueue directly to the investigation queue
 # ---------------------------------------------------------------------------
 
-_MODE_EMOJI = {
-    "investigate": "🔬", "explore": "🧭",
-    "build": "🔨", "experiment": "🧪",
-}
-
-
-_RIGOR_DESCRIPTIONS = {
-    "standard": "Basic quality checks",
-    "analytical": "Statistical validation with effect sizes",
-    "scientific": "Full scientific method with pre-registration",
-    "experimental": "Controlled experiments with replication",
-}
-
-
 def _workflow_response(mode: str, rigor: str, question: str,
                        inv_id: int, queue_status: str) -> str:
-    emoji = _MODE_EMOJI.get(mode, "🔷")
-    rigor_desc = _RIGOR_DESCRIPTIONS.get(rigor, rigor)
+    emoji = MODE_EMOJI.get(mode, "🔷")
+    rigor_desc = RIGOR_DESCRIPTIONS.get(rigor, rigor)
+    verb = MODE_VERB.get(mode, mode)
     return (
-        f"{emoji} *{mode.upper()}* mode activated\n\n"
-        f"📋 _{question}_\n\n"
-        f"🎯 Rigor: *{rigor}* — {rigor_desc}\n"
-        f"🆔 Investigation *#{inv_id}*\n"
-        f"📊 {queue_status}\n\n"
-        f"⏳ Setting up lab workspace… I'll notify you when agents start working.\n\n"
-        f"💡 _Use_ `/voronoi status` _to check progress anytime._"
+        f"⚡ *Voronoi #{inv_id}* {emoji} LAUNCHED\n\n"
+        f"_{question}_\n\n"
+        f"  Mode     *{rigor}* {verb}\n"
+        f"  Rigor    {rigor_desc}\n"
+        f"  Queue    {queue_status}\n\n"
+        f"Setting up workspace — I'll ping you when agents are live."
     )
 
 
@@ -464,15 +451,14 @@ def handle_results(project_dir: str, inv_id_str: str = "") -> str:
 # ---------------------------------------------------------------------------
 
 _INTRO_MESSAGE = (
-    "🔬 *Voronoi — Ask a question. Get evidence.*\n\n"
-    "I'm your personal research lab in a chat window. "
+    "� *Voronoi — Ask a question. Get evidence.*\n\n"
     "Drop me a question — anything from _\"why is our model degrading?\"_ "
     "to _\"does EWC beat replay for catastrophic forgetting?\"_ — and I'll "
-    "dispatch a swarm of AI agents to investigate it.\n\n"
-    "Hypotheses. Experiments. Statistical validation. Belief maps. "
-    "Findings with effect sizes and confidence intervals. "
-    "The whole scientific method, on autopilot. 🧪\n\n"
-    "_Send_ `/voronoi` _for commands, or just ask me something._ 🧠"
+    "dispatch a swarm of AI agents to investigate, explore, or build it.\n\n"
+    "Hypotheses · experiments · statistical validation · belief maps · "
+    "findings with effect sizes and confidence intervals — "
+    "on autopilot. 🧪\n\n"
+    "_Send_ `/voronoi` _for commands, or just ask me something._"
 )
 
 def _LOW_CONFIDENCE_MESSAGE(text: str, intent) -> str:
@@ -495,9 +481,9 @@ def _LOW_CONFIDENCE_MESSAGE(text: str, intent) -> str:
 
 
 _HELP_MESSAGE = (
-    "👋 *Hey! I'm Voronoi.*\n\n"
-    "I orchestrate AI agents to run scientific investigations, "
-    "build software, and explore ideas — all from this chat.\n\n"
+    "� *Voronoi* — your AI research lab\n\n"
+    "I orchestrate AI agent swarms to investigate, explore, "
+    "and build — all from this chat.\n\n"
     "*Just ask me anything:*\n"
     "  → _Why is our model accuracy dropping?_\n"
     "  → _Compare Redis vs Memcached for our workload_\n"
@@ -668,8 +654,9 @@ class CommandRouter:
 
         # Prepend classification feedback so the user knows what Voronoi understood
         confidence_pct = int(intent.confidence * 100)
+        mode_emoji = MODE_EMOJI.get(intent.mode.value, "🔷")
         feedback = (
-            f"🧠 _Understood as *{intent.mode.value}* "
-            f"(rigor: {intent.rigor.value}, confidence: {confidence_pct}%)_\n\n"
+            f"🧠 _Classified as *{intent.mode.value}* {mode_emoji} "
+            f"(rigor: {intent.rigor.value} · {confidence_pct}% confidence)_\n\n"
         )
         return feedback + txt, None

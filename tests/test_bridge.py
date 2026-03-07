@@ -131,8 +131,9 @@ class TestScienceHandlers:
         mock_queue_cls.return_value = mock_q
 
         result = handle_investigate(str(tmp_path), "Why is latency high?", "chat1")
-        assert "INVESTIGATE" in result
-        assert "#1" in result
+        assert "Voronoi #1" in result
+        assert "LAUNCHED" in result
+        assert "investigation" in result
 
     @patch("voronoi.gateway.router.InvestigationQueue", autospec=True)
     @patch("voronoi.gateway.router.make_slug", return_value="test-slug")
@@ -144,7 +145,8 @@ class TestScienceHandlers:
         mock_queue_cls.return_value = mock_q
 
         result = handle_explore(str(tmp_path), "Redis vs Memcached", "chat1")
-        assert "EXPLORE" in result
+        assert "Voronoi #2" in result
+        assert "exploration" in result
 
     @patch("voronoi.gateway.router.InvestigationQueue", autospec=True)
     @patch("voronoi.gateway.router.make_slug", return_value="test-slug")
@@ -156,7 +158,8 @@ class TestScienceHandlers:
         mock_queue_cls.return_value = mock_q
 
         result = handle_build(str(tmp_path), "Build REST API", "chat1")
-        assert "BUILD" in result
+        assert "Voronoi #3" in result
+        assert "build" in result
 
     @patch("voronoi.gateway.router.InvestigationQueue", autospec=True)
     @patch("voronoi.gateway.router.make_slug", return_value="test-slug")
@@ -168,7 +171,8 @@ class TestScienceHandlers:
         mock_queue_cls.return_value = mock_q
 
         result = handle_experiment(str(tmp_path), "test batch size effect", "chat1")
-        assert "INVESTIGATE" in result or "EXPERIMENT" in result
+        assert "Voronoi #4" in result
+        assert "LAUNCHED" in result
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +226,7 @@ class TestCommandRouter:
     def test_route_help(self, tmp_path):
         router = CommandRouter(str(tmp_path))
         text, _ = router.route("", [], "chat1")
-        assert "Hey! I'm Voronoi" in text
+        assert "Voronoi" in text
 
     @patch("voronoi.gateway.router.subprocess.run")
     def test_route_status(self, mock_run, tmp_path):
@@ -253,9 +257,11 @@ class TestFreeText:
     def test_science_question(self, tmp_path):
         router = CommandRouter(str(tmp_path))
         text, _ = router.handle_free_text("Why is our model accuracy dropping?", "chat1", True)
-        assert "INVESTIGATE" in text
+        assert "investigate" in text.lower()
+        assert "Voronoi" in text
 
     def test_explore_question(self, tmp_path):
         router = CommandRouter(str(tmp_path))
         text, _ = router.handle_free_text("Which database should we use — Postgres vs MySQL?", "chat1", True)
-        assert "EXPLORE" in text
+        assert "explore" in text.lower()
+        assert "Voronoi" in text
