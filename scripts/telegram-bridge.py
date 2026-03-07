@@ -182,7 +182,10 @@ def run_bot(config: dict) -> None:
         query = update.callback_query
         if query is None:
             return
-        await query.answer()
+        try:
+            await query.answer()
+        except Exception:
+            pass  # query expired — still process the button action
         data = query.data or ""
         chat_id = str(query.message.chat_id) if query.message else "unknown"
 
@@ -305,7 +308,8 @@ def run_bot(config: dict) -> None:
         d = _get_dispatcher()
         if d:
             try:
-                d.dispatch_next()
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, d.dispatch_next)
             except Exception as e:
                 logger.error("Dispatch error: %s", e, exc_info=True)
 
@@ -313,7 +317,8 @@ def run_bot(config: dict) -> None:
         d = _get_dispatcher()
         if d:
             try:
-                d.poll_progress()
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, d.poll_progress)
             except Exception as e:
                 logger.error("Progress poll error: %s", e, exc_info=True)
 
