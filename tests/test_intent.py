@@ -180,3 +180,11 @@ class TestEdgeCases:
         r = classify("test")
         with pytest.raises(AttributeError):
             r.mode = WorkflowMode.BUILD  # type: ignore
+
+    def test_paper_request_classified_as_hybrid(self):
+        r = classify("Write a paper on catastrophic forgetting mitigation strategies")
+        assert r.mode == WorkflowMode.HYBRID
+
+    def test_paper_about_classified_as_hybrid(self):
+        r = classify("paper on the effects of replay buffer size")
+        assert r.mode == WorkflowMode.HYBRID

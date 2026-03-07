@@ -47,9 +47,9 @@ class Finding:
             emoji = {"positive": "✅", "negative": "❌", "inconclusive": "❓"}.get(self.valence, "•")
             lines.append(f"  {emoji} {self.valence.upper()}")
         if self.robust:
-            lines.append(f"  Robust: {self.robust}")
+            lines.append(f"  Robust: {_escape_md(self.robust)}")
         if self.stat_test:
-            lines.append(f"  Test: {self.stat_test}")
+            lines.append(f"  Test: {_escape_md(self.stat_test)}")
         return "\n".join(lines)
 
 

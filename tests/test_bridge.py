@@ -1,64 +1,46 @@
-"""Tests for the upgraded telegram-bridge.py handlers.
+"""Tests for the refactored architecture.
 
-These tests import the handler functions directly from the bridge script
-and verify them with mocked bd/subprocess.
+Tests the gateway modules (config, router) which now own all business
+logic.  The bridge script is a thin Telegram I/O layer that delegates
+to these modules — it is not tested directly here.
 """
 
 import json
-import sys
-import tempfile
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
 
-# Add scripts dir and src dir to path so we can import the bridge module
-_scripts_dir = Path(__file__).resolve().parent.parent / "scripts"
-_src_dir = Path(__file__).resolve().parent.parent / "src"
-
-sys.path.insert(0, str(_scripts_dir))
-sys.path.insert(0, str(_src_dir))
-
-# We need to set INBOX_DIR before importing bridge handlers
-import importlib
-
-
-@pytest.fixture(autouse=True)
-def setup_bridge(tmp_path, monkeypatch):
-    """Set up the bridge module with a temporary project directory."""
-    # Import as a module from scripts/
-    spec = importlib.util.spec_from_file_location(
-        "telegram_bridge",
-        str(_scripts_dir / "telegram-bridge.py"),
-    )
-    mod = importlib.util.module_from_spec(spec)
-
-    # Set INBOX_DIR before loading
-    monkeypatch.setattr("builtins.__import__", __builtins__.__import__ if hasattr(__builtins__, '__import__') else __import__)
-
-    spec.loader.exec_module(mod)
-    mod.INBOX_DIR = tmp_path / ".swarm" / "inbox"
-
-    # Reset singletons
-    mod._MEMORY_INSTANCE = None
-    mod._KNOWLEDGE_INSTANCE = None
-
-    return mod, tmp_path
+from voronoi.gateway.config import load_config, save_chat_id
+from voronoi.gateway.router import (
+    CommandRouter,
+    handle_status,
+    handle_tasks,
+    handle_ready,
+    handle_guide,
+    handle_pivot,
+    handle_abort,
+    handle_investigate,
+    handle_explore,
+    handle_build,
+    handle_experiment,
+    handle_belief,
+    handle_journal,
+    handle_finding,
+)
 
 
 # ---------------------------------------------------------------------------
-# Config loading
+# Config
 # ---------------------------------------------------------------------------
 
 class TestConfig:
-    def test_load_config_defaults(self, setup_bridge):
-        mod, tmp_path = setup_bridge
-        config = mod.load_config(str(tmp_path / "nonexistent.json"))
+    def test_load_config_defaults(self, tmp_path):
+        config = load_config(str(tmp_path / "nonexistent.json"))
         assert config["bridge_enabled"] is True
         assert config["user_allowlist"] == []
 
-    def test_load_config_with_user_allowlist(self, setup_bridge, tmp_path, monkeypatch):
-        mod, _ = setup_bridge
+    def test_load_config_with_user_allowlist(self, tmp_path, monkeypatch):
         monkeypatch.setenv("VORONOI_TG_USER_ALLOWLIST", "112423044,vahidrostami")
         config_data = {
             "notifications": {
@@ -70,251 +52,206 @@ class TestConfig:
         }
         config_path = tmp_path / "config.json"
         config_path.write_text(json.dumps(config_data))
-        config = mod.load_config(str(config_path))
+        config = load_config(str(config_path))
         assert "112423044" in config["user_allowlist"]
         assert "vahidrostami" in config["user_allowlist"]
 
+    def test_save_chat_id(self, tmp_path):
+        save_chat_id(str(tmp_path), 12345)
+        chat_file = tmp_path / ".telegram-chat-id"
+        assert chat_file.exists()
+        assert chat_file.read_text().strip() == "12345"
+
 
 # ---------------------------------------------------------------------------
-# Existing handlers still work (regression tests)
+# Existing handlers (regression)
 # ---------------------------------------------------------------------------
 
-class TestExistingHandlers:
-    @patch("subprocess.run")
-    def test_handle_status(self, mock_run, setup_bridge):
-        mod, tmp_path = setup_bridge
-        config = {"project_dir": str(tmp_path)}
-
+class TestHandlers:
+    @patch("voronoi.gateway.router.subprocess.run")
+    def test_handle_status(self, mock_run, tmp_path):
         mock_run.side_effect = [
             MagicMock(returncode=0, stdout=json.dumps([{"id": "1"}]), stderr=""),
             MagicMock(returncode=0, stdout=json.dumps([{"id": "1"}, {"id": "2"}]), stderr=""),
         ]
-        result = mod.handle_status(config)
+        result = handle_status(str(tmp_path))
         assert "Ready: 1" in result
         assert "Open: 2" in result
 
-    @patch("subprocess.run")
-    def test_handle_tasks(self, mock_run, setup_bridge):
-        mod, tmp_path = setup_bridge
-        config = {"project_dir": str(tmp_path)}
-
+    @patch("voronoi.gateway.router.subprocess.run")
+    def test_handle_tasks(self, mock_run, tmp_path):
         tasks = [
             {"id": "bd-1", "title": "Task 1", "priority": 1, "status": "open"},
             {"id": "bd-2", "title": "Task 2", "priority": 2, "status": "open"},
         ]
         mock_run.return_value = MagicMock(returncode=0, stdout=json.dumps(tasks), stderr="")
-        result = mod.handle_tasks(config)
+        result = handle_tasks(str(tmp_path))
         assert "Task 1" in result
         assert "Task 2" in result
 
-    @patch("subprocess.run")
-    def test_handle_ready(self, mock_run, setup_bridge):
-        mod, tmp_path = setup_bridge
-        config = {"project_dir": str(tmp_path)}
-
+    @patch("voronoi.gateway.router.subprocess.run")
+    def test_handle_ready(self, mock_run, tmp_path):
         tasks = [{"id": "bd-1", "title": "Ready task", "priority": 1}]
         mock_run.return_value = MagicMock(returncode=0, stdout=json.dumps(tasks), stderr="")
-        result = mod.handle_ready(config)
+        result = handle_ready(str(tmp_path))
         assert "Ready task" in result
 
-    def test_handle_guide(self, setup_bridge):
-        mod, tmp_path = setup_bridge
-        config = {"project_dir": str(tmp_path)}
+    def test_handle_guide(self, tmp_path):
         (tmp_path / ".swarm").mkdir(parents=True)
-
-        result = mod.handle_guide(config, "focus on H1")
+        result = handle_guide(str(tmp_path), "focus on H1")
         assert "Guidance noted" in result
         assert (tmp_path / ".swarm" / "operator-guidance.md").exists()
 
-    def test_handle_pivot(self, setup_bridge):
-        mod, tmp_path = setup_bridge
-        config = {"project_dir": str(tmp_path)}
+    def test_handle_pivot(self, tmp_path):
         (tmp_path / ".swarm").mkdir(parents=True)
-
-        result = mod.handle_pivot(config, "new direction")
+        result = handle_pivot(str(tmp_path), "new direction")
         assert "Pivot recorded" in result
 
-    def test_handle_abort(self, setup_bridge):
-        mod, tmp_path = setup_bridge
-        config = {"project_dir": str(tmp_path)}
-
-        result = mod.handle_abort(config)
+    def test_handle_abort(self, tmp_path):
+        result = handle_abort(str(tmp_path))
         assert "Abort requested" in result
-        # Should write inbox command
-        inbox_files = list((tmp_path / ".swarm" / "inbox").glob("*.json"))
-        assert len(inbox_files) == 1
 
 
 # ---------------------------------------------------------------------------
-# NEW: Science workflow handlers
+# Science workflow handlers
 # ---------------------------------------------------------------------------
 
 class TestScienceHandlers:
-    def test_handle_investigate(self, setup_bridge):
-        mod, tmp_path = setup_bridge
-        config = {"project_dir": str(tmp_path)}
+    @patch("voronoi.gateway.router.InvestigationQueue", autospec=True)
+    @patch("voronoi.gateway.router.make_slug", return_value="test-slug")
+    def test_handle_investigate(self, mock_slug, mock_queue_cls, tmp_path):
+        mock_q = MagicMock()
+        mock_q.enqueue.return_value = 1
+        mock_q.get_queued.return_value = []
+        mock_q.get_running.return_value = []
+        mock_queue_cls.return_value = mock_q
 
-        result = mod.handle_investigate(config, "Why is latency high?")
+        result = handle_investigate(str(tmp_path), "Why is latency high?", "chat1")
         assert "INVESTIGATE" in result
-        assert "Workflow ID" in result
-        # Inbox command written
-        inbox_files = list((tmp_path / ".swarm" / "inbox").glob("*.json"))
-        assert len(inbox_files) == 1
-        cmd = json.loads(inbox_files[0].read_text())
-        assert cmd["action"] == "investigate"
-        assert cmd["params"]["rigor"] == "scientific"
+        assert "Investigation #1" in result
 
-    def test_handle_explore(self, setup_bridge):
-        mod, tmp_path = setup_bridge
-        config = {"project_dir": str(tmp_path)}
+    @patch("voronoi.gateway.router.InvestigationQueue", autospec=True)
+    @patch("voronoi.gateway.router.make_slug", return_value="test-slug")
+    def test_handle_explore(self, mock_slug, mock_queue_cls, tmp_path):
+        mock_q = MagicMock()
+        mock_q.enqueue.return_value = 2
+        mock_q.get_queued.return_value = []
+        mock_q.get_running.return_value = []
+        mock_queue_cls.return_value = mock_q
 
-        result = mod.handle_explore(config, "Redis vs Memcached")
+        result = handle_explore(str(tmp_path), "Redis vs Memcached", "chat1")
         assert "EXPLORE" in result
-        inbox_files = list((tmp_path / ".swarm" / "inbox").glob("*.json"))
-        cmd = json.loads(inbox_files[0].read_text())
-        assert cmd["action"] == "explore"
 
-    def test_handle_build(self, setup_bridge):
-        mod, tmp_path = setup_bridge
-        config = {"project_dir": str(tmp_path)}
+    @patch("voronoi.gateway.router.InvestigationQueue", autospec=True)
+    @patch("voronoi.gateway.router.make_slug", return_value="test-slug")
+    def test_handle_build(self, mock_slug, mock_queue_cls, tmp_path):
+        mock_q = MagicMock()
+        mock_q.enqueue.return_value = 3
+        mock_q.get_queued.return_value = []
+        mock_q.get_running.return_value = []
+        mock_queue_cls.return_value = mock_q
 
-        result = mod.handle_build(config, "Build REST API")
+        result = handle_build(str(tmp_path), "Build REST API", "chat1")
         assert "BUILD" in result
-        inbox_files = list((tmp_path / ".swarm" / "inbox").glob("*.json"))
-        cmd = json.loads(inbox_files[0].read_text())
-        assert cmd["action"] == "build"
 
-    def test_handle_experiment(self, setup_bridge):
-        mod, tmp_path = setup_bridge
-        config = {"project_dir": str(tmp_path)}
+    @patch("voronoi.gateway.router.InvestigationQueue", autospec=True)
+    @patch("voronoi.gateway.router.make_slug", return_value="test-slug")
+    def test_handle_experiment(self, mock_slug, mock_queue_cls, tmp_path):
+        mock_q = MagicMock()
+        mock_q.enqueue.return_value = 4
+        mock_q.get_queued.return_value = []
+        mock_q.get_running.return_value = []
+        mock_queue_cls.return_value = mock_q
 
-        result = mod.handle_experiment(config, "test batch size effect")
-        assert "EXPERIMENT" in result or "INVESTIGATE" in result
-        inbox_files = list((tmp_path / ".swarm" / "inbox").glob("*.json"))
-        cmd = json.loads(inbox_files[0].read_text())
-        assert cmd["params"]["rigor"] == "experimental"
+        result = handle_experiment(str(tmp_path), "test batch size effect", "chat1")
+        assert "INVESTIGATE" in result or "EXPERIMENT" in result
 
 
 # ---------------------------------------------------------------------------
-# NEW: Knowledge handlers
+# Knowledge handlers
 # ---------------------------------------------------------------------------
 
 class TestKnowledgeHandlers:
-    def test_handle_belief_no_file(self, setup_bridge):
-        mod, tmp_path = setup_bridge
-        config = {"project_dir": str(tmp_path)}
-
-        result = mod.handle_belief(config)
+    def test_handle_belief_no_file(self, tmp_path):
+        result = handle_belief(str(tmp_path))
         assert "No belief map" in result
 
-    def test_handle_belief_with_file(self, setup_bridge):
-        mod, tmp_path = setup_bridge
-        config = {"project_dir": str(tmp_path)}
-
+    def test_handle_belief_with_file(self, tmp_path):
         swarm = tmp_path / ".swarm"
         swarm.mkdir(parents=True)
         (swarm / "belief-map.md").write_text("H1: P=0.7")
-
-        result = mod.handle_belief(config)
+        result = handle_belief(str(tmp_path))
         assert "H1" in result
 
-    def test_handle_journal_no_file(self, setup_bridge):
-        mod, tmp_path = setup_bridge
-        config = {"project_dir": str(tmp_path)}
-
-        result = mod.handle_journal(config)
+    def test_handle_journal_no_file(self, tmp_path):
+        result = handle_journal(str(tmp_path))
         assert "No journal" in result
 
-    def test_handle_journal_with_file(self, setup_bridge):
-        mod, tmp_path = setup_bridge
-        config = {"project_dir": str(tmp_path)}
-
+    def test_handle_journal_with_file(self, tmp_path):
         swarm = tmp_path / ".swarm"
         swarm.mkdir(parents=True)
         (swarm / "journal.md").write_text("## Round 1\nFound something interesting")
-
-        result = mod.handle_journal(config)
+        result = handle_journal(str(tmp_path))
         assert "Found something" in result
 
-    @patch("subprocess.run")
-    def test_handle_finding(self, mock_run, setup_bridge):
-        mod, tmp_path = setup_bridge
-        config = {"project_dir": str(tmp_path)}
-
+    @patch("voronoi.gateway.router.subprocess.run")
+    def test_handle_finding(self, mock_run, tmp_path):
         task = {"id": "bd-42", "title": "FINDING: Cache works", "status": "closed",
                 "priority": 1, "notes": "EFFECT_SIZE:d=1.5"}
         mock_run.return_value = MagicMock(returncode=0, stdout=json.dumps(task), stderr="")
-
-        result = mod.handle_finding(config, "bd-42")
+        result = handle_finding(str(tmp_path), "bd-42")
         assert "bd-42" in result
         assert "Cache works" in result
 
-    @patch("subprocess.run")
-    def test_handle_finding_not_found(self, mock_run, setup_bridge):
-        mod, tmp_path = setup_bridge
-        config = {"project_dir": str(tmp_path)}
-
+    @patch("voronoi.gateway.router.subprocess.run")
+    def test_handle_finding_not_found(self, mock_run, tmp_path):
         mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="not found")
-        result = mod.handle_finding(config, "bd-999")
+        result = handle_finding(str(tmp_path), "bd-999")
         assert "not found" in result
 
 
 # ---------------------------------------------------------------------------
-# NEW: Free-text science intent detection
+# CommandRouter
 # ---------------------------------------------------------------------------
 
-class TestFreeTextScience:
-    def test_science_question_detected(self, setup_bridge):
-        mod, tmp_path = setup_bridge
-        config = {"project_dir": str(tmp_path)}
+class TestCommandRouter:
+    def test_route_help(self, tmp_path):
+        router = CommandRouter(str(tmp_path))
+        text, _ = router.route("", [], "chat1")
+        assert "Hey! I'm Voronoi" in text
 
-        result = mod.handle_free_text_science(config, "Why is our model accuracy dropping?", "chat1")
-        assert result is not None
-        assert "INVESTIGATE" in result
+    @patch("voronoi.gateway.router.subprocess.run")
+    def test_route_status(self, mock_run, tmp_path):
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="[]", stderr=""),
+            MagicMock(returncode=0, stdout="[]", stderr=""),
+        ]
+        router = CommandRouter(str(tmp_path))
+        text, _ = router.route("status", [], "chat1")
+        assert "Swarm Status" in text
 
-    def test_non_science_returns_none(self, setup_bridge):
-        mod, tmp_path = setup_bridge
-        config = {"project_dir": str(tmp_path)}
-
-        result = mod.handle_free_text_science(config, "hello how are you", "chat1")
-        assert result is None
-
-    def test_explore_question_detected(self, setup_bridge):
-        mod, tmp_path = setup_bridge
-        config = {"project_dir": str(tmp_path)}
-
-        result = mod.handle_free_text_science(
-            config, "Which database should we use — Postgres vs MySQL?", "chat1"
-        )
-        assert result is not None
-        assert "EXPLORE" in result
-
-    def test_recall_question_detected(self, setup_bridge):
-        mod, tmp_path = setup_bridge
-        config = {"project_dir": str(tmp_path)}
-
-        result = mod.handle_free_text_science(
-            config, "What did we learn about caching?", "chat1"
-        )
-        assert result is not None
-        # Should trigger recall, not investigate
+    def test_route_unknown(self, tmp_path):
+        router = CommandRouter(str(tmp_path))
+        text, _ = router.route("xyzzy", [], "chat1")
+        assert "Unknown command" in text
 
 
 # ---------------------------------------------------------------------------
-# Inbox command writing
+# Free-text intent detection
 # ---------------------------------------------------------------------------
 
-class TestInboxCommands:
-    def test_write_inbox_command(self, setup_bridge):
-        mod, tmp_path = setup_bridge
+class TestFreeText:
+    def test_greeting(self, tmp_path):
+        router = CommandRouter(str(tmp_path))
+        text, _ = router.handle_free_text("hello", "chat1", True)
+        assert "Voronoi" in text
 
-        cmd_id = mod.write_inbox_command("test_action", {"key": "value"}, "test message")
-        assert cmd_id  # non-empty
+    def test_science_question(self, tmp_path):
+        router = CommandRouter(str(tmp_path))
+        text, _ = router.handle_free_text("Why is our model accuracy dropping?", "chat1", True)
+        assert "INVESTIGATE" in text
 
-        inbox_files = list((tmp_path / ".swarm" / "inbox").glob("*.json"))
-        assert len(inbox_files) == 1
-
-        cmd = json.loads(inbox_files[0].read_text())
-        assert cmd["action"] == "test_action"
-        assert cmd["params"]["key"] == "value"
-        assert cmd["source"] == "telegram"
+    def test_explore_question(self, tmp_path):
+        router = CommandRouter(str(tmp_path))
+        text, _ = router.handle_free_text("Which database should we use — Postgres vs MySQL?", "chat1", True)
+        assert "EXPLORE" in text

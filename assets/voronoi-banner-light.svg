@@ -1,57 +1,74 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 340" width="900" height="340">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 200" width="900" height="200">
   <defs>
-    <style>
-      .cell-label { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; font-size: 11px; font-weight: 600; }
-      .cell-emoji { font-size: 22px; }
-    </style>
+    <linearGradient id="bg-light" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#ffffff"/>
+      <stop offset="100%" style="stop-color:#f6f8fa"/>
+    </linearGradient>
+    <filter id="glowl">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="softglowl">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
   </defs>
-  <rect width="900" height="340" rx="12" fill="#ffffff" stroke="#e5e7eb" stroke-width="1"/>
-  <path d="M 155.7,100.0 L 163.5,127.1 L 141.1,144.4 L 120.0,155.0 L 101.0,164.5 L 80.0,175.0 L 50.9,189.5 L 8.0,199.1 L 8.0,152.3 L 8.0,123.4 L 8.0,100.0 L 8.0,76.6 L 8.0,47.7 L 13.2,8.0 L 50.1,8.0 L 80.0,8.0 L 109.9,8.0 L 134.3,25.2 L 142.7,54.4 L 149.3,77.5 Z" fill="#DBEAFE" fill-opacity="0.35" stroke="#2563EB" stroke-width="1" stroke-opacity="0.3"/>
-  <path d="M 296.3,60.0 L 293.2,83.8 L 289.6,110.6 L 277.1,138.6 L 250.2,152.9 L 220.0,160.0 L 192.0,146.0 L 166.7,133.4 L 157.3,105.6 L 150.7,82.5 L 144.3,60.0 L 136.5,32.9 L 148.4,8.0 L 182.2,8.0 L 203.1,8.0 L 220.0,8.0 L 236.9,8.0 L 257.8,8.0 L 291.6,8.0 L 299.8,34.1 Z" fill="#FEF3C7" fill-opacity="0.35" stroke="#D97706" stroke-width="1" stroke-opacity="0.3"/>
-  <path d="M 447.1,80.0 L 451.5,106.5 L 440.9,131.5 L 420.2,149.1 L 398.4,167.5 L 370.0,167.0 L 345.0,157.0 L 321.0,147.4 L 292.8,136.1 L 290.2,105.9 L 293.7,80.0 L 296.8,56.2 L 300.4,29.4 L 317.7,8.0 L 346.6,8.0 L 370.0,8.0 L 393.4,8.0 L 422.3,8.0 L 438.8,30.0 L 443.1,56.2 Z" fill="#D1FAE5" fill-opacity="0.35" stroke="#059669" stroke-width="1" stroke-opacity="0.3"/>
-  <path d="M 597.1,55.0 L 593.1,78.8 L 588.8,105.0 L 582.7,141.3 L 549.3,145.2 L 520.0,137.7 L 495.2,131.3 L 469.4,124.6 L 451.2,105.0 L 446.9,78.8 L 442.9,55.0 L 438.5,28.5 L 455.3,8.0 L 485.9,8.0 L 504.7,8.0 L 520.0,8.0 L 535.3,8.0 L 554.1,8.0 L 584.7,8.0 L 601.5,28.5 Z" fill="#EDE9FE" fill-opacity="0.35" stroke="#7C3AED" stroke-width="1" stroke-opacity="0.3"/>
-  <path d="M 743.2,80.0 L 738.4,102.2 L 733.4,126.0 L 726.5,157.8 L 697.5,164.7 L 670.0,161.2 L 644.6,158.1 L 615.9,154.5 L 582.3,143.7 L 588.5,106.5 L 592.9,80.0 L 596.9,56.2 L 601.2,30.0 L 617.7,8.0 L 646.6,8.0 L 670.0,8.0 L 693.4,8.0 L 722.3,8.0 L 756.7,17.0 L 748.7,54.4 Z" fill="#FEE2E2" fill-opacity="0.35" stroke="#DC2626" stroke-width="1" stroke-opacity="0.3"/>
-  <path d="M 892.0,110.0 L 892.0,136.6 L 892.0,169.6 L 863.9,184.2 L 833.4,182.0 L 810.0,180.4 L 787.7,178.8 L 761.4,176.9 L 726.5,170.7 L 731.3,135.6 L 736.8,110.0 L 741.6,87.8 L 746.6,64.0 L 753.5,32.2 L 776.9,8.0 L 810.0,8.0 L 843.1,8.0 L 884.1,8.0 L 892.0,50.4 L 892.0,83.4 Z" fill="#CCFBF1" fill-opacity="0.35" stroke="#0D9488" stroke-width="1" stroke-opacity="0.3"/>
-  <path d="M 225.3,220.0 L 223.7,247.2 L 221.8,279.4 L 218.9,328.6 L 176.4,332.0 L 140.0,332.0 L 103.6,332.0 L 58.6,332.0 L 8.0,315.9 L 8.0,262.9 L 8.0,220.0 L 49.1,190.5 L 78.9,175.6 L 100.0,165.0 L 119.0,155.5 L 140.0,145.0 L 168.0,134.0 L 193.3,146.6 L 221.5,160.8 L 227.0,191.7 Z" fill="#FFEDD5" fill-opacity="0.35" stroke="#EA580C" stroke-width="1" stroke-opacity="0.3"/>
-  <path d="M 396.2,230.0 L 399.6,259.1 L 404.2,298.5 L 384.1,332.0 L 343.1,332.0 L 310.0,332.0 L 276.9,332.0 L 235.9,332.0 L 220.9,294.7 L 223.0,258.3 L 224.7,230.0 L 226.3,202.8 L 228.2,170.6 L 252.9,151.4 L 279.8,137.1 L 310.0,143.0 L 335.0,153.0 L 359.0,162.6 L 387.2,173.9 L 393.0,203.0 Z" fill="#DBEAFE" fill-opacity="0.35" stroke="#1D4ED8" stroke-width="1" stroke-opacity="0.3"/>
-  <path d="M 567.6,210.0 L 562.9,236.9 L 557.7,266.4 L 550.5,307.1 L 519.6,332.0 L 480.0,332.0 L 440.4,332.0 L 405.8,312.1 L 400.6,267.7 L 397.0,237.0 L 393.8,210.0 L 390.4,180.9 L 409.1,158.5 L 429.8,140.9 L 451.6,122.5 L 480.0,127.3 L 504.8,133.7 L 530.6,140.4 L 564.0,149.0 L 573.0,179.8 Z" fill="#FDE68A" fill-opacity="0.35" stroke="#B45309" stroke-width="1" stroke-opacity="0.3"/>
-  <path d="M 725.3,240.0 L 723.7,264.0 L 721.9,292.2 L 716.8,332.0 L 679.9,332.0 L 650.0,332.0 L 620.1,332.0 L 583.2,332.0 L 549.5,313.0 L 557.0,270.2 L 562.4,240.0 L 567.1,213.1 L 572.3,183.6 L 585.1,150.6 L 622.5,155.3 L 650.0,158.8 L 675.4,161.9 L 704.1,165.5 L 729.2,182.5 L 727.0,215.0 Z" fill="#99F6E4" fill-opacity="0.35" stroke="#0F766E" stroke-width="1" stroke-opacity="0.3"/>
-  <path d="M 892.0,250.0 L 892.0,279.9 L 892.0,316.8 L 859.6,332.0 L 826.6,332.0 L 800.0,332.0 L 773.4,332.0 L 740.4,332.0 L 720.8,307.5 L 723.0,275.0 L 724.7,250.0 L 726.3,226.0 L 728.1,197.8 L 746.1,175.8 L 776.6,178.0 L 800.0,179.6 L 822.3,181.2 L 848.6,183.1 L 888.2,185.9 L 892.0,220.1 Z" fill="#E5E7EB" fill-opacity="0.35" stroke="#4B5563" stroke-width="1" stroke-opacity="0.3"/>
-  <line x1="80" y1="100" x2="220" y2="60" stroke="#d1d5db" stroke-width="0.5" stroke-dasharray="4,4" opacity="0.6"/>
-  <line x1="220" y1="60" x2="370" y2="80" stroke="#d1d5db" stroke-width="0.5" stroke-dasharray="4,4" opacity="0.6"/>
-  <line x1="370" y1="80" x2="520" y2="55" stroke="#d1d5db" stroke-width="0.5" stroke-dasharray="4,4" opacity="0.6"/>
-  <line x1="520" y1="55" x2="670" y2="80" stroke="#d1d5db" stroke-width="0.5" stroke-dasharray="4,4" opacity="0.6"/>
-  <line x1="670" y1="80" x2="810" y2="110" stroke="#d1d5db" stroke-width="0.5" stroke-dasharray="4,4" opacity="0.6"/>
-  <line x1="80" y1="100" x2="140" y2="220" stroke="#d1d5db" stroke-width="0.5" stroke-dasharray="4,4" opacity="0.6"/>
-  <line x1="220" y1="60" x2="140" y2="220" stroke="#d1d5db" stroke-width="0.5" stroke-dasharray="4,4" opacity="0.6"/>
-  <line x1="370" y1="80" x2="310" y2="230" stroke="#d1d5db" stroke-width="0.5" stroke-dasharray="4,4" opacity="0.6"/>
-  <line x1="520" y1="55" x2="480" y2="210" stroke="#d1d5db" stroke-width="0.5" stroke-dasharray="4,4" opacity="0.6"/>
-  <line x1="670" y1="80" x2="650" y2="240" stroke="#d1d5db" stroke-width="0.5" stroke-dasharray="4,4" opacity="0.6"/>
-  <line x1="810" y1="110" x2="800" y2="250" stroke="#d1d5db" stroke-width="0.5" stroke-dasharray="4,4" opacity="0.6"/>
-  <line x1="140" y1="220" x2="310" y2="230" stroke="#d1d5db" stroke-width="0.5" stroke-dasharray="4,4" opacity="0.6"/>
-  <line x1="310" y1="230" x2="480" y2="210" stroke="#d1d5db" stroke-width="0.5" stroke-dasharray="4,4" opacity="0.6"/>
-  <line x1="480" y1="210" x2="650" y2="240" stroke="#d1d5db" stroke-width="0.5" stroke-dasharray="4,4" opacity="0.6"/>
-  <line x1="650" y1="240" x2="800" y2="250" stroke="#d1d5db" stroke-width="0.5" stroke-dasharray="4,4" opacity="0.6"/>
-  <text x="80" y="92" text-anchor="middle" class="cell-emoji">🔍</text>
-  <text x="80" y="114" text-anchor="middle" class="cell-label" fill="#2563EB">Scout</text>
-  <text x="220" y="52" text-anchor="middle" class="cell-emoji">🔬</text>
-  <text x="220" y="74" text-anchor="middle" class="cell-label" fill="#D97706">Investigator</text>
-  <text x="370" y="72" text-anchor="middle" class="cell-emoji">🔨</text>
-  <text x="370" y="94" text-anchor="middle" class="cell-label" fill="#059669">Builder</text>
-  <text x="520" y="47" text-anchor="middle" class="cell-emoji">⚖️</text>
-  <text x="520" y="69" text-anchor="middle" class="cell-label" fill="#7C3AED">Critic</text>
-  <text x="670" y="72" text-anchor="middle" class="cell-emoji">📊</text>
-  <text x="670" y="94" text-anchor="middle" class="cell-label" fill="#DC2626">Statistician</text>
-  <text x="810" y="102" text-anchor="middle" class="cell-emoji">🧩</text>
-  <text x="810" y="124" text-anchor="middle" class="cell-label" fill="#0D9488">Synthesizer</text>
-  <text x="140" y="212" text-anchor="middle" class="cell-emoji">🎯</text>
-  <text x="140" y="234" text-anchor="middle" class="cell-label" fill="#EA580C">Evaluator</text>
-  <text x="310" y="222" text-anchor="middle" class="cell-emoji">🧬</text>
-  <text x="310" y="244" text-anchor="middle" class="cell-label" fill="#1D4ED8">Theorist</text>
-  <text x="480" y="202" text-anchor="middle" class="cell-emoji">📐</text>
-  <text x="480" y="224" text-anchor="middle" class="cell-label" fill="#B45309">Methodologist</text>
-  <text x="650" y="232" text-anchor="middle" class="cell-emoji">🧭</text>
-  <text x="650" y="254" text-anchor="middle" class="cell-label" fill="#0F766E">Explorer</text>
-  <text x="800" y="242" text-anchor="middle" class="cell-emoji">⚙️</text>
-  <text x="800" y="264" text-anchor="middle" class="cell-label" fill="#4B5563">Worker</text>
+
+  <rect width="900" height="200" rx="12" fill="url(#bg-light)"/>
+
+  <!-- Voronoi cell mesh -->
+  <path d="M0,100 L45,20 L130,8 L155,75 L120,140 L50,170 L0,150Z" fill="#58a6ff" fill-opacity="0.06" stroke="#58a6ff" stroke-width="0.8" stroke-opacity="0.25">
+    <animate attributeName="stroke-opacity" values="0.15;0.4;0.15" dur="4s" repeatCount="indefinite"/>
+  </path>
+  <path d="M130,8 L250,5 L280,70 L260,130 L155,75Z" fill="#d29922" fill-opacity="0.06" stroke="#d29922" stroke-width="0.8" stroke-opacity="0.25">
+    <animate attributeName="stroke-opacity" values="0.15;0.4;0.15" dur="3.5s" begin="0.5s" repeatCount="indefinite"/>
+  </path>
+  <path d="M250,5 L390,12 L400,90 L350,145 L280,70Z" fill="#1a7f37" fill-opacity="0.06" stroke="#1a7f37" stroke-width="0.8" stroke-opacity="0.25">
+    <animate attributeName="stroke-opacity" values="0.15;0.4;0.15" dur="3.8s" begin="1s" repeatCount="indefinite"/>
+  </path>
+  <path d="M390,12 L510,8 L540,80 L500,140 L400,90Z" fill="#8957e5" fill-opacity="0.07" stroke="#8957e5" stroke-width="0.8" stroke-opacity="0.25">
+    <animate attributeName="stroke-opacity" values="0.15;0.5;0.15" dur="3.2s" begin="0.3s" repeatCount="indefinite"/>
+  </path>
+  <path d="M510,8 L640,15 L660,95 L610,155 L540,80Z" fill="#cf222e" fill-opacity="0.06" stroke="#cf222e" stroke-width="0.8" stroke-opacity="0.25">
+    <animate attributeName="stroke-opacity" values="0.15;0.4;0.15" dur="4.2s" begin="0.7s" repeatCount="indefinite"/>
+  </path>
+  <path d="M640,15 L780,10 L810,85 L760,150 L660,95Z" fill="#1a7f37" fill-opacity="0.06" stroke="#1a7f37" stroke-width="0.8" stroke-opacity="0.25">
+    <animate attributeName="stroke-opacity" values="0.15;0.4;0.15" dur="3.6s" begin="1.2s" repeatCount="indefinite"/>
+  </path>
+  <path d="M780,10 L900,0 L900,200 L810,170 L810,85Z" fill="#656d76" fill-opacity="0.04" stroke="#656d76" stroke-width="0.8" stroke-opacity="0.2">
+    <animate attributeName="stroke-opacity" values="0.1;0.3;0.1" dur="5s" begin="0.4s" repeatCount="indefinite"/>
+  </path>
+  <path d="M0,150 L50,170 L120,140 L155,75 L260,130 L350,145 L280,192 L140,195 L0,200Z" fill="#d29922" fill-opacity="0.04" stroke="#d29922" stroke-width="0.6" stroke-opacity="0.2">
+    <animate attributeName="stroke-opacity" values="0.1;0.35;0.1" dur="4.5s" begin="0.8s" repeatCount="indefinite"/>
+  </path>
+  <path d="M280,192 L350,145 L400,90 L500,140 L610,155 L560,192 L420,198Z" fill="#8957e5" fill-opacity="0.04" stroke="#8957e5" stroke-width="0.6" stroke-opacity="0.2">
+    <animate attributeName="stroke-opacity" values="0.1;0.35;0.1" dur="3.9s" begin="1.5s" repeatCount="indefinite"/>
+  </path>
+  <path d="M560,192 L610,155 L660,95 L760,150 L810,170 L900,200 L700,198Z" fill="#1a7f37" fill-opacity="0.04" stroke="#1a7f37" stroke-width="0.6" stroke-opacity="0.2">
+    <animate attributeName="stroke-opacity" values="0.1;0.35;0.1" dur="4.1s" begin="0.6s" repeatCount="indefinite"/>
+  </path>
+
+  <!-- Particles -->
+  <circle r="2" fill="#0969da" filter="url(#glowl)" opacity="0.7">
+    <animateMotion dur="6s" repeatCount="indefinite" path="M155,75 L280,70 L400,90 L540,80 L660,95 L810,85"/>
+  </circle>
+  <circle r="1.5" fill="#1a7f37" filter="url(#glowl)" opacity="0.6">
+    <animateMotion dur="5s" repeatCount="indefinite" begin="1.5s" path="M810,85 L660,95 L540,80 L400,90 L280,70 L155,75"/>
+  </circle>
+  <circle r="1.5" fill="#8957e5" filter="url(#glowl)" opacity="0.6">
+    <animateMotion dur="7s" repeatCount="indefinite" begin="0.8s" path="M50,170 L155,75 L400,90 L610,155 L810,170"/>
+  </circle>
+  <circle r="2" fill="#d29922" filter="url(#glowl)" opacity="0.5">
+    <animateMotion dur="4.5s" repeatCount="indefinite" begin="2s" path="M120,140 L260,130 L350,145 L500,140 L610,155 L760,150"/>
+  </circle>
+
+  <!-- Title -->
+  <text x="450" y="82" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="42" font-weight="700" fill="#1f2328" letter-spacing="-1">Voronoi</text>
+  <text x="450" y="115" text-anchor="middle" font-family="SF Mono,Menlo,monospace" font-size="14" fill="#656d76" letter-spacing="3">SCIENTIFIC DISCOVERY ENGINE</text>
+  <text x="450" y="148" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="15" fill="#0969da" opacity="0.8">ask a question &#xB7; spawn agents &#xB7; get evidence</text>
+
+  <rect x="395" y="160" width="110" height="20" rx="10" fill="#f6f8fa" stroke="#d0d7de" stroke-width="0.5"/>
+  <text x="450" y="174" text-anchor="middle" font-family="SF Mono,Menlo,monospace" font-size="10" fill="#656d76">v0.4 &#xB7; 11 roles</text>
+
+  <rect x="1" y="1" width="898" height="198" rx="12" fill="none" stroke="#d0d7de" stroke-width="1"/>
 </svg>
