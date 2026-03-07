@@ -42,6 +42,53 @@ Design, build, experimentally validate, and write up a system that fulfils the a
 
 ---
 
+## Playbook Architecture — The Core Complexity
+
+The system must reason over a **decision playbook**: a structured collection of question types, each with its own multi-step process, governed by overlapping rules and shared analytical techniques. The playbook itself is a form of heterogeneous knowledge that must be encoded and reasoned over — distinct from (and interacting with) the quantitative data, policy documents, and expert judgment already described in the abstract.
+
+### Question Taxonomy
+
+Real decision-support work involves fundamentally different types of questions, not just one. The synthetic scenario must include **at least 6 distinct question types** that an analyst would pose against the decision space:
+
+| Type | Description | Example | Typical Steps |
+|------|-------------|---------|---------------|
+| **What-If (Scenario)** | Simulate impact of hypothetical lever changes | "What if we raise price 5% in urban stores next quarter?" | 3–4 |
+| **Root-Cause (Diagnostic)** | Explain observed metric changes | "Why did margin decline 8% in Q3 despite higher volume?" | 3–4 |
+| **Optimization** | Find the best lever configuration given constraints | "Optimal price-pack architecture for the premium segment?" | 4–5 |
+| **Sensitivity** | Map how outcomes depend on lever intensity | "How sensitive is revenue to promotion depth across segments?" | 2–3 |
+| **Trade-Off** | Evaluate competing objectives along a frontier | "Distribution reach vs. assortment depth — where's the sweet spot?" | 2–3 |
+| **Compliance (Feasibility)** | Check whether a plan satisfies all hard constraints | "Does Plan X violate any pricing or distribution rules?" | 2 |
+
+You may add additional question types (comparison, forecasting, anomaly detection) if they strengthen the paper.
+
+### Processes, Rules, and Techniques — The Three Overlapping Layers
+
+Each question type has a **process** — an ordered sequence of analytical steps. Each step invokes one or more **techniques** (analytical methods) and is governed by one or more **rules** (constraints on valid execution). These three layers overlap extensively:
+
+**Processes vary in length.** A compliance check may be 2 steps; an optimization may be 5. The system must select and execute the correct process for each question.
+
+**Rules overlap across question types.** For example:
+- "Maximum price increase of 10% per quarter" governs what-if scenarios, optimization, AND compliance checks
+- "Minimum 70% distribution coverage" constrains optimization, trade-off analysis, AND compliance
+- "Seasonal adjustment required for summer months" applies to what-if, sensitivity, AND root-cause questions
+- A rule may be a **hard constraint** in one question type (compliance) but a **soft advisory** in another (what-if exploration)
+
+**Techniques are shared.** For example:
+- Elasticity estimation appears in what-if, optimization, AND sensitivity processes
+- Constraint satisfaction is used in optimization, trade-off, AND compliance processes
+- Metric decomposition trees are used in root-cause AND what-if processes
+- Cross-lever interaction modeling appears in what-if, optimization, AND trade-off processes
+
+**Step outputs feed across question types.** Answering a root-cause question may require first running a what-if counterfactual. An optimization may depend on a sensitivity analysis. These **cross-question chains** create implicit dependencies that the system must discover and honor.
+
+### Why This Matters for the Paper
+
+The playbook structure introduces a fourth structural complexity beyond the three invariants in the abstract: the **process selection and composition bottleneck**. Even with perfect encoding and perfect cross-source reasoning, a system that applies the wrong process — or applies the right process but misses a shared rule — will produce incorrect answers. This is where the cognitive assembly bottleneck manifests most acutely in practice: human analysts carry the playbook in their heads and silently apply shared rules from memory.
+
+The synthetic data, the encoding layer, and the pipeline must all account for this playbook structure. The experiments must demonstrate that the system selects the correct process, applies shared rules across question types, reuses techniques appropriately, and follows cross-question chains.
+
+---
+
 ## Research Quality Standards
 
 This is a paper, not a software demo. Every section must meet academic standards:
@@ -54,17 +101,20 @@ This is a paper, not a software demo. Every section must meet academic standards
 
 ### Encoding Layer (Contribution 2)
 - Design representations for each knowledge type that are machine-readable yet preserve native semantics
-- The key insight to validate: conflicts between knowledge sources become *diagnostic signals* rather than noise. Design experiments that demonstrate this
+- **The encoding layer must handle four knowledge types** — not three: quantitative data, policy documents, expert judgment, AND the playbook itself (process definitions, rule catalog, technique library). The playbook is a distinct knowledge type with its own encoding challenges: it contains procedural logic (sequences of steps), context-dependent constraints (rule strictness varies by question type), and structural relationships (technique sharing, cross-question dependencies).
+- The key insight to validate: conflicts between knowledge sources become *diagnostic signals* rather than noise. This applies equally to playbook conflicts — e.g., a rule that contradicts expert judgment, or a process step that assumes an input the data doesn't support.
 - **Head-to-head baseline — raw table dump**: The strongest skeptic objection is "why not just paste the CSV into an LLM prompt?" You MUST include a baseline that serializes the same data as a plain numeric table (CSV/markdown) and sends it to the same LLM with an equivalent task prompt. Compare against your structured encoding on identical scenarios. If your encoding doesn't clearly win, the contribution is not established.
 - **Encoding ablation ladder**: Test at least these representation strategies, all using the same LLM and prompt structure:
   1. *Raw table dump* — flat CSV / markdown table of numbers, no semantic annotation
   2. *Narrated table* — raw numbers plus natural-language column descriptions
   3. *Type-collapsed encoding* — all knowledge types forced into a single representation (e.g., everything as text, or everything as feature vectors)
-  4. *Full structured encoding* — your proposed statistical profiles + constraint vectors + temporal belief objects
-- For each level, measure: (a) discovery precision/recall of planted cross-lever effects, (b) frequency of hallucinated or spurious effects, (c) ability to detect conflicts between knowledge sources, (d) quality of causal mechanism explanations
+  4. *Structured encoding WITHOUT playbook* — statistical profiles + constraint vectors + temporal belief objects, but playbook given as unstructured text
+  5. *Full structured encoding* — your proposed statistical profiles + constraint vectors + temporal belief objects + encoded playbook (process graphs, typed rule catalog, technique registry)
+- For each level, measure: (a) discovery precision/recall of planted cross-lever effects, (b) frequency of hallucinated or spurious effects, (c) ability to detect conflicts between knowledge sources, (d) quality of causal mechanism explanations, **(e) process selection accuracy on the query set, (f) rule overlap correctness**
 - Report pairwise effect sizes (Cohen's d or equivalent) with 95% CIs between each adjacent rung and between raw-table-dump vs full-encoding
 - Show at least one scenario where the raw table dump *actively misleads* the LLM (e.g., Simpson's paradox, confounded correlation, unit mismatch) while the structured encoding surfaces the correct interpretation
 - Show that collapsing knowledge types into a single representation (e.g., converting everything to text, or everything to numbers) loses critical information
+- **Show that encoding the playbook as structured data (process graphs, typed rules) outperforms providing it as unstructured text** — this is the new encoding gap that rung 4 vs. rung 5 must demonstrate
 
 ### Progressive Pipeline (Contribution 3)
 - The pipeline must demonstrably compress a combinatorial space by orders of magnitude
@@ -78,36 +128,76 @@ Design experiments that are *genuinely convincing* to a skeptical reviewer. At m
 - **Encoding fidelity (primary experiment)**: Run the full encoding ablation ladder (raw table → narrated table → type-collapsed → full encoding) on identical synthetic scenarios. This is the paper's most critical experiment — allocate the most scenarios and the most careful analysis here. The full encoding must statistically significantly outperform the raw table dump on at least precision, recall, and hallucination rate.
 - **Cross-source reasoning**: Show that the system discovers effects that require synthesizing multiple knowledge types — and that siloed analysis misses them
 - **Space reduction**: Quantify compression at each pipeline stage
+- **Playbook-driven reasoning** *(new, critical)*: Show that the system correctly handles the playbook complexity:
+  - **Process selection accuracy**: Given a diverse question set spanning all question types, measure whether the system selects the correct process for each question. Report accuracy and confusion matrix across question types.
+  - **Rule overlap handling**: Show that shared rules are correctly applied across question types. Plant at least 3 scenarios where a rule that is "hard" in one question type but "soft" in another produces different answers — the system must respect the context-dependent rule semantics.
+  - **Technique reuse**: Show that the system correctly reuses analytical techniques across question types rather than re-deriving results (e.g., an elasticity estimate computed during a sensitivity question should be available and consistent when answering a subsequent what-if question on the same lever).
+  - **Cross-question chains**: Measure performance on questions that require output from a prior question of a different type. Compare: (a) answering in correct dependency order vs. (b) answering each question in isolation. The chained approach must outperform.
+  - **Process length robustness**: Show that the system handles both short (2-step compliance check) and long (5-step optimization) processes without truncating steps or hallucinating extra ones.
 - **Generalization** *(secondary, brief)*: Sketch applicability to 1–2 additional domains to show the architecture is not RGM-specific, but keep this concise — a short qualitative discussion is sufficient. Do not invest significant experimental effort here.
 
 For all experiments: report effect sizes, confidence intervals, and statistical tests. Negative or weak results must be reported honestly.
 
 ### Synthetic Data
-You must generate your own synthetic data with *planted ground truth* so you can rigorously measure discovery performance. Design the data to be:
-- **Large-scale**: Generate datasets that mimic the volume and granularity of real enterprise data. Minimum requirements:
-  - **Transaction-level data**: ≥100,000 rows per scenario (e.g., weekly store×SKU observations across 50+ stores, 200+ SKUs, 2+ years)
-  - **Multiple scenarios**: At least 8–10 distinct synthetic scenarios, each with different planted effects, coupling structures, and noise profiles
-  - **High dimensionality**: Each scenario should include ≥15 decision levers/features with realistic covariance structure
-  - The sample sizes must be large enough that statistical tests have adequate power (≥0.8) to detect the planted effects at their true magnitudes
-- **Realistic — mimic real-world data characteristics**: The synthetic data must be indistinguishable in structure from what an analyst would encounter in practice:
-  - Reproduce real-world distributional shapes: skewed revenue distributions, fat-tailed promotional lifts, zero-inflated sparse assortment matrices
-  - Include temporal structure: seasonality (weekly, monthly, annual cycles), trend, promotional calendar effects, holiday spikes
-  - Inject realistic noise: measurement error, reporting lags, missing data (MCAR, MAR, and MNAR patterns at 5–15% rates), outliers, and data entry errors
-  - Model realistic confounders: price–promotion correlation, store-size effects, geographic clustering, brand-level halo effects
-  - Include heterogeneous sub-populations (e.g., urban vs. rural stores, premium vs. value segments) with different response functions
-  - Generate companion policy documents and expert judgment data with realistic ambiguity, contradictions, and varying confidence levels
-- **Challenging**: Include effects that require cross-lever and cross-source reasoning to discover
-- **Measurable**: Every planted effect has a known ground-truth magnitude so you can compute precision/recall
-- **Non-trivial**: A naive approach (analyzing each lever independently) must fail to discover at least some effects. This is how you prove coupling matters.
 
-Keep the ground-truth specification completely separate from the reasoning system. The system must never see the answer key.
+You must generate your own synthetic data with *planted ground truth* so you can rigorously measure discovery performance. The synthetic data has **four layers** — transactional data, knowledge sources, the playbook itself, and a query set — each with its own realism requirements.
+
+#### Layer 1: Transactional Data
+
+Generate datasets that mimic the volume and granularity of real enterprise data:
+
+- **Transaction-level data**: ≥100,000 rows per scenario (e.g., weekly store×SKU observations across 50+ stores, 200+ SKUs, 2+ years)
+- **Multiple scenarios**: At least 8–10 distinct synthetic scenarios, each with different planted effects, coupling structures, and noise profiles
+- **High dimensionality**: Each scenario should include ≥15 decision levers/features with realistic covariance structure
+- The sample sizes must be large enough that statistical tests have adequate power (≥0.8) to detect the planted effects at their true magnitudes
+- Reproduce real-world distributional shapes: skewed revenue distributions, fat-tailed promotional lifts, zero-inflated sparse assortment matrices
+- Include temporal structure: seasonality (weekly, monthly, annual cycles), trend, promotional calendar effects, holiday spikes
+- Inject realistic noise: measurement error, reporting lags, missing data (MCAR, MAR, and MNAR patterns at 5–15% rates), outliers, and data entry errors
+- Model realistic confounders: price–promotion correlation, store-size effects, geographic clustering, brand-level halo effects
+- Include heterogeneous sub-populations (e.g., urban vs. rural stores, premium vs. value segments) with different response functions
+
+#### Layer 2: Knowledge Sources
+
+Generate companion knowledge artifacts with realistic imperfection:
+
+- **Policy documents** (15+ rules): Mix of hard constraints ("never exceed 10% price increase per quarter"), soft guidelines ("prefer promotional bundling in Q4"), and conditional rules ("if store is premium tier, minimum assortment width is 40 SKUs"). Each rule must have a defined scope (which question types it governs) and a strictness level that varies by context.
+- **Expert judgment** (15–20 beliefs): Mix of correct, outdated, conditionally-true, and flat-wrong beliefs with confidence scores. Include temporal decay (beliefs that were true 2 years ago but no longer hold). Include at least 3 experts with systematically different biases (e.g., one overestimates promotion impact, another undervalues distribution).
+- **Ambiguity and contradiction**: At least 5 cases where policy and expert judgment conflict (e.g., policy says "no price increases in rural stores" but expert says "rural stores can absorb 3% increases"). At least 2 cases where experts contradict each other.
+
+#### Layer 3: The Playbook
+
+Generate a structured decision playbook as machine-readable knowledge:
+
+- **Process definitions**: For each of the 6+ question types, define an ordered list of steps. Each step specifies: (a) what technique(s) it uses, (b) what rule(s) govern it, (c) what inputs it requires, (d) what outputs it produces. Processes must vary in length (2 to 5 steps).
+- **Rule catalog** (20+ rules): Each rule has: (a) a unique ID, (b) a natural-language statement, (c) a formal condition, (d) a list of question types it applies to, (e) a strictness level per question type (hard/soft/advisory). At least **8 rules must apply to 2+ question types** (this is the overlap). At least **3 rules must change strictness depending on question type** (hard in compliance, soft in what-if).
+- **Technique library** (10+ techniques): Each technique has: (a) a unique ID, (b) a description, (c) required inputs, (d) outputs, (e) a list of process steps that invoke it. At least **5 techniques must appear in 2+ question types** (this is the sharing).
+- **Cross-question dependencies**: Explicitly define at least 3 question chains where one question's output is another question's required input (e.g., "before optimizing pack-price architecture, you must run a sensitivity analysis on price elasticity by segment").
+
+#### Layer 4: Query Set
+
+Generate a diverse set of **30–50 questions** that exercise the playbook:
+
+- **Coverage**: At least 4 questions per question type, spread across easy/medium/hard difficulty
+- **Ground-truth traces**: For each question, record the correct answer AND the full answer trace: which process was selected, which steps were executed, which rules were applied, which techniques were used, and which cross-question dependencies (if any) were followed
+- **Planted traps** — at least 5 questions where the correct answer requires handling playbook complexity:
+  1. **Wrong-process trap**: A question that superficially resembles one type but is actually another (e.g., "Why is Plan X underperforming?" looks like root-cause but is actually a compliance failure — wrong process gives wrong diagnosis)
+  2. **Missing shared-rule trap**: A what-if question where the correct answer depends on a pricing constraint usually encountered in compliance checks — an agent that only loads what-if rules will miss it
+  3. **Technique-reuse trap**: Two questions that share a technique (e.g., elasticity estimation) but with different scoping — the system must adapt the technique's output, not blindly reuse it
+  4. **Cross-chain trap**: A question that can only be answered correctly if a prior question of a different type was answered first — answering in isolation produces a subtly wrong result
+  5. **Context-dependent strictness trap**: A question where a rule that is "soft" in this question type is erroneously treated as "hard" (or vice versa), leading to an overly conservative or overly aggressive answer
+- **Difficulty gradient**: Easy questions (single process, no rule overlap, no chains) through hard questions (multi-process, extensive rule overlap, multi-step chains, conflicting knowledge sources)
+
+#### Cross-Cutting Data Requirements
+
+- **Challenging**: Include effects that require cross-lever, cross-source, AND cross-question-type reasoning to discover
+- **Measurable**: Every planted effect has a known ground-truth magnitude. Every planted trap has a known correct answer trace. You can compute precision/recall for both effect discovery and process correctness.
+- **Non-trivial**: A naive approach — analyzing each lever independently OR applying a generic one-size-fits-all process to all question types — must fail on at least some questions. This is how you prove that both coupling AND playbook structure matter.
+
+Keep the ground-truth specification (answer key + traces) completely separate from the reasoning system. The system must never see the answer key.
 
 ### Paper Writing
-- Full LaTeX paper: Introduction, Related Work, Problem Characterization, Method, Experimental Setup, Results, Discussion, Limitations, Conclusion
-- All figures generated from real experimental output — no hand-drawn mockups
-- Bibliography: 30–40 references covering combinatorial optimization, multi-agent systems, knowledge representation, the application domain, and LLM-based reasoning
-- Honest limitations section — what the system cannot do, where validation was weak, what assumptions might not hold
-- Compile to PDF if pdflatex is available
+
+The paper follows standard academic conventions (LaTeX, proper bibliography, figures from real data, honest limitations). One non-standard requirement: the Experimental Setup section MUST name the exact LLM model used (from the model identification query below).
 
 ---
 
@@ -122,31 +212,35 @@ Keep the ground-truth specification completely separate from the reasoning syste
   - Encoding evaluation and conflict detection MUST use LLM interpretation — not string matching or numeric comparisons
   - If `copilot` is not in PATH, the pipeline MUST fail immediately with a clear error message rather than silently degrading to heuristics
   - Any code path that makes a judgment call without an LLM invocation is a bug
-- **Model identification is mandatory**: At startup, the pipeline MUST query `copilot -p "What model are you? Reply with only your model name and version." -s --no-color --allow-all`, parse the response, and record the model name (e.g., "GPT-4o", "Claude 3.5 Sonnet") in `results.json` under a top-level `"model"` key. The paper MUST report this model name in the Experimental Setup section so readers know exactly which LLM produced the results.
-- All LLM calls cached in `.llm_cache/` by prompt hash for reproducibility. First run hits the LLM; subsequent runs replay from cache.
+- **Model identification is mandatory**: At startup, the pipeline MUST query `copilot -p "What model are you? Reply with only your model name and version." -s --no-color --allow-all`, parse the response, and record the model name (e.g., "GPT-4o", "Claude 3.5 Sonnet") in `results.json` under a top-level `"model"` key.
+- All LLM calls cached in `demos/coupled-decisions/.llm_cache/` by prompt hash for reproducibility. First run hits the LLM; subsequent runs replay from cache.
 - Full pipeline should complete in <60 minutes first run, <5 minutes from cache (increased budget to accommodate large-scale data generation and LLM-intensive evaluation)
-- Paper compiles with standard pdflatex + bibtex
 
 ---
 
 ## Deliverables
 
-All output MUST be written under `demos/coupled-decisions/`, NOT the repository root.
+All output scoped under `demos/coupled-decisions/`. The framework handles `.swarm/` artifacts (deliverable, journal, belief map) automatically — do NOT duplicate those here.
+
+**Demo-specific artifacts** (these are NOT standard framework output — agents must create them explicitly):
 
 ```
 demos/coupled-decisions/
   output/
-    results.json            # All experimental results
+    results.json            # All experimental results + top-level "model" key
     validation_report.json  # Validation gate verdicts and audit trail
-    paper/
-      paper.tex
-      paper.pdf             
-      figures/
-      tables/
     index.html              # Interactive webapp (single HTML, Chart.js + D3.js via CDN)
-    data/                   # Generated synthetic data
-  src/                      # All source code
+    data/
+      transactions/          # Layer 1: transactional data (CSV/parquet per scenario)
+      knowledge/             # Layer 2: policy docs, expert beliefs (JSON/YAML)
+      playbook/              # Layer 3: process definitions, rule catalog, technique library (JSON)
+      queries/               # Layer 4: query set with ground-truth traces (JSON)
+      ground_truth.json      # Answer key — NEVER loaded by reasoning system
+  src/                      # Pipeline source code
+  .llm_cache/               # LLM response cache (by prompt hash)
 ```
+
+The paper (LaTeX source, compiled PDF, figures, tables, bibliography) goes under `output/paper/` — standard academic structure; agents know what to produce.
 
 ### Interactive Webapp
 Single self-contained HTML file. Must include:
@@ -163,13 +257,14 @@ Single self-contained HTML file. Must include:
 The paper succeeds if a skeptical reviewer would agree that:
 
 1. **The problem characterization is rigorous** — the three invariants are formally defined and the incompleteness of partial approaches is demonstrated
-2. **The encoding layer matters** — reasoning with encoded representations significantly outperforms reasoning with raw data
+2. **The encoding layer matters** — reasoning with encoded representations significantly outperforms reasoning with raw data. Specifically, structured playbook encoding (process graphs, typed rules) outperforms unstructured playbook text.
 3. **Cross-source reasoning works** — the system discovers effects that require synthesizing multiple knowledge types, and siloed analysis misses them
 4. **The pipeline compresses effectively** — a combinatorial space is reduced by orders of magnitude to a tractable set of interventions with zero hard-constraint violations
 5. **Ablation is convincing** — removing any major component produces measurable degradation
-6. **Generalization is plausible** — a brief discussion argues the architecture applies beyond RGM, but deep multi-domain experiments are not required
-7. **Results are validated** — all claims pass statistical audit, methodology critique, and adversarial review before appearing in the paper
-8. **Limitations are honest** — the paper reports what didn't work, what was weak, and what assumptions might not hold
+6. **Playbook-driven reasoning is correct** — the system selects the right process for each question type, applies shared rules with correct context-dependent strictness, reuses techniques across question types, and follows cross-question dependency chains. Process selection accuracy ≥80% on the full query set; a flat (single-process) baseline achieves ≤60%.
+7. **Generalization is plausible** — a brief discussion argues the architecture applies beyond RGM, but deep multi-domain experiments are not required
+8. **Results are validated** — all claims pass statistical audit, methodology critique, and adversarial review before appearing in the paper
+9. **Limitations are honest** — the paper reports what didn't work, what was weak, and what assumptions might not hold
 
 ---
 
