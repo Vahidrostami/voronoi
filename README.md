@@ -1,697 +1,276 @@
 <div align="center">
 
-# 🔬 Voronoi
+# Voronoi
 
-### Science-first multi-agent orchestration
-
-**Ask a question on Telegram. Get a research paper.**
+**Ask a question. Get evidence.**
 
 <br/>
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/voronoi-banner.svg" />
   <source media="(prefers-color-scheme: light)" srcset="assets/voronoi-banner-light.svg" />
-  <img alt="Voronoi — 11 specialized agent roles partitioning the problem space" src="assets/voronoi-banner-light.svg" width="900" />
+  <img alt="Voronoi — Scientific Discovery Engine" src="assets/voronoi-banner-light.svg" width="900" />
 </picture>
-
-<sub><em>Each cell is an agent. Each agent owns a slice of the problem. No overlaps. No gaps.</em></sub>
 
 <br/>
 
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
 [![Copilot](https://img.shields.io/badge/GitHub_Copilot-Powered-000?style=flat-square&logo=github&logoColor=white)](https://github.com/features/copilot)
 [![Telegram](https://img.shields.io/badge/Telegram-26A5E4?style=flat-square&logo=telegram&logoColor=white)](https://core.telegram.org/bots)
-[![Beads](https://img.shields.io/badge/Beads-Task_Tracking-orange?style=flat-square)](https://github.com/steveyegge/beads)
 [![MIT](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](./LICENSE)
 
 <br/>
 
-<a href="#quickstart"><strong>Quickstart</strong></a>&nbsp;&nbsp;&middot;&nbsp;&nbsp;<a href="#how-it-works"><strong>How It Works</strong></a>&nbsp;&nbsp;&middot;&nbsp;&nbsp;<a href="#commands"><strong>Commands</strong></a>&nbsp;&nbsp;&middot;&nbsp;&nbsp;<a href="#telegram"><strong>Telegram</strong></a>&nbsp;&nbsp;&middot;&nbsp;&nbsp;<a href="#demos"><strong>Demos</strong></a>&nbsp;&nbsp;&middot;&nbsp;&nbsp;<a href="#comparison"><strong>Comparison</strong></a>&nbsp;&nbsp;&middot;&nbsp;&nbsp;<a href="DESIGN.md"><strong>Design</strong></a>
+<img src="assets/voronoi-manuscript.svg" alt="Voronoi — scientific discovery with feedback loops" width="800"/>
+
+<sub>Question → hypotheses → parallel agents → failure → OODA loop → new hypothesis → convergence → manuscript</sub>
+
+<br/>
+
+<details>
+<summary>Quick investigation (simpler flow)</summary>
+<br/>
+<img src="assets/voronoi-demo.svg" alt="Voronoi — quick investigation to findings" width="800"/>
+</details>
+
+<br/>
+<br/>
+
+<a href="#install"><strong>Install</strong></a>&nbsp;&nbsp;&middot;&nbsp;&nbsp;<a href="#how-it-works"><strong>How It Works</strong></a>&nbsp;&nbsp;&middot;&nbsp;&nbsp;<a href="#commands"><strong>Commands</strong></a>&nbsp;&nbsp;&middot;&nbsp;&nbsp;<a href="#demos"><strong>Demos</strong></a>&nbsp;&nbsp;&middot;&nbsp;&nbsp;<a href="DESIGN.md"><strong>Design Doc</strong></a>
 
 </div>
 
 <br/>
 
-> **Voronoi** orchestrates multiple AI agents in parallel — with hypothesis management, statistical rigor, convergence feedback loops, and evidence preservation. Engineering is science with the rigor gates turned off.
+> Multi-agent orchestration with **hypothesis management**, **statistical rigor gates**, and **evidence preservation**. Other frameworks build software — Voronoi runs **investigations**.
 
 ---
 
-<br/>
-
-## What Makes This Different
-
-<table>
-<tr>
-<td width="33%">
-
-**Science, Not Just Code**
-
-Other agent frameworks build software. Voronoi runs **investigations** — with pre-registration, competing hypotheses, belief maps, and statistical validation. Findings come with effect sizes and confidence intervals, not just "it works."
-
-</td>
-<td width="33%">
-
-**One Prompt, Zero Config**
-
-Type `/swarm "Why is our model accuracy dropping?"` and walk away. The system auto-detects whether to **build**, **investigate**, **explore**, or **hybridize** — and selects the rigor level to match.
-
-</td>
-<td width="33%">
-
-**Telegram-Native Science**
-
-Text a question in your Telegram group. Voronoi classifies intent, dispatches agents, streams progress updates, and delivers findings — all from your pocket. Or use the CLI. Same engine either way.
-
-</td>
-</tr>
-</table>
-
----
-
-<h2 id="quickstart">Quickstart</h2>
-
-### Option A: Server Mode (Telegram-first — recommended)
-
-Set up once on a server. Text questions from your phone forever.
+<h2 id="install">Install</h2>
 
 ```bash
-# 1. Install
 pip install voronoi
+```
 
-# 2. Initialize the server (creates ~/.voronoi/)
+**Telegram** (recommended) — set up once, text questions from your phone:
+
+```bash
 voronoi server init
-
-# 3. Set your credentials in ~/.voronoi/.env
-cp ~/.voronoi/.env.example ~/.voronoi/.env
-# Edit ~/.voronoi/.env — fill in:
-#   GH_TOKEN=ghp_...                  (GitHub PAT for cloning/publishing)
-#   VORONOI_TG_BOT_TOKEN=...          (from @BotFather)
-#   VORONOI_TG_USER_ALLOWLIST=...     (optional: restrict to specific users)
-
-# 4. Start the Telegram bridge
+# Edit ~/.voronoi/.env with your VORONOI_TG_BOT_TOKEN
 voronoi server start
 ```
 
-Now open Telegram and text:
-
-```
-You:     Why is accuracy dropping in github.com/acme/ml-model?
-Voronoi: 🔬 Investigation #1 queued. Cloning acme/ml-model...
-         🔍 Scout analyzing 342 files... 3 hypotheses generated.
-         ⚡ 3 investigators dispatched in parallel.
-         [2 hours later]
-         🧪 ROOT CAUSE: Training pipeline introduced 12% label noise.
-         📄 Paper: github.com/voronoi-lab/acme-ml-accuracy-inv1
-
-You:     Does EWC prevent catastrophic forgetting better than replay?
-Voronoi: 🔬 Investigation #2 queued. Creating lab workspace...
-         [4 hours later]
-         📄 Paper + raw data: github.com/voronoi-lab/ewc-vs-replay-inv2
-
-You:     What did we learn about forgetting?
-Voronoi: 📚 3 findings from investigation #2:
-         1. EWC+Replay hybrid: backward transfer 0.81 (REPLICATED)
-         2. EWC alone: d=0.34 over replay, needs N>50k
-         3. Naive sequential: catastrophic at task 3+
-```
-
-**That's it.** No SSH, no CLI, no `cd`. Just text a question and get a research paper.
-
-### Option B: Local Mode (CLI-first)
-
-Work directly inside a project on your machine.
+**CLI** — work inside a project:
 
 ```bash
-pip install voronoi
-
-cd my-project
-voronoi init
-
-# Start your AI coding agent
-copilot                    # or: claude
-> /swarm Build a full-stack SaaS app with auth, billing, dashboard, and API
+cd my-project && voronoi init
+copilot   # or: claude
+> /swarm Why is our model accuracy dropping 15% after each retrain?
 ```
-
-The swarm plans the work, spawns isolated agents, and merges results back.
-
-For science:
-
-```bash
-> /swarm Why is our recommendation model's CTR dropping 15% after each retrain?
-```
-
-Voronoi classifies this as **Investigate** (Scientific rigor), spawns a Scout, generates hypotheses, dispatches parallel Investigators, validates findings with a Statistician, and delivers a research report with evidence.
 
 ---
 
 <h2 id="how-it-works">How It Works</h2>
 
 ```mermaid
-graph TD
-    Q["🧑 You: 'Why is latency 3x higher?'"] --> C["🏷️ Classifier"]
-    C -->|"Investigate · Scientific rigor"| S["🔍 Scout — Phase 0"]
-    S -->|"Knowledge brief: known results,<br/>failed approaches, hypotheses"| O["🧠 Orchestrator"]
-
-    O -->|"H1: Feature drift (P=0.40)"| I1["🔬 Investigator 1<br/><i>git worktree</i>"]
-    O -->|"H2: Data contamination (P=0.35)"| I2["🔬 Investigator 2<br/><i>git worktree</i>"]
-    O -->|"H3: Serving timeout (P=0.25)"| I3["🔬 Investigator 3<br/><i>git worktree</i>"]
-
-    I1 --> F1["📊 Finding — d, CI, N, p"]
-    I2 --> F2["📊 Finding — d, CI, N, p"]
-    I3 --> F3["📊 Finding — d, CI, N, p"]
-
-    F1 --> R["⚖️ Review Gate"]
-    F2 --> R
-    F3 --> R
-
-    R -->|"Statistician · Critic · Synthesizer"| E["🎯 Evaluator"]
-    E -->|"Completeness · Coherence · Strength"| D["📄 deliverable.md<br/><i>research paper with full evidence trail</i>"]
-```
-
-For **engineering tasks**, the system simplifies automatically:
-
-```mermaid
-graph TD
-    Q["🧑 You: 'Build a REST API with auth'"] --> C["🏷️ Classifier"]
-    C -->|"Build · Standard rigor"| P["📋 Planner"]
-
-    P --> A1["🔨 agent-auth<br/><i>worktree</i>"]
-    P --> A2["🔨 agent-api<br/><i>worktree</i>"]
-    P --> A3["🔨 agent-dash<br/><i>worktree</i>"]
-
-    A1 --> CR["⚖️ Critic Review"]
-    A2 --> CR
-    A3 --> CR
-
-    CR --> M["🔀 Merge to main"]
-```
-
-Same framework. Same commands. Rigor gates activate only when warranted.
-
-### Under the Hood: tmux × Copilot CLI
-
-Every agent is a **full Copilot CLI session** running in its own **tmux window** with its own **git worktree**. The orchestrator doesn't use APIs — it opens terminals and types commands.
-
-```mermaid
 graph LR
-    subgraph tmux["🖥️ tmux session: project-swarm"]
-        direction TB
-        W0["orchestrator"]
-        W1["agent-hypothesis-1"]
-        W2["agent-hypothesis-2"]
-        W3["agent-hypothesis-3"]
-    end
-
-    subgraph worktrees["📁 git worktrees"]
-        WT1["worktree/agent-hypothesis-1/"]
-        WT2["worktree/agent-hypothesis-2/"]
-        WT3["worktree/agent-hypothesis-3/"]
-    end
-
-    W1 -.- WT1
-    W2 -.- WT2
-    W3 -.- WT3
-
-    W0 -->|"spawn-agent.sh"| W1
-    W0 -->|"spawn-agent.sh"| W2
-    W0 -->|"spawn-agent.sh"| W3
-
-    W1 -->|"copilot --allow-all -p ..."| C1["🤖 Copilot CLI"]
-    W2 -->|"copilot --allow-all -p ..."| C2["🤖 Copilot CLI"]
-    W3 -->|"copilot --allow-all -p ..."| C3["🤖 Copilot CLI"]
+    Q["🧑 Question"] --> C["🏷️ Classify"]
+    C --> S["🔍 Scout"]
+    S --> O["🧠 Orchestrator"]
+    O --> I1["🔬 Agent 1"]
+    O --> I2["🔬 Agent 2"]
+    O --> I3["🔬 Agent 3"]
+    I1 --> R["⚖️ Review Gate"]
+    I2 --> R
+    I3 --> R
+    R --> D["📄 Report or Paper"]
 ```
 
-<table>
-<tr>
-<td width="50%">
+1. **You ask** — Telegram or CLI, natural language
+2. **Classifier** picks the workflow (build / investigate / explore) and rigor level
+3. **Scout** researches existing knowledge, generates hypotheses
+4. **Agents run in parallel** — each in its own git worktree + tmux session
+5. **Review gates** — Statistician, Critic, Evaluator score the output
+6. **You get** a teaser with key findings + a PDF — **report** for investigations, **scientific manuscript** if the scope warrants it
 
-**Why tmux?**
-- Process isolation — one crash doesn't kill the swarm
-- `tmux attach` to watch any agent think in real-time
-- Dashboard polls `capture-pane` for live status
-- No custom IPC — agents communicate through git + Beads
+Every finding ships with **effect size, confidence interval, sample size, p-value, and data hash**.
 
-</td>
-<td width="50%">
+> _"Investigate catastrophic forgetting mitigation"_ → the system runs experiments, gathers evidence, then assembles a structured manuscript (Abstract, Methods, Results, Discussion) with real statistical findings. Auto-detected — no special flag needed.
 
-**Why full Copilot CLI?**
-- Each agent gets the complete toolkit (bash, edit, grep, git)
-- Not a stripped-down API subset — real terminal sessions
-- Works with Claude CLI too — swap with one config line
-- Same agent you use manually, running autonomously
+### Tasks form a dependency graph, not a flat queue
 
-</td>
-</tr>
-</table>
+In real investigations, work has structure — you need baselines before hybrids, data before analysis, controls before treatments. Voronoi preserves this:
+
+```mermaid
+graph TD
+    O["🧠 Orchestrator"] --> B["🔬 Baseline\n(sequential training)"]
+    O --> E["🔬 EWC\n(elastic weights)"]
+    O --> R["🔬 Replay\n(experience replay)"]
+
+    B --> H["🔬 Hybrid\n(EWC + Replay)"]
+    E --> H
+    R --> H
+
+    H --> Rev["⚖️ Review Gate"]
+    Rev --> D["📄 Report"]
+
+    style B fill:#161b22,stroke:#3fb950
+    style E fill:#161b22,stroke:#3fb950
+    style R fill:#161b22,stroke:#3fb950
+    style H fill:#161b22,stroke:#d29922
+```
+
+<sup>**Baseline**, **EWC**, and **Replay** run in parallel. **Hybrid** is automatically blocked until all three finish — its experiment depends on their results. The orchestrator tracks this via [Beads](https://github.com/steveyegge/beads) dependency graph.</sup>
 
 ---
 
 <h2 id="commands">Commands</h2>
 
-### From your AI agent (CLI)
+**From Telegram** — just text a question, or use explicit commands:
 
-| Command | What it does |
+| Command | What happens |
 |---------|-------------|
-| `/swarm <task>` | Classify intent → plan tasks → spawn parallel agents |
-| `/standup` | Status report across all agents |
-| `/progress` | Quick metric overview |
-| `/spawn <id>` | Launch a single agent on a specific task |
-| `/merge` | Merge completed agent branches |
-| `/teardown` | Kill all agents, clean up worktrees |
+| `/voronoi investigate <question>` | Parallel investigation with findings |
+| `/voronoi explore <question>` | Options, benchmark, comparison matrix |
+| `/voronoi build <description>` | Decompose, parallel build, merge |
+| `/voronoi results [id]` | View past investigation results |
+| `/voronoi status` | Open tasks, ready tasks |
+| `/voronoi recall <query>` | Search past findings |
+| Free text in groups | Auto-detect intent and dispatch |
 
-<h3 id="telegram">From Telegram</h3>
-
-| Command | What Happens |
-|---------|-------------|
-| `/voronoi investigate <question>` | Classify → hypothesize → parallel investigation → findings with evidence |
-| `/voronoi explore <question>` | Generate options → benchmark → comparison matrix |
-| `/voronoi build <description>` | Decompose → parallel build → critic review → merge |
-| `/voronoi experiment <hypothesis>` | Pre-register → experiment → replicate → report (max rigor) |
-| `/voronoi recall <query>` | Search past findings in knowledge store |
-| `/voronoi belief` | Show current belief map with hypothesis probabilities |
-| `/voronoi journal` | Recent investigation journal entries |
-| `/voronoi finding <id>` | Detailed view of a specific finding |
-| `/voronoi status` | Swarm status — open tasks, ready tasks |
-| `/voronoi guide <msg>` | Send guidance to agents mid-flight |
-| `/voronoi pivot <msg>` | Strategic direction change |
-| Free-text in groups | Auto-detect scientific intent and dispatch |
-
-Natural language works too — _"Why is our model accuracy dropping after each retrain?"_ — Voronoi detects the intent, classifies rigor level, and dispatches agents automatically.
-
----
-
-## The Science Stack
-
-What makes Voronoi unique — no other agent framework has this:
-
-<table>
-<tr>
-<td width="50%">
-
-### 🧪 11 Specialized Roles
-
-| Role | When Active |
-|------|------------|
-| **Builder** 🔨 | Build tasks |
-| **Scout** 🔍 | Before any investigation |
-| **Investigator** 🔬 | Tests hypotheses |
-| **Critic** ⚖️ | Before any merge |
-| **Synthesizer** 🧩 | Integrates findings |
-| **Evaluator** 🎯 | Scores deliverables |
-| **Explorer** 🧭 | Compares options |
-| **Theorist** 🧬 | Builds causal models |
-| **Methodologist** 📐 | Reviews experiment design |
-| **Statistician** 📊 | Reviews quantitative claims |
-| **Worker** ⚙️ | General-purpose tasks |
-
-Auto-selected by task type. Build mode uses 2 roles. Full investigation uses all 11.
-
-</td>
-<td width="50%">
-
-### 🔒 Rigor Gates
-
-| Gate | Standard | Analytical | Scientific | Experimental |
-|------|:--------:|:----------:|:----------:|:------------:|
-| Critic review | ✅ | ✅ | ✅ | ✅ |
-| Statistician | — | ✅ | ✅ | ✅ |
-| Final evaluation | — | ✅ | ✅ | ✅ |
-| Methodologist | — | — | ✅ | ✅ |
-| Pre-registration | — | — | ✅ | ✅ |
-| Power analysis | — | — | ✅ | ✅ |
-| Partial blinding | — | — | ✅ | ✅ |
-| Adversarial review | — | — | ✅ | ✅ |
-| Replication | — | — | — | ✅ |
-
-Auto-classified. _"Build X"_ → Standard. _"Why X?"_ → Scientific. When in doubt, classify higher — gates can be skipped but not added retroactively.
-
-</td>
-</tr>
-</table>
-
-### Evidence System
-
-Every finding is a first-class artifact with a complete evidence trail:
-
-```
-📊 FINDING bd-42: Redis outperforms Memcached for our workload
-   Effect: d=2.3, CI [1.9, 2.8], N=10,000 requests
-   Test: Welch t-test, p<0.001
-   Robust: YES (3 parameter variations tested)
-   Data: data/raw/cache_benchmark.csv (SHA-256: a3f2...)
-   Replicated: 2/2 agree (overlapping 95% CIs)
-```
-
-| Layer | Location | Purpose |
-|-------|----------|---------|
-| **Findings** | Beads entries | Effect size, CI, N, stat test, data hash |
-| **Raw Data** | `data/raw/` | CSV/JSON committed per experiment |
-| **Journal** | `.swarm/journal.md` | Narrative continuity across cycles |
-| **Belief Map** | `.swarm/belief-map.json` | Hypothesis probabilities, updated per cycle |
-| **Strategic Context** | `.swarm/strategic-context.md` | Dead ends, gaps, decision rationale |
-| **Deliverable** | `.swarm/deliverable.md` | Final output scored by Evaluator |
-
----
-
-## Architecture
-
-```
-voronoi/
-├── src/voronoi/
-│   ├── cli.py                  # CLI: init, upgrade, demo, server
-│   ├── gateway/                # Telegram science interface
-│   │   ├── intent.py           # Free-text → workflow mode + rigor classifier
-│   │   ├── memory.py           # Per-chat conversation memory (SQLite)
-│   │   ├── knowledge.py        # Knowledge store queries (findings, beliefs)
-│   │   ├── progress.py         # Real-time OODA progress relay
-│   │   └── handoff.py          # Voronoi → Anton/MVCHA handoff protocol
-│   └── server/                 # Server mode infrastructure
-│       ├── repo_url.py         # GitHub URL extraction from free text
-│       ├── workspace.py        # Auto-clone with --reference, lab creation
-│       ├── queue.py            # Investigation queue (SQLite, concurrency control)
-│       ├── runner.py           # Queue runner, server config
-│       ├── sandbox.py          # Docker sandbox per investigation
-│       └── publisher.py        # Push results to GitHub (voronoi-lab/ org)
-│
-├── scripts/                    # Infrastructure plumbing
-│   ├── swarm-init.sh           # One-time project setup
-│   ├── spawn-agent.sh          # Git worktree + tmux, launch agent
-│   ├── merge-agent.sh          # Merge branch → main, clean up
-│   ├── teardown.sh             # Kill sessions, prune worktrees
-│   ├── sandbox-exec.sh         # Run commands in Docker sandbox (fallback to host)
-│   ├── notify-telegram.sh      # Outbound Telegram notifications
-│   ├── telegram-bridge.py      # Inbound Telegram command bridge
-│   └── dashboard.py            # Live terminal monitoring (Rich)
-│
-├── docker/
-│   └── voronoi-python.Dockerfile  # Python 3.11 + scipy + matplotlib + git
-│
-├── .github/
-│   ├── agents/                 # Specialized agent personas
-│   ├── prompts/                # Slash command definitions
-│   └── skills/                 # Reusable domain knowledge
-│
-├── demos/                      # 3 proof-of-concept scenarios
-└── DESIGN.md                   # Full design philosophy
-```
-
-### Server Mode Layout
-
-```
-~/.voronoi/                          # created by: voronoi server init
-├── config.json                      # server settings
-├── knowledge.db                     # ALL findings across ALL investigations
-├── conversations.db                 # Telegram chat history
-├── queue.db                         # investigation queue
-│
-├── objects/                         # shared git object store
-│   ├── acme--ml-model.git           # bare clone (reused across investigations)
-│   └── acme--api.git
-│
-└── active/                          # one workspace per running investigation
-    ├── inv-1-acme-ml-accuracy/      # repo-bound (cloned with --reference)
-    │   ├── .swarm/                  # science state, journal, beliefs
-    │   ├── .sandbox-id              # Docker container ID
-    │   └── (repo files)
-    └── inv-2-ewc-vs-replay/         # pure science (git init from scratch)
-        ├── .swarm/
-        ├── PROMPT.md                # the original question
-        ├── src/                     # generated experiment code
-        └── data/raw/                # committed experimental data
-```
-
-**Everything is local files.** Agents are coordinated through git branches, [Beads](https://github.com/steveyegge/beads) for task tracking, and tmux sessions. Code execution is sandboxed in Docker.
+**From CLI**: `/swarm <task>` · `/standup` · `/progress` · `/merge` · `/teardown`
 
 ---
 
 <h2 id="demos">Demos</h2>
 
 ```bash
-voronoi demo list                          # see available demos
-voronoi demo run coupled-decisions         # launch a demo
-voronoi demo run forgetting-cure --safe    # restrict agent tools
-voronoi demo run emergent-ecosystem --dry-run  # copy files only
+voronoi demo list
+voronoi demo run forgetting-cure
+voronoi demo run emergent-ecosystem --safe
 ```
 
-<table>
-<tr>
-<td width="33%">
-
-**[Coupled Decisions](demos/coupled-decisions/)**
-
-Multi-agent reasoning over 5 coupled commercial levers. Planted ground truth across 100K+ synthetic transactions. Can the swarm discover what humans can't see in raw data?
-
-</td>
-<td width="33%">
-
-**[Emergent Ecosystem](demos/emergent-ecosystem/)**
-
-100×100 grid, 4 species, 4 communication strategies. Each agent builds one species module in isolation. Watch highways, flocks, and extinction cascades emerge.
-
-</td>
-<td width="33%">
-
-**[Forgetting Cure](demos/forgetting-cure/)**
-
-4 brain-inspired anti-forgetting strategies implemented from scratch (no PyTorch). Head-to-head MNIST benchmark, then discover the optimal hybrid. Pure numpy-free backprop.
-
-</td>
-</tr>
-</table>
+| Demo | What it does |
+|------|-------------|
+| **coupled-decisions** | 5 coupled levers, planted ground truth in 100K transactions |
+| **emergent-ecosystem** | 4 species on a 100×100 grid, each agent builds one in isolation |
+| **forgetting-cure** | 4 anti-forgetting strategies, head-to-head MNIST benchmark |
 
 ---
 
-<h2 id="comparison">How Voronoi Compares</h2>
+<details>
+<summary><strong>🧪 The Science Stack</strong></summary>
+
+<br/>
+
+**11 Specialized Roles** — auto-selected by task type:
+
+Builder 🔨 · Scout 🔍 · Investigator 🔬 · Critic ⚖️ · Synthesizer 🧩 · Evaluator 🎯 · Explorer 🧭 · Theorist 🧬 · Methodologist 📐 · Statistician 📊 · Worker ⚙️
+
+**4 Rigor Levels** — auto-classified from your question:
+
+| Gate | Standard | Analytical | Scientific | Experimental |
+|------|:--------:|:----------:|:----------:|:------------:|
+| Critic review | ✅ | ✅ | ✅ | ✅ |
+| Statistician | — | ✅ | ✅ | ✅ |
+| Methodologist | — | — | ✅ | ✅ |
+| Pre-registration | — | — | ✅ | ✅ |
+| Replication | — | — | — | ✅ |
+
+**Evidence System** — every finding includes:
+
+```
+FINDING bd-42: Sleep Replay + EWC hybrid outperforms all
+  Effect: d=1.47, CI [1.12, 1.83], N=15 (5 tasks × 3 seeds)
+  Test: Welch t-test, p<0.001
+  Data: data/raw/forgetting_benchmark.csv (SHA-256: e7b3f...)
+  Reviewed: Statistician + Critic + Methodologist
+```
+
+</details>
+
+<details>
+<summary><strong>🏗️ Architecture</strong></summary>
+
+<br/>
+
+```
+src/voronoi/
+  cli.py                  # init, upgrade, demo, server
+  gateway/                # Telegram interface
+    config.py  router.py  report.py  intent.py
+    memory.py  knowledge.py  handoff.py
+  server/
+    dispatcher.py  queue.py  workspace.py
+    sandbox.py  publisher.py
+```
+
+Each agent is a **full Copilot CLI session** in its own **tmux window** with its own **git worktree**. No custom IPC — agents communicate through git + [Beads](https://github.com/steveyegge/beads).
+
+```
+~/.voronoi/              # server mode
+  config.json  queue.db
+  objects/               # shared bare git repos
+  active/                # one workspace per investigation
+    inv-1-slug/
+      .swarm/            # journal, beliefs, deliverable
+      data/raw/          # experimental data
+```
+
+</details>
+
+<details>
+<summary><strong>📊 Comparison</strong></summary>
+
+<br/>
 
 | Capability | **Voronoi** | CrewAI | AutoGen | MetaGPT |
 |:-----------|:----------:|:------:|:-------:|:-------:|
 | Parallel agents in git worktrees | ✅ | — | — | — |
-| Hypothesis management & belief maps | ✅ | — | — | — |
-| Statistical rigor gates (CI, p-values) | ✅ | — | — | — |
+| Hypothesis management | ✅ | — | — | — |
+| Statistical rigor gates | ✅ | — | — | — |
 | Pre-registration & replication | ✅ | — | — | — |
-| Evidence system (raw data + SHA-256) | ✅ | — | — | — |
-| Auto intent classification | ✅ | — | ✅ | ✅ |
+| Evidence system (SHA-256) | ✅ | — | — | — |
 | Telegram-native interface | ✅ | — | — | — |
 | Docker-sandboxed execution | ✅ | — | ✅ | — |
-| Role-based agent specialization | ✅ (11 roles) | ✅ | ✅ | ✅ (6 roles) |
-| Task dependency tracking | ✅ (Beads) | — | — | ✅ |
-| Deliverable scoring (Evaluator) | ✅ | — | — | — |
+| Role-based specialization | ✅ (11) | ✅ | ✅ | ✅ (6) |
 | Works with any LLM agent | ✅ | ✅ | ✅ | — |
 
-Other frameworks orchestrate **code generation**. Voronoi orchestrates **investigations** — where the output is evidence, not just software.
+</details>
 
----
+<details>
+<summary><strong>⚙️ Setup & Configuration</strong></summary>
 
-## Sample Output
+<br/>
 
-What a finding actually looks like after the review gates:
-
-```
-╔══════════════════════════════════════════════════════════════════════╗
-║  FINDING bd-127: Sleep Replay + EWC hybrid outperforms all         ║
-║  individual anti-forgetting strategies                             ║
-╠══════════════════════════════════════════════════════════════════════╣
-║                                                                    ║
-║  Hypothesis:  H3 — Combining complementary mechanisms preserves    ║
-║               more knowledge than any single approach              ║
-║  Verdict:     ✅ SUPPORTED                                         ║
-║                                                                    ║
-║  Effect:      d = 1.47, 95% CI [1.12, 1.83]                       ║
-║  Baseline:    Naive sequential — 12% Task 1 accuracy at Task 5    ║
-║  Treatment:   Sleep Replay + EWC hybrid — 89% accuracy retained    ║
-║  N:           5 sequential MNIST tasks × 3 seeds                   ║
-║  Test:        Welch t-test, p < 0.001                              ║
-║                                                                    ║
-║  Robust:      YES — tested with λ ∈ {0.1, 1.0, 10.0},             ║
-║               replay ratios ∈ {10%, 25%, 50%}                      ║
-║  Data:        data/raw/forgetting_benchmark.csv                    ║
-║  Hash:        sha256:e7b3f...                                      ║
-║  Replicated:  2/2 seeds agree (overlapping 95% CIs)                ║
-║                                                                    ║
-║  REVIEWED BY: Statistician ✅ · Critic ✅ · Methodologist ✅        ║
-╚══════════════════════════════════════════════════════════════════════╝
-```
-
-This isn't a mock-up — it's the format every Voronoi finding ships in. Effect sizes, not vibes.
-
----
-
-## Telegram Setup
+**Prerequisites**: Python 3.10+ · [Beads](https://github.com/steveyegge/beads) · [tmux](https://github.com/tmux/tmux) · [Copilot CLI](https://githubnext.com/projects/copilot-cli/) (or Claude)
 
 ```bash
-# 1. Get a bot token from @BotFather on Telegram
-# 2. Set credentials in ~/.voronoi/.env:
-#    VORONOI_TG_BOT_TOKEN=your-bot-token
-#    VORONOI_TG_USER_ALLOWLIST=your_username    # optional: restrict access
-
-# 3. Disable privacy mode (for free-text in groups):
-#    @BotFather → /setprivacy → Disable
-
-# 4. Start the bridge:
-voronoi server start
+brew install beads tmux gh   # macOS
+pip install voronoi[report]  # optional: PDF generation
 ```
 
-Credentials can also be set via environment variables or in a project `.env`.
+**Telegram**: Get bot token from @BotFather → set `VORONOI_TG_BOT_TOKEN` in `~/.voronoi/.env` → `voronoi server start`
 
-In groups, the bot only responds when **@mentioned** or **replied to** — no spam.
+**Docker**: `docker build -t voronoi-python:latest -f docker/voronoi-python.Dockerfile .`
 
-Free-text intent detection works in group chats — just ask a question, no `/voronoi` prefix needed.
+**Upgrade**: `pip install --upgrade voronoi && voronoi upgrade`
 
----
-
-## Docker Sandbox
-
-Agent code execution runs in Docker containers — isolated, resource-limited, reproducible.
-
-```bash
-# Build the science image (one time)
-docker build -t voronoi-python:latest -f docker/voronoi-python.Dockerfile .
-
-# Or pull pre-built:
-docker pull python:3.11-slim   # minimal fallback
-```
-
-The **orchestrator runs on the host** (needs git, tmux, Beads). The **experiments run in Docker** (safe, capped at 4 CPUs / 8 GB RAM / 12 hour timeout).
-
-```mermaid
-graph LR
-    subgraph Host
-        O["🧠 Orchestrator<br/><i>copilot / claude</i><br/>git, tmux, bd"]
-    end
-    subgraph Docker["🐳 Docker Container"]
-        W["voronoi-inv-12<br/>Python 3.11 + scipy<br/>/workspace (mounted)"]
-    end
-    O -->|"exec"| W
-    W -->|"files"| O
-```
-
-If Docker is unavailable, Voronoi falls back to host execution automatically.
-
-Configure in `~/.voronoi/config.json`:
-
-```json
-{
-  "sandbox": {
-    "enabled": true,
-    "image": "voronoi-python:latest",
-    "cpus": 4,
-    "memory": "8g",
-    "timeout_hours": 12,
-    "network": true,
-    "fallback_to_host": true
-  }
-}
-```
-
----
-
-## Server Management
-
-```bash
-voronoi server init              # Create ~/.voronoi/, write config
-voronoi server status            # Running/queued investigations, workspace count
-voronoi server config            # Show current config
-voronoi server prune --force     # Clean completed workspaces
-```
-
----
-
-## Voronoi + Anton (MVCHA)
-
-Voronoi is the **science brain**. [Anton (MVCHA)](https://github.com/shyamsridhar123/MVCHA) is the **engineering hands**.
-
-```mermaid
-graph TD
-    V["🔬 Voronoi investigates:<br/>'Why is our API slow?'"]
-    V --> RC["🔍 Root cause: N+1 query in /users<br/>Expected fix: 3x reduction, CI [2.1x, 4.2x]"]
-    RC --> S["📋 Structured spec → GitHub issue<br/><i>labeled voronoi-spec</i>"]
-    S --> A["🔧 Anton picks it up:<br/>Clone → implement → test → PR"]
-    A --> Val["✅ Voronoi validates:<br/>Re-runs experiment → '2.8x improvement, within CI'"]
-```
-
-They can coexist in the same Telegram group — Voronoi handles _"why"_ questions, Anton handles _"fix"_ commands.
-
----
-
-## Prerequisites
-
-- **Python 3.10+**
-- **[Beads (bd)](https://github.com/steveyegge/beads)** — dependency-aware task tracking
-- **[tmux](https://github.com/tmux/tmux)** — terminal multiplexer for agent sessions
-- **[GitHub CLI (gh)](https://cli.github.com/)** — optional, for GitHub integration
-- **[Copilot CLI](https://githubnext.com/projects/copilot-cli/)** — AI coding agent (or Claude CLI)
-
-```bash
-# macOS
-brew install beads tmux gh
-```
-
-## Configuration
-
-After `voronoi init`, `.swarm-config.json` is generated:
-
-```json
-{
-  "max_agents": 4,
-  "agent_command": "copilot",
-  "agent_flags": "--allow-all",
-  "notifications": {
-    "telegram": {
-      "bot_token": "...",
-      "chat_id": "...",
-      "bridge_enabled": true,
-      "free_text_in_groups": true
-    }
-  }
-}
-```
-
-## Upgrade
-
-```bash
-pip install --upgrade voronoi
-cd my-project
-voronoi upgrade    # Replaces scripts/ and .github/ — your CLAUDE.md is preserved
-```
+</details>
 
 ---
 
 ## Contributing
 
 ```bash
-git clone https://github.com/Vahidrostami/voronoi
-cd voronoi
-pip install -e .
-pytest              # 218 tests
+git clone https://github.com/Vahidrostami/voronoi && cd voronoi
+pip install -e . && pytest   # 223 tests
 ```
 
-Voronoi uses [Beads](https://github.com/steveyegge/beads) for issue tracking:
-
-```bash
-bd onboard          # Get started
-bd ready            # Find available work
-```
-
-## Design
-
-See [DESIGN.md](DESIGN.md) for architecture, workflow modes, rigor levels, evidence layers, and convergence criteria.
-
----
-
-## Star History
-
-<a href="https://star-history.com/#Vahidrostami/voronoi&Date">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=Vahidrostami/voronoi&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=Vahidrostami/voronoi&type=Date" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=Vahidrostami/voronoi&type=Date" />
- </picture>
-</a>
+See [DESIGN.md](DESIGN.md) for the full design philosophy.
 
 ---
 
 <div align="center">
-  <sub>MIT License</sub>
-  <br/>
-  <sub><em>Voronoi — ask a question, get evidence.</em></sub>
+  <sub>MIT License · <em>Voronoi — ask a question, get evidence.</em></sub>
 </div>

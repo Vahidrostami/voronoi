@@ -1,4 +1,8 @@
-"""Tests for the investigation dispatcher."""
+"""Tests for the investigation dispatcher (refactored).
+
+inbox processing has been removed — the router enqueues directly.
+The dispatcher now only: dispatch_next() + poll_progress().
+"""
 
 import json
 import time
@@ -21,69 +25,32 @@ def dispatcher_setup(tmp_path):
         base_dir=tmp_path,
         max_concurrent=2,
         max_agents=4,
-        agent_command="echo",  # won't actually run anything
+        agent_command="echo",
     )
     messages = []
-    dispatcher = InvestigationDispatcher(config, lambda msg: messages.append(msg))
-    return dispatcher, messages, tmp_path
+    documents = []
+
+    def send_msg(msg):
+        messages.append(msg)
+
+    def send_doc(chat_id, path, caption=""):
+        documents.append((chat_id, path, caption))
+
+    dispatcher = InvestigationDispatcher(config, send_msg, send_doc)
+    return dispatcher, messages, documents, tmp_path
 
 
-class TestInboxProcessing:
-    def test_poll_empty_inbox(self, dispatcher_setup):
-        d, msgs, tmp_path = dispatcher_setup
-        d.poll_inbox()  # should not raise
-        assert len(msgs) == 0
-
-    def test_poll_inbox_processes_investigate_command(self, dispatcher_setup):
-        d, msgs, tmp_path = dispatcher_setup
-        # Create inbox directory and command file
-        inbox = tmp_path / ".swarm" / "inbox"
-        inbox.mkdir(parents=True)
-        cmd = {
-            "id": "test-123",
-            "action": "investigate",
-            "params": {
-                "question": "Why is accuracy dropping?",
-                "mode": "investigate",
-                "rigor": "scientific",
-            },
-            "timestamp": time.time(),
-            "source": "telegram",
-        }
-        (inbox / "test-123.json").write_text(json.dumps(cmd))
-
-        # Mock queue so we don't need sqlite
+class TestDispatchNext:
+    def test_dispatch_next_no_queue(self, dispatcher_setup):
+        d, msgs, docs, _ = dispatcher_setup
         mock_queue = MagicMock()
-        mock_queue.enqueue.return_value = 1
-        mock_queue.get_queued.return_value = []
-        mock_queue.get_running.return_value = []
         mock_queue.next_ready.return_value = None
         d._queue = mock_queue
-
-        d.poll_inbox()
-
-        # Command should be enqueued
-        mock_queue.enqueue.assert_called_once()
-        # Message sent to Telegram
-        assert any("queued" in m.lower() for m in msgs)
-        # File moved to processed
-        assert not (inbox / "test-123.json").exists()
-        assert (inbox / "processed" / "test-123.json").exists()
-
-    def test_poll_inbox_handles_bad_json(self, dispatcher_setup):
-        d, msgs, tmp_path = dispatcher_setup
-        inbox = tmp_path / ".swarm" / "inbox"
-        inbox.mkdir(parents=True)
-        (inbox / "bad.json").write_text("not json{{{")
-
-        d.poll_inbox()
-
-        # File moved to failed
-        assert not (inbox / "bad.json").exists()
-        assert (inbox / "failed" / "bad.json").exists()
+        d.dispatch_next()
+        assert len(msgs) == 0
 
     def test_abort_kills_running(self, dispatcher_setup):
-        d, msgs, tmp_path = dispatcher_setup
+        d, msgs, docs, tmp_path = dispatcher_setup
         mock_queue = MagicMock()
         d._queue = mock_queue
 
@@ -104,7 +71,7 @@ class TestInboxProcessing:
 
 class TestProgressMonitoring:
     def test_diff_tasks_detects_completion(self, dispatcher_setup):
-        d, msgs, tmp_path = dispatcher_setup
+        d, msgs, docs, tmp_path = dispatcher_setup
         run = RunningInvestigation(
             investigation_id=1,
             workspace_path=tmp_path,
@@ -128,7 +95,7 @@ class TestProgressMonitoring:
         assert "task_started" in types
 
     def test_detect_phase_change(self, dispatcher_setup):
-        d, msgs, tmp_path = dispatcher_setup
+        d, msgs, docs, tmp_path = dispatcher_setup
         run = RunningInvestigation(
             investigation_id=1,
             workspace_path=tmp_path,
@@ -144,7 +111,7 @@ class TestProgressMonitoring:
         assert any("planning" in e["msg"].lower() for e in events)
 
     def test_is_complete_with_deliverable(self, dispatcher_setup):
-        d, msgs, tmp_path = dispatcher_setup
+        d, msgs, docs, tmp_path = dispatcher_setup
         run = RunningInvestigation(
             investigation_id=1,
             workspace_path=tmp_path,
@@ -158,7 +125,7 @@ class TestProgressMonitoring:
         assert d._is_complete(run) is True
 
     def test_finding_detection(self, dispatcher_setup):
-        d, msgs, tmp_path = dispatcher_setup
+        d, msgs, docs, tmp_path = dispatcher_setup
         run = RunningInvestigation(
             investigation_id=1,
             workspace_path=tmp_path,
@@ -182,7 +149,7 @@ class TestProgressMonitoring:
         assert "bd-5" in run.notified_findings
 
     def test_progress_bar_format(self, dispatcher_setup):
-        d, msgs, tmp_path = dispatcher_setup
+        d, msgs, docs, tmp_path = dispatcher_setup
         run = RunningInvestigation(
             investigation_id=1,
             workspace_path=tmp_path,
@@ -201,3 +168,27 @@ class TestProgressMonitoring:
         assert len(progress_events) == 1
         assert "█" in progress_events[0]["msg"]
         assert "50%" in progress_events[0]["msg"]
+
+    def test_handle_completion_sends_teaser(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        mock_queue = MagicMock()
+        d._queue = mock_queue
+
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "deliverable.md").write_text("# Done\nResults here.")
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="Why is model degrading?",
+            mode="investigate",
+        )
+        run.task_snapshot = {"bd-1": {"status": "closed", "title": "Done"}}
+
+        with patch("voronoi.server.dispatcher.subprocess.run"):
+            d._handle_completion(run)
+
+        mock_queue.complete.assert_called_once_with(1)
+        assert len(msgs) >= 1
+        assert "COMPLETE" in msgs[0]

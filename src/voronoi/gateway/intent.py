@@ -153,6 +153,14 @@ _HYBRID_SIGNALS = [
     r"\bfind\b.*\b(and|then)\s+(fix|patch)\b",
     r"\bwhy\b.*\band\b.*\bfix\b",
     r"\bdebug\s+and\s+(fix|resolve)\b",
+    r"\bwrite\s+(a\s+)?(research\s+)?paper\b",
+    r"\bgenerate\s+(a\s+)?paper\b",
+    r"\bdraft\s+(a\s+)?paper\b",
+    r"\bpaper\s+(on|about|for)\b",
+    r"\bwrite\s+(a\s+)?(research\s+)?manuscript\b",
+    r"\bdraft\s+(a\s+)?manuscript\b",
+    r"\bmanuscript\s+(on|about|for)\b",
+    r"\babstract\s*:?\s*.{20,}",
 ]
 
 # Recall/knowledge-query signals

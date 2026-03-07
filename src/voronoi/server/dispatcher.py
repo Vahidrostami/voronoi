@@ -1,7 +1,10 @@
-"""Investigation Dispatcher — watches inbox, provisions workspaces, launches agents.
+"""Investigation Dispatcher — provisions workspaces, launches agents, monitors progress.
 
-This is the missing piece that connects Telegram → inbox → workspace → orchestrator.
-Designed to be polled from the Telegram bridge's event loop.
+The router enqueues investigations directly into the SQLite queue.
+The dispatcher's job is to:
+  1. dispatch_next() — launch queued investigations
+  2. poll_progress() — monitor running investigations, send updates
+  3. Generate teaser + PDF on completion and deliver via Telegram
 """
 
 from __future__ import annotations
@@ -24,7 +27,6 @@ class DispatcherConfig:
     max_agents: int = 4
     agent_command: str = "copilot"
     agent_flags: str = "--allow-all"
-    poll_interval: int = 10  # seconds between inbox checks
     progress_interval: int = 30  # seconds between progress updates
 
 
@@ -40,23 +42,26 @@ class RunningInvestigation:
     last_update_at: float = 0
     task_snapshot: dict = field(default_factory=dict)
     notified_findings: set = field(default_factory=set)
-    phase: str = "starting"  # starting, planning, investigating, synthesizing, complete
+    phase: str = "starting"
 
 
 class InvestigationDispatcher:
-    """Watches inbox for commands, provisions workspaces, launches orchestrators.
+    """Launches queued investigations and monitors their progress.
 
-    Integrates with the Telegram bridge — call poll_inbox() and poll_progress()
-    from the bot's job_queue.
+    Integrates with the Telegram bridge via two callbacks:
+      send_message(text)  — send a chat message
+      send_document(chat_id, path, caption)  — send a file
     """
 
     def __init__(
         self,
         config: DispatcherConfig,
         send_message: Callable[[str], None],
+        send_document: Callable[[str, Path, str], None] | None = None,
     ):
         self.config = config
-        self.send_message = send_message  # callback to send Telegram messages
+        self.send_message = send_message
+        self.send_document = send_document or (lambda *a: None)
         self.running: dict[int, RunningInvestigation] = {}
         self._queue = None
         self._workspace_mgr = None
@@ -76,109 +81,32 @@ class InvestigationDispatcher:
         return self._workspace_mgr
 
     # ------------------------------------------------------------------
-    # Inbox processing
+    # Dispatch
     # ------------------------------------------------------------------
 
-    def poll_inbox(self) -> None:
-        """Check for new inbox commands and dispatch investigations."""
-        inbox_dir = self.config.base_dir / ".swarm" / "inbox"
-        if not inbox_dir.exists():
-            return
-
-        for cmd_file in sorted(inbox_dir.glob("*.json")):
-            try:
-                cmd = json.loads(cmd_file.read_text())
-                self._process_command(cmd)
-                # Move to processed
-                processed_dir = inbox_dir / "processed"
-                processed_dir.mkdir(exist_ok=True)
-                cmd_file.rename(processed_dir / cmd_file.name)
-            except Exception as e:
-                self.send_message(f"❌ Failed to process command: {e}")
-                # Move to failed
-                failed_dir = inbox_dir / "failed"
-                failed_dir.mkdir(exist_ok=True)
-                cmd_file.rename(failed_dir / cmd_file.name)
-
-        # Also check queue for ready investigations
-        self._dispatch_next()
-
-    def _process_command(self, cmd: dict) -> None:
-        """Process an inbox command."""
-        action = cmd.get("action", "")
-        params = cmd.get("params", {})
-
-        if action in ("investigate", "explore", "build", "experiment"):
-            self._enqueue_investigation(cmd)
-        elif action == "abort":
-            self._handle_abort()
-        # guide, pivot, etc. are handled directly by the bridge
-
-    def _enqueue_investigation(self, cmd: dict) -> None:
-        """Add an investigation to the queue."""
-        from voronoi.server.queue import Investigation
-        from voronoi.server.runner import create_investigation_from_text, make_slug
-
-        params = cmd.get("params", {})
-        question = params.get("question", params.get("description", params.get("hypothesis", "")))
-        mode = params.get("mode", "investigate")
-        rigor = params.get("rigor", "scientific")
-        chat_id = cmd.get("chat_id", "telegram")
-
-        inv = Investigation(
-            chat_id=chat_id,
-            question=question,
-            slug=make_slug(question[:40]),
-            mode=mode,
-            rigor=rigor,
-            investigation_type="lab",
-        )
-
-        inv_id = self.queue.enqueue(inv)
-
-        queued_count = len(self.queue.get_queued())
-        running_count = len(self.queue.get_running())
-
-        mode_emoji = {"investigate": "🔬", "explore": "🧭", "build": "🔨", "experiment": "🧪"}.get(mode, "🔷")
-
-        self.send_message(
-            f"{mode_emoji} *Investigation #{inv_id} queued*\n\n"
-            f"_{question}_\n\n"
-            f"Mode: {mode} · Rigor: {rigor}\n"
-            f"Queue: {queued_count} waiting · {running_count} running\n\n"
-            f"Setting up lab workspace... 🧫"
-        )
-
-    def _dispatch_next(self) -> None:
+    def dispatch_next(self) -> None:
         """Launch the next queued investigation if capacity allows."""
         inv = self.queue.next_ready(self.config.max_concurrent)
         if inv is None:
             return
-
         try:
             self._launch_investigation(inv)
         except Exception as e:
             self.queue.fail(inv.id, str(e))
             self.send_message(
-                f"💀 *Investigation #{inv.id} failed to launch*\n\n"
-                f"Error: `{e}`"
+                f"💀 *Investigation #{inv.id} failed to launch*\n\nError: `{e}`"
             )
 
     def _launch_investigation(self, inv) -> None:
-        """Provision workspace and launch orchestrator for an investigation."""
         from voronoi.server.repo_url import extract_repo_url
 
-        # 1. Provision workspace
         repo_ref = extract_repo_url(inv.question) if inv.investigation_type == "repo" else None
-
         if repo_ref:
             ws = self.workspace_mgr.provision_repo(inv.id, repo_ref, inv.slug)
         else:
             ws = self.workspace_mgr.provision_lab(inv.id, inv.slug, inv.question)
 
         workspace_path = Path(ws.path)
-
-        # 2. Mark as running
         self.queue.start(inv.id, ws.path)
 
         self.send_message(
@@ -187,19 +115,14 @@ class InvestigationDispatcher:
             f"🔬 Launching orchestrator..."
         )
 
-        # 3. Build orchestrator prompt
-        prompt = self._build_server_orchestrator_prompt(inv, workspace_path)
-
-        # Write prompt to file
+        prompt = self._build_prompt(inv, workspace_path)
         prompt_file = workspace_path / ".swarm" / "orchestrator-prompt.txt"
         prompt_file.parent.mkdir(parents=True, exist_ok=True)
         prompt_file.write_text(prompt)
 
-        # 4. Launch orchestrator in tmux
         tmux_session = f"voronoi-inv-{inv.id}"
-        self._launch_in_tmux(tmux_session, workspace_path, prompt)
+        self._launch_in_tmux(tmux_session, workspace_path)
 
-        # 5. Track for progress monitoring
         self.running[inv.id] = RunningInvestigation(
             investigation_id=inv.id,
             workspace_path=workspace_path,
@@ -215,8 +138,7 @@ class InvestigationDispatcher:
             f"I'll send updates as agents make progress. 🔥"
         )
 
-    def _build_server_orchestrator_prompt(self, inv, workspace_path: Path) -> str:
-        """Build the orchestrator prompt for a server-mode investigation."""
+    def _build_prompt(self, inv, workspace_path: Path) -> str:
         return (
             "You are the Voronoi swarm orchestrator. Your job: read the investigation question, "
             "plan tasks, spawn parallel worker agents, monitor their progress, merge "
@@ -257,28 +179,21 @@ class InvestigationDispatcher:
             f"- Max concurrent agents: {self.config.max_agents}\n"
         )
 
-    def _launch_in_tmux(self, session: str, workspace_path: Path, prompt: str) -> None:
-        """Launch the orchestrator agent in a tmux session."""
+    def _launch_in_tmux(self, session: str, workspace_path: Path) -> None:
         agent_cmd = self.config.agent_command
         agent_flags = self.config.agent_flags
-
-        # Verify agent exists
         agent_bin = agent_cmd.split()[0]
         if not shutil.which(agent_bin):
             raise RuntimeError(f"Agent CLI not found: {agent_bin}")
 
-        # Write prompt to a temp file the agent can read
-        prompt_path = workspace_path / ".swarm" / "orchestrator-prompt.txt"
-        prompt_path.write_text(prompt)
-
-        # Create tmux session and launch
         subprocess.run(
             ["tmux", "new-session", "-d", "-s", session, "-c", str(workspace_path)],
             capture_output=True,
         )
         subprocess.run(
             ["tmux", "send-keys", "-t", session,
-             f'cd "{workspace_path}" && {agent_cmd} {agent_flags} -p "$(cat .swarm/orchestrator-prompt.txt)"',
+             f'cd "{workspace_path}" && {agent_cmd} {agent_flags} '
+             f'-p "$(cat .swarm/orchestrator-prompt.txt)"',
              "Enter"],
             capture_output=True,
         )
@@ -293,26 +208,20 @@ class InvestigationDispatcher:
 
         for inv_id, run in self.running.items():
             now = time.time()
-
-            # Rate-limit updates
             if now - run.last_update_at < self.config.progress_interval:
                 continue
             run.last_update_at = now
 
-            # Check if tmux session still exists
             result = subprocess.run(
                 ["tmux", "has-session", "-t", run.tmux_session],
                 capture_output=True,
             )
             session_alive = result.returncode == 0
 
-            # Check task progress
             events = self._check_progress(run)
-
             if events:
                 self._send_progress_batch(run, events)
 
-            # Check for completion
             if not session_alive or self._is_complete(run):
                 self._handle_completion(run)
                 completed_ids.append(inv_id)
@@ -321,38 +230,25 @@ class InvestigationDispatcher:
             del self.running[inv_id]
 
     def _check_progress(self, run: RunningInvestigation) -> list[dict]:
-        """Check for progress changes in a running investigation."""
-        events = []
-        ws = run.workspace_path
-
-        # Check Beads task status
+        events: list[dict] = []
         try:
             result = subprocess.run(
                 ["bd", "list", "--json"],
                 capture_output=True, text=True, timeout=15,
-                cwd=str(ws),
+                cwd=str(run.workspace_path),
             )
             if result.returncode == 0:
                 tasks = json.loads(result.stdout)
                 events.extend(self._diff_tasks(run, tasks))
         except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError):
             pass
-
-        # Check for new findings
         events.extend(self._check_findings(run))
-
-        # Check journal
-        events.extend(self._check_journal(run))
-
-        # Detect phase changes
         events.extend(self._detect_phase(run))
-
         return events
 
     def _diff_tasks(self, run: RunningInvestigation, tasks: list[dict]) -> list[dict]:
-        """Detect task changes since last check."""
-        events = []
-        current = {}
+        events: list[dict] = []
+        current: dict = {}
         for t in tasks:
             tid = t.get("id", "")
             status = t.get("status", "")
@@ -361,40 +257,25 @@ class InvestigationDispatcher:
 
             old = run.task_snapshot.get(tid)
             if old is None and run.task_snapshot:
-                events.append({
-                    "type": "task_new",
-                    "msg": f"📋 New: *{title}*",
-                })
+                events.append({"type": "task_new", "msg": f"📋 New: *{title}*"})
             elif old and old["status"] != status:
                 if status == "closed":
-                    events.append({
-                        "type": "task_done",
-                        "msg": f"✅ Done: *{title}*",
-                    })
+                    events.append({"type": "task_done", "msg": f"✅ Done: *{title}*"})
                 elif status == "in_progress" and old["status"] != "in_progress":
-                    events.append({
-                        "type": "task_started",
-                        "msg": f"⚡ Working: *{title}*",
-                    })
+                    events.append({"type": "task_started", "msg": f"⚡ Working: *{title}*"})
 
         run.task_snapshot = current
 
-        # Progress bar
         total = len(current)
         closed = sum(1 for t in current.values() if t["status"] == "closed")
         if total > 0 and events:
             pct = int(closed / total * 100)
             bar = "█" * (pct // 10) + "░" * (10 - pct // 10)
-            events.append({
-                "type": "progress",
-                "msg": f"📊 `[{bar}]` {closed}/{total} tasks ({pct}%)",
-            })
-
+            events.append({"type": "progress", "msg": f"📊 `[{bar}]` {closed}/{total} tasks ({pct}%)"})
         return events
 
     def _check_findings(self, run: RunningInvestigation) -> list[dict]:
-        """Check for new findings."""
-        events = []
+        events: list[dict] = []
         try:
             result = subprocess.run(
                 ["bd", "list", "--json"],
@@ -413,7 +294,6 @@ class InvestigationDispatcher:
             if "FINDING" in title.upper() and tid not in run.notified_findings:
                 run.notified_findings.add(tid)
                 notes = task.get("notes", "")
-                # Extract effect size if present
                 effect = ""
                 for line in notes.split("\n"):
                     if any(k in line.upper() for k in ("EFFECT_SIZE", "CI_95", "VALENCE")):
@@ -422,22 +302,11 @@ class InvestigationDispatcher:
                 if effect:
                     msg += f"\n{effect}"
                 events.append({"type": "finding", "msg": msg})
-
         return events
 
-    def _check_journal(self, run: RunningInvestigation) -> list[dict]:
-        """Check for journal updates."""
-        journal = run.workspace_path / ".swarm" / "journal.md"
-        if not journal.exists():
-            return []
-        # We don't send journal updates every poll — too noisy
-        return []
-
     def _detect_phase(self, run: RunningInvestigation) -> list[dict]:
-        """Detect investigation phase changes."""
-        events = []
+        events: list[dict] = []
         ws = run.workspace_path
-
         old_phase = run.phase
 
         if (ws / ".swarm" / "deliverable.md").exists():
@@ -454,65 +323,50 @@ class InvestigationDispatcher:
 
         if run.phase != old_phase:
             phase_msg = {
-                "planning": "🗺️ *Planning phase* — Orchestrator is decomposing tasks and generating hypotheses...",
-                "investigating": "🔬 *Investigation phase* — Agents are running experiments in parallel!",
-                "synthesizing": "🧩 *Synthesis phase* — Integrating findings, updating belief map...",
+                "planning": "🗺️ *Planning phase* — Orchestrator is decomposing tasks...",
+                "investigating": "🔬 *Investigation phase* — Agents running in parallel!",
+                "synthesizing": "🧩 *Synthesis phase* — Integrating findings...",
                 "complete": "📄 *Wrapping up* — Writing deliverable...",
             }.get(run.phase, f"Phase: {run.phase}")
             events.append({"type": "phase", "msg": phase_msg})
-
         return events
 
     def _send_progress_batch(self, run: RunningInvestigation, events: list[dict]) -> None:
-        """Bundle progress events into a single message."""
         elapsed = (time.time() - run.started_at) / 60
-
-        # Group events by priority
         findings = [e for e in events if e["type"] == "finding"]
         phases = [e for e in events if e["type"] == "phase"]
         progress = [e for e in events if e["type"] == "progress"]
         tasks = [e for e in events if e["type"] in ("task_done", "task_started", "task_new")]
 
         lines = [f"📡 *Investigation #{run.investigation_id}* ({elapsed:.0f}min)\n"]
-
-        # Phase changes first
         for e in phases:
             lines.append(e["msg"])
-
-        # Findings (most important!)
         for e in findings:
             lines.append("")
             lines.append(e["msg"])
-
-        # Task updates (limit to avoid spam)
         if len(tasks) <= 5:
             for e in tasks:
                 lines.append(e["msg"])
         elif tasks:
-            done_count = sum(1 for e in tasks if e["type"] == "task_done")
-            started_count = sum(1 for e in tasks if e["type"] == "task_started")
-            new_count = sum(1 for e in tasks if e["type"] == "task_new")
+            done = sum(1 for e in tasks if e["type"] == "task_done")
+            started = sum(1 for e in tasks if e["type"] == "task_started")
+            new = sum(1 for e in tasks if e["type"] == "task_new")
             parts = []
-            if done_count:
-                parts.append(f"{done_count} completed")
-            if started_count:
-                parts.append(f"{started_count} started")
-            if new_count:
-                parts.append(f"{new_count} new")
+            if done:
+                parts.append(f"{done} completed")
+            if started:
+                parts.append(f"{started} started")
+            if new:
+                parts.append(f"{new} new")
             lines.append(f"📋 Tasks: {', '.join(parts)}")
-
-        # Progress bar
         for e in progress:
             lines.append(e["msg"])
 
         self.send_message("\n".join(lines))
 
     def _is_complete(self, run: RunningInvestigation) -> bool:
-        """Check if an investigation has completed."""
-        # Check for deliverable
         if (run.workspace_path / ".swarm" / "deliverable.md").exists():
             return True
-        # Check for convergence signal
         conv = run.workspace_path / ".swarm" / "convergence.json"
         if conv.exists():
             try:
@@ -522,35 +376,41 @@ class InvestigationDispatcher:
                 pass
         return False
 
-    def _handle_completion(self, run: RunningInvestigation) -> None:
-        """Handle investigation completion."""
-        elapsed = (time.time() - run.started_at) / 60
+    # ------------------------------------------------------------------
+    # Completion — teaser + PDF + publish
+    # ------------------------------------------------------------------
 
-        # Count results
+    def _handle_completion(self, run: RunningInvestigation) -> None:
+        elapsed = (time.time() - run.started_at) / 60
         total_tasks = len(run.task_snapshot)
         closed = sum(1 for t in run.task_snapshot.values() if t["status"] == "closed")
-        findings = len(run.notified_findings)
 
-        # Mark complete in queue
         self.queue.complete(run.investigation_id)
 
-        # Check for deliverable
-        deliverable = run.workspace_path / ".swarm" / "deliverable.md"
-        has_deliverable = deliverable.exists()
-
-        self.send_message(
-            f"🏁 *Investigation #{run.investigation_id} COMPLETE!* 🎉\n\n"
-            f"_{run.question}_\n\n"
-            f"📊 {closed}/{total_tasks} tasks · {findings} findings · {elapsed:.0f}min\n"
-            + (f"📄 Deliverable: `.swarm/deliverable.md`\n" if has_deliverable else "")
-            + f"\n_Science delivered._ 🔬"
+        # Build teaser + report
+        from voronoi.gateway.report import ReportGenerator
+        rg = ReportGenerator(run.workspace_path)
+        teaser = rg.build_teaser(
+            run.investigation_id, run.question,
+            total_tasks, closed, elapsed,
         )
+        self.send_message(teaser)
 
-        # Try to publish to GitHub
+        # Generate PDF/MD and send as document
+        report_path = rg.build_pdf()
+        if report_path and report_path.exists():
+            from voronoi.gateway.config import get_chat_id
+            chat_id = get_chat_id(str(run.workspace_path.parent.parent))
+            doc_type = "Manuscript" if rg.is_manuscript_format() else "Report"
+            if chat_id:
+                self.send_document(
+                    chat_id, report_path,
+                    f"Investigation #{run.investigation_id} — Full {doc_type}",
+                )
+
         self._try_publish(run)
 
     def _try_publish(self, run: RunningInvestigation) -> None:
-        """Attempt to publish results to GitHub (best-effort)."""
         try:
             from voronoi.server.publisher import GitHubPublisher
             publisher = GitHubPublisher()
@@ -561,10 +421,9 @@ class InvestigationDispatcher:
             if ok:
                 self.send_message(f"📦 Published: [{slug}]({url})")
         except Exception:
-            pass  # Publishing is best-effort
+            pass
 
     def _handle_abort(self) -> None:
-        """Abort all running investigations."""
         for inv_id, run in list(self.running.items()):
             subprocess.run(
                 ["tmux", "kill-session", "-t", run.tmux_session],

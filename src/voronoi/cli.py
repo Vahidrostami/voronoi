@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from voronoi import __version__
@@ -567,6 +568,17 @@ def _server_init(args: argparse.Namespace) -> None:
         shutil.copy2(env_example_src, env_example_dst)
         print(f"  ✓ .env.example copied to {env_example_dst}")
 
+    # Initialize Beads in the server directory
+    if not (config.base_dir / ".beads").is_dir() and shutil.which("bd"):
+        subprocess.run(
+            ["bd", "init", "--quiet"],
+            cwd=str(config.base_dir),
+            capture_output=True,
+            input="N\n",
+            text=True,
+        )
+        print(f"  ✓ Beads initialized")
+
     print(f"\nServer ready.")
     print(f"  1. Edit {config.base_dir / '.env'} with your credentials")
     if not env_dst.exists():
@@ -623,6 +635,17 @@ def _server_start(args: argparse.Namespace) -> None:
 
     # Ensure inbox directory exists
     (config.base_dir / ".swarm" / "inbox").mkdir(parents=True, exist_ok=True)
+
+    # Ensure Beads is initialized in the server directory
+    if not (config.base_dir / ".beads").is_dir() and shutil.which("bd"):
+        subprocess.run(
+            ["bd", "init", "--quiet"],
+            cwd=str(config.base_dir),
+            capture_output=True,
+            input="N\n",
+            text=True,
+        )
+        print(f"  ✓ Beads initialized in {config.base_dir}")
 
     print(f"\n🤖 Starting Telegram bridge...")
     print(f"   Server: {config.base_dir}")

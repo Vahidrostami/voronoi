@@ -7,6 +7,7 @@ Queries the Beads database and evidence store to answer questions like
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from dataclasses import dataclass, field
@@ -46,9 +47,9 @@ class Finding:
             emoji = {"positive": "✅", "negative": "❌", "inconclusive": "❓"}.get(self.valence, "•")
             lines.append(f"  {emoji} {self.valence.upper()}")
         if self.robust:
-            lines.append(f"  Robust: {self.robust}")
+            lines.append(f"  Robust: {_escape_md(self.robust)}")
         if self.stat_test:
-            lines.append(f"  Test: {self.stat_test}")
+            lines.append(f"  Test: {_escape_md(self.stat_test)}")
         return "\n".join(lines)
 
 
@@ -74,11 +75,16 @@ def _parse_finding_notes(notes_str: str) -> dict:
 
 def _run_bd(*args: str, cwd: Optional[str] = None) -> tuple[int, str]:
     """Run a bd (beads) command."""
+    env = os.environ.copy()
+    if cwd and "BEADS_DIR" not in env:
+        beads_dir = os.path.join(cwd, ".beads")
+        if os.path.isdir(beads_dir):
+            env["BEADS_DIR"] = beads_dir
     try:
         result = subprocess.run(
             ["bd", *args],
             capture_output=True, text=True, timeout=30,
-            cwd=cwd,
+            cwd=cwd, env=env,
         )
         return result.returncode, (result.stdout + result.stderr).strip()
     except FileNotFoundError:

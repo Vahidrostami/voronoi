@@ -1,0 +1,558 @@
+"""Command router — central dispatch for all Voronoi commands.
+
+Every user action (Telegram command, free-text, CLI) flows through
+the public functions in this module.  The Telegram bridge and any
+future UI are thin I/O layers that call these functions and send
+the result.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import time
+from pathlib import Path
+from typing import Optional
+
+from voronoi.gateway.intent import ClassifiedIntent, WorkflowMode, classify
+from voronoi.server.queue import Investigation, InvestigationQueue
+from voronoi.server.runner import make_slug
+
+# Re-export for tests
+__all__ = [
+    "CommandRouter",
+    "handle_status", "handle_tasks", "handle_ready",
+    "handle_reprioritize", "handle_pause", "handle_resume", "handle_add",
+    "handle_abort", "handle_pivot", "handle_guide",
+    "handle_investigate", "handle_explore", "handle_build", "handle_experiment",
+    "handle_recall", "handle_belief", "handle_journal", "handle_finding",
+    "handle_results",
+]
+
+
+# ---------------------------------------------------------------------------
+# bd helper
+# ---------------------------------------------------------------------------
+
+def _run_bd(*args: str, cwd: str | None = None) -> tuple[int, str]:
+    env = os.environ.copy()
+    if cwd and "BEADS_DIR" not in env:
+        beads_dir = os.path.join(cwd, ".beads")
+        if os.path.isdir(beads_dir):
+            env["BEADS_DIR"] = beads_dir
+    try:
+        result = subprocess.run(
+            ["bd", *args],
+            capture_output=True, text=True, timeout=30,
+            cwd=cwd, env=env,
+        )
+        return result.returncode, (result.stdout + result.stderr).strip()
+    except FileNotFoundError:
+        return 1, "bd (beads) not found"
+    except subprocess.TimeoutExpired:
+        return 1, "Command timed out"
+
+
+# ---------------------------------------------------------------------------
+# Conversation memory helpers (best-effort)
+# ---------------------------------------------------------------------------
+
+_MEMORY_INSTANCE = None
+_KNOWLEDGE_INSTANCE = None
+
+
+def _get_memory(project_dir: str):
+    global _MEMORY_INSTANCE
+    if _MEMORY_INSTANCE is None:
+        try:
+            from voronoi.gateway.memory import ConversationMemory
+            db = Path(project_dir) / ".swarm" / "conversations.db"
+            _MEMORY_INSTANCE = ConversationMemory(db)
+        except ImportError:
+            pass
+    return _MEMORY_INSTANCE
+
+
+def _get_knowledge(project_dir: str):
+    global _KNOWLEDGE_INSTANCE
+    if _KNOWLEDGE_INSTANCE is None:
+        try:
+            from voronoi.gateway.knowledge import KnowledgeStore
+            _KNOWLEDGE_INSTANCE = KnowledgeStore(project_dir)
+        except ImportError:
+            pass
+    return _KNOWLEDGE_INSTANCE
+
+
+def _save_msg(project_dir: str, chat_id: str, role: str,
+              text: str, metadata: dict | None = None):
+    mem = _get_memory(project_dir)
+    if mem is None:
+        return
+    try:
+        from voronoi.gateway.memory import Message
+        mem.save_message(Message(
+            chat_id=str(chat_id), role=role,
+            content=text, metadata=metadata or {},
+        ))
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Queue helper
+# ---------------------------------------------------------------------------
+
+def _get_queue(project_dir: str) -> InvestigationQueue:
+    base = Path(project_dir) if project_dir else Path.home() / ".voronoi"
+    return InvestigationQueue(base / ".swarm" / "queue.db")
+
+
+def _enqueue(project_dir: str, question: str, mode: str,
+             rigor: str, chat_id: str) -> tuple[int, str]:
+    """Enqueue an investigation and return (inv_id, status_message)."""
+    q = _get_queue(project_dir)
+    inv = Investigation(
+        chat_id=chat_id,
+        question=question,
+        slug=make_slug(question[:40]),
+        mode=mode,
+        rigor=rigor,
+        investigation_type="lab",
+    )
+    inv_id = q.enqueue(inv)
+    queued = len(q.get_queued())
+    running = len(q.get_running())
+    return inv_id, f"Queue: {queued} waiting · {running} running"
+
+
+# ---------------------------------------------------------------------------
+# Read-only handlers
+# ---------------------------------------------------------------------------
+
+def handle_status(project_dir: str) -> str:
+    _, ready = _run_bd("ready", "--json", cwd=project_dir)
+    _, open_tasks = _run_bd("list", "--status", "open", "--json", cwd=project_dir)
+    try:
+        ready_count = len(json.loads(ready))
+    except Exception:
+        ready_count = "?"
+    try:
+        open_count = len(json.loads(open_tasks))
+    except Exception:
+        open_count = "?"
+    return f"📊 *Swarm Status*\nReady: {ready_count}\nOpen: {open_count}"
+
+
+def handle_tasks(project_dir: str) -> str:
+    code, output = _run_bd("list", "--status", "open", "--json", cwd=project_dir)
+    if code != 0:
+        return f"❌ Failed to list tasks: {output}"
+    try:
+        tasks = json.loads(output)
+    except json.JSONDecodeError:
+        return f"❌ Invalid JSON from bd: {output[:200]}"
+    if not tasks:
+        return "✅ No open tasks!"
+    lines = ["📋 *Open Tasks*\n"]
+    for t in tasks[:20]:
+        tid = t.get("id", "?")
+        title = t.get("title", "?")[:60]
+        priority = t.get("priority", "?")
+        status = t.get("status", "?")
+        lines.append(f"• `{tid}` P{priority} [{status}] {title}")
+    if len(tasks) > 20:
+        lines.append(f"\n… and {len(tasks) - 20} more")
+    return "\n".join(lines)
+
+
+def handle_ready(project_dir: str) -> str:
+    code, output = _run_bd("ready", "--json", cwd=project_dir)
+    if code != 0:
+        return f"❌ Failed to get ready tasks: {output}"
+    try:
+        tasks = json.loads(output)
+    except json.JSONDecodeError:
+        return f"❌ Invalid JSON from bd: {output[:200]}"
+    if not tasks:
+        return "⏳ No unblocked tasks ready"
+    lines = ["⚡ *Ready Tasks*\n"]
+    for t in tasks[:15]:
+        tid = t.get("id", "?")
+        title = t.get("title", "?")[:60]
+        priority = t.get("priority", "?")
+        lines.append(f"• `{tid}` P{priority} {title}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Mutation handlers
+# ---------------------------------------------------------------------------
+
+def handle_reprioritize(project_dir: str, task_id: str, priority: str) -> str:
+    code, output = _run_bd("update", task_id, "--priority", priority, cwd=project_dir)
+    if code != 0:
+        return f"❌ Failed: {output}"
+    return f"✅ Task `{task_id}` priority set to {priority}"
+
+
+def handle_pause(project_dir: str, task_id: str) -> str:
+    _run_bd("update", task_id, "--notes",
+            "BLOCKED: Paused by operator via Telegram", cwd=project_dir)
+    return f"⏸ Task `{task_id}` paused"
+
+
+def handle_resume(project_dir: str, task_id: str) -> str:
+    _run_bd("update", task_id, "--status", "open", cwd=project_dir)
+    return f"▶️ Task `{task_id}` resumed"
+
+
+def handle_add(project_dir: str, title: str) -> str:
+    code, output = _run_bd(
+        "create", title, "-t", "task", "-p", "1", "--json",
+        cwd=project_dir,
+    )
+    if code != 0:
+        return f"❌ Failed to create task: {output}"
+    try:
+        new_id = json.loads(output).get("id", "?")
+    except Exception:
+        new_id = "?"
+    return f"✅ Created task `{new_id}`: {title}"
+
+
+def handle_abort(project_dir: str) -> str:
+    return "🛑 *Abort requested* — orchestrator will shut down gracefully after current agents complete"
+
+
+def handle_pivot(project_dir: str, message: str) -> str:
+    guidance_dir = Path(project_dir) / ".swarm"
+    guidance_dir.mkdir(parents=True, exist_ok=True)
+    ts = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
+    with open(guidance_dir / "operator-guidance.md", "a") as f:
+        f.write(f"\n## Pivot — {ts}\n\n{message}\n")
+    return f"🔀 *Pivot recorded*\n\nGuidance written to `.swarm/operator-guidance.md`\nAgents will read this on next dispatch."
+
+
+def handle_guide(project_dir: str, message: str) -> str:
+    guidance_dir = Path(project_dir) / ".swarm"
+    guidance_dir.mkdir(parents=True, exist_ok=True)
+    ts = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
+    with open(guidance_dir / "operator-guidance.md", "a") as f:
+        f.write(f"\n## Guidance — {ts}\n\n{message}\n")
+    return f"📝 *Guidance noted*\n\n_{message}_"
+
+
+# ---------------------------------------------------------------------------
+# Science workflow handlers — enqueue directly to the investigation queue
+# ---------------------------------------------------------------------------
+
+_MODE_EMOJI = {
+    "investigate": "🔬", "explore": "🧭",
+    "build": "🔨", "experiment": "🧪",
+}
+
+
+def _workflow_response(mode: str, rigor: str, question: str,
+                       inv_id: int, queue_status: str) -> str:
+    emoji = _MODE_EMOJI.get(mode, "🔷")
+    return (
+        f"{emoji} *{mode.upper()}* mode activated · rigor: {rigor}\n\n"
+        f"_{question}_\n\n"
+        f"*Investigation #{inv_id} queued*\n"
+        f"{queue_status}\n\n"
+        f"Setting up lab workspace… 🧫"
+    )
+
+
+def handle_investigate(project_dir: str, question: str, chat_id: str = "") -> str:
+    inv_id, qs = _enqueue(project_dir, question, "investigate", "scientific", chat_id)
+    return _workflow_response("investigate", "scientific", question, inv_id, qs)
+
+
+def handle_explore(project_dir: str, question: str, chat_id: str = "") -> str:
+    inv_id, qs = _enqueue(project_dir, question, "explore", "analytical", chat_id)
+    return _workflow_response("explore", "analytical", question, inv_id, qs)
+
+
+def handle_build(project_dir: str, description: str, chat_id: str = "") -> str:
+    inv_id, qs = _enqueue(project_dir, description, "build", "standard", chat_id)
+    return _workflow_response("build", "standard", description, inv_id, qs)
+
+
+def handle_experiment(project_dir: str, hypothesis: str, chat_id: str = "") -> str:
+    inv_id, qs = _enqueue(project_dir, hypothesis, "investigate", "experimental", chat_id)
+    return _workflow_response("investigate", "experimental", hypothesis, inv_id, qs)
+
+
+# ---------------------------------------------------------------------------
+# Knowledge handlers
+# ---------------------------------------------------------------------------
+
+def handle_recall(project_dir: str, query: str) -> str:
+    ks = _get_knowledge(project_dir)
+    if ks is None:
+        return "❌ Knowledge store not available"
+    return ks.format_recall_response(query)
+
+
+def handle_belief(project_dir: str) -> str:
+    swarm = Path(project_dir) / ".swarm"
+    for name in ("belief-map.md", "belief-map.json"):
+        p = swarm / name
+        if p.exists():
+            content = p.read_text().strip()
+            if name.endswith(".json"):
+                try:
+                    data = json.loads(content)
+                    lines = []
+                    for h in data.get("hypotheses", []):
+                        lines.append(f"- {h.get('name', '?')}: P={h.get('prior', '?')} [{h.get('status', '?')}]")
+                    content = "\n".join(lines) if lines else content
+                except (json.JSONDecodeError, ValueError):
+                    pass
+            return f"📊 *Belief Map*\n\n{content}"
+    return "📊 No belief map found. Start an investigation to generate one."
+
+
+def handle_journal(project_dir: str, max_lines: int = 30) -> str:
+    journal_path = Path(project_dir) / ".swarm" / "journal.md"
+    if not journal_path.exists():
+        return "📓 No journal found. Start a workflow to begin recording."
+    lines = journal_path.read_text().strip().split("\n")
+    content = "\n".join(lines[-max_lines:])
+    return f"📓 *Journal* (last {max_lines} lines)\n\n{content}"
+
+
+def handle_finding(project_dir: str, finding_id: str) -> str:
+    code, output = _run_bd("show", finding_id, "--json", cwd=project_dir)
+    if code != 0:
+        return f"❌ Finding `{finding_id}` not found: {output}"
+    try:
+        task = json.loads(output)
+    except json.JSONDecodeError:
+        return f"❌ Invalid data for `{finding_id}`"
+    title = task.get("title", "?")
+    status = task.get("status", "?")
+    notes = task.get("notes", "")
+    priority = task.get("priority", "?")
+    lines = [
+        f"🔍 *{finding_id}*: {title}",
+        f"Status: {status} | Priority: {priority}",
+    ]
+    if notes:
+        lines.append(f"\nNotes:\n```\n{notes[:500]}\n```")
+    return "\n".join(lines)
+
+
+def handle_results(project_dir: str, inv_id_str: str = "") -> str:
+    """Look up a past investigation and return its teaser."""
+    q = _get_queue(project_dir)
+    if inv_id_str:
+        try:
+            inv = q.get(int(inv_id_str))
+        except (ValueError, TypeError):
+            return f"❌ Invalid investigation ID: {inv_id_str}"
+        if inv is None:
+            return f"❌ Investigation #{inv_id_str} not found"
+        if inv.status not in ("complete", "failed"):
+            return f"⏳ Investigation #{inv_id_str} is still {inv.status}"
+        if not inv.workspace_path:
+            return f"❌ No workspace for investigation #{inv_id_str}"
+        from voronoi.gateway.report import ReportGenerator
+        rg = ReportGenerator(Path(inv.workspace_path))
+        return rg.build_teaser(inv.id, inv.question, 0, 0, 0)
+    # List recent investigations
+    recent = q.get_recent(5)
+    if not recent:
+        return "📭 No investigations found"
+    lines = ["📋 *Recent Investigations*\n"]
+    for inv in recent:
+        emoji = {"complete": "✅", "failed": "❌", "running": "⚡"}.get(inv.status, "⏳")
+        lines.append(
+            f"• {emoji} #{inv.id} [{inv.status}] _{inv.question[:50]}_"
+        )
+    lines.append("\nUse `/voronoi results <id>` to see details")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Free-text classification
+# ---------------------------------------------------------------------------
+
+_INTRO_MESSAGE = (
+    "🔬 *Voronoi — Ask a question. Get evidence.*\n\n"
+    "I'm your personal research lab in a chat window. "
+    "Drop me a question — anything from _\"why is our model degrading?\"_ "
+    "to _\"does EWC beat replay for catastrophic forgetting?\"_ — and I'll "
+    "dispatch a swarm of AI agents to investigate it.\n\n"
+    "Hypotheses. Experiments. Statistical validation. Belief maps. "
+    "Findings with effect sizes and confidence intervals. "
+    "The whole scientific method, on autopilot. 🧪\n\n"
+    "_Send_ `/voronoi` _for commands, or just ask me something._ 🧠"
+)
+
+_HELP_MESSAGE = (
+    "👋 *Hey! I'm Voronoi.*\n\n"
+    "I orchestrate AI agents to run scientific investigations, "
+    "build software, and explore ideas — all from this chat.\n\n"
+    "*Just ask me anything:*\n"
+    "  → _Why is our model accuracy dropping?_\n"
+    "  → _Compare Redis vs Memcached for our workload_\n"
+    "  → _Build a REST API with auth and billing_\n\n"
+    "I'll figure out what to do — classify intent, pick the right "
+    "rigor level, spawn parallel agents, and deliver findings with "
+    "effect sizes and confidence intervals.\n\n"
+    "━━━━━━━━━━━━━━━━━━━━━━\n"
+    "*Or use commands:*\n\n"
+    "🧪 *Workflows*\n"
+    "`/voronoi investigate <question>`\n"
+    "`/voronoi explore <question>`\n"
+    "`/voronoi build <description>`\n"
+    "`/voronoi experiment <hypothesis>`\n\n"
+    "📚 *Knowledge*\n"
+    "`/voronoi recall <query>` · `belief` · `journal` · `finding <id>`\n\n"
+    "📋 *Tasks*\n"
+    "`/voronoi status` · `tasks` · `ready` · `results [id]`\n\n"
+    "🎛 *Control*\n"
+    "`/voronoi guide <msg>` · `pivot <msg>` · `abort`\n\n"
+    "_In groups, @mention me or reply to my messages._"
+)
+
+
+def _is_greeting(text: str) -> bool:
+    t = text.lower().strip().rstrip("?!.")
+    greetings = {"hi", "hello", "hey", "yo", "sup", "hi there", "hello there", "hey there"}
+    if t in greetings:
+        return True
+    intro = [
+        "what can you do", "what do you do", "who are you",
+        "how do you work", "how does this work", "what is voronoi",
+        "what is this", "help", "help me", "what are you",
+        "introduce yourself", "capabilities",
+    ]
+    return any(p in t for p in intro)
+
+
+# ---------------------------------------------------------------------------
+# CommandRouter — high-level entry point
+# ---------------------------------------------------------------------------
+
+class CommandRouter:
+    """Routes commands and free-text to the appropriate handler.
+
+    Returns (text, document_path | None) tuples so the I/O layer
+    can send both messages and file attachments.
+    """
+
+    def __init__(self, project_dir: str):
+        self.project_dir = project_dir
+
+    def route(self, command: str, args: list[str],
+              chat_id: str) -> tuple[str, Optional[Path]]:
+        """Dispatch a /voronoi <command> and return (text, document)."""
+        if not command:
+            return _HELP_MESSAGE, None
+
+        sub = command.lower()
+
+        try:
+            if sub in ("help", "hi", "hello", "hey"):
+                return _HELP_MESSAGE, None
+            elif sub == "status":
+                return handle_status(self.project_dir), None
+            elif sub == "tasks":
+                return handle_tasks(self.project_dir), None
+            elif sub == "ready":
+                return handle_ready(self.project_dir), None
+            elif sub == "investigate" and args:
+                txt = handle_investigate(self.project_dir, " ".join(args), chat_id)
+                return txt, None
+            elif sub == "explore" and args:
+                txt = handle_explore(self.project_dir, " ".join(args), chat_id)
+                return txt, None
+            elif sub == "build" and args:
+                txt = handle_build(self.project_dir, " ".join(args), chat_id)
+                return txt, None
+            elif sub == "experiment" and args:
+                txt = handle_experiment(self.project_dir, " ".join(args), chat_id)
+                return txt, None
+            elif sub == "recall" and args:
+                return handle_recall(self.project_dir, " ".join(args)), None
+            elif sub == "belief":
+                return handle_belief(self.project_dir), None
+            elif sub == "journal":
+                return handle_journal(self.project_dir), None
+            elif sub == "finding" and args:
+                return handle_finding(self.project_dir, args[0]), None
+            elif sub == "results":
+                inv_id = args[0] if args else ""
+                return handle_results(self.project_dir, inv_id), None
+            elif sub == "reprioritize" and len(args) >= 2:
+                return handle_reprioritize(self.project_dir, args[0], args[1]), None
+            elif sub == "pause" and args:
+                return handle_pause(self.project_dir, args[0]), None
+            elif sub == "resume" and args:
+                return handle_resume(self.project_dir, args[0]), None
+            elif sub == "add" and args:
+                return handle_add(self.project_dir, " ".join(args)), None
+            elif sub == "abort":
+                return handle_abort(self.project_dir), None
+            elif sub == "pivot" and args:
+                return handle_pivot(self.project_dir, " ".join(args)), None
+            elif sub == "guide" and args:
+                return handle_guide(self.project_dir, " ".join(args)), None
+            else:
+                return f"❓ Unknown command: `{sub}`\nSend `/voronoi` for help.", None
+        except Exception as e:
+            return f"❌ Error: {e}", None
+
+    def handle_free_text(self, text: str, chat_id: str,
+                         is_private: bool) -> tuple[str, Optional[Path]]:
+        """Classify and handle free-text input.
+
+        Returns (reply_text, document_path | None).
+        """
+        if _is_greeting(text):
+            return _INTRO_MESSAGE, None
+
+        intent = classify(text)
+
+        # Meta intents
+        if intent.is_meta:
+            if intent.mode == WorkflowMode.RECALL:
+                return handle_recall(self.project_dir, intent.summary), None
+            if is_private:
+                return handle_guide(self.project_dir, text), None
+            return handle_guide(self.project_dir, text), None
+
+        # Low confidence → guidance
+        if intent.confidence < 0.5:
+            if is_private:
+                return handle_guide(self.project_dir, text), None
+            return handle_guide(self.project_dir, text), None
+
+        if not intent.is_science and intent.mode != WorkflowMode.BUILD:
+            return handle_guide(self.project_dir, text), None
+
+        # Save to memory
+        _save_msg(self.project_dir, chat_id, "user", text, {
+            "intent": intent.mode.value,
+            "rigor": intent.rigor.value,
+            "confidence": intent.confidence,
+        })
+
+        # Dispatch workflow
+        if intent.mode == WorkflowMode.INVESTIGATE:
+            txt = handle_investigate(self.project_dir, intent.summary, chat_id)
+        elif intent.mode == WorkflowMode.EXPLORE:
+            txt = handle_explore(self.project_dir, intent.summary, chat_id)
+        elif intent.mode == WorkflowMode.BUILD:
+            txt = handle_build(self.project_dir, intent.summary, chat_id)
+        elif intent.mode == WorkflowMode.HYBRID:
+            txt = handle_investigate(self.project_dir, intent.summary, chat_id)
+        else:
+            txt = handle_guide(self.project_dir, text)
+
+        return txt, None

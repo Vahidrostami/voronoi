@@ -131,7 +131,7 @@ class InvestigationQueue:
         with self._connect() as conn:
             conn.execute(
                 "UPDATE investigations SET status='running', started_at=?, "
-                "workspace_path=?, sandbox_id=? WHERE id=?",
+                "workspace_path=?, sandbox_id=? WHERE id=? AND status='queued'",
                 (time.time(), workspace_path, sandbox_id, investigation_id),
             )
 
@@ -140,7 +140,7 @@ class InvestigationQueue:
         with self._connect() as conn:
             conn.execute(
                 "UPDATE investigations SET status='complete', completed_at=?, "
-                "github_url=? WHERE id=?",
+                "github_url=? WHERE id=? AND status='running'",
                 (time.time(), github_url, investigation_id),
             )
 
@@ -149,7 +149,7 @@ class InvestigationQueue:
         with self._connect() as conn:
             conn.execute(
                 "UPDATE investigations SET status='failed', completed_at=?, "
-                "error=? WHERE id=?",
+                "error=? WHERE id=? AND status='running'",
                 (time.time(), error, investigation_id),
             )
 
@@ -181,6 +181,16 @@ class InvestigationQueue:
                 "SELECT * FROM investigations WHERE chat_id=? "
                 "ORDER BY created_at DESC LIMIT ?",
                 (chat_id, limit),
+            ).fetchall()
+            return [self._row_to_investigation(r) for r in rows]
+
+    def get_recent(self, limit: int = 10) -> list[Investigation]:
+        """Get the most recent investigations across all chats."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM investigations "
+                "ORDER BY created_at DESC LIMIT ?",
+                (limit,),
             ).fetchall()
             return [self._row_to_investigation(r) for r in rows]
 
