@@ -40,7 +40,7 @@ if git merge "$BRANCH_NAME" --no-ff -m "Merge $BRANCH_NAME: agent work complete"
 else
     echo "✗ Merge conflict detected. Branch $BRANCH_NAME is safely on remote."
     echo "  Resolve manually: git merge $BRANCH_NAME"
-    notify_telegram "merge_conflict" "⚠️ Merge conflict on \`${BRANCH_NAME}\` — needs manual resolve" 2>/dev/null || true
+    notify_telegram "merge_conflict" "⚠️ Merge conflict: \`${BRANCH_NAME}\` — needs manual resolve" 2>/dev/null || true
     exit 1
 fi
 
@@ -61,7 +61,7 @@ fi
 # 5. Notify Telegram: merge success with progress count
 TOTAL=$(bd list --json 2>/dev/null | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "?")
 CLOSED=$(bd list --status closed --json 2>/dev/null | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "?")
-notify_telegram "merge" "✅ Merged \`${BRANCH_NAME}\` (${CLOSED}/${TOTAL} tasks done)" 2>/dev/null || true
+notify_telegram "merge" "✅ Merged \`${BRANCH_NAME}\` · ${CLOSED}/${TOTAL} tasks done" 2>/dev/null || true
 
 # 6. Check for scientific findings and notify immediately
 if [ -n "$TASK_ID" ]; then
@@ -91,7 +91,7 @@ except Exception:
     pass
 " 2>/dev/null || true)
     if [ -n "$FINDING_MSG" ]; then
-        notify_telegram "finding" "🔬 *Finding* from \`${BRANCH_NAME}\`:\n${FINDING_MSG}" 2>/dev/null || true
+        notify_telegram "finding" "🧬 *Finding* from \`${BRANCH_NAME}\`:\n${FINDING_MSG}" 2>/dev/null || true
         echo "✓ Finding sent to Telegram"
     fi
 fi

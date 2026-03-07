@@ -245,7 +245,7 @@ notify_swarm_start() {
     local task_count="${1:-?}"
     local domain="${2:-code}"
     notify_telegram "swarm_start" \
-        "🚀 *Swarm started*\n📋 ${task_count} tasks planned\n🏷 Domain: ${domain}"
+        "⚡ *Swarm launched*\n📋 ${task_count} tasks planned · ${domain}"
 }
 
 notify_wave_dispatch() {
@@ -253,7 +253,7 @@ notify_wave_dispatch() {
     local agent_count="${2:-?}"
     local ready_count="${3:-?}"
     notify_telegram "wave_dispatch" \
-        "📦 *Wave ${wave}*: dispatched ${agent_count} agents\n⏳ ${ready_count} tasks still ready"
+        "📦 *Wave ${wave}* · ${agent_count} agents dispatched · ${ready_count} tasks remaining"
 }
 
 notify_merge() {
@@ -261,7 +261,7 @@ notify_merge() {
     local task_id="${2:-?}"
     local total_merged="${3:-?}"
     notify_telegram "merge" \
-        "🔀 *Merged* \`${branch}\`\n🎫 Task: ${task_id}\n📊 Total merged: ${total_merged}"
+        "✅ *Merged* \`${branch}\` · task ${task_id} · ${total_merged} total"
 }
 
 notify_quality_gate() {
@@ -284,13 +284,13 @@ notify_convergence() {
     case "$verdict" in
         CONVERGED)
             notify_telegram "convergence" \
-                "🎯 *CONVERGED* after ${iteration}/${max_iter} iterations\nAll validation stages passed!" ;;
+                "🎯 *CONVERGED* · iteration ${iteration}/${max_iter} · all gates passed" ;;
         ITERATE)
             notify_telegram "convergence" \
-                "🔄 *ITERATE* — iteration ${iteration}/${max_iter}\nImprovement tasks created, re-running" ;;
+                "🔄 *ITERATE* · iteration ${iteration}/${max_iter} · improvement tasks created" ;;
         EXHAUSTED|DIMINISHING_RETURNS)
             notify_telegram "convergence" \
-                "⚠️ *${verdict}* — iteration ${iteration}/${max_iter}\nProceeding with limitations disclosure" ;;
+                "⚠️ *${verdict}* · iteration ${iteration}/${max_iter} · delivering with disclosure" ;;
     esac
 }
 
@@ -299,7 +299,7 @@ notify_agent_timeout() {
     local task_id="${2:-?}"
     local timeout="${3:-?}"
     notify_telegram "agent_timeout" \
-        "⏰ *Agent timed out*: \`${branch}\` (${task_id}) after ${timeout}s"
+        "⏰ *Timeout* \`${branch}\` · task ${task_id} · ${timeout}s"
 }
 
 notify_agent_retry() {
@@ -307,7 +307,7 @@ notify_agent_retry() {
     local attempt="${2:-?}"
     local max_retries="${3:-?}"
     notify_telegram "agent_retry" \
-        "🔄 *Retry* \`${branch}\`: attempt ${attempt}/${max_retries}"
+        "🔄 *Retry* \`${branch}\` · attempt ${attempt}/${max_retries}"
 }
 
 notify_swarm_complete() {
@@ -315,14 +315,14 @@ notify_swarm_complete() {
     local merged="${2:-?}"
     local runtime_min="${3:-?}"
     notify_telegram "swarm_complete" \
-        "🏁 *Swarm complete!*\n\n📊 Waves: ${waves}\n✅ Merged: ${merged}\n⏱ Runtime: ${runtime_min}m"
+        "🏁 *Swarm complete* · ${waves} waves · ${merged} merged · ${runtime_min}min"
 }
 
 notify_inbox_command() {
     local action="${1:-?}"
     local detail="${2:-}"
     notify_telegram "inbox_command" \
-        "📨 *Operator command received*\nAction: \`${action}\`" \
+        "📨 *Operator command* · \`${action}\`" \
         --details "$detail"
 }
 

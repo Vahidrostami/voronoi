@@ -90,37 +90,72 @@ class ReportGenerator:
 
     def build_teaser(self, investigation_id: int, question: str,
                      total_tasks: int, closed_tasks: int,
-                     elapsed_min: float) -> str:
+                     elapsed_min: float, *, mode: str = "investigate") -> str:
         """3-5 bullet point teaser for Telegram."""
-        findings = self._get_findings()
+        from voronoi.gateway.progress import MODE_EMOJI, progress_bar
 
-        lines = [f"🏁 *Investigation #{investigation_id} COMPLETE*\n"]
+        findings = self._get_findings()
+        mode_emoji = MODE_EMOJI.get(mode, "🔷")
+
+        lines = [f"🏁 *Voronoi #{investigation_id}* {mode_emoji} COMPLETE · {elapsed_min:.0f}min\n"]
         lines.append(f"_{question}_\n")
 
+        # Headline finding — strongest effect gets a callout
         if findings:
-            lines.append("*Key Results:*")
-            for f in findings[:5]:
-                valence = f.get("valence", "").lower()
-                emoji = {"positive": "✅", "negative": "❌"}.get(valence, "❓")
-                title = f["title"].replace("FINDING:", "").replace("FINDING", "").strip()
-                effect = f.get("effect_size", "")
-                p_val = f.get("p", "")
-                parts = [f"{emoji} {title}"]
-                if effect:
-                    parts[0] += f" (d={effect}"
-                    if p_val:
-                        parts[0] += f", p={p_val}"
-                    parts[0] += ")"
-                lines.append(f"• {''.join(parts)}")
+            # Pick the finding with the largest numeric effect size
+            headline = None
+            for f in findings:
+                es = f.get("effect_size", "")
+                if es:
+                    headline = f
+                    break
+            if headline is None:
+                headline = findings[0]
+
+            title = headline["title"].replace("FINDING:", "").replace("FINDING", "").strip()
+            valence = headline.get("valence", "").lower()
+            h_emoji = {"positive": "✅", "negative": "❌"}.get(valence, "❓")
+            stat_parts = []
+            if headline.get("effect_size"):
+                stat_parts.append(f"d={headline['effect_size']}")
+            if headline.get("ci_95"):
+                stat_parts.append(f"CI {headline['ci_95']}")
+            if headline.get("p"):
+                stat_parts.append(f"p={headline['p']}")
+            if headline.get("n"):
+                stat_parts.append(f"N={headline['n']}")
+
+            lines.append("━━━━━━━━━━━━━━━━━━━━")
+            lines.append(f"💡 *HEADLINE*")
+            lines.append(f"{h_emoji} {title}")
+            if stat_parts:
+                lines.append(" · ".join(stat_parts))
+            lines.append("━━━━━━━━━━━━━━━━━━━━\n")
+
+            # Remaining findings
+            if len(findings) > 1:
+                lines.append("*All findings:*")
+                for f in findings[:5]:
+                    valence = f.get("valence", "").lower()
+                    emoji = {"positive": "✅", "negative": "❌"}.get(valence, "❓")
+                    f_title = f["title"].replace("FINDING:", "").replace("FINDING", "").strip()
+                    effect = f.get("effect_size", "")
+                    p_val = f.get("p", "")
+                    entry = f"{emoji} {f_title}"
+                    if effect:
+                        entry += f" (d={effect}"
+                        if p_val:
+                            entry += f", p={p_val}"
+                        entry += ")"
+                    lines.append(f"  {entry}")
+                lines.append("")
 
         finding_count = len(findings)
-        lines.append(
-            f"\n📊 {closed_tasks}/{total_tasks} tasks · "
-            f"{finding_count} finding{'s' if finding_count != 1 else ''} · "
-            f"{elapsed_min:.0f}min"
-        )
+        bar = progress_bar(closed_tasks, total_tasks)
+        lines.append(f"{bar} · {finding_count} finding{'s' if finding_count != 1 else ''}")
+
         doc_type = "manuscript" if self.is_manuscript_format() else "report"
-        lines.append(f"📎 Full {doc_type} attached below")
+        lines.append(f"\n📎 Full {doc_type} attached")
         return "\n".join(lines)
 
     # ------------------------------------------------------------------
