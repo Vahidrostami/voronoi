@@ -569,15 +569,22 @@ def _server_init(args: argparse.Namespace) -> None:
         print(f"  ✓ .env.example copied to {env_example_dst}")
 
     # Initialize Beads in the server directory
-    if not (config.base_dir / ".beads").is_dir() and shutil.which("bd"):
-        subprocess.run(
-            ["bd", "init", "--quiet"],
+    beads_dir = config.base_dir / ".beads"
+    if not beads_dir.is_dir() and shutil.which("bd"):
+        result = subprocess.run(
+            ["bd", "init"],
             cwd=str(config.base_dir),
             capture_output=True,
-            input="N\n",
+            input="Y\n",
             text=True,
+            timeout=30,
         )
-        print(f"  ✓ Beads initialized")
+        if beads_dir.is_dir():
+            print(f"  ✓ Beads initialized")
+        else:
+            print(f"  ⚠ Beads init may have failed: {result.stderr.strip()}")
+    elif beads_dir.is_dir():
+        print(f"  ✓ Beads already initialized")
 
     print(f"\nServer ready.")
     print(f"  1. Edit {config.base_dir / '.env'} with your credentials")
@@ -588,7 +595,20 @@ def _server_init(args: argparse.Namespace) -> None:
 
 def _server_start(args: argparse.Namespace) -> None:
     """Start the Telegram bridge using server config."""
+    import logging
     from voronoi.server.runner import ServerConfig
+
+    # Configure logging so all voronoi activity is visible in the terminal
+    log_level = os.environ.get("VORONOI_LOG_LEVEL", "INFO").upper()
+    logging.basicConfig(
+        level=getattr(logging, log_level, logging.INFO),
+        format="%(asctime)s %(levelname)-8s [%(name)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        stream=sys.stdout,
+    )
+    # Also let python-telegram-bot's own logs through at WARNING+
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("telegram").setLevel(logging.WARNING)
 
     config = ServerConfig()
 
@@ -637,15 +657,22 @@ def _server_start(args: argparse.Namespace) -> None:
     (config.base_dir / ".swarm" / "inbox").mkdir(parents=True, exist_ok=True)
 
     # Ensure Beads is initialized in the server directory
-    if not (config.base_dir / ".beads").is_dir() and shutil.which("bd"):
-        subprocess.run(
-            ["bd", "init", "--quiet"],
+    beads_dir = config.base_dir / ".beads"
+    if not beads_dir.is_dir() and shutil.which("bd"):
+        result = subprocess.run(
+            ["bd", "init"],
             cwd=str(config.base_dir),
             capture_output=True,
-            input="N\n",
+            input="Y\n",
             text=True,
+            timeout=30,
         )
-        print(f"  ✓ Beads initialized in {config.base_dir}")
+        if (beads_dir).is_dir():
+            print(f"  ✓ Beads initialized in {config.base_dir}")
+        else:
+            print(f"  ⚠ Beads init may have failed: {result.stderr.strip()}", file=sys.stderr)
+    elif beads_dir.is_dir():
+        print(f"  ✓ Beads already initialized in {config.base_dir}")
 
     print(f"\n🤖 Starting Telegram bridge...")
     print(f"   Server: {config.base_dir}")

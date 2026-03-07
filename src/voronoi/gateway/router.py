@@ -9,6 +9,7 @@ the result.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 import time
@@ -18,6 +19,8 @@ from typing import Optional
 from voronoi.gateway.intent import ClassifiedIntent, WorkflowMode, classify
 from voronoi.server.queue import Investigation, InvestigationQueue
 from voronoi.server.runner import make_slug
+
+logger = logging.getLogger("voronoi.router")
 
 # Re-export for tests
 __all__ = [
@@ -124,6 +127,8 @@ def _enqueue(project_dir: str, question: str, mode: str,
     inv_id = q.enqueue(inv)
     queued = len(q.get_queued())
     running = len(q.get_running())
+    logger.info("Enqueued investigation #%d mode=%s rigor=%s (queued=%d running=%d)",
+                inv_id, mode, rigor, queued, running)
     return inv_id, f"Queue: {queued} waiting · {running} running"
 
 
@@ -132,39 +137,105 @@ def _enqueue(project_dir: str, question: str, mode: str,
 # ---------------------------------------------------------------------------
 
 def handle_status(project_dir: str) -> str:
-    _, ready = _run_bd("ready", "--json", cwd=project_dir)
-    _, open_tasks = _run_bd("list", "--status", "open", "--json", cwd=project_dir)
-    try:
-        ready_count = len(json.loads(ready))
-    except Exception:
-        ready_count = "?"
-    try:
-        open_count = len(json.loads(open_tasks))
-    except Exception:
-        open_count = "?"
-    return f"📊 *Swarm Status*\nReady: {ready_count}\nOpen: {open_count}"
+    q = _get_queue(project_dir)
+    queued = len(q.get_queued())
+    running_invs = q.get_running()
+    running_count = len(running_invs)
+    recent = q.get_recent(5)
+    completed = sum(1 for inv in recent if inv.status == "complete")
+
+    lines = ["📊 *Swarm Status*\n"]
+    lines.append(f"Queued: {queued} · Running: {running_count} · Recent completed: {completed}")
+
+    # Show tasks from active investigation workspaces
+    if running_invs:
+        for inv in running_invs:
+            ws_path = inv.workspace_path
+            if ws_path:
+                _, ready = _run_bd("ready", "--json", cwd=ws_path)
+                _, open_tasks = _run_bd("list", "--status", "open", "--json", cwd=ws_path)
+                try:
+                    ready_count = len(json.loads(ready))
+                except Exception:
+                    ready_count = "?"
+                try:
+                    open_count = len(json.loads(open_tasks))
+                except Exception:
+                    open_count = "?"
+                q_str = inv.question[:50] if inv.question else "?"
+                lines.append(f"\n⚡ *#{inv.id}* _{q_str}_")
+                lines.append(f"   Tasks: {open_count} open · {ready_count} ready")
+    else:
+        # Fallback: query server-level beads
+        _, ready = _run_bd("ready", "--json", cwd=project_dir)
+        _, open_tasks = _run_bd("list", "--status", "open", "--json", cwd=project_dir)
+        try:
+            ready_count = len(json.loads(ready))
+        except Exception:
+            ready_count = "?"
+        try:
+            open_count = len(json.loads(open_tasks))
+        except Exception:
+            open_count = "?"
+        lines.append(f"Tasks: {open_count} open · {ready_count} ready")
+
+    return "\n".join(lines)
 
 
 def handle_tasks(project_dir: str) -> str:
-    code, output = _run_bd("list", "--status", "open", "--json", cwd=project_dir)
-    if code != 0:
-        return f"❌ Failed to list tasks: {output}"
-    try:
-        tasks = json.loads(output)
-    except json.JSONDecodeError:
-        return f"❌ Invalid JSON from bd: {output[:200]}"
-    if not tasks:
-        return "✅ No open tasks!"
-    lines = ["📋 *Open Tasks*\n"]
-    for t in tasks[:20]:
-        tid = t.get("id", "?")
-        title = t.get("title", "?")[:60]
-        priority = t.get("priority", "?")
-        status = t.get("status", "?")
-        lines.append(f"• `{tid}` P{priority} [{status}] {title}")
-    if len(tasks) > 20:
-        lines.append(f"\n… and {len(tasks) - 20} more")
-    return "\n".join(lines)
+    q = _get_queue(project_dir)
+    running_invs = q.get_running()
+    all_lines = ["📋 *Open Tasks*\n"]
+    found_any = False
+
+    # Show tasks from active investigation workspaces
+    for inv in running_invs:
+        ws_path = inv.workspace_path
+        if not ws_path:
+            continue
+        code, output = _run_bd("list", "--status", "open", "--json", cwd=ws_path)
+        if code != 0:
+            continue
+        try:
+            tasks = json.loads(output)
+        except json.JSONDecodeError:
+            continue
+        if not tasks:
+            continue
+        found_any = True
+        q_str = inv.question[:40] if inv.question else "?"
+        all_lines.append(f"⚡ *Investigation #{inv.id}* _{q_str}_")
+        for t in tasks[:10]:
+            tid = t.get("id", "?")
+            title = t.get("title", "?")[:60]
+            priority = t.get("priority", "?")
+            status = t.get("status", "?")
+            all_lines.append(f"  • `{tid}` P{priority} [{status}] {title}")
+        if len(tasks) > 10:
+            all_lines.append(f"  … and {len(tasks) - 10} more")
+        all_lines.append("")
+
+    # Fallback to server-level beads if no running investigations
+    if not found_any:
+        code, output = _run_bd("list", "--status", "open", "--json", cwd=project_dir)
+        if code != 0:
+            return f"❌ Failed to list tasks: {output}"
+        try:
+            tasks = json.loads(output)
+        except json.JSONDecodeError:
+            return f"❌ Invalid JSON from bd: {output[:200]}"
+        if not tasks:
+            return "✅ No open tasks!"
+        for t in tasks[:20]:
+            tid = t.get("id", "?")
+            title = t.get("title", "?")[:60]
+            priority = t.get("priority", "?")
+            status = t.get("status", "?")
+            all_lines.append(f"• `{tid}` P{priority} [{status}] {title}")
+        if len(tasks) > 20:
+            all_lines.append(f"\n… and {len(tasks) - 20} more")
+
+    return "\n".join(all_lines)
 
 
 def handle_ready(project_dir: str) -> str:
@@ -254,15 +325,26 @@ _MODE_EMOJI = {
 }
 
 
+_RIGOR_DESCRIPTIONS = {
+    "standard": "Basic quality checks",
+    "analytical": "Statistical validation with effect sizes",
+    "scientific": "Full scientific method with pre-registration",
+    "experimental": "Controlled experiments with replication",
+}
+
+
 def _workflow_response(mode: str, rigor: str, question: str,
                        inv_id: int, queue_status: str) -> str:
     emoji = _MODE_EMOJI.get(mode, "🔷")
+    rigor_desc = _RIGOR_DESCRIPTIONS.get(rigor, rigor)
     return (
-        f"{emoji} *{mode.upper()}* mode activated · rigor: {rigor}\n\n"
-        f"_{question}_\n\n"
-        f"*Investigation #{inv_id} queued*\n"
-        f"{queue_status}\n\n"
-        f"Setting up lab workspace… 🧫"
+        f"{emoji} *{mode.upper()}* mode activated\n\n"
+        f"📋 _{question}_\n\n"
+        f"🎯 Rigor: *{rigor}* — {rigor_desc}\n"
+        f"🆔 Investigation *#{inv_id}*\n"
+        f"📊 {queue_status}\n\n"
+        f"⏳ Setting up lab workspace… I'll notify you when agents start working.\n\n"
+        f"💡 _Use_ `/voronoi status` _to check progress anytime._"
     )
 
 
@@ -393,6 +475,25 @@ _INTRO_MESSAGE = (
     "_Send_ `/voronoi` _for commands, or just ask me something._ 🧠"
 )
 
+def _LOW_CONFIDENCE_MESSAGE(text: str, intent) -> str:
+    """Return a helpful clarification prompt when intent confidence is low."""
+    mode_label = intent.mode.value if intent.mode else "unknown"
+    confidence_pct = int(intent.confidence * 100)
+    return (
+        f"🤔 I'm not sure what you'd like me to do ({confidence_pct}% confident → _{mode_label}_).\n\n"
+        f"Your message: _{text[:120]}_\n\n"
+        "Try one of these:\n"
+        "  🔬 _Why is our model accuracy dropping?_ → investigate\n"
+        "  🧭 _Compare Redis vs Memcached_ → explore\n"
+        "  🔨 _Build a REST API with auth_ → build\n\n"
+        "Or use a command directly:\n"
+        "`/voronoi investigate <question>`\n"
+        "`/voronoi explore <question>`\n"
+        "`/voronoi build <description>`\n\n"
+        "_Send_ `/voronoi` _for all commands._"
+    )
+
+
 _HELP_MESSAGE = (
     "👋 *Hey! I'm Voronoi.*\n\n"
     "I orchestrate AI agents to run scientific investigations, "
@@ -456,6 +557,7 @@ class CommandRouter:
             return _HELP_MESSAGE, None
 
         sub = command.lower()
+        logger.info("Routing command=%s args=%s chat=%s", sub, args, chat_id)
 
         try:
             if sub in ("help", "hi", "hello", "hey"):
@@ -506,6 +608,7 @@ class CommandRouter:
             else:
                 return f"❓ Unknown command: `{sub}`\nSend `/voronoi` for help.", None
         except Exception as e:
+            logger.error("Command %s failed: %s", sub, e, exc_info=True)
             return f"❌ Error: {e}", None
 
     def handle_free_text(self, text: str, chat_id: str,
@@ -518,23 +621,31 @@ class CommandRouter:
             return _INTRO_MESSAGE, None
 
         intent = classify(text)
+        logger.info("Classified intent: mode=%s rigor=%s confidence=%.2f",
+                    intent.mode.value, intent.rigor.value, intent.confidence)
 
         # Meta intents
         if intent.is_meta:
             if intent.mode == WorkflowMode.RECALL:
                 return handle_recall(self.project_dir, intent.summary), None
-            if is_private:
-                return handle_guide(self.project_dir, text), None
+            if intent.mode == WorkflowMode.STATUS:
+                return handle_status(self.project_dir), None
+            # Save as guidance and acknowledge
+            _save_msg(self.project_dir, chat_id, "user", text,
+                      {"intent": "guide", "confidence": intent.confidence})
             return handle_guide(self.project_dir, text), None
 
-        # Low confidence → guidance
+        # Low confidence → ask the user to clarify instead of silently
+        # writing guidance
         if intent.confidence < 0.5:
-            if is_private:
-                return handle_guide(self.project_dir, text), None
-            return handle_guide(self.project_dir, text), None
+            _save_msg(self.project_dir, chat_id, "user", text,
+                      {"intent": intent.mode.value, "confidence": intent.confidence})
+            return _LOW_CONFIDENCE_MESSAGE(text, intent), None
 
         if not intent.is_science and intent.mode != WorkflowMode.BUILD:
-            return handle_guide(self.project_dir, text), None
+            _save_msg(self.project_dir, chat_id, "user", text,
+                      {"intent": intent.mode.value, "confidence": intent.confidence})
+            return _LOW_CONFIDENCE_MESSAGE(text, intent), None
 
         # Save to memory
         _save_msg(self.project_dir, chat_id, "user", text, {
@@ -543,7 +654,7 @@ class CommandRouter:
             "confidence": intent.confidence,
         })
 
-        # Dispatch workflow
+        # Dispatch workflow with classification feedback
         if intent.mode == WorkflowMode.INVESTIGATE:
             txt = handle_investigate(self.project_dir, intent.summary, chat_id)
         elif intent.mode == WorkflowMode.EXPLORE:
@@ -555,4 +666,10 @@ class CommandRouter:
         else:
             txt = handle_guide(self.project_dir, text)
 
-        return txt, None
+        # Prepend classification feedback so the user knows what Voronoi understood
+        confidence_pct = int(intent.confidence * 100)
+        feedback = (
+            f"🧠 _Understood as *{intent.mode.value}* "
+            f"(rigor: {intent.rigor.value}, confidence: {confidence_pct}%)_\n\n"
+        )
+        return feedback + txt, None
