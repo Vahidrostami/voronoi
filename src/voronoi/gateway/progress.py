@@ -88,10 +88,12 @@ def estimate_remaining(elapsed_sec: float, done: int, total: int) -> str:
     return f"~{remaining_min:.0f}min left"
 
 
-def voronoi_header(inv_id: int, mode: str, suffix: str = "") -> str:
-    """Build the branded header: ⚡ Voronoi #2 🔬 LAUNCHED"""
+def voronoi_header(inv_id: int, mode: str, suffix: str = "",
+                   codename: str = "") -> str:
+    """Build the branded header: ⚡ Voronoi · Dopamine 🔬 LAUNCHED"""
     emoji = MODE_EMOJI.get(mode, "🔷")
-    parts = [f"Voronoi #{inv_id} {emoji}"]
+    label = codename or f"#{inv_id}"
+    parts = [f"Voronoi · {label} {emoji}"]
     if suffix:
         parts[0] += f" {suffix}"
     return parts[0]

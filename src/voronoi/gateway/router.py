@@ -20,6 +20,7 @@ from voronoi.gateway.intent import ClassifiedIntent, WorkflowMode, classify
 from voronoi.gateway.progress import MODE_EMOJI, RIGOR_DESCRIPTIONS, MODE_VERB
 from voronoi.server.queue import Investigation, InvestigationQueue
 from voronoi.server.runner import make_slug
+from voronoi.gateway.codename import codename_for_id
 
 logger = logging.getLogger("voronoi.router")
 
@@ -114,8 +115,8 @@ def _get_queue(project_dir: str) -> InvestigationQueue:
 
 
 def _enqueue(project_dir: str, question: str, mode: str,
-             rigor: str, chat_id: str) -> tuple[int, str]:
-    """Enqueue an investigation and return (inv_id, status_message)."""
+             rigor: str, chat_id: str) -> tuple[int, str, str]:
+    """Enqueue an investigation and return (inv_id, status_message, codename)."""
     q = _get_queue(project_dir)
     inv = Investigation(
         chat_id=chat_id,
@@ -126,11 +127,14 @@ def _enqueue(project_dir: str, question: str, mode: str,
         investigation_type="lab",
     )
     inv_id = q.enqueue(inv)
+    # Fetch back to get the codename (may have been assigned in enqueue)
+    stored = q.get(inv_id)
+    codename = stored.codename if stored else codename_for_id(inv_id)
     queued = len(q.get_queued())
     running = len(q.get_running())
-    logger.info("Enqueued investigation #%d mode=%s rigor=%s (queued=%d running=%d)",
-                inv_id, mode, rigor, queued, running)
-    return inv_id, f"Queue: {queued} waiting · {running} running"
+    logger.info("Enqueued investigation %s (#%d) mode=%s rigor=%s (queued=%d running=%d)",
+                codename, inv_id, mode, rigor, queued, running)
+    return inv_id, f"Queue: {queued} waiting · {running} running", codename
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +168,8 @@ def handle_status(project_dir: str) -> str:
                 except Exception:
                     open_count = "?"
                 q_str = inv.question[:50] if inv.question else "?"
-                lines.append(f"\n⚡ *#{inv.id}* _{q_str}_")
+                label = inv.codename or f"#{inv.id}"
+                lines.append(f"\n⚡ *{label}* _{q_str}_")
                 lines.append(f"   Tasks: {open_count} open · {ready_count} ready")
     else:
         # Fallback: query server-level beads
@@ -205,7 +210,8 @@ def handle_tasks(project_dir: str) -> str:
             continue
         found_any = True
         q_str = inv.question[:40] if inv.question else "?"
-        all_lines.append(f"⚡ *Investigation #{inv.id}* _{q_str}_")
+        label = inv.codename or f"#{inv.id}"
+        all_lines.append(f"⚡ *{label}* _{q_str}_")
         for t in tasks[:10]:
             tid = t.get("id", "?")
             title = t.get("title", "?")[:60]
@@ -321,12 +327,14 @@ def handle_guide(project_dir: str, message: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _workflow_response(mode: str, rigor: str, question: str,
-                       inv_id: int, queue_status: str) -> str:
+                       inv_id: int, queue_status: str,
+                       codename: str = "") -> str:
     emoji = MODE_EMOJI.get(mode, "🔷")
     rigor_desc = RIGOR_DESCRIPTIONS.get(rigor, rigor)
     verb = MODE_VERB.get(mode, mode)
+    label = codename or f"#{inv_id}"
     return (
-        f"⚡ *Voronoi #{inv_id}* {emoji} LAUNCHED\n\n"
+        f"⚡ *Voronoi · {label}* {emoji} LAUNCHED\n\n"
         f"_{question}_\n\n"
         f"  Mode     *{rigor}* {verb}\n"
         f"  Rigor    {rigor_desc}\n"
@@ -336,23 +344,23 @@ def _workflow_response(mode: str, rigor: str, question: str,
 
 
 def handle_investigate(project_dir: str, question: str, chat_id: str = "") -> str:
-    inv_id, qs = _enqueue(project_dir, question, "investigate", "scientific", chat_id)
-    return _workflow_response("investigate", "scientific", question, inv_id, qs)
+    inv_id, qs, cn = _enqueue(project_dir, question, "investigate", "scientific", chat_id)
+    return _workflow_response("investigate", "scientific", question, inv_id, qs, cn)
 
 
 def handle_explore(project_dir: str, question: str, chat_id: str = "") -> str:
-    inv_id, qs = _enqueue(project_dir, question, "explore", "analytical", chat_id)
-    return _workflow_response("explore", "analytical", question, inv_id, qs)
+    inv_id, qs, cn = _enqueue(project_dir, question, "explore", "analytical", chat_id)
+    return _workflow_response("explore", "analytical", question, inv_id, qs, cn)
 
 
 def handle_build(project_dir: str, description: str, chat_id: str = "") -> str:
-    inv_id, qs = _enqueue(project_dir, description, "build", "standard", chat_id)
-    return _workflow_response("build", "standard", description, inv_id, qs)
+    inv_id, qs, cn = _enqueue(project_dir, description, "build", "standard", chat_id)
+    return _workflow_response("build", "standard", description, inv_id, qs, cn)
 
 
 def handle_experiment(project_dir: str, hypothesis: str, chat_id: str = "") -> str:
-    inv_id, qs = _enqueue(project_dir, hypothesis, "investigate", "experimental", chat_id)
-    return _workflow_response("investigate", "experimental", hypothesis, inv_id, qs)
+    inv_id, qs, cn = _enqueue(project_dir, hypothesis, "investigate", "experimental", chat_id)
+    return _workflow_response("investigate", "experimental", hypothesis, inv_id, qs, cn)
 
 
 # ---------------------------------------------------------------------------

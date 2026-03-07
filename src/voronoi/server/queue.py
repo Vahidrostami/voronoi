@@ -27,6 +27,7 @@ class Investigation:
     slug: str = ""
     mode: str = "investigate"         # investigate | explore | build | experiment
     rigor: str = "scientific"
+    codename: str = ""               # brain-themed codename (e.g. "Dopamine")
     workspace_path: Optional[str] = None
     sandbox_id: Optional[str] = None
     github_url: Optional[str] = None
@@ -50,6 +51,7 @@ CREATE TABLE IF NOT EXISTS investigations (
     slug              TEXT NOT NULL,
     mode              TEXT NOT NULL DEFAULT 'investigate',
     rigor             TEXT NOT NULL DEFAULT 'scientific',
+    codename          TEXT NOT NULL DEFAULT '',
     workspace_path    TEXT,
     sandbox_id        TEXT,
     github_url        TEXT,
@@ -65,6 +67,10 @@ CREATE INDEX IF NOT EXISTS idx_inv_chat ON investigations(chat_id);
 CREATE INDEX IF NOT EXISTS idx_inv_repo ON investigations(repo);
 """
 
+_MIGRATION_ADD_CODENAME = """
+ALTER TABLE investigations ADD COLUMN codename TEXT NOT NULL DEFAULT '';
+"""
+
 
 class InvestigationQueue:
     """SQLite-backed investigation queue with concurrency control."""
@@ -77,6 +83,11 @@ class InvestigationQueue:
     def _init_db(self) -> None:
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
+            # Migrate existing databases that lack the codename column
+            try:
+                conn.execute("SELECT codename FROM investigations LIMIT 1")
+            except sqlite3.OperationalError:
+                conn.executescript(_MIGRATION_ADD_CODENAME)
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -98,13 +109,22 @@ class InvestigationQueue:
             cursor = conn.execute(
                 "INSERT INTO investigations "
                 "(chat_id, status, investigation_type, repo, question, slug, "
-                " mode, rigor, parent_id, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " mode, rigor, codename, parent_id, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (inv.chat_id, "queued", inv.investigation_type, inv.repo,
                  inv.question, inv.slug, inv.mode, inv.rigor,
-                 inv.parent_id, inv.created_at),
+                 inv.codename, inv.parent_id, inv.created_at),
             )
-            return cursor.lastrowid  # type: ignore[return-value]
+            inv_id: int = cursor.lastrowid  # type: ignore[assignment]
+            # Assign a deterministic codename if none was provided
+            if not inv.codename:
+                from voronoi.gateway.codename import codename_for_id
+                codename = codename_for_id(inv_id)
+                conn.execute(
+                    "UPDATE investigations SET codename=? WHERE id=?",
+                    (codename, inv_id),
+                )
+            return inv_id
 
     def next_ready(self, max_concurrent: int = 2) -> Optional[Investigation]:
         """Get the next queued investigation if under concurrency limit."""
@@ -253,13 +273,15 @@ class InvestigationQueue:
             for inv in running:
                 elapsed = (time.time() - (inv.started_at or inv.created_at)) / 60
                 label = inv.repo or inv.slug
-                lines.append(f"  ⚡ #{inv.id} {label} ({elapsed:.0f}min)")
+                name = inv.codename or f"#{inv.id}"
+                lines.append(f"  ⚡ {name} {label} ({elapsed:.0f}min)")
 
         if queued:
             lines.append("\n*Queued:*")
             for i, inv in enumerate(queued):
                 label = inv.repo or inv.slug
-                lines.append(f"  ⏳ #{inv.id} {label} (position {i+1})")
+                name = inv.codename or f"#{inv.id}"
+                lines.append(f"  ⏳ {name} {label} (position {i+1})")
 
         if not running and not queued:
             lines.append("No active investigations.")
@@ -277,6 +299,7 @@ class InvestigationQueue:
             slug=row["slug"],
             mode=row["mode"],
             rigor=row["rigor"],
+            codename=row["codename"],
             workspace_path=row["workspace_path"],
             sandbox_id=row["sandbox_id"],
             github_url=row["github_url"],

@@ -90,14 +90,16 @@ class ReportGenerator:
 
     def build_teaser(self, investigation_id: int, question: str,
                      total_tasks: int, closed_tasks: int,
-                     elapsed_min: float, *, mode: str = "investigate") -> str:
+                     elapsed_min: float, *, mode: str = "investigate",
+                     codename: str = "") -> str:
         """3-5 bullet point teaser for Telegram."""
         from voronoi.gateway.progress import MODE_EMOJI, progress_bar
 
         findings = self._get_findings()
         mode_emoji = MODE_EMOJI.get(mode, "🔷")
+        label = codename or f"#{investigation_id}"
 
-        lines = [f"🏁 *Voronoi #{investigation_id}* {mode_emoji} COMPLETE · {elapsed_min:.0f}min\n"]
+        lines = [f"🏁 *Voronoi · {label}* {mode_emoji} COMPLETE · {elapsed_min:.0f}min\n"]
         lines.append(f"_{question}_\n")
 
         # Headline finding — strongest effect gets a callout

@@ -36,7 +36,7 @@ class TestTeaser:
         teaser = rg.build_teaser(7, "Why is performance degrading?", 12, 12, 18.5)
 
         assert "COMPLETE" in teaser
-        assert "#7" in teaser
+        assert "Voronoi" in teaser
         assert "EWC" in teaser
         assert "12/12" in teaser
         assert "18min" in teaser

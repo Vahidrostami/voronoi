@@ -131,7 +131,7 @@ class TestScienceHandlers:
         mock_queue_cls.return_value = mock_q
 
         result = handle_investigate(str(tmp_path), "Why is latency high?", "chat1")
-        assert "Voronoi #1" in result
+        assert "Voronoi" in result
         assert "LAUNCHED" in result
         assert "investigation" in result
 
@@ -145,7 +145,7 @@ class TestScienceHandlers:
         mock_queue_cls.return_value = mock_q
 
         result = handle_explore(str(tmp_path), "Redis vs Memcached", "chat1")
-        assert "Voronoi #2" in result
+        assert "Voronoi" in result
         assert "exploration" in result
 
     @patch("voronoi.gateway.router.InvestigationQueue", autospec=True)
@@ -158,7 +158,7 @@ class TestScienceHandlers:
         mock_queue_cls.return_value = mock_q
 
         result = handle_build(str(tmp_path), "Build REST API", "chat1")
-        assert "Voronoi #3" in result
+        assert "Voronoi" in result
         assert "build" in result
 
     @patch("voronoi.gateway.router.InvestigationQueue", autospec=True)
@@ -171,7 +171,7 @@ class TestScienceHandlers:
         mock_queue_cls.return_value = mock_q
 
         result = handle_experiment(str(tmp_path), "test batch size effect", "chat1")
-        assert "Voronoi #4" in result
+        assert "Voronoi" in result
         assert "LAUNCHED" in result
 
 

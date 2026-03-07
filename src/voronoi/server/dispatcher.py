@@ -46,11 +46,16 @@ class RunningInvestigation:
     tmux_session: str
     question: str
     mode: str
+    codename: str = ""
     started_at: float = field(default_factory=time.time)
     last_update_at: float = 0
     task_snapshot: dict = field(default_factory=dict)
     notified_findings: set = field(default_factory=set)
     phase: str = "starting"
+
+    @property
+    def label(self) -> str:
+        return self.codename or f"#{self.investigation_id}"
 
 
 class InvestigationDispatcher:
@@ -104,8 +109,9 @@ class InvestigationDispatcher:
         except Exception as e:
             logger.error("Failed to launch investigation #%d: %s", inv.id, e, exc_info=True)
             self.queue.fail(inv.id, str(e))
+            label = inv.codename or f"#{inv.id}"
             self.send_message(
-                f"💀 *Voronoi #{inv.id} failed to launch*\n\nError: `{e}`"
+                f"💀 *Voronoi · {label} failed to launch*\n\nError: `{e}`"
             )
 
     def _launch_investigation(self, inv) -> None:
@@ -134,22 +140,30 @@ class InvestigationDispatcher:
             tmux_session=tmux_session,
             question=inv.question,
             mode=inv.mode,
+            codename=inv.codename,
         )
 
-        logger.info("Investigation #%d LIVE in tmux=%s workspace=%s",
-                    inv.id, tmux_session, workspace_path)
+        logger.info("Investigation %s (#%d) LIVE in tmux=%s workspace=%s",
+                    inv.codename, inv.id, tmux_session, workspace_path)
 
         mode_emoji = MODE_EMOJI.get(inv.mode, "🔷")
         verb = MODE_VERB.get(inv.mode, inv.mode)
+        label = inv.codename or f"#{inv.id}"
         self.send_message(
-            f"🟢 *Voronoi #{inv.id}* {mode_emoji} is LIVE\n\n"
+            f"🟢 *Voronoi · {label}* {mode_emoji} is LIVE\n\n"
             f"_{inv.question}_\n\n"
             f"Orchestrator is planning tasks and spawning agents.\n"
             f"First progress update in ~30s."
         )
 
     def _build_prompt(self, inv, workspace_path: Path) -> str:
+        from voronoi.gateway.codename import theme_for_codename
+
         verb = MODE_VERB.get(inv.mode, inv.mode)
+        label = inv.codename or f"#{inv.id}"
+        theme = theme_for_codename(inv.codename) if inv.codename else ""
+        theme_hint = f"\nThematic inspiration: {theme}\n" if theme else ""
+
         return (
             "You are the Voronoi swarm orchestrator. Your job: read the question, "
             "plan tasks, spawn parallel worker agents, monitor their progress, merge "
@@ -159,11 +173,22 @@ class InvestigationDispatcher:
             f"**Mode:** {inv.mode}\n"
             f"**Rigor:** {inv.rigor}\n"
             f"**Workspace:** {workspace_path}\n\n"
-            "## Personality — IMPORTANT\n\n"
-            "Your Telegram notifications should be EXCITED, high-energy, and fun — like a hype crew "
-            "that genuinely loves watching agents crush it. Use fire emojis, celebrate wins, "
-            "make the work feel epic. But always stay INFORMATIVE — every message "
-            "must include real numbers (task counts, progress, findings). Never fluff without facts.\n\n"
+            f"## Your Codename: {label}\n\n"
+            f"Use \"{label}\" in EVERY Telegram notification. This is your identity.\n"
+            f"{theme_hint}\n"
+            "## Telegram Notifications — IMPORTANT\n\n"
+            "Write ALL notification messages yourself. Be creative, fun, and use "
+            "brain/neuroscience metaphors when they fit naturally. Always include "
+            "real numbers (task counts, progress, findings). Never fluff without facts.\n\n"
+            "The notify_telegram function takes your full message:\n"
+            '  notify_telegram "event_type" "your full creative message here"\n\n'
+            "GOOD examples:\n"
+            f'  notify_telegram "merge" "🧬 {label} absorbed the auth module — 4/9 tasks down. Synapses forming fast."\n'
+            f'  notify_telegram "finding" "💡 {label} breakthrough: latency was pooling-related (d=1.8, p<0.001). Huge signal."\n'
+            f'  notify_telegram "wave" "⚡ {label} wave 2 — 3 agents deployed, 5 tasks queued. The network grows."\n\n'
+            "BAD examples:\n"
+            '  notify_telegram "merge" "Merged branch task 3"  ← no personality, no codename\n'
+            '  notify_telegram "wave" "dispatched agents"  ← no numbers, no fun\n\n'
             "## Workflow\n\n"
             "1. Read PROMPT.md — understand the question fully\n"
             "2. Run `bd prime`, create an epic + tasks with dependencies\n"
@@ -349,7 +374,7 @@ class InvestigationDispatcher:
         tasks = [e for e in events if e["type"] in ("task_done", "task_started", "task_new")]
 
         mode_emoji = MODE_EMOJI.get(run.mode, "🔷")
-        lines = [f"📡 *Voronoi #{run.investigation_id}* {mode_emoji} · {elapsed:.0f}min\n"]
+        lines = [f"📡 *Voronoi · {run.label}* {mode_emoji} · {elapsed:.0f}min\n"]
 
         # Progress bar first — instant status at a glance
         total = len(run.task_snapshot)
@@ -410,8 +435,8 @@ class InvestigationDispatcher:
         total_tasks = len(run.task_snapshot)
         closed = sum(1 for t in run.task_snapshot.values() if t["status"] == "closed")
 
-        logger.info("Voronoi #%d complete: %d/%d tasks in %.1fmin",
-                    run.investigation_id, closed, total_tasks, elapsed)
+        logger.info("Voronoi %s (#%d) complete: %d/%d tasks in %.1fmin",
+                    run.label, run.investigation_id, closed, total_tasks, elapsed)
         self.queue.complete(run.investigation_id)
 
         # Build teaser + report
@@ -421,6 +446,7 @@ class InvestigationDispatcher:
             run.investigation_id, run.question,
             total_tasks, closed, elapsed,
             mode=run.mode,
+            codename=run.codename,
         )
         self.send_message(teaser)
 
@@ -433,7 +459,7 @@ class InvestigationDispatcher:
             if chat_id:
                 self.send_document(
                     chat_id, report_path,
-                    f"Voronoi #{run.investigation_id} — {doc_type}",
+                    f"Voronoi · {run.label} — {doc_type}",
                 )
 
         self._try_publish(run)
@@ -458,5 +484,5 @@ class InvestigationDispatcher:
                 capture_output=True,
             )
             self.queue.fail(inv_id, "Aborted by operator")
-            self.send_message(f"🛑 Voronoi #{inv_id} aborted")
+            self.send_message(f"🛑 Voronoi · {run.label} aborted")
         self.running.clear()
