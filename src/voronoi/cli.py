@@ -678,10 +678,15 @@ def _server_start(args: argparse.Namespace) -> None:
     print(f"   Server: {config.base_dir}")
     print(f"   Press Ctrl+C to stop\n")
 
+    # Pass log level to the bridge subprocess via environment
+    env = os.environ.copy()
+    env.setdefault("VORONOI_LOG_LEVEL", log_level)
+
     try:
         subprocess.run(
             [sys.executable, str(bridge_script), "--config", str(server_swarm_config)],
             cwd=str(config.base_dir),
+            env=env,
         )
     except KeyboardInterrupt:
         print("\nTelegram bridge stopped.")

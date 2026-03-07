@@ -266,7 +266,18 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Voronoi ↔ Telegram bridge")
     parser.add_argument("--config", default=".swarm-config.json", help="Path to .swarm-config.json")
     args = parser.parse_args()
-
+    import os
+    log_level = os.environ.get("VORONOI_LOG_LEVEL", "INFO").upper()
+    logging.basicConfig(
+        level=getattr(logging, log_level, logging.INFO),
+        format="%(asctime)s %(levelname)-8s [%(name)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        stream=sys.stdout,
+    )
+    # Keep noisy libs at WARNING
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("telegram").setLevel(logging.WARNING)
+    logging.getLogger("apscheduler").setLevel(logging.WARNING)
     config = load_config(args.config)
 
     if not config["bot_token"]:
