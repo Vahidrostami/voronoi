@@ -10,6 +10,7 @@ The dispatcher's job is to:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -17,6 +18,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
+
+logger = logging.getLogger("voronoi.dispatcher")
 
 
 @dataclass
@@ -88,10 +91,13 @@ class InvestigationDispatcher:
         """Launch the next queued investigation if capacity allows."""
         inv = self.queue.next_ready(self.config.max_concurrent)
         if inv is None:
+            logger.debug("dispatch_next: nothing ready (db=%s)", self.queue.db_path)
             return
+        logger.info("Dispatching investigation #%d: %.60s", inv.id, inv.question)
         try:
             self._launch_investigation(inv)
         except Exception as e:
+            logger.error("Failed to launch investigation #%d: %s", inv.id, e, exc_info=True)
             self.queue.fail(inv.id, str(e))
             self.send_message(
                 f"💀 *Investigation #{inv.id} failed to launch*\n\nError: `{e}`"
@@ -130,6 +136,9 @@ class InvestigationDispatcher:
             question=inv.question,
             mode=inv.mode,
         )
+
+        logger.info("Investigation #%d LIVE in tmux=%s workspace=%s",
+                    inv.id, tmux_session, workspace_path)
 
         self.send_message(
             f"⚡ *Investigation #{inv.id} is LIVE*\n\n"
@@ -220,9 +229,13 @@ class InvestigationDispatcher:
 
             events = self._check_progress(run)
             if events:
+                logger.info("Investigation #%d: %d events (phase=%s)",
+                            inv_id, len(events), run.phase)
                 self._send_progress_batch(run, events)
 
             if not session_alive or self._is_complete(run):
+                reason = "tmux ended" if not session_alive else "complete"
+                logger.info("Investigation #%d finished (%s)", inv_id, reason)
                 self._handle_completion(run)
                 completed_ids.append(inv_id)
 
@@ -385,6 +398,8 @@ class InvestigationDispatcher:
         total_tasks = len(run.task_snapshot)
         closed = sum(1 for t in run.task_snapshot.values() if t["status"] == "closed")
 
+        logger.info("Investigation #%d complete: %d/%d tasks in %.1fmin",
+                    run.investigation_id, closed, total_tasks, elapsed)
         self.queue.complete(run.investigation_id)
 
         # Build teaser + report

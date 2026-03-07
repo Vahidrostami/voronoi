@@ -20,8 +20,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import sys
 from pathlib import Path
+
+logger = logging.getLogger("voronoi.bridge")
 
 # Ensure src/ is importable when running from the repo checkout
 _src_dir = Path(__file__).resolve().parent.parent / "src"
@@ -98,6 +101,8 @@ def run_bot(config: dict) -> None:
 
     async def cmd_voronoi(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not _is_allowed(update):
+            user = update.effective_user
+            logger.warning("Unauthorized /voronoi from user=%s", user.id if user else "?")
             if update.message:
                 await update.message.reply_text("You are not authorized to use this bot.")
             return
@@ -110,7 +115,9 @@ def run_bot(config: dict) -> None:
         sub_args = args[1:] if len(args) > 1 else []
         chat_id = str(update.message.chat_id) if update.message else "unknown"
 
+        logger.info("CMD /voronoi %s %s (chat=%s)", subcommand, " ".join(sub_args), chat_id)
         reply_text, reply_file = router.route(subcommand, sub_args, chat_id)
+        logger.debug("Reply: %s", reply_text[:120])
         await _reply(update, reply_text, reply_file)
 
     async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -134,7 +141,9 @@ def run_bot(config: dict) -> None:
         if _bot_username[0]:
             text = text.replace(f"@{_bot_username[0]}", "").strip()
 
+        logger.info("MSG from chat=%s: %.80s", chat_id, text)
         reply_text, reply_file = router.handle_free_text(text, chat_id, is_private)
+        logger.debug("Reply: %s", reply_text[:120])
         await _reply(update, reply_text, reply_file)
 
     # -- application -------------------------------------------------------
@@ -144,7 +153,7 @@ def run_bot(config: dict) -> None:
     async def _post_init(application: Application) -> None:
         me = await application.bot.get_me()
         _bot_username[0] = me.username
-        print(f"   Bot username: @{me.username}")
+        logger.info("Bot username: @%s", me.username)
 
     app.post_init = _post_init
     app.add_handler(CommandHandler("voronoi", cmd_voronoi))
@@ -212,9 +221,9 @@ def run_bot(config: dict) -> None:
                     pass
 
             _dispatcher_instance[0] = InvestigationDispatcher(dc, _send, _send_document)
-            print("   ✓ Investigation dispatcher initialized")
+            logger.info("Investigation dispatcher initialized")
         except Exception as e:
-            print(f"   ⚠ Dispatcher not available: {e}")
+            logger.warning("Dispatcher not available: %s", e)
         return _dispatcher_instance[0]
 
     async def _job_dispatch(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -223,7 +232,7 @@ def run_bot(config: dict) -> None:
             try:
                 d.dispatch_next()
             except Exception as e:
-                print(f"Dispatch error: {e}")
+                logger.error("Dispatch error: %s", e, exc_info=True)
 
     async def _job_progress(context: ContextTypes.DEFAULT_TYPE) -> None:
         d = _get_dispatcher()
@@ -231,21 +240,21 @@ def run_bot(config: dict) -> None:
             try:
                 d.poll_progress()
             except Exception as e:
-                print(f"Progress poll error: {e}")
+                logger.error("Progress poll error: %s", e, exc_info=True)
 
     if app.job_queue is not None:
         app.job_queue.run_repeating(_job_dispatch, interval=10, first=5)
         app.job_queue.run_repeating(_job_progress, interval=30, first=15)
     else:
-        print("⚠️  JobQueue not available — install 'python-telegram-bot[job-queue]'")
+        logger.warning("JobQueue not available — install 'python-telegram-bot[job-queue]'")
 
     # -- start -------------------------------------------------------------
 
     allowlist_str = ", ".join(user_allowlist) if user_allowlist else "any"
-    print(f"🤖 Telegram bridge started for {config['project_name']}")
-    print(f"   Allowed users: {allowlist_str}")
-    print(f"   Project: {project_dir}")
-    print(f"   Dispatcher: polling every 10s (dispatch) / 30s (progress)")
+    logger.info("Telegram bridge started for %s", config['project_name'])
+    logger.info("  Allowed users: %s", allowlist_str)
+    logger.info("  Project: %s", project_dir)
+    logger.info("  Dispatcher: polling every 10s (dispatch) / 30s (progress)")
     app.run_polling(drop_pending_updates=True)
 
 
@@ -257,7 +266,18 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Voronoi ↔ Telegram bridge")
     parser.add_argument("--config", default=".swarm-config.json", help="Path to .swarm-config.json")
     args = parser.parse_args()
-
+    import os
+    log_level = os.environ.get("VORONOI_LOG_LEVEL", "INFO").upper()
+    logging.basicConfig(
+        level=getattr(logging, log_level, logging.INFO),
+        format="%(asctime)s %(levelname)-8s [%(name)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        stream=sys.stdout,
+    )
+    # Keep noisy libs at WARNING
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("telegram").setLevel(logging.WARNING)
+    logging.getLogger("apscheduler").setLevel(logging.WARNING)
     config = load_config(args.config)
 
     if not config["bot_token"]:
