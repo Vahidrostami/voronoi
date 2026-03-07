@@ -109,7 +109,7 @@ def _save_msg(project_dir: str, chat_id: str, role: str,
 
 def _get_queue(project_dir: str) -> InvestigationQueue:
     base = Path(project_dir) if project_dir else Path.home() / ".voronoi"
-    return InvestigationQueue(base / ".swarm" / "queue.db")
+    return InvestigationQueue(base / "queue.db")
 
 
 def _enqueue(project_dir: str, question: str, mode: str,

@@ -91,6 +91,7 @@ class InvestigationDispatcher:
         """Launch the next queued investigation if capacity allows."""
         inv = self.queue.next_ready(self.config.max_concurrent)
         if inv is None:
+            logger.debug("dispatch_next: nothing ready (db=%s)", self.queue.db_path)
             return
         logger.info("Dispatching investigation #%d: %.60s", inv.id, inv.question)
         try:
