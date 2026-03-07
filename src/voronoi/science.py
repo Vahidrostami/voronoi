@@ -1,0 +1,830 @@
+"""Science gate enforcement — the backbone of Voronoi's rigor system.
+
+This module implements programmatic enforcement of scientific rigor gates
+that were previously only described in agent prompts. It provides:
+
+- Pre-registration validation
+- Belief map management (create, update, query)
+- Convergence detection with rigor-appropriate criteria
+- Information-gain hypothesis prioritization
+- Paradigm stress detection
+- Consistency gate (pairwise contradiction checking)
+- Lab notebook tracking (iteration history)
+- Replication coordination
+
+All functions operate on the filesystem (.swarm/) and Beads (via subprocess),
+keeping the system stateless and debuggable.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import os
+import re
+import subprocess
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional
+
+logger = logging.getLogger("voronoi.science")
+
+
+# ---------------------------------------------------------------------------
+# Beads helper (shared with other modules)
+# ---------------------------------------------------------------------------
+
+def _run_bd(*args: str, cwd: str | None = None) -> tuple[int, str]:
+    """Run a bd (beads) command."""
+    env = os.environ.copy()
+    if cwd and "BEADS_DIR" not in env:
+        beads_dir = os.path.join(cwd, ".beads")
+        if os.path.isdir(beads_dir):
+            env["BEADS_DIR"] = beads_dir
+    try:
+        result = subprocess.run(
+            ["bd", *args],
+            capture_output=True, text=True, timeout=30,
+            cwd=cwd, env=env,
+        )
+        return result.returncode, (result.stdout + result.stderr).strip()
+    except FileNotFoundError:
+        return 1, "bd (beads) not found"
+    except subprocess.TimeoutExpired:
+        return 1, "Command timed out"
+
+
+# ---------------------------------------------------------------------------
+# Pre-registration
+# ---------------------------------------------------------------------------
+
+PRE_REG_FIELDS = {
+    "HYPOTHESIS", "METHOD", "CONTROLS", "EXPECTED_RESULT",
+    "CONFOUNDS", "STAT_TEST", "SAMPLE_SIZE",
+}
+
+PRE_REG_SCIENTIFIC_FIELDS = PRE_REG_FIELDS | {
+    "POWER_ANALYSIS", "SENSITIVITY_PLAN",
+}
+
+
+@dataclass
+class PreRegistration:
+    """A pre-registered experimental design."""
+    task_id: str
+    hypothesis: str = ""
+    method: str = ""
+    controls: str = ""
+    expected_result: str = ""
+    confounds: str = ""
+    stat_test: str = ""
+    sample_size: str = ""
+    power_analysis: str = ""
+    sensitivity_plan: str = ""
+    approved_by: str = ""  # methodologist task ID
+    deviations: list[str] = field(default_factory=list)
+
+    @property
+    def is_complete(self) -> bool:
+        return all([self.hypothesis, self.method, self.controls,
+                    self.expected_result, self.stat_test, self.sample_size])
+
+    @property
+    def is_scientific_complete(self) -> bool:
+        return self.is_complete and bool(self.power_analysis) and bool(self.sensitivity_plan)
+
+
+def parse_pre_registration(notes: str) -> PreRegistration:
+    """Extract pre-registration fields from Beads notes."""
+    pre_reg = PreRegistration(task_id="")
+    for line in notes.split("\n"):
+        line = line.strip()
+        if not line.startswith("PRE_REG"):
+            continue
+        for fld in ["HYPOTHESIS", "METHOD", "CONTROLS", "EXPECTED_RESULT",
+                     "CONFOUNDS", "STAT_TEST", "SAMPLE_SIZE"]:
+            m = re.search(rf"{fld}\s*=\s*\[([^\]]+)\]", line)
+            if m:
+                setattr(pre_reg, fld.lower(), m.group(1).strip())
+        if "POWER" in line:
+            m = re.search(r"EFFECT_SIZE=\[([^\]]+)\]", line)
+            if m:
+                pre_reg.power_analysis = m.group(1).strip()
+        if "SENSITIVITY" in line and "PRE_REG_SENSITIVITY" in line:
+            pre_reg.sensitivity_plan = line.split("PRE_REG_SENSITIVITY:")[-1].strip()
+        if "PRE_REG_DEVIATION" in line:
+            pre_reg.deviations.append(line.split("PRE_REG_DEVIATION:")[-1].strip())
+    return pre_reg
+
+
+def validate_pre_registration(task_notes: str, rigor: str) -> tuple[bool, list[str]]:
+    """Check if a task's pre-registration is complete for its rigor level.
+
+    Returns (is_valid, list_of_missing_fields).
+    """
+    pre_reg = parse_pre_registration(task_notes)
+    missing = []
+
+    for fld in ["hypothesis", "method", "controls", "expected_result",
+                "stat_test", "sample_size"]:
+        if not getattr(pre_reg, fld):
+            missing.append(fld.upper())
+
+    if rigor in ("scientific", "experimental"):
+        if not pre_reg.power_analysis:
+            missing.append("POWER_ANALYSIS")
+        if not pre_reg.sensitivity_plan:
+            missing.append("SENSITIVITY_PLAN")
+
+    return len(missing) == 0, missing
+
+
+# ---------------------------------------------------------------------------
+# Belief Map
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Hypothesis:
+    """A single hypothesis in the belief map."""
+    id: str
+    name: str
+    prior: float
+    posterior: float
+    status: str = "untested"  # untested, testing, confirmed, refuted, inconclusive
+    evidence: list[str] = field(default_factory=list)
+    testability: float = 0.5
+    impact: float = 0.5
+
+    @property
+    def uncertainty(self) -> float:
+        """Uncertainty is highest at P=0.5, zero at P=0 or P=1."""
+        return 1.0 - abs(self.posterior - 0.5) * 2
+
+    @property
+    def information_gain(self) -> float:
+        """Priority score: uncertainty × impact × testability."""
+        return self.uncertainty * self.impact * self.testability
+
+
+@dataclass
+class BeliefMap:
+    """Tracks hypothesis probabilities across an investigation."""
+    hypotheses: list[Hypothesis] = field(default_factory=list)
+    cycle: int = 0
+    last_updated: str = ""
+
+    def add_hypothesis(self, h: Hypothesis) -> None:
+        self.hypotheses.append(h)
+
+    def update_hypothesis(self, h_id: str, posterior: float,
+                          status: str, evidence_id: str = "") -> bool:
+        """Update a hypothesis with new evidence. Returns True if found."""
+        for h in self.hypotheses:
+            if h.id == h_id:
+                h.posterior = max(0.0, min(1.0, posterior))
+                h.status = status
+                if evidence_id:
+                    h.evidence.append(evidence_id)
+                return True
+        return False
+
+    def get_priority_order(self) -> list[Hypothesis]:
+        """Return hypotheses sorted by information gain (highest first)."""
+        untested = [h for h in self.hypotheses if h.status in ("untested", "testing")]
+        return sorted(untested, key=lambda h: h.information_gain, reverse=True)
+
+    def all_resolved(self) -> bool:
+        """True if every hypothesis has been resolved (not untested/testing)."""
+        return all(h.status not in ("untested", "testing") for h in self.hypotheses)
+
+    def summary(self) -> dict:
+        """Compact summary for logging."""
+        by_status: dict[str, int] = {}
+        for h in self.hypotheses:
+            by_status[h.status] = by_status.get(h.status, 0) + 1
+        return {
+            "total": len(self.hypotheses),
+            "by_status": by_status,
+            "cycle": self.cycle,
+        }
+
+
+def load_belief_map(workspace: Path) -> BeliefMap:
+    """Load belief map from .swarm/belief-map.json."""
+    path = workspace / ".swarm" / "belief-map.json"
+    if not path.exists():
+        return BeliefMap()
+    try:
+        data = json.loads(path.read_text())
+        bm = BeliefMap(
+            cycle=data.get("cycle", 0),
+            last_updated=data.get("last_updated", ""),
+        )
+        for h_data in data.get("hypotheses", []):
+            bm.hypotheses.append(Hypothesis(
+                id=h_data.get("id", ""),
+                name=h_data.get("name", ""),
+                prior=h_data.get("prior", 0.5),
+                posterior=h_data.get("posterior", h_data.get("prior", 0.5)),
+                status=h_data.get("status", "untested"),
+                evidence=h_data.get("evidence", []),
+                testability=h_data.get("testability", 0.5),
+                impact=h_data.get("impact", 0.5),
+            ))
+        return bm
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning("Failed to load belief map: %s", e)
+        return BeliefMap()
+
+
+def save_belief_map(workspace: Path, bm: BeliefMap) -> None:
+    """Save belief map to .swarm/belief-map.json."""
+    path = workspace / ".swarm" / "belief-map.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    bm.last_updated = datetime.now(timezone.utc).isoformat()
+    data = {
+        "cycle": bm.cycle,
+        "last_updated": bm.last_updated,
+        "hypotheses": [asdict(h) for h in bm.hypotheses],
+    }
+    path.write_text(json.dumps(data, indent=2))
+
+
+# ---------------------------------------------------------------------------
+# Convergence Detection
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ConvergenceResult:
+    """Result of a convergence check."""
+    converged: bool
+    status: str  # converged, not_ready, blocked, exhausted, diminishing_returns
+    reason: str
+    score: float = 0.0  # evaluator score if available
+    blockers: list[str] = field(default_factory=list)
+
+
+def check_convergence(workspace: Path, rigor: str,
+                      eval_score: float = 0.0,
+                      improvement_rounds: int = 0) -> ConvergenceResult:
+    """Check if an investigation meets convergence criteria for its rigor level.
+
+    Args:
+        workspace: Path to the investigation workspace.
+        rigor: One of standard, analytical, scientific, experimental.
+        eval_score: Evaluator score (0.0-1.0) if available.
+        improvement_rounds: Number of improvement rounds completed.
+    """
+    blockers: list[str] = []
+    swarm = workspace / ".swarm"
+
+    # --- Standard: all tasks closed + tests passing ---
+    if rigor == "standard":
+        if not (swarm / "deliverable.md").exists():
+            blockers.append("No deliverable produced")
+        if blockers:
+            return ConvergenceResult(False, "not_ready", "; ".join(blockers), blockers=blockers)
+        return ConvergenceResult(True, "converged", "All build tasks complete")
+
+    # --- Analytical+: evaluator score required ---
+    if eval_score <= 0.0:
+        blockers.append("No evaluator score yet")
+
+    # Check for consistency conflicts
+    conflicts = _find_consistency_conflicts(workspace)
+    if conflicts:
+        blockers.append(f"{len(conflicts)} unresolved consistency conflicts")
+
+    # Check for contested findings
+    contested = _find_contested_findings(workspace)
+    if contested:
+        blockers.append(f"{len(contested)} contested findings")
+
+    if rigor == "analytical":
+        if eval_score >= 0.75:
+            if not blockers:
+                return ConvergenceResult(True, "converged", "Evaluator PASS", score=eval_score)
+        elif eval_score >= 0.50 and improvement_rounds < 2:
+            return ConvergenceResult(False, "not_ready",
+                                     f"Score {eval_score:.2f} — improvement round needed",
+                                     score=eval_score, blockers=blockers)
+        elif improvement_rounds >= 2:
+            return ConvergenceResult(True, "diminishing_returns",
+                                     f"Max improvement rounds reached (score={eval_score:.2f})",
+                                     score=eval_score)
+
+    # --- Scientific+: hypothesis resolution required ---
+    if rigor in ("scientific", "experimental"):
+        bm = load_belief_map(workspace)
+        if not bm.hypotheses:
+            blockers.append("No hypotheses in belief map")
+        elif not bm.all_resolved():
+            unresolved = [h.name for h in bm.hypotheses
+                          if h.status in ("untested", "testing")]
+            blockers.append(f"Unresolved hypotheses: {', '.join(unresolved[:3])}")
+
+        # At least one competing theory ruled out
+        theories = _find_theories(workspace)
+        if not any(t.get("status") == "refuted" for t in theories):
+            blockers.append("No competing theory ruled out yet")
+
+        # Novel prediction tested
+        predictions = _find_tested_predictions(workspace)
+        if not predictions:
+            blockers.append("No novel prediction tested")
+
+        # All findings must be ROBUST or FRAGILE-documented
+        fragile_undoc = _find_undocumented_fragile(workspace)
+        if fragile_undoc:
+            blockers.append(f"{len(fragile_undoc)} fragile findings without conditions documented")
+
+    # --- Experimental: replication required ---
+    if rigor == "experimental":
+        unreplicated = _find_unreplicated_high_impact(workspace)
+        if unreplicated:
+            blockers.append(f"{len(unreplicated)} high-impact findings not yet replicated")
+
+    if eval_score >= 0.75 and not blockers:
+        return ConvergenceResult(True, "converged",
+                                 f"All criteria met (score={eval_score:.2f})",
+                                 score=eval_score)
+
+    if improvement_rounds >= 2 and not blockers:
+        return ConvergenceResult(True, "diminishing_returns",
+                                 "Max improvement rounds, blockers cleared",
+                                 score=eval_score)
+
+    if blockers:
+        return ConvergenceResult(False, "blocked", "; ".join(blockers),
+                                 score=eval_score, blockers=blockers)
+
+    return ConvergenceResult(False, "not_ready", "Evaluation in progress",
+                             score=eval_score)
+
+
+def write_convergence(workspace: Path, result: ConvergenceResult) -> Path:
+    """Write convergence.json to the workspace."""
+    path = workspace / ".swarm" / "convergence.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        "status": result.status,
+        "converged": result.converged,
+        "reason": result.reason,
+        "score": result.score,
+        "blockers": result.blockers,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    path.write_text(json.dumps(data, indent=2))
+    return path
+
+
+# ---------------------------------------------------------------------------
+# Paradigm Stress Detection
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ParadigmStressResult:
+    """Result of paradigm stress check."""
+    stressed: bool
+    contradiction_count: int
+    contradicting_findings: list[str]
+    message: str
+
+
+def check_paradigm_stress(workspace: Path) -> ParadigmStressResult:
+    """Detect if 3+ findings contradict the working model."""
+    contradictions = _find_consistency_conflicts(workspace)
+    count = len(contradictions)
+    finding_ids = [c.get("finding_a", "") for c in contradictions] + \
+                  [c.get("finding_b", "") for c in contradictions]
+    finding_ids = list(set(f for f in finding_ids if f))
+
+    if count >= 3:
+        return ParadigmStressResult(
+            stressed=True,
+            contradiction_count=count,
+            contradicting_findings=finding_ids,
+            message=f"PARADIGM STRESS: {count} contradictions detected. "
+                    f"Working model may need fundamental revision.",
+        )
+    return ParadigmStressResult(
+        stressed=False,
+        contradiction_count=count,
+        contradicting_findings=finding_ids,
+        message=f"{count} contradiction(s) — within normal range",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Consistency Gate
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ConsistencyConflict:
+    """A contradiction between two findings."""
+    finding_a: str
+    finding_b: str
+    conflict_type: str  # direction, magnitude, conclusion
+    description: str
+
+
+def check_consistency(findings: list[dict]) -> list[ConsistencyConflict]:
+    """Pairwise consistency check across validated findings.
+
+    Finds contradictions in valence direction or overlapping claims.
+    """
+    conflicts: list[ConsistencyConflict] = []
+    validated = [f for f in findings
+                 if "STAT_REVIEW: APPROVED" in f.get("notes", "")]
+
+    for i, a in enumerate(validated):
+        for b in validated[i + 1:]:
+            conflict = _check_pair_consistency(a, b)
+            if conflict:
+                conflicts.append(conflict)
+
+    return conflicts
+
+
+def _check_pair_consistency(a: dict, b: dict) -> Optional[ConsistencyConflict]:
+    """Check if two findings contradict each other."""
+    notes_a = a.get("notes", "")
+    notes_b = b.get("notes", "")
+
+    valence_a = _extract_field(notes_a, "VALENCE")
+    valence_b = _extract_field(notes_b, "VALENCE")
+
+    title_a = a.get("title", "").lower()
+    title_b = b.get("title", "").lower()
+
+    # Check if they address the same topic (simple keyword overlap)
+    words_a = set(re.findall(r'\b\w{4,}\b', title_a))
+    words_b = set(re.findall(r'\b\w{4,}\b', title_b))
+    overlap = words_a & words_b
+
+    if len(overlap) < 2:
+        return None  # Different topics — no conflict expected
+
+    # Opposing valence on overlapping topic
+    if valence_a and valence_b and valence_a != valence_b:
+        if {valence_a, valence_b} == {"positive", "negative"}:
+            return ConsistencyConflict(
+                finding_a=a.get("id", ""),
+                finding_b=b.get("id", ""),
+                conflict_type="direction",
+                description=f"Opposing valence on related topic: "
+                            f"{a.get('title', '')} ({valence_a}) vs "
+                            f"{b.get('title', '')} ({valence_b})",
+            )
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Lab Notebook
+# ---------------------------------------------------------------------------
+
+@dataclass
+class LabNotebookEntry:
+    """A single entry in the lab notebook."""
+    cycle: int
+    phase: str
+    verdict: str  # pass, fail, iterate, blocked
+    metrics: dict = field(default_factory=dict)
+    failures: list[str] = field(default_factory=list)
+    next_steps: list[str] = field(default_factory=list)
+    timestamp: str = ""
+
+
+def load_lab_notebook(workspace: Path) -> list[LabNotebookEntry]:
+    """Load the lab notebook from .swarm/lab-notebook.json."""
+    path = workspace / ".swarm" / "lab-notebook.json"
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text())
+        entries = []
+        for e in data.get("entries", []):
+            entries.append(LabNotebookEntry(
+                cycle=e.get("cycle", 0),
+                phase=e.get("phase", ""),
+                verdict=e.get("verdict", ""),
+                metrics=e.get("metrics", {}),
+                failures=e.get("failures", []),
+                next_steps=e.get("next_steps", []),
+                timestamp=e.get("timestamp", ""),
+            ))
+        return entries
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
+def append_lab_notebook(workspace: Path, entry: LabNotebookEntry) -> None:
+    """Append an entry to the lab notebook."""
+    entries = load_lab_notebook(workspace)
+    entry.timestamp = datetime.now(timezone.utc).isoformat()
+    entries.append(entry)
+    path = workspace / ".swarm" / "lab-notebook.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = {"entries": [asdict(e) for e in entries]}
+    path.write_text(json.dumps(data, indent=2))
+
+
+# ---------------------------------------------------------------------------
+# Data Integrity
+# ---------------------------------------------------------------------------
+
+def verify_data_hash(filepath: Path, expected_hash: str) -> bool:
+    """Verify SHA-256 hash of a data file."""
+    if not filepath.exists():
+        return False
+    sha256 = hashlib.sha256()
+    with open(filepath, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            sha256.update(chunk)
+    actual = f"sha256:{sha256.hexdigest()}"
+    return actual == expected_hash
+
+
+# ---------------------------------------------------------------------------
+# Gate checks (used by dispatcher)
+# ---------------------------------------------------------------------------
+
+def check_dispatch_gates(task: dict, workspace: Path, rigor: str) -> tuple[bool, list[str]]:
+    """Check if a task is ready to be dispatched based on artifact contracts and rigor gates.
+
+    Returns (can_dispatch, list_of_blockers).
+    """
+    blockers: list[str] = []
+    notes = task.get("notes", "")
+
+    # Check REQUIRES artifacts
+    requires = _extract_field(notes, "REQUIRES")
+    if requires:
+        for req in requires.split(","):
+            req = req.strip()
+            if req and not (workspace / req).exists():
+                blockers.append(f"REQUIRES missing: {req}")
+
+    # Check GATE artifacts
+    gate = _extract_field(notes, "GATE")
+    if gate:
+        gate_path = workspace / gate.strip()
+        if not gate_path.exists():
+            blockers.append(f"GATE file missing: {gate}")
+        else:
+            try:
+                gate_data = json.loads(gate_path.read_text())
+                # Check for passing verdicts
+                if isinstance(gate_data, dict):
+                    status = gate_data.get("status", "")
+                    converged = gate_data.get("converged", False)
+                    if status not in ("converged", "pass", "passed") and not converged:
+                        blockers.append(f"GATE not passing: {gate} (status={status})")
+            except (json.JSONDecodeError, OSError):
+                blockers.append(f"GATE file unreadable: {gate}")
+
+    # Scientific+ investigation tasks need Methodologist approval
+    task_type = _extract_field(notes, "TASK_TYPE")
+    if task_type == "investigation" and rigor in ("scientific", "experimental"):
+        methodologist_review = _extract_field(notes, "METHODOLOGIST_REVIEW")
+        if not methodologist_review:
+            blockers.append("Methodologist review required (Scientific+ investigation)")
+        elif methodologist_review == "REJECTED":
+            blockers.append("Methodologist REJECTED this design")
+        elif methodologist_review == "CONDITIONAL":
+            blockers.append("Methodologist review CONDITIONAL — conditions not yet met")
+
+    # Pre-registration check for investigation tasks at Analytical+
+    if task_type == "investigation" and rigor in ("analytical", "scientific", "experimental"):
+        valid, missing = validate_pre_registration(notes, rigor)
+        if not valid:
+            blockers.append(f"Pre-registration incomplete: {', '.join(missing)}")
+
+    return len(blockers) == 0, blockers
+
+
+def check_merge_gates(task: dict, workspace: Path, rigor: str) -> tuple[bool, list[str]]:
+    """Check if a task's output is ready to be merged based on quality gates.
+
+    Returns (can_merge, list_of_blockers).
+    """
+    blockers: list[str] = []
+    notes = task.get("notes", "")
+
+    # Check PRODUCES artifacts
+    produces = _extract_field(notes, "PRODUCES")
+    if produces:
+        for prod in produces.split(","):
+            prod = prod.strip()
+            if prod and not (workspace / prod).exists():
+                blockers.append(f"PRODUCES missing: {prod}")
+
+    # Findings need statistical review at Analytical+
+    title = task.get("title", "")
+    if "FINDING" in title.upper() and rigor in ("analytical", "scientific", "experimental"):
+        stat_review = _extract_field(notes, "STAT_REVIEW")
+        if not stat_review:
+            blockers.append("Finding needs Statistician review")
+        elif stat_review == "REJECTED":
+            blockers.append("Statistician REJECTED this finding")
+
+    # Findings need Critic review at Scientific+
+    if "FINDING" in title.upper() and rigor in ("scientific", "experimental"):
+        critic_review = _extract_field(notes, "CRITIC_REVIEW")
+        if not critic_review:
+            blockers.append("Finding needs Critic review")
+        elif critic_review == "REJECTED":
+            blockers.append("Critic REJECTED this finding")
+
+    return len(blockers) == 0, blockers
+
+
+# ---------------------------------------------------------------------------
+# Replication
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ReplicationNeed:
+    """A finding that needs replication."""
+    finding_id: str
+    title: str
+    reason: str  # direction_changing, wide_ci, contradicts_model, low_quality
+
+
+def find_replication_needs(workspace: Path) -> list[ReplicationNeed]:
+    """Identify findings that should be replicated."""
+    needs: list[ReplicationNeed] = []
+    code, output = _run_bd("list", "--json", cwd=str(workspace))
+    if code != 0:
+        return needs
+
+    try:
+        tasks = json.loads(output)
+    except (json.JSONDecodeError, ValueError):
+        return needs
+
+    for task in tasks:
+        title = task.get("title", "")
+        notes = task.get("notes", "")
+        if "FINDING" not in title.upper():
+            continue
+        if "REPLICATED" in notes and "REPLICATED:no" not in notes.lower():
+            continue
+
+        tid = task.get("id", "")
+        reasons = []
+
+        # Wide CI check
+        ci = _extract_field(notes, "CI_95")
+        if ci:
+            try:
+                nums = re.findall(r'[-+]?\d*\.?\d+', ci)
+                if len(nums) >= 2:
+                    lo, hi = float(nums[0]), float(nums[1])
+                    effect = _extract_field(notes, "EFFECT_SIZE")
+                    if effect:
+                        eff_nums = re.findall(r'[-+]?\d*\.?\d+', effect)
+                        if eff_nums:
+                            eff_val = abs(float(eff_nums[0]))
+                            if eff_val > 0 and (hi - lo) / eff_val > 0.6:
+                                reasons.append("wide_ci")
+            except (ValueError, IndexError):
+                pass
+
+        # Low quality score
+        quality = _extract_field(notes, "QUALITY")
+        if quality:
+            try:
+                if float(quality) < 0.7:
+                    reasons.append("low_quality")
+            except ValueError:
+                pass
+
+        if reasons:
+            needs.append(ReplicationNeed(
+                finding_id=tid,
+                title=title,
+                reason=reasons[0],
+            ))
+
+    return needs
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def _extract_field(notes: str, field_name: str) -> str:
+    """Extract a field value from Beads notes string."""
+    pattern = rf"\b{re.escape(field_name)}\s*[:=]\s*([^\n|]+)"
+    m = re.search(pattern, notes, re.I)
+    return m.group(1).strip() if m else ""
+
+
+def _find_consistency_conflicts(workspace: Path) -> list[dict]:
+    """Find unresolved consistency conflicts in the workspace."""
+    code, output = _run_bd("list", "--json", cwd=str(workspace))
+    if code != 0:
+        return []
+    try:
+        tasks = json.loads(output)
+    except (json.JSONDecodeError, ValueError):
+        return []
+
+    conflicts = []
+    for task in tasks:
+        notes = task.get("notes", "")
+        if "CONSISTENCY_CONFLICT" in notes and task.get("status") != "closed":
+            conflicts.append({
+                "id": task.get("id", ""),
+                "finding_a": _extract_field(notes, "CONSISTENCY_CONFLICT").split(" vs ")[0].strip() if " vs " in notes else "",
+                "finding_b": _extract_field(notes, "CONSISTENCY_CONFLICT").split(" vs ")[-1].strip() if " vs " in notes else "",
+            })
+    return conflicts
+
+
+def _find_contested_findings(workspace: Path) -> list[str]:
+    """Find findings marked CONTESTED."""
+    code, output = _run_bd("list", "--json", cwd=str(workspace))
+    if code != 0:
+        return []
+    try:
+        tasks = json.loads(output)
+    except (json.JSONDecodeError, ValueError):
+        return []
+    return [t.get("id", "") for t in tasks
+            if "ADVERSARIAL_RESULT: CONTESTED" in t.get("notes", "")]
+
+
+def _find_theories(workspace: Path) -> list[dict]:
+    """Find theory entries in Beads."""
+    code, output = _run_bd("list", "--json", cwd=str(workspace))
+    if code != 0:
+        return []
+    try:
+        tasks = json.loads(output)
+    except (json.JSONDecodeError, ValueError):
+        return []
+    theories = []
+    for t in tasks:
+        notes = t.get("notes", "")
+        if "TYPE:theory" in notes:
+            status = _extract_field(notes, "STATUS")
+            theories.append({"id": t.get("id", ""), "status": status})
+    return theories
+
+
+def _find_tested_predictions(workspace: Path) -> list[str]:
+    """Find predictions that have been tested."""
+    code, output = _run_bd("list", "--json", cwd=str(workspace))
+    if code != 0:
+        return []
+    try:
+        tasks = json.loads(output)
+    except (json.JSONDecodeError, ValueError):
+        return []
+    return [t.get("id", "") for t in tasks
+            if "PREDICTION_TESTED" in t.get("notes", "")
+            and t.get("status") == "closed"]
+
+
+def _find_undocumented_fragile(workspace: Path) -> list[str]:
+    """Find fragile findings without documented conditions."""
+    code, output = _run_bd("list", "--json", cwd=str(workspace))
+    if code != 0:
+        return []
+    try:
+        tasks = json.loads(output)
+    except (json.JSONDecodeError, ValueError):
+        return []
+    fragile = []
+    for t in tasks:
+        notes = t.get("notes", "")
+        if "ROBUST:no" in notes.lower() and "CONDITIONS:" not in notes:
+            fragile.append(t.get("id", ""))
+    return fragile
+
+
+def _find_unreplicated_high_impact(workspace: Path) -> list[str]:
+    """Find high-impact findings that haven't been replicated."""
+    code, output = _run_bd("list", "--json", cwd=str(workspace))
+    if code != 0:
+        return []
+    try:
+        tasks = json.loads(output)
+    except (json.JSONDecodeError, ValueError):
+        return []
+    unreplicated = []
+    for t in tasks:
+        title = t.get("title", "")
+        notes = t.get("notes", "")
+        if "FINDING" not in title.upper():
+            continue
+        # High impact: priority 0 or 1
+        if t.get("priority", 9) <= 1:
+            if "REPLICATED:no" in notes.lower() or "REPLICATED" not in notes:
+                unreplicated.append(t.get("id", ""))
+    return unreplicated

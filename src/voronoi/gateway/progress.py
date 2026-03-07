@@ -37,28 +37,47 @@ MODE_VERB: dict[str, str] = {
 
 PHASE_LABELS: dict[str, dict[str, str]] = {
     "investigate": {
-        "planning": "🗺️ *Planning* — decomposing into tasks…",
+        "scouting": "🔍 *Scouting* — researching prior knowledge…",
+        "planning": "🗺️ *Planning* — generating hypotheses, decomposing into tasks…",
         "investigating": "🔬 *Running* — agents investigating in parallel",
-        "synthesizing": "🧩 *Synthesizing* — integrating findings…",
+        "reviewing": "⚖️ *Reviewing* — findings under statistical & adversarial review",
+        "synthesizing": "🧩 *Synthesizing* — integrating findings, updating belief map…",
+        "converging": "🎯 *Converging* — evaluating deliverable against original question…",
         "complete": "📄 *Wrapping up* — writing deliverable…",
     },
     "explore": {
+        "scouting": "🔍 *Scouting* — surveying the landscape…",
         "planning": "🗺️ *Planning* — mapping the exploration…",
         "investigating": "🧭 *Exploring* — agents researching in parallel",
+        "reviewing": "⚖️ *Reviewing* — evaluating options…",
         "synthesizing": "🧩 *Synthesizing* — comparing alternatives…",
+        "converging": "🎯 *Converging* — finalizing recommendation…",
         "complete": "📄 *Wrapping up* — writing report…",
     },
     "build": {
         "planning": "🗺️ *Architecting* — breaking down the build…",
         "investigating": "🔨 *Building* — agents coding in parallel",
+        "reviewing": "⚖️ *Reviewing* — code review in progress…",
         "synthesizing": "🧩 *Integrating* — assembling components…",
         "complete": "📄 *Finalizing* — polishing deliverables…",
     },
     "experiment": {
-        "planning": "🗺️ *Designing* — setting up the experiment…",
+        "scouting": "🔍 *Scouting* — reviewing methodology and prior art…",
+        "planning": "🗺️ *Designing* — pre-registering experiments…",
         "investigating": "🧪 *Running trials* — agents executing experiments",
-        "synthesizing": "🧩 *Analyzing* — processing results…",
+        "reviewing": "⚖️ *Reviewing* — statistical audit & adversarial critique",
+        "synthesizing": "🧩 *Analyzing* — processing results, checking consistency…",
+        "converging": "🎯 *Converging* — replication & final evaluation…",
         "complete": "📄 *Wrapping up* — writing manuscript…",
+    },
+    "hybrid": {
+        "scouting": "🔍 *Scouting* — researching before we plan…",
+        "planning": "🗺️ *Planning* — investigation then build…",
+        "investigating": "🔬🔨 *Working* — agents running in parallel",
+        "reviewing": "⚖️ *Reviewing* — validating findings…",
+        "synthesizing": "🧩 *Synthesizing* — integrating investigation + build…",
+        "converging": "🎯 *Converging* — evaluating completeness…",
+        "complete": "📄 *Wrapping up* — writing deliverable…",
     },
 }
 

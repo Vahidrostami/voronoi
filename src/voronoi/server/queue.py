@@ -92,7 +92,12 @@ class InvestigationQueue:
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(str(self.db_path), timeout=10)
-        conn.execute("PRAGMA journal_mode=WAL")
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+        except sqlite3.OperationalError:
+            # WAL requires POSIX shared-memory locking; falls back to
+            # DELETE journal mode on filesystems that lack it (e.g. NFS).
+            pass
         conn.row_factory = sqlite3.Row
         try:
             yield conn

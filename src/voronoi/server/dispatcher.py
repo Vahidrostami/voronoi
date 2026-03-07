@@ -4,7 +4,8 @@ The router enqueues investigations directly into the SQLite queue.
 The dispatcher's job is to:
   1. dispatch_next() — launch queued investigations
   2. poll_progress() — monitor running investigations, send updates
-  3. Generate teaser + PDF on completion and deliver via Telegram
+  3. Enforce science gates (pre-registration, review, convergence)
+  4. Generate teaser + PDF on completion and deliver via Telegram
 """
 
 from __future__ import annotations
@@ -47,11 +48,15 @@ class RunningInvestigation:
     question: str
     mode: str
     codename: str = ""
+    rigor: str = "standard"
     started_at: float = field(default_factory=time.time)
     last_update_at: float = 0
     task_snapshot: dict = field(default_factory=dict)
     notified_findings: set = field(default_factory=set)
+    notified_paradigm_stress: bool = False
     phase: str = "starting"
+    improvement_rounds: int = 0
+    eval_score: float = 0.0
 
     @property
     def label(self) -> str:
@@ -141,6 +146,7 @@ class InvestigationDispatcher:
             question=inv.question,
             mode=inv.mode,
             codename=inv.codename,
+            rigor=getattr(inv, 'rigor', 'standard') or 'standard',
         )
 
         logger.info("Investigation %s (#%d) LIVE in tmux=%s workspace=%s",
@@ -163,6 +169,10 @@ class InvestigationDispatcher:
         label = inv.codename or f"#{inv.id}"
         theme = theme_for_codename(inv.codename) if inv.codename else ""
         theme_hint = f"\nThematic inspiration: {theme}\n" if theme else ""
+        rigor = getattr(inv, 'rigor', 'standard') or 'standard'
+
+        # Build science-aware sections based on rigor
+        science_sections = self._build_science_prompt_sections(inv.mode, rigor, label)
 
         return (
             "You are the Voronoi swarm orchestrator. Your job: read the question, "
@@ -171,7 +181,7 @@ class InvestigationDispatcher:
             f"## {verb.title()}\n\n"
             f"**Question:** {inv.question}\n"
             f"**Mode:** {inv.mode}\n"
-            f"**Rigor:** {inv.rigor}\n"
+            f"**Rigor:** {rigor}\n"
             f"**Workspace:** {workspace_path}\n\n"
             f"## Your Codename: {label}\n\n"
             f"Use \"{label}\" in EVERY Telegram notification. This is your identity.\n"
@@ -189,16 +199,10 @@ class InvestigationDispatcher:
             "BAD examples:\n"
             '  notify_telegram "merge" "Merged branch task 3"  ← no personality, no codename\n'
             '  notify_telegram "wave" "dispatched agents"  ← no numbers, no fun\n\n'
+            f"{science_sections}"
             "## Workflow\n\n"
-            "1. Read PROMPT.md — understand the question fully\n"
-            "2. Run `bd prime`, create an epic + tasks with dependencies\n"
-            "3. OODA loop:\n"
-            "   - Observe: `bd ready --json` for dispatchable tasks\n"
-            "   - Orient: Check agent status, process results\n"
-            "   - Decide: What to spawn, merge, retry, or analyze\n"
-            "   - Act: Spawn agents, merge work, diagnose failures\n"
-            "4. When converged, write `.swarm/deliverable.md` and push results\n\n"
-            "## Tools\n\n"
+            + self._build_workflow_steps(inv.mode, rigor) +
+            "\n## Tools\n\n"
             "Task tracking:\n"
             "  bd prime / bd create / bd ready --json / bd close\n\n"
             "Spawn agents:\n"
@@ -213,7 +217,143 @@ class InvestigationDispatcher:
             "- No overlapping file scopes between agents\n"
             "- Push all completed work to remote when done\n"
             f"- Max concurrent agents: {self.config.max_agents}\n"
+            + self._build_rigor_rules(rigor)
         )
+
+    def _build_science_prompt_sections(self, mode: str, rigor: str, label: str) -> str:
+        """Build science-specific prompt sections based on mode and rigor."""
+        sections = []
+
+        # Scout phase for non-build modes
+        if mode in ("investigate", "explore", "hybrid"):
+            sections.append(
+                "## Phase 0: Scout\n\n"
+                "Before planning tasks, dispatch a Scout agent to research existing knowledge:\n"
+                "- Search codebase, docs, logs for prior work on this topic\n"
+                "- Produce a knowledge brief (.swarm/scout-brief.md) with:\n"
+                "  - Known results, failed approaches, open questions\n"
+                "  - Suggested hypotheses with rationale and priors\n"
+            )
+            if rigor in ("scientific", "experimental"):
+                sections.append(
+                    "  - SOTA methodology for this problem type (MANDATORY at Scientific+)\n"
+                    "- WAIT for Scout to complete before generating hypotheses\n\n"
+                )
+            else:
+                sections.append("\n")
+
+        # Hypothesis generation for investigation modes
+        if mode in ("investigate", "hybrid") and rigor != "standard":
+            sections.append(
+                "## Hypothesis Management\n\n"
+                "After Scout completes, generate hypotheses and create a belief map:\n"
+                "1. Generate 3-7 hypotheses from Scout brief with prior probabilities\n"
+                "2. Write belief map to .swarm/belief-map.json\n"
+                "3. Prioritize by information gain: uncertainty × impact × testability\n"
+                "4. Create investigation tasks for top-priority hypotheses\n\n"
+            )
+            if rigor in ("scientific", "experimental"):
+                sections.append(
+                    "At Scientific+ rigor:\n"
+                    "- Dispatch Theorist to refine hypotheses and propose competing theories\n"
+                    "- Dispatch Methodologist to batch-review all experimental designs\n"
+                    "- WAIT for Methodologist approval before dispatching Investigators\n"
+                    "- Every investigation task MUST have pre-registration (HYPOTHESIS, METHOD,\n"
+                    "  CONTROLS, EXPECTED_RESULT, CONFOUNDS, STAT_TEST, SAMPLE_SIZE, POWER_ANALYSIS)\n\n"
+                )
+
+        # Review gates
+        if rigor in ("analytical", "scientific", "experimental"):
+            sections.append(
+                "## Review Gates\n\n"
+                "Findings MUST pass review gates before entering the knowledge store:\n"
+            )
+            sections.append("- **Statistician**: Reviews CI, effect sizes, test appropriateness, data integrity\n")
+            if rigor in ("scientific", "experimental"):
+                sections.append(
+                    "- **Critic**: Adversarial review with structured checklist (CONFOUNDS, ALT_EXPLANATIONS,\n"
+                    "  DATA_QUALITY, STAT_VALIDITY, GENERALIZABILITY). Partially blinded — sees data but NOT hypothesis.\n"
+                    "  Up to 3 adversarial rounds. Unresolved = CONTESTED (blocks convergence).\n"
+                )
+            sections.append(
+                "- **Synthesizer**: Consistency check against all validated findings\n"
+                "- **Evaluator**: Score deliverable (Completeness, Coherence, Strength, Actionability)\n\n"
+            )
+
+        # Convergence criteria
+        if rigor != "standard":
+            sections.append(
+                "## Convergence Criteria\n\n"
+            )
+            if rigor == "analytical":
+                sections.append(
+                    "- All questions answered with quantitative evidence\n"
+                    "- Statistician reviewed all findings\n"
+                    "- No unresolved contradictions\n"
+                    "- Evaluator score ≥ 0.75 (max 2 improvement rounds)\n\n"
+                )
+            elif rigor == "scientific":
+                sections.append(
+                    "- All hypotheses resolved (confirmed/refuted/inconclusive with evidence)\n"
+                    "- Causal model accounts for all findings\n"
+                    "- At least 1 competing theory ruled out\n"
+                    "- At least 1 novel prediction tested\n"
+                    "- No CONSISTENCY_CONFLICTs, no PARADIGM_STRESS\n"
+                    "- All findings ROBUST or FRAGILE-documented\n"
+                    "- Evaluator score ≥ 0.75 (max 2 improvement rounds)\n\n"
+                )
+            elif rigor == "experimental":
+                sections.append(
+                    "- All Scientific criteria PLUS:\n"
+                    "- All high-impact findings replicated (overlapping CIs or TOST)\n"
+                    "- Pre-registration compliance verified\n"
+                    "- Power analysis documented for every experiment\n\n"
+                )
+
+        return "".join(sections)
+
+    def _build_workflow_steps(self, mode: str, rigor: str) -> str:
+        """Build mode-appropriate workflow steps."""
+        steps = ["1. Read PROMPT.md — understand the question fully\n"]
+
+        if mode in ("investigate", "explore", "hybrid"):
+            steps.append("2. Dispatch Scout → wait for knowledge brief (.swarm/scout-brief.md)\n")
+            steps.append("3. Run `bd prime`, create an epic + tasks with dependencies\n")
+            if rigor != "standard":
+                steps.append("4. Generate hypotheses → write .swarm/belief-map.json\n")
+                steps.append("5. Inject STRATEGIC_CONTEXT into each task's Beads notes\n")
+                scout_step = 6
+            else:
+                scout_step = 4
+        else:
+            steps.append("2. Run `bd prime`, create an epic + tasks with dependencies\n")
+            scout_step = 3
+
+        steps.append(
+            f"{scout_step}. OODA loop:\n"
+            "   - Observe: `bd ready --json`, check findings, belief map, git activity\n"
+            "   - Orient: Classify events, update strategic context, check convergence\n"
+            "   - Decide: Prioritize by information gain, check review gates\n"
+            "   - Act: Spawn agents, merge work, dispatch reviewers, update belief map\n"
+        )
+        steps.append(f"{scout_step + 1}. When converged, write `.swarm/deliverable.md` and push results\n")
+        return "".join(steps)
+
+    def _build_rigor_rules(self, rigor: str) -> str:
+        """Build rigor-specific rules."""
+        rules = []
+        if rigor in ("analytical", "scientific", "experimental"):
+            rules.append("- Every finding MUST pass Statistician review before acceptance\n")
+            rules.append("- Every task MUST declare PRODUCES and REQUIRES artifact contracts\n")
+        if rigor in ("scientific", "experimental"):
+            rules.append("- Investigation tasks MUST have pre-registration BEFORE execution\n")
+            rules.append("- Investigation tasks MUST have Methodologist approval BEFORE dispatch\n")
+            rules.append("- Findings MUST pass Critic adversarial review (partially blinded)\n")
+            rules.append("- Must propose competing theories with discriminating predictions\n")
+        if rigor == "experimental":
+            rules.append("- High-impact findings MUST be replicated before convergence\n")
+            rules.append("- Power analysis MANDATORY for every experiment\n")
+        return "".join(rules)
 
     def _launch_in_tmux(self, session: str, workspace_path: Path) -> None:
         agent_cmd = self.config.agent_command
@@ -351,12 +491,27 @@ class InvestigationDispatcher:
 
         if (ws / ".swarm" / "deliverable.md").exists():
             run.phase = "complete"
+        elif (ws / ".swarm" / "convergence.json").exists():
+            run.phase = "converging"
         elif (ws / ".swarm" / "belief-map.json").exists():
             run.phase = "synthesizing"
+        elif (ws / ".swarm" / "scout-brief.md").exists() and run.phase == "scouting":
+            run.phase = "planning"
         elif run.task_snapshot:
+            # Detect science-specific phases
+            titles = [t.get("title", "") for t in run.task_snapshot.values()]
+            has_scout = any("scout" in t.lower() for t in titles)
+            has_review = any(k in " ".join(titles).upper()
+                            for k in ("STAT_REVIEW", "CRITIC_REVIEW", "METHODOLOGIST"))
+
             in_progress = sum(1 for t in run.task_snapshot.values() if t["status"] == "in_progress")
             closed = sum(1 for t in run.task_snapshot.values() if t["status"] == "closed")
-            if in_progress > 0 or closed > 0:
+
+            if has_scout and closed == 0 and in_progress > 0:
+                run.phase = "scouting"
+            elif has_review and in_progress > 0:
+                run.phase = "reviewing"
+            elif in_progress > 0 or closed > 0:
                 run.phase = "investigating"
             elif len(run.task_snapshot) > 0:
                 run.phase = "planning"
@@ -364,6 +519,28 @@ class InvestigationDispatcher:
         if run.phase != old_phase:
             phase_msg = phase_label(run.mode, run.phase)
             events.append({"type": "phase", "msg": phase_msg})
+
+        # Check for paradigm stress (Scientific+ only)
+        if run.rigor in ("scientific", "experimental") and not run.notified_paradigm_stress:
+            events.extend(self._check_paradigm_stress(run))
+
+        return events
+
+    def _check_paradigm_stress(self, run: RunningInvestigation) -> list[dict]:
+        """Check for paradigm stress in scientific investigations."""
+        events: list[dict] = []
+        try:
+            from voronoi.science import check_paradigm_stress
+            result = check_paradigm_stress(run.workspace_path)
+            if result.stressed:
+                run.notified_paradigm_stress = True
+                events.append({
+                    "type": "paradigm_stress",
+                    "msg": f"⚠️ *PARADIGM STRESS* — {result.contradiction_count} "
+                           f"contradictions detected. Working model may need revision.",
+                })
+        except Exception as e:
+            logger.debug("Paradigm stress check failed: %s", e)
         return events
 
     def _send_progress_batch(self, run: RunningInvestigation, events: list[dict]) -> None:
@@ -416,7 +593,22 @@ class InvestigationDispatcher:
 
     def _is_complete(self, run: RunningInvestigation) -> bool:
         if (run.workspace_path / ".swarm" / "deliverable.md").exists():
-            return True
+            # For standard rigor, deliverable is sufficient
+            if run.rigor == "standard":
+                return True
+            # For higher rigor, also need convergence signal
+            conv = run.workspace_path / ".swarm" / "convergence.json"
+            if conv.exists():
+                try:
+                    data = json.loads(conv.read_text())
+                    return data.get("converged", False) or \
+                        data.get("status") in ("converged", "exhausted", "diminishing_returns")
+                except (json.JSONDecodeError, OSError):
+                    pass
+            # Deliverable exists but no convergence signal — check if
+            # we should generate one
+            self._try_convergence_check(run)
+            return False
         conv = run.workspace_path / ".swarm" / "convergence.json"
         if conv.exists():
             try:
@@ -425,6 +617,21 @@ class InvestigationDispatcher:
             except (json.JSONDecodeError, OSError):
                 pass
         return False
+
+    def _try_convergence_check(self, run: RunningInvestigation) -> None:
+        """Attempt to run a convergence check and write convergence.json."""
+        try:
+            from voronoi.science import check_convergence, write_convergence
+            result = check_convergence(
+                run.workspace_path, run.rigor,
+                eval_score=run.eval_score,
+                improvement_rounds=run.improvement_rounds,
+            )
+            if result.converged or result.status in ("exhausted", "diminishing_returns"):
+                write_convergence(run.workspace_path, result)
+                logger.info("Convergence written for %s: %s", run.label, result.status)
+        except Exception as e:
+            logger.debug("Convergence check failed: %s", e)
 
     # ------------------------------------------------------------------
     # Completion — teaser + PDF + publish
