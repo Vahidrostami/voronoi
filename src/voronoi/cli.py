@@ -1,17 +1,19 @@
 """CLI entry point for voronoi."""
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from voronoi import __version__
 
 # Framework files to copy into user projects
 FRAMEWORK_DIRS = ["scripts"]
-FRAMEWORK_FILES = ["CLAUDE.md", "AGENTS.md"]
+FRAMEWORK_FILES = ["CLAUDE.md", "AGENTS.md", ".env.example"]
 
 # .github/ subdirectories to copy (agent definitions, prompts, skills)
 GITHUB_SUBDIRS = ["agents", "prompts", "skills"]
@@ -56,6 +58,97 @@ def _ensure_executable(directory: Path) -> None:
         sh_file.chmod(sh_file.stat().st_mode | 0o755)
 
 
+def _build_orchestrator_prompt(
+    prompt_path: str, output_dir: str, safe: bool, max_agents: int = 4,
+) -> str:
+    """Build the prompt that makes Copilot the swarm orchestrator.
+
+    Replaces the rigid 1000-line bash autopilot with Copilot's own judgment:
+    it reads the project brief, plans tasks in Beads, spawns worker agents,
+    monitors progress, merges completed work, and handles failures.
+    """
+    safe_flag = "--safe " if safe else ""
+    return (
+        "You are the Voronoi swarm orchestrator. Your job: read the project brief, "
+        "plan tasks, spawn parallel worker agents, monitor their progress, merge "
+        "completed work, and repeat until the project is done.\n\n"
+        "## Personality — IMPORTANT\n\n"
+        "Your Telegram notifications should be EXCITED, high-energy, and fun — like a hype crew "
+        "that genuinely loves watching agents crush it. Use fire emojis, exclamation marks, "
+        "celebrate wins, make science feel epic. But always stay INFORMATIVE — every message "
+        "must include real numbers (task counts, progress, findings). Never fluff without facts.\n"
+        "Examples of good messages:\n"
+        '  \"🔥 Wave 2 DONE! 8/12 tasks crushed, 4 agents still cooking. LET\'S GO!\"\n'
+        '  \"🧪 FINDING ALERT! Replay + EWC cuts forgetting by 34%% (d=0.82, p<.001) — HUGE if it replicates!\"\n'
+        '  \"🏁 ALL DONE! 12/12 tasks, 3 waves, 18min. Science delivered. 🎉\"\n'
+        '  \"💀 agent-validation gave up after 3 tries. Skill issue. Moving on.\"\n\n'
+        f"PROJECT BRIEF: Read `{prompt_path}` completely before planning — every line matters.\n"
+        f"OUTPUT DIR: All work scoped under `{output_dir}/` "
+        f"(source in `{output_dir}/src/`, output in `{output_dir}/output/`).\n"
+        f"MAX CONCURRENT AGENTS: {max_agents}.\n\n"
+        "## Tools\n\n"
+        "Task tracking (Beads):\n"
+        "  bd prime                       # Load context at start\n"
+        "  bd create \"title\" -t task -p <1-3> --description \"...\" --json\n"
+        "  bd create \"title\" -t epic -p 1 --json\n"
+        "  bd dep add <child-id> <parent-id>\n"
+        "  bd ready --json                # Unblocked tasks\n"
+        "  bd update <id> --notes \"PRODUCES:file1,file2\"  # Artifact contract\n"
+        "  bd update <id> --notes \"REQUIRES:file1,file2\"  # Input contract\n"
+        "  bd close <id> --reason \"summary\"\n"
+        "  bd list --json / bd show <id> --json\n\n"
+        "Spawn a worker agent:\n"
+        "  1. Write the worker's prompt to a temp file, e.g. /tmp/prompt-<branch>.txt\n"
+        "  2. Run: ./scripts/spawn-agent.sh "
+        f"{safe_flag}<task-id> <branch-name> /tmp/prompt-<branch>.txt\n\n"
+        "Merge completed work:\n"
+        "  ./scripts/merge-agent.sh <branch-name> <task-id>\n\n"
+        "Monitor agents:\n"
+        "  bd show <id> --json                                    # Task status\n"
+        "  git log main..<branch> --oneline                      # Commits\n"
+        "  tmux capture-pane -t $(jq -r .tmux_session .swarm-config.json):<branch> -p 2>/dev/null | tail -20\n\n"
+        "## Workflow\n\n"
+        f"1. Read `{prompt_path}` completely — understand deliverables, success criteria, constraints\n"
+        "2. Run `bd prime`, then create an epic + tasks with dependencies and artifact contracts\n"
+        "   (each task: PRODUCES files it must create, REQUIRES files it needs, clear file scope)\n"
+        "3. OODA loop:\n"
+        "   - Observe:  `bd ready --json` for tasks to dispatch, check agent status\n"
+        "   - Orient:   Any agents done? Failed? Stuck? New tasks unblocked?\n"
+        "   - Decide:   What to spawn, merge, retry, or fix\n"
+        "   - Act:      Spawn agents (with rich prompts), merge completed work, \n"
+        "               diagnose failures, dispatch newly unblocked tasks\n"
+        "   - Repeat until all tasks are done\n"
+        "4. Verify deliverables exist, `git push origin main`, report results\n\n"
+        "## Writing Worker Prompts — CRITICAL\n\n"
+        "Each worker agent is autonomous — it only knows what you tell it. Include:\n"
+        "- WHAT to build: specific files, functions, data structures, algorithms\n"
+        "- FULL relevant context from the project brief (copy sections verbatim)\n"
+        "- Input files with full paths, output files matching PRODUCES artifact contract\n"
+        "- Acceptance criteria: how the agent knows it's done\n"
+        "- Completion: `bd close <task-id> --reason \"...\"` then `git push origin <branch>`\n\n"
+        "## Rules\n"
+        "- Read the FULL project brief before planning\n"
+        "- No overlapping file scopes between agents\n"
+        "- Write detailed, context-rich worker prompts — agents can't infer what you don't provide\n"
+        "- Diagnose failures (check git log, tmux output) before retrying\n"
+        "- Push all completed work to remote when done\n\n"
+        "## Telegram Notifications\n\n"
+        "Spawn and merge scripts send per-agent notifications automatically.\n"
+        "YOU are responsible for these additional notifications (use your Personality above!):\n\n"
+        "  source ./scripts/notify-telegram.sh\n\n"
+        "RIGHT AFTER planning tasks (before first spawn), send the kickoff message:\n"
+        "  notify_telegram \"swarm_start\" \"🚀 <project name> LET'S GO! <N> tasks planned, <M> agents ready to cook!\"\n\n"
+        "After completing each wave of merges, send a hype progress update:\n"
+        "  notify_telegram \"wave_complete\" \"🔥 Wave N DONE! X/Y tasks crushed · Z agents still going\"\n\n"
+        "When giving up on a task after repeated failures:\n"
+        "  notify_telegram \"agent_exhausted\" \"💀 <branch> couldn't land it after N tries — <reason>\"\n\n"
+        "When the swarm is fully complete:\n"
+        "  notify_telegram \"swarm_complete\" \"🏁 ALL DONE! X/Y tasks · N waves · Mm runtime 🎉\"\n\n"
+        "Also check `.swarm/inbox/` for operator commands from Telegram (JSON files).\n"
+        "Process any pending commands before each dispatch round.\n"
+    )
+
+
 def cmd_init(args: argparse.Namespace) -> None:
     """Scaffold voronoi into the current directory."""
     target = Path.cwd()
@@ -68,11 +161,25 @@ def cmd_init(args: argparse.Namespace) -> None:
 
     print(f"Initializing voronoi v{__version__} in {target}")
 
-    # Ensure it's a git repo (swarm-init.sh and agents expect git)
+    # Ensure it's a git repo with at least one commit (agents use git worktrees)
     if not (target / ".git").is_dir():
         print("  Initializing git repository...")
         subprocess.run(["git", "init"], cwd=str(target), capture_output=True)
         print("  ✓ git init")
+
+    # Ensure at least one commit exists (git worktree requires it)
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=str(target), capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        print("  Creating initial commit (required for agent worktrees)...")
+        subprocess.run(["git", "add", "-A"], cwd=str(target), capture_output=True)
+        subprocess.run(
+            ["git", "commit", "--allow-empty", "-m", "voronoi: initial commit"],
+            cwd=str(target), capture_output=True,
+        )
+        print("  ✓ initial commit")
 
     # Copy directories
     for dirname in FRAMEWORK_DIRS:
@@ -236,30 +343,55 @@ def cmd_demo(args: argparse.Namespace) -> None:
         if args.dry_run:
             print(f"\n--dry-run: demo copied but not started.")
             print(f"To run manually:")
-            print(f"  ./scripts/autopilot.sh --prompt {prompt_path} --safe")
+            print(f"  copilot --allow-all -p \"$(cat .swarm/orchestrator-prompt.txt)\"")
             return
 
-        # Build the autopilot command
-        autopilot = target / "scripts" / "autopilot.sh"
-        if not autopilot.exists():
-            print(f"Error: scripts/autopilot.sh not found.", file=sys.stderr)
+        # Read config for agent settings
+        config = {}
+        config_path = target / ".swarm-config.json"
+        if config_path.exists():
+            config = json.loads(config_path.read_text())
+
+        agent_cmd = config.get("agent_command", "copilot")
+        max_agents = config.get("max_agents", 4)
+
+        # Verify agent CLI exists
+        agent_bin = agent_cmd.split()[0]
+        if not shutil.which(agent_bin):
+            print(f"Error: agent CLI not found: {agent_bin}", file=sys.stderr)
+            print("  Install Copilot CLI or update agent_command in .swarm-config.json", file=sys.stderr)
             sys.exit(1)
 
-        cmd = ["bash", str(autopilot), "--prompt", prompt_path]
-        if args.safe:
-            cmd.append("--safe")
+        # Build orchestrator prompt
+        prompt = _build_orchestrator_prompt(
+            prompt_path=prompt_path,
+            output_dir=f"demos/{name}",
+            safe=args.safe,
+            max_agents=max_agents,
+        )
 
-        print(f"\nLaunching autopilot...\n")
-        print(f"  Command: {' '.join(cmd)}")
-        print(f"  Monitor: python3 scripts/dashboard.py")
-        print(f"  Agents:  tmux attach -t $(basename $(pwd))-swarm")
+        # Write prompt to file for reference/debugging
+        swarm_dir = target / ".swarm"
+        swarm_dir.mkdir(parents=True, exist_ok=True)
+        (swarm_dir / "orchestrator-prompt.txt").write_text(prompt)
+
+        # Launch orchestrator — Copilot IS the autopilot now
+        agent_flags = "--allow-all"
+        cmd = [agent_cmd] + agent_flags.split() + ["-p", prompt]
+
+        project_name = target.name
+        print(f"\nLaunching orchestrator...\n")
+        print(f"  Agent:  {agent_cmd}")
+        print(f"  Prompt: .swarm/orchestrator-prompt.txt")
+        print(f"  Agents: tmux attach -t {project_name}-swarm")
         print()
 
         try:
             subprocess.run(cmd, cwd=str(target))
         except KeyboardInterrupt:
-            print("\n\nAutopilot interrupted. Resume with:")
-            print(f"  ./scripts/autopilot.sh --resume")
+            print(f"\n\nOrchestrator interrupted.")
+            print(f"  Agent work preserved in tmux: tmux attach -t {project_name}-swarm")
+            print(f"  Re-run: voronoi demo run {name}")
 
     elif args.demo_action == "clean":
         name = args.name
@@ -350,6 +482,294 @@ def cmd_version(args: argparse.Namespace) -> None:
     print(f"voronoi {__version__}")
 
 
+# ---------------------------------------------------------------------------
+# Server commands
+# ---------------------------------------------------------------------------
+
+def cmd_server(args: argparse.Namespace) -> None:
+    """Handle server subcommands."""
+    from voronoi.server.runner import ServerConfig
+
+    if args.server_action == "init":
+        _server_init(args)
+    elif args.server_action == "start":
+        _server_start(args)
+    elif args.server_action == "status":
+        _server_status(args)
+    elif args.server_action == "prune":
+        _server_prune(args)
+    elif args.server_action == "config":
+        _server_config(args)
+    else:
+        print("Usage: voronoi server {init|start|status|prune|config}")
+        sys.exit(1)
+
+
+def _server_init(args: argparse.Namespace) -> None:
+    """Initialize the Voronoi server at ~/.voronoi/."""
+    from voronoi.server.runner import ServerConfig
+
+    base_dir = getattr(args, "base_dir", None)
+    config = ServerConfig(base_dir=base_dir)
+
+    print(f"Initializing Voronoi server at {config.base_dir}")
+
+    config.base_dir.mkdir(parents=True, exist_ok=True)
+    (config.base_dir / "objects").mkdir(exist_ok=True)
+    (config.base_dir / "active").mkdir(exist_ok=True)
+
+    if not config.config_path.exists():
+        config.save()
+        print(f"  ✓ Config written to {config.config_path}")
+    else:
+        print(f"  ⊘ Config already exists at {config.config_path}")
+
+    # Check dependencies
+    for cmd, label in [("docker", "Docker"), ("gh", "GitHub CLI"), ("git", "Git"),
+                        ("tmux", "tmux"), ("bd", "Beads")]:
+        if shutil.which(cmd):
+            print(f"  ✓ {label} found")
+        else:
+            print(f"  ⚠ {label} not found ({cmd})")
+
+    # Check GitHub auth
+    gh_token = os.environ.get("GH_TOKEN", "")
+    if gh_token:
+        print(f"  ✓ GH_TOKEN set")
+    elif shutil.which("gh"):
+        result = subprocess.run(
+            ["gh", "auth", "status"], capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            print(f"  ✓ GitHub authenticated via gh CLI")
+        else:
+            print(f"  ⚠ gh not authenticated — run: gh auth login")
+    else:
+        print(f"  ⚠ No GitHub auth — set GH_TOKEN in .env or run: gh auth login")
+
+    # Check agent CLI
+    agent_cmd = os.environ.get("VORONOI_AGENT_COMMAND", config.agent_command)
+    agent_bin = agent_cmd.split()[0]
+    if shutil.which(agent_bin):
+        print(f"  ✓ Agent CLI found: {agent_bin}")
+    else:
+        print(f"  ⚠ Agent CLI not found: {agent_bin}")
+        # Try fallbacks
+        for alt in ["copilot", "claude"]:
+            if alt != agent_bin and shutil.which(alt):
+                print(f"    → Found {alt} instead. Set VORONOI_AGENT_COMMAND={alt} in .env")
+                break
+
+    # Copy .env.example into ~/.voronoi/ for easy editing
+    env_example_src = _find_data_dir() / ".env.example"
+    env_example_dst = config.base_dir / ".env.example"
+    env_dst = config.base_dir / ".env"
+    if env_example_src.is_file() and not env_example_dst.exists():
+        shutil.copy2(env_example_src, env_example_dst)
+        print(f"  ✓ .env.example copied to {env_example_dst}")
+
+    # Initialize Beads in the server directory
+    if not (config.base_dir / ".beads").is_dir() and shutil.which("bd"):
+        subprocess.run(
+            ["bd", "init", "--quiet"],
+            cwd=str(config.base_dir),
+            capture_output=True,
+            input="N\n",
+            text=True,
+        )
+        print(f"  ✓ Beads initialized")
+
+    print(f"\nServer ready.")
+    print(f"  1. Edit {config.base_dir / '.env'} with your credentials")
+    if not env_dst.exists():
+        print(f"     cp {env_example_dst} {env_dst}")
+    print(f"  2. voronoi server start          # launch Telegram bridge")
+
+
+def _server_start(args: argparse.Namespace) -> None:
+    """Start the Telegram bridge using server config."""
+    from voronoi.server.runner import ServerConfig
+
+    config = ServerConfig()
+
+    if not config.base_dir.exists():
+        print("Server not initialized. Run: voronoi server init")
+        sys.exit(1)
+
+    # Load .env from ~/.voronoi/ if it exists
+    env_file = config.base_dir / ".env"
+    if env_file.exists():
+        _load_dotenv(env_file)
+        print(f"  ✓ Loaded {env_file}")
+
+    # Verify bot token is available
+    bot_token = os.environ.get("VORONOI_TG_BOT_TOKEN", "")
+    if not bot_token:
+        print("Error: No Telegram bot token configured.", file=sys.stderr)
+        print(f"  Set VORONOI_TG_BOT_TOKEN in {env_file}", file=sys.stderr)
+        sys.exit(1)
+
+    # Find the bridge script
+    bridge_script = _find_bridge_script()
+    if bridge_script is None:
+        print("Error: telegram-bridge.py not found.", file=sys.stderr)
+        sys.exit(1)
+
+    # Create a minimal .swarm config pointing to the server base dir
+    server_config = {
+        "project_name": "voronoi-server",
+        "project_dir": str(config.base_dir),
+        "agent_command": config.agent_command,
+        "notifications": {
+            "telegram": {
+                "bot_token": bot_token,
+                "user_allowlist": os.environ.get("VORONOI_TG_USER_ALLOWLIST", ""),
+                "bridge_enabled": True,
+            }
+        },
+    }
+
+    # Write server swarm config
+    server_swarm_config = config.base_dir / ".swarm-config.json"
+    server_swarm_config.write_text(json.dumps(server_config, indent=2))
+
+    # Ensure inbox directory exists
+    (config.base_dir / ".swarm" / "inbox").mkdir(parents=True, exist_ok=True)
+
+    # Ensure Beads is initialized in the server directory
+    if not (config.base_dir / ".beads").is_dir() and shutil.which("bd"):
+        subprocess.run(
+            ["bd", "init", "--quiet"],
+            cwd=str(config.base_dir),
+            capture_output=True,
+            input="N\n",
+            text=True,
+        )
+        print(f"  ✓ Beads initialized in {config.base_dir}")
+
+    print(f"\n🤖 Starting Telegram bridge...")
+    print(f"   Server: {config.base_dir}")
+    print(f"   Press Ctrl+C to stop\n")
+
+    try:
+        subprocess.run(
+            [sys.executable, str(bridge_script), "--config", str(server_swarm_config)],
+            cwd=str(config.base_dir),
+        )
+    except KeyboardInterrupt:
+        print("\nTelegram bridge stopped.")
+
+
+def _load_dotenv(env_path: Path) -> None:
+    """Load a .env file into os.environ (only sets vars not already set)."""
+    with open(env_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip()
+                # Strip inline comments
+                for sep in ("  #", "\t#"):
+                    if sep in value:
+                        value = value[:value.index(sep)].strip()
+                if key not in os.environ:
+                    os.environ[key] = value
+
+
+def _find_bridge_script() -> Path | None:
+    """Locate telegram-bridge.py in data dir or repo."""
+    data = _find_data_dir()
+    candidates = [
+        data / "scripts" / "telegram-bridge.py",
+        Path(__file__).resolve().parent.parent.parent / "scripts" / "telegram-bridge.py",
+    ]
+    for c in candidates:
+        if c.is_file():
+            return c
+    return None
+
+
+def _server_status(args: argparse.Namespace) -> None:
+    """Show server status."""
+    from voronoi.server.queue import InvestigationQueue
+    from voronoi.server.runner import ServerConfig
+    from voronoi.server.workspace import WorkspaceManager
+
+    config = ServerConfig()
+    queue_path = config.base_dir / "queue.db"
+
+    if not config.base_dir.exists():
+        print("Server not initialized. Run: voronoi server init")
+        sys.exit(1)
+
+    wm = WorkspaceManager(config.base_dir)
+    active = wm.list_active()
+
+    print(f"Voronoi Server — {config.base_dir}")
+    print(f"  Active workspaces: {len(active)}")
+    print(f"  Max concurrent: {config.max_concurrent}")
+    print(f"  Sandbox: {'enabled' if config.sandbox.enabled else 'disabled'}")
+
+    if queue_path.exists():
+        queue = InvestigationQueue(queue_path)
+        running = queue.get_running()
+        queued = queue.get_queued()
+        print(f"\n  Running: {len(running)}")
+        for inv in running:
+            elapsed = (time.time() - (inv.started_at or inv.created_at)) / 60
+            label = inv.repo or inv.slug
+            print(f"    ⚡ #{inv.id} {label} ({elapsed:.0f}min)")
+        print(f"  Queued: {len(queued)}")
+        for inv in queued:
+            label = inv.repo or inv.slug
+            print(f"    ⏳ #{inv.id} {label}")
+
+
+def _server_prune(args: argparse.Namespace) -> None:
+    """Clean up old investigation workspaces."""
+    from voronoi.server.runner import ServerConfig
+    from voronoi.server.workspace import WorkspaceManager
+
+    config = ServerConfig()
+    wm = WorkspaceManager(config.base_dir)
+    active = wm.list_active()
+
+    if not active:
+        print("No workspaces to prune.")
+        return
+
+    print(f"Active workspaces: {len(active)}")
+    for name in active:
+        print(f"  {name}")
+
+    if not getattr(args, "force", False):
+        print(f"\nRun with --force to remove all workspaces.")
+        return
+
+    for name in active:
+        p = config.base_dir / "active" / name
+        if p.exists():
+            shutil.rmtree(p)
+            print(f"  ✓ Removed {name}")
+
+    print("Done.")
+
+
+def _server_config(args: argparse.Namespace) -> None:
+    """Show server configuration."""
+    from voronoi.server.runner import ServerConfig
+
+    config = ServerConfig()
+    if not config.config_path.exists():
+        print("No config found. Run: voronoi server init")
+        sys.exit(1)
+
+    print(config.config_path.read_text())
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="voronoi",
@@ -379,6 +799,17 @@ def main() -> None:
     sub.add_parser("clean", help="Remove all voronoi artifacts from this directory")
     sub.add_parser("version", help="Print version")
 
+    # Server subcommand
+    server_parser = sub.add_parser("server", help="Manage the Voronoi server")
+    server_sub = server_parser.add_subparsers(dest="server_action")
+    server_init = server_sub.add_parser("init", help="Initialize server at ~/.voronoi/")
+    server_init.add_argument("--base-dir", dest="base_dir", help="Custom base directory")
+    server_sub.add_parser("start", help="Start Telegram bridge")
+    server_sub.add_parser("status", help="Show server status")
+    server_prune = server_sub.add_parser("prune", help="Clean up old workspaces")
+    server_prune.add_argument("--force", action="store_true", help="Actually remove workspaces")
+    server_sub.add_parser("config", help="Show server configuration")
+
     args = parser.parse_args()
 
     if args.command == "init":
@@ -394,6 +825,11 @@ def main() -> None:
         cmd_clean(args)
     elif args.command == "version":
         cmd_version(args)
+    elif args.command == "server":
+        if not hasattr(args, "server_action") or args.server_action is None:
+            server_parser.print_help()
+        else:
+            cmd_server(args)
     else:
         parser.print_help()
 

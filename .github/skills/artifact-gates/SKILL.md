@@ -34,10 +34,9 @@ Each task can have these properties stored in Beads notes:
 
 ## How to Set Artifact Contracts
 
-### During Planning (plan-tasks.sh)
+### During Planning
 
-The planner LLM generates `produces`, `requires`, and `gate` fields per task.
-These are automatically stored as Beads notes:
+The orchestrator creates tasks with artifact contracts in Beads notes:
 
 ```bash
 bd update <task-id> --notes "PRODUCES:output/results.json, output/figures/"
@@ -60,25 +59,25 @@ bd update bd-44 --notes "GATE:demos/coupled-decisions/output/validation_report.j
 
 ## Enforcement Points
 
-### 1. Pre-Flight Check (autopilot.sh)
+### 1. Pre-Dispatch Check (Orchestrator)
 
-Before dispatching any task, `autopilot.sh` runs `preflight_check()`:
+Before dispatching any task, the orchestrator verifies:
 
-- Verifies all `REQUIRES` files exist on disk
-- Verifies `GATE` file exists AND contains PASS verdicts
-- If either fails, the task is **skipped** and tried again next poll cycle
+- All `REQUIRES` files exist on disk
+- `GATE` file exists AND contains PASS verdicts
+- If either fails, the task is **skipped** and retried later
 
-### 2. Quality Gate (quality-gate.sh)
+### 2. Merge Verification (Orchestrator)
 
-Before merging any branch, Gate 5 checks:
+Before merging any branch, the orchestrator checks:
 
 - Reads `PRODUCES` from Beads notes
 - Verifies each listed file exists in the worktree or project root
-- If any `PRODUCES` file is missing, the quality gate **FAILS** and the agent retries
+- If any `PRODUCES` file is missing, the merge is **deferred** and the agent may be retried
 
-### 3. Agent Prompt (spawn-agent.sh)
+### 3. Agent Prompt (Orchestrator → spawn-agent.sh)
 
-When spawning an agent, the artifact contract is injected into the prompt:
+The orchestrator writes each agent's prompt with the artifact contract:
 
 - Agent is told which files it MUST create (`PRODUCES`)
 - Agent is told which files must exist (`REQUIRES`) — and to report BLOCKED if missing

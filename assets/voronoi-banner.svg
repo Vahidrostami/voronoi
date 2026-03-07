@@ -1,0 +1,98 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 200" width="900" height="200">
+  <defs>
+    <linearGradient id="bg-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0d1117"/>
+      <stop offset="100%" style="stop-color:#161b22"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="softglow">
+      <feGaussianBlur stdDeviation="8" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <rect width="900" height="200" rx="12" fill="url(#bg-grad)"/>
+
+  <!-- ════════ Voronoi cell mesh (abstract tessellation) ════════ -->
+  <!-- Cells as soft colored regions with animated borders -->
+
+  <!-- Cell 1: Scout (blue) -->
+  <path d="M0,100 L45,20 L130,8 L155,75 L120,140 L50,170 L0,150Z" fill="#58a6ff" fill-opacity="0.04" stroke="#58a6ff" stroke-width="0.8" stroke-opacity="0.2">
+    <animate attributeName="stroke-opacity" values="0.1;0.4;0.1" dur="4s" repeatCount="indefinite"/>
+  </path>
+
+  <!-- Cell 2: Investigator (orange) -->
+  <path d="M130,8 L250,5 L280,70 L260,130 L155,75Z" fill="#d29922" fill-opacity="0.04" stroke="#d29922" stroke-width="0.8" stroke-opacity="0.2">
+    <animate attributeName="stroke-opacity" values="0.1;0.35;0.1" dur="3.5s" begin="0.5s" repeatCount="indefinite"/>
+  </path>
+
+  <!-- Cell 3: Builder (green) -->
+  <path d="M250,5 L390,12 L400,90 L350,145 L280,70Z" fill="#3fb950" fill-opacity="0.04" stroke="#3fb950" stroke-width="0.8" stroke-opacity="0.2">
+    <animate attributeName="stroke-opacity" values="0.1;0.35;0.1" dur="3.8s" begin="1s" repeatCount="indefinite"/>
+  </path>
+
+  <!-- Cell 4: Critic (purple) -->
+  <path d="M390,12 L510,8 L540,80 L500,140 L400,90Z" fill="#8957e5" fill-opacity="0.05" stroke="#8957e5" stroke-width="0.8" stroke-opacity="0.2">
+    <animate attributeName="stroke-opacity" values="0.15;0.5;0.15" dur="3.2s" begin="0.3s" repeatCount="indefinite"/>
+  </path>
+
+  <!-- Cell 5: Statistician (red) -->
+  <path d="M510,8 L640,15 L660,95 L610,155 L540,80Z" fill="#f85149" fill-opacity="0.04" stroke="#f85149" stroke-width="0.8" stroke-opacity="0.2">
+    <animate attributeName="stroke-opacity" values="0.1;0.35;0.1" dur="4.2s" begin="0.7s" repeatCount="indefinite"/>
+  </path>
+
+  <!-- Cell 6: Synthesizer (teal) -->
+  <path d="M640,15 L780,10 L810,85 L760,150 L660,95Z" fill="#3fb9a0" fill-opacity="0.04" stroke="#3fb9a0" stroke-width="0.8" stroke-opacity="0.2">
+    <animate attributeName="stroke-opacity" values="0.1;0.4;0.1" dur="3.6s" begin="1.2s" repeatCount="indefinite"/>
+  </path>
+
+  <!-- Cell 7: Worker (grey) -->
+  <path d="M780,10 L900,0 L900,200 L810,170 L810,85Z" fill="#8b949e" fill-opacity="0.03" stroke="#8b949e" stroke-width="0.8" stroke-opacity="0.15">
+    <animate attributeName="stroke-opacity" values="0.08;0.25;0.08" dur="5s" begin="0.4s" repeatCount="indefinite"/>
+  </path>
+
+  <!-- Lower cells -->
+  <path d="M0,150 L50,170 L120,140 L155,75 L260,130 L350,145 L280,192 L140,195 L0,200Z" fill="#d29922" fill-opacity="0.03" stroke="#d29922" stroke-width="0.6" stroke-opacity="0.15">
+    <animate attributeName="stroke-opacity" values="0.08;0.3;0.08" dur="4.5s" begin="0.8s" repeatCount="indefinite"/>
+  </path>
+  <path d="M280,192 L350,145 L400,90 L500,140 L610,155 L560,192 L420,198Z" fill="#bc8cff" fill-opacity="0.03" stroke="#bc8cff" stroke-width="0.6" stroke-opacity="0.15">
+    <animate attributeName="stroke-opacity" values="0.08;0.3;0.08" dur="3.9s" begin="1.5s" repeatCount="indefinite"/>
+  </path>
+  <path d="M560,192 L610,155 L660,95 L760,150 L810,170 L900,200 L700,198Z" fill="#3fb950" fill-opacity="0.03" stroke="#3fb950" stroke-width="0.6" stroke-opacity="0.15">
+    <animate attributeName="stroke-opacity" values="0.08;0.3;0.08" dur="4.1s" begin="0.6s" repeatCount="indefinite"/>
+  </path>
+
+  <!-- ════════ Flowing data particles ════════ -->
+  <!-- Particles moving along cell edges to show agent communication -->
+
+  <circle r="2" fill="#58a6ff" filter="url(#glow)" opacity="0.8">
+    <animateMotion dur="6s" repeatCount="indefinite" path="M155,75 L280,70 L400,90 L540,80 L660,95 L810,85"/>
+  </circle>
+  <circle r="1.5" fill="#3fb950" filter="url(#glow)" opacity="0.7">
+    <animateMotion dur="5s" repeatCount="indefinite" begin="1.5s" path="M810,85 L660,95 L540,80 L400,90 L280,70 L155,75"/>
+  </circle>
+  <circle r="1.5" fill="#8957e5" filter="url(#glow)" opacity="0.7">
+    <animateMotion dur="7s" repeatCount="indefinite" begin="0.8s" path="M50,170 L155,75 L400,90 L610,155 L810,170"/>
+  </circle>
+  <circle r="2" fill="#d29922" filter="url(#glow)" opacity="0.6">
+    <animateMotion dur="4.5s" repeatCount="indefinite" begin="2s" path="M120,140 L260,130 L350,145 L500,140 L610,155 L760,150"/>
+  </circle>
+
+  <!-- ════════ Title ════════ -->
+  <text x="450" y="82" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="42" font-weight="700" fill="#e6edf3" filter="url(#softglow)" letter-spacing="-1">Voronoi</text>
+
+  <text x="450" y="115" text-anchor="middle" font-family="SF Mono,Menlo,monospace" font-size="14" fill="#8b949e" letter-spacing="3">SCIENTIFIC DISCOVERY ENGINE</text>
+
+  <!-- Tagline -->
+  <text x="450" y="148" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="15" fill="#58a6ff" opacity="0.8">ask a question &#xB7; spawn agents &#xB7; get evidence</text>
+
+  <!-- Version badge -->
+  <rect x="395" y="160" width="110" height="20" rx="10" fill="#161b22" stroke="#30363d" stroke-width="0.5"/>
+  <text x="450" y="174" text-anchor="middle" font-family="SF Mono,Menlo,monospace" font-size="10" fill="#8b949e">v0.4 &#xB7; 11 roles</text>
+
+  <!-- Subtle border -->
+  <rect x="1" y="1" width="898" height="198" rx="12" fill="none" stroke="#30363d" stroke-width="1"/>
+</svg>

@@ -18,6 +18,16 @@ Generates a synthetic beverage company dataset ("BevCo") with 5 planted cross-le
 | 4 | Cross-Source Signal | Quant + policy + expert must all be synthesized for correct answer |
 | 5 | Constraint-Coupling Conflict | Expert is directionally right but scoped wrong without policy constraints |
 
+### Playbook Complexity (30–50 queries across 6+ question types)
+
+| Trap | What It Tests |
+|------|---------------|
+| Wrong-process trap | Question looks like one type but is actually another — wrong process, wrong answer |
+| Missing shared-rule trap | Rule from another question type's context is required but not loaded |
+| Technique-reuse trap | Shared technique needs scoping adaptation, not blind reuse |
+| Cross-chain trap | Answer depends on output from a prior question of a different type |
+| Context-dependent strictness trap | Same rule is hard vs. soft depending on question type |
+
 ### Knowledge Sources
 
 - **Quantitative**: ~1M transaction rows, price elasticities, market share data
@@ -26,22 +36,21 @@ Generates a synthetic beverage company dataset ("BevCo") with 5 planted cross-le
 
 ## How to Run
 
-### Option A: Autopilot (fully automated)
+### Option A: CLI (recommended)
 
 ```bash
-./scripts/swarm-init.sh
-./scripts/autopilot.sh --prompt demos/coupled-decisions/PROMPT.md --safe
+voronoi demo run coupled-decisions
 ```
 
-Watch progress:
+Watch agents:
 ```bash
-python3 scripts/dashboard.py
+tmux attach -t $(basename $(pwd))-swarm
 ```
 
 ### Option B: Interactive
 
 ```bash
-./scripts/swarm-init.sh
+voronoi init
 copilot
 > /swarm Build from demos/coupled-decisions/PROMPT.md
 ```
@@ -77,9 +86,10 @@ demos/coupled-decisions/
 1. Full system discovers ≥4/5 planted effects; best ablation discovers ≤3/5
 2. Knowledge encoding yields ≥80% cross-type query accuracy (vs ≤50% without)
 3. Decision space reduced from 10^18 → ≤15 recommendations with zero hard-constraint violations
-4. All 4 validation stages produce PASS verdicts
-5. Paper compiles with figures/tables from validated data
-6. Webapp opens in browser with interactive results
+4. Process selection accuracy ≥80% on 30–50 diverse queries; flat baseline ≤60%
+5. All 4 validation stages produce PASS verdicts
+6. Paper compiles with figures/tables from validated data
+7. Webapp opens in browser with interactive results
 
 ## Prerequisites
 

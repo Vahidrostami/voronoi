@@ -277,7 +277,7 @@ def build_status_bar(config, tasks, agents, ready_count, start_time):
 def build_help_bar():
     """Build the bottom help bar."""
     return Text(
-        "  [q]uit  [r]efresh  │  Use autopilot.sh for autonomous operation",
+        "  [q]uit  [r]efresh  │  voronoi demo run <name> for orchestration",
         style="dim",
     )
 

@@ -236,7 +236,7 @@ A single self-contained HTML file that visualizes the experiment results. Opens 
 - Key findings as numbered bullet points with bold stats
 - Final comparison: "Best Single Strategy" card vs "Best Hybrid" card, side by side
 - If hybrid beat all singles: celebratory visual (confetti animation or glowing border)
-- Call to action: *"Built by [N] AI agents in [M] minutes. Run it yourself: `./scripts/autopilot.sh --prompt demos/forgetting-cure/PROMPT.md`"*
+- Call to action: *"Built by [N] AI agents in [M] minutes. Run it yourself: `voronoi demo run forgetting-cure`"*
 
 #### Fallback behavior
 - If `results.json` is not found (hasn't been generated yet), show a placeholder page explaining how to run the experiment
