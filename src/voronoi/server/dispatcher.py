@@ -37,6 +37,7 @@ class DispatcherConfig:
     agent_command: str = "copilot"
     agent_flags: str = "--allow-all"
     progress_interval: int = 30  # seconds between progress updates
+    timeout_hours: int = 8       # max hours before marking investigation exhausted
 
 
 @dataclass
@@ -129,6 +130,12 @@ class InvestigationDispatcher:
             ws = self.workspace_mgr.provision_lab(inv.id, inv.slug, inv.question)
 
         workspace_path = Path(ws.path)
+
+        # Copy demo files into workspace if this investigation originated from a demo
+        demo_info = self.queue.get_demo_source(inv.id)
+        if demo_info:
+            self._copy_demo_files(demo_info, workspace_path)
+
         self.queue.start(inv.id, ws.path)
 
         prompt = self._build_prompt(inv, workspace_path)
@@ -163,197 +170,19 @@ class InvestigationDispatcher:
         )
 
     def _build_prompt(self, inv, workspace_path: Path) -> str:
-        from voronoi.gateway.codename import theme_for_codename
+        from voronoi.server.prompt import build_orchestrator_prompt
 
-        verb = MODE_VERB.get(inv.mode, inv.mode)
-        label = inv.codename or f"#{inv.id}"
-        theme = theme_for_codename(inv.codename) if inv.codename else ""
-        theme_hint = f"\nThematic inspiration: {theme}\n" if theme else ""
         rigor = getattr(inv, 'rigor', 'standard') or 'standard'
+        label = inv.codename or f"#{inv.id}"
 
-        # Build science-aware sections based on rigor
-        science_sections = self._build_science_prompt_sections(inv.mode, rigor, label)
-
-        return (
-            "You are the Voronoi swarm orchestrator. Your job: read the question, "
-            "plan tasks, spawn parallel worker agents, monitor their progress, merge "
-            "completed work, and repeat until done.\n\n"
-            f"## {verb.title()}\n\n"
-            f"**Question:** {inv.question}\n"
-            f"**Mode:** {inv.mode}\n"
-            f"**Rigor:** {rigor}\n"
-            f"**Workspace:** {workspace_path}\n\n"
-            f"## Your Codename: {label}\n\n"
-            f"Use \"{label}\" in EVERY Telegram notification. This is your identity.\n"
-            f"{theme_hint}\n"
-            "## Telegram Notifications — IMPORTANT\n\n"
-            "Write ALL notification messages yourself. Be creative, fun, and use "
-            "brain/neuroscience metaphors when they fit naturally. Always include "
-            "real numbers (task counts, progress, findings). Never fluff without facts.\n\n"
-            "The notify_telegram function takes your full message:\n"
-            '  notify_telegram "event_type" "your full creative message here"\n\n'
-            "GOOD examples:\n"
-            f'  notify_telegram "merge" "🧬 {label} absorbed the auth module — 4/9 tasks down. Synapses forming fast."\n'
-            f'  notify_telegram "finding" "💡 {label} breakthrough: latency was pooling-related (d=1.8, p<0.001). Huge signal."\n'
-            f'  notify_telegram "wave" "⚡ {label} wave 2 — 3 agents deployed, 5 tasks queued. The network grows."\n\n'
-            "BAD examples:\n"
-            '  notify_telegram "merge" "Merged branch task 3"  ← no personality, no codename\n'
-            '  notify_telegram "wave" "dispatched agents"  ← no numbers, no fun\n\n'
-            f"{science_sections}"
-            "## Workflow\n\n"
-            + self._build_workflow_steps(inv.mode, rigor) +
-            "\n## Tools\n\n"
-            "Task tracking:\n"
-            "  bd prime / bd create / bd ready --json / bd close\n\n"
-            "Spawn agents:\n"
-            "  ./scripts/spawn-agent.sh <task-id> <branch-name> /tmp/prompt-<branch>.txt\n\n"
-            "Merge completed work:\n"
-            "  ./scripts/merge-agent.sh <branch-name> <task-id>\n\n"
-            "Telegram notifications:\n"
-            "  source ./scripts/notify-telegram.sh\n"
-            '  notify_telegram "event_type" "message"\n\n'
-            "## Rules\n"
-            "- Write detailed worker prompts with full context\n"
-            "- No overlapping file scopes between agents\n"
-            "- Push all completed work to remote when done\n"
-            f"- Max concurrent agents: {self.config.max_agents}\n"
-            + self._build_rigor_rules(rigor)
+        return build_orchestrator_prompt(
+            question=inv.question,
+            mode=inv.mode,
+            rigor=rigor,
+            workspace_path=str(workspace_path),
+            codename=label,
+            max_agents=self.config.max_agents,
         )
-
-    def _build_science_prompt_sections(self, mode: str, rigor: str, label: str) -> str:
-        """Build science-specific prompt sections based on mode and rigor."""
-        sections = []
-
-        # Scout phase for non-build modes
-        if mode in ("investigate", "explore", "hybrid"):
-            sections.append(
-                "## Phase 0: Scout\n\n"
-                "Before planning tasks, dispatch a Scout agent to research existing knowledge:\n"
-                "- Search codebase, docs, logs for prior work on this topic\n"
-                "- Produce a knowledge brief (.swarm/scout-brief.md) with:\n"
-                "  - Known results, failed approaches, open questions\n"
-                "  - Suggested hypotheses with rationale and priors\n"
-            )
-            if rigor in ("scientific", "experimental"):
-                sections.append(
-                    "  - SOTA methodology for this problem type (MANDATORY at Scientific+)\n"
-                    "- WAIT for Scout to complete before generating hypotheses\n\n"
-                )
-            else:
-                sections.append("\n")
-
-        # Hypothesis generation for investigation modes
-        if mode in ("investigate", "hybrid") and rigor != "standard":
-            sections.append(
-                "## Hypothesis Management\n\n"
-                "After Scout completes, generate hypotheses and create a belief map:\n"
-                "1. Generate 3-7 hypotheses from Scout brief with prior probabilities\n"
-                "2. Write belief map to .swarm/belief-map.json\n"
-                "3. Prioritize by information gain: uncertainty × impact × testability\n"
-                "4. Create investigation tasks for top-priority hypotheses\n\n"
-            )
-            if rigor in ("scientific", "experimental"):
-                sections.append(
-                    "At Scientific+ rigor:\n"
-                    "- Dispatch Theorist to refine hypotheses and propose competing theories\n"
-                    "- Dispatch Methodologist to batch-review all experimental designs\n"
-                    "- WAIT for Methodologist approval before dispatching Investigators\n"
-                    "- Every investigation task MUST have pre-registration (HYPOTHESIS, METHOD,\n"
-                    "  CONTROLS, EXPECTED_RESULT, CONFOUNDS, STAT_TEST, SAMPLE_SIZE, POWER_ANALYSIS)\n\n"
-                )
-
-        # Review gates
-        if rigor in ("analytical", "scientific", "experimental"):
-            sections.append(
-                "## Review Gates\n\n"
-                "Findings MUST pass review gates before entering the knowledge store:\n"
-            )
-            sections.append("- **Statistician**: Reviews CI, effect sizes, test appropriateness, data integrity\n")
-            if rigor in ("scientific", "experimental"):
-                sections.append(
-                    "- **Critic**: Adversarial review with structured checklist (CONFOUNDS, ALT_EXPLANATIONS,\n"
-                    "  DATA_QUALITY, STAT_VALIDITY, GENERALIZABILITY). Partially blinded — sees data but NOT hypothesis.\n"
-                    "  Up to 3 adversarial rounds. Unresolved = CONTESTED (blocks convergence).\n"
-                )
-            sections.append(
-                "- **Synthesizer**: Consistency check against all validated findings\n"
-                "- **Evaluator**: Score deliverable (Completeness, Coherence, Strength, Actionability)\n\n"
-            )
-
-        # Convergence criteria
-        if rigor != "standard":
-            sections.append(
-                "## Convergence Criteria\n\n"
-            )
-            if rigor == "analytical":
-                sections.append(
-                    "- All questions answered with quantitative evidence\n"
-                    "- Statistician reviewed all findings\n"
-                    "- No unresolved contradictions\n"
-                    "- Evaluator score ≥ 0.75 (max 2 improvement rounds)\n\n"
-                )
-            elif rigor == "scientific":
-                sections.append(
-                    "- All hypotheses resolved (confirmed/refuted/inconclusive with evidence)\n"
-                    "- Causal model accounts for all findings\n"
-                    "- At least 1 competing theory ruled out\n"
-                    "- At least 1 novel prediction tested\n"
-                    "- No CONSISTENCY_CONFLICTs, no PARADIGM_STRESS\n"
-                    "- All findings ROBUST or FRAGILE-documented\n"
-                    "- Evaluator score ≥ 0.75 (max 2 improvement rounds)\n\n"
-                )
-            elif rigor == "experimental":
-                sections.append(
-                    "- All Scientific criteria PLUS:\n"
-                    "- All high-impact findings replicated (overlapping CIs or TOST)\n"
-                    "- Pre-registration compliance verified\n"
-                    "- Power analysis documented for every experiment\n\n"
-                )
-
-        return "".join(sections)
-
-    def _build_workflow_steps(self, mode: str, rigor: str) -> str:
-        """Build mode-appropriate workflow steps."""
-        steps = ["1. Read PROMPT.md — understand the question fully\n"]
-
-        if mode in ("investigate", "explore", "hybrid"):
-            steps.append("2. Dispatch Scout → wait for knowledge brief (.swarm/scout-brief.md)\n")
-            steps.append("3. Run `bd prime`, create an epic + tasks with dependencies\n")
-            if rigor != "standard":
-                steps.append("4. Generate hypotheses → write .swarm/belief-map.json\n")
-                steps.append("5. Inject STRATEGIC_CONTEXT into each task's Beads notes\n")
-                scout_step = 6
-            else:
-                scout_step = 4
-        else:
-            steps.append("2. Run `bd prime`, create an epic + tasks with dependencies\n")
-            scout_step = 3
-
-        steps.append(
-            f"{scout_step}. OODA loop:\n"
-            "   - Observe: `bd ready --json`, check findings, belief map, git activity\n"
-            "   - Orient: Classify events, update strategic context, check convergence\n"
-            "   - Decide: Prioritize by information gain, check review gates\n"
-            "   - Act: Spawn agents, merge work, dispatch reviewers, update belief map\n"
-        )
-        steps.append(f"{scout_step + 1}. When converged, write `.swarm/deliverable.md` and push results\n")
-        return "".join(steps)
-
-    def _build_rigor_rules(self, rigor: str) -> str:
-        """Build rigor-specific rules."""
-        rules = []
-        if rigor in ("analytical", "scientific", "experimental"):
-            rules.append("- Every finding MUST pass Statistician review before acceptance\n")
-            rules.append("- Every task MUST declare PRODUCES and REQUIRES artifact contracts\n")
-        if rigor in ("scientific", "experimental"):
-            rules.append("- Investigation tasks MUST have pre-registration BEFORE execution\n")
-            rules.append("- Investigation tasks MUST have Methodologist approval BEFORE dispatch\n")
-            rules.append("- Findings MUST pass Critic adversarial review (partially blinded)\n")
-            rules.append("- Must propose competing theories with discriminating predictions\n")
-        if rigor == "experimental":
-            rules.append("- High-impact findings MUST be replicated before convergence\n")
-            rules.append("- Power analysis MANDATORY for every experiment\n")
-        return "".join(rules)
 
     def _launch_in_tmux(self, session: str, workspace_path: Path) -> None:
         agent_cmd = self.config.agent_command
@@ -366,13 +195,28 @@ class InvestigationDispatcher:
             ["tmux", "new-session", "-d", "-s", session, "-c", str(workspace_path)],
             capture_output=True,
         )
+        # Launch agent via shell; when it exits the shell exits too,
+        # letting poll_progress detect the session is gone.
         subprocess.run(
             ["tmux", "send-keys", "-t", session,
              f'cd "{workspace_path}" && {agent_cmd} {agent_flags} '
-             f'-p "$(cat .swarm/orchestrator-prompt.txt)"',
+             f'-p "$(cat .swarm/orchestrator-prompt.txt)" ; exit',
              "Enter"],
             capture_output=True,
         )
+
+    def _copy_demo_files(self, demo_info: tuple[str, str], workspace_path: Path) -> None:
+        """Copy demo directory contents into the workspace."""
+        demo_name, demo_src_path = demo_info
+        demo_src = Path(demo_src_path)
+        if not demo_src.is_dir():
+            logger.warning("Demo source not found: %s", demo_src)
+            return
+        demo_dst = workspace_path / "demos" / demo_name
+        if demo_dst.exists():
+            shutil.rmtree(demo_dst)
+        shutil.copytree(demo_src, demo_dst)
+        logger.info("Copied demo files from %s to %s", demo_src, demo_dst)
 
     # ------------------------------------------------------------------
     # Progress monitoring
@@ -388,6 +232,9 @@ class InvestigationDispatcher:
                 continue
             run.last_update_at = now
 
+            # Read eval_score from workspace if available
+            self._refresh_eval_score(run)
+
             result = subprocess.run(
                 ["tmux", "has-session", "-t", run.tmux_session],
                 capture_output=True,
@@ -400,14 +247,61 @@ class InvestigationDispatcher:
                             inv_id, len(events), run.phase)
                 self._send_progress_batch(run, events)
 
-            if not session_alive or self._is_complete(run):
-                reason = "tmux ended" if not session_alive else "complete"
+            # Check for timeout
+            elapsed_hours = (now - run.started_at) / 3600
+            timed_out = elapsed_hours >= self.config.timeout_hours
+
+            if not session_alive or self._is_complete(run) or timed_out:
+                if timed_out and not self._is_complete(run):
+                    reason = f"timeout ({self.config.timeout_hours}h)"
+                    logger.warning("Investigation #%d timed out after %.1fh",
+                                   inv_id, elapsed_hours)
+                    # Kill tmux session if still alive
+                    if session_alive:
+                        subprocess.run(
+                            ["tmux", "kill-session", "-t", run.tmux_session],
+                            capture_output=True,
+                        )
+                    # Write exhaustion convergence
+                    self._write_timeout_convergence(run)
+                elif not session_alive:
+                    reason = "agent exited"
+                else:
+                    reason = "complete"
                 logger.info("Investigation #%d finished (%s)", inv_id, reason)
                 self._handle_completion(run)
                 completed_ids.append(inv_id)
 
         for inv_id in completed_ids:
             del self.running[inv_id]
+
+    def _refresh_eval_score(self, run: RunningInvestigation) -> None:
+        """Read evaluator score from workspace and update the run state."""
+        eval_path = run.workspace_path / ".swarm" / "eval-score.json"
+        if eval_path.exists():
+            try:
+                data = json.loads(eval_path.read_text())
+                score = float(data.get("score", 0.0))
+                if score > 0:
+                    run.eval_score = score
+                    run.improvement_rounds = int(data.get("rounds", run.improvement_rounds))
+            except (json.JSONDecodeError, OSError, ValueError):
+                pass
+
+    def _write_timeout_convergence(self, run: RunningInvestigation) -> None:
+        """Write convergence.json indicating timeout exhaustion."""
+        conv_path = run.workspace_path / ".swarm" / "convergence.json"
+        conv_path.parent.mkdir(parents=True, exist_ok=True)
+        from datetime import datetime, timezone
+        data = {
+            "status": "exhausted",
+            "converged": False,
+            "reason": f"Timed out after {self.config.timeout_hours}h",
+            "score": run.eval_score,
+            "blockers": ["timeout"],
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        conv_path.write_text(json.dumps(data, indent=2))
 
     def _check_progress(self, run: RunningInvestigation) -> list[dict]:
         events: list[dict] = []

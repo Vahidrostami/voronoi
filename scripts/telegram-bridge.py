@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import fcntl
 import logging
 import sys
 from pathlib import Path
@@ -363,6 +364,16 @@ def main() -> None:
     if not config["bot_token"]:
         print("Error: No Telegram bot token configured", file=sys.stderr)
         print("Set VORONOI_TG_BOT_TOKEN or add to .swarm-config.json", file=sys.stderr)
+        sys.exit(1)
+
+    # Prevent two instances from polling the same bot token simultaneously.
+    lock_path = Path(config.get("project_dir", ".")) / ".bridge.lock"
+    lock_file = open(lock_path, "w")  # noqa: SIM115 — kept open for process lifetime
+    try:
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        print("Error: Another telegram-bridge instance is already running "
+              f"(lock: {lock_path})", file=sys.stderr)
         sys.exit(1)
 
     run_bot(config)

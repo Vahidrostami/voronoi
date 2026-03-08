@@ -32,7 +32,7 @@ __all__ = [
     "handle_abort", "handle_pivot", "handle_guide",
     "handle_investigate", "handle_explore", "handle_build", "handle_experiment",
     "handle_recall", "handle_belief", "handle_journal", "handle_finding",
-    "handle_results",
+    "handle_results", "handle_demo",
 ]
 
 
@@ -423,6 +423,56 @@ def handle_finding(project_dir: str, finding_id: str) -> str:
     return "\n".join(lines)
 
 
+def handle_demo(project_dir: str, demo_name: str, chat_id: str = "") -> str:
+    """Set up and enqueue a demo as an investigation.
+
+    Mirrors the CLI ``voronoi demo run`` path:
+    1. Locate the demo directory and its PROMPT.md
+    2. Enqueue a build investigation whose question is the full PROMPT.md content
+    3. Tag the investigation so the dispatcher copies demo files into the workspace
+    """
+    from voronoi.cli import _find_data_dir, _list_demos
+
+    data = _find_data_dir()
+    demos = _list_demos(data)
+    demo = next((d for d in demos if d["name"] == demo_name), None)
+    if demo is None:
+        available = ", ".join(d["name"] for d in demos)
+        return f"❌ Demo `{demo_name}` not found. Available: {available}"
+    if not demo["has_prompt"]:
+        return f"❌ Demo `{demo_name}` has no PROMPT.md."
+
+    prompt_path = demo["path"] / "PROMPT.md"
+    prompt_content = prompt_path.read_text()
+
+    q = _get_queue(project_dir)
+    inv = Investigation(
+        chat_id=chat_id,
+        question=prompt_content,
+        slug=make_slug(demo_name),
+        mode="build",
+        rigor="standard",
+        investigation_type="lab",
+    )
+    inv_id = q.enqueue(inv)
+    stored = q.get(inv_id)
+    codename = stored.codename if stored else codename_for_id(inv_id)
+
+    # Tag the investigation so the dispatcher knows to copy demo files
+    q.set_demo_source(inv_id, demo_name, str(demo["path"]))
+
+    queued = len(q.get_queued())
+    running = len(q.get_running())
+    logger.info("Enqueued demo %s as investigation %s (#%d)", demo_name, codename, inv_id)
+
+    return (
+        f"⚡ *Voronoi · {codename}* 🎮 DEMO LAUNCHED\n\n"
+        f"Demo: *{demo_name}*\n"
+        f"Queue: {queued} waiting · {running} running\n\n"
+        f"Setting up workspace — I'll ping you when agents are live."
+    )
+
+
 def handle_results(project_dir: str, inv_id_str: str = "") -> str:
     """Look up a past investigation and return its teaser."""
     q = _get_queue(project_dir)
@@ -544,6 +594,23 @@ class CommandRouter:
     def __init__(self, project_dir: str):
         self.project_dir = project_dir
 
+    def _list_demos(self) -> str:
+        """List available demos."""
+        try:
+            from voronoi.cli import _find_data_dir, _list_demos
+            data = _find_data_dir()
+            demos = _list_demos(data)
+        except Exception:
+            return "\u274c Could not list demos."
+        if not demos:
+            return "No demos available."
+        lines = ["\ud83c\udfae *Available Demos*\n"]
+        for d in demos:
+            marker = "\u2713" if d["has_prompt"] else "\u25cb"
+            lines.append(f"  {marker} `{d['name']}` \u2014 {d['description']}")
+        lines.append("\nRun with: `/voronoi demo run <name>`")
+        return "\n".join(lines)
+
     def route(self, command: str, args: list[str],
               chat_id: str) -> tuple[str, Optional[Path]]:
         """Dispatch a /voronoi <command> and return (text, document)."""
@@ -573,6 +640,15 @@ class CommandRouter:
                 return txt, None
             elif sub == "experiment" and args:
                 txt = handle_experiment(self.project_dir, " ".join(args), chat_id)
+                return txt, None
+            elif sub == "demo" and args:
+                demo_action = args[0].lower()
+                if demo_action == "run" and len(args) >= 2:
+                    txt = handle_demo(self.project_dir, args[1], chat_id)
+                elif demo_action == "list":
+                    txt = self._list_demos()
+                else:
+                    txt = "Usage: `/voronoi demo list` or `/voronoi demo run <name>`"
                 return txt, None
             elif sub == "recall" and args:
                 return handle_recall(self.project_dir, " ".join(args)), None
@@ -648,15 +724,15 @@ class CommandRouter:
             "confidence": intent.confidence,
         })
 
-        # Dispatch workflow with classification feedback
+        # Dispatch workflow with full question text (not truncated summary)
         if intent.mode == WorkflowMode.INVESTIGATE:
-            txt = handle_investigate(self.project_dir, intent.summary, chat_id)
+            txt = handle_investigate(self.project_dir, text, chat_id)
         elif intent.mode == WorkflowMode.EXPLORE:
-            txt = handle_explore(self.project_dir, intent.summary, chat_id)
+            txt = handle_explore(self.project_dir, text, chat_id)
         elif intent.mode == WorkflowMode.BUILD:
-            txt = handle_build(self.project_dir, intent.summary, chat_id)
+            txt = handle_build(self.project_dir, text, chat_id)
         elif intent.mode == WorkflowMode.HYBRID:
-            txt = handle_investigate(self.project_dir, intent.summary, chat_id)
+            txt = handle_investigate(self.project_dir, text, chat_id)
         else:
             txt = handle_guide(self.project_dir, text)
 

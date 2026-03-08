@@ -32,6 +32,7 @@ class Investigation:
     sandbox_id: Optional[str] = None
     github_url: Optional[str] = None
     parent_id: Optional[int] = None   # for follow-ups
+    demo_source: Optional[str] = None  # demo name:path for demo-originated investigations
     created_at: float = field(default_factory=time.time)
     started_at: Optional[float] = None
     completed_at: Optional[float] = None
@@ -71,6 +72,10 @@ _MIGRATION_ADD_CODENAME = """
 ALTER TABLE investigations ADD COLUMN codename TEXT NOT NULL DEFAULT '';
 """
 
+_MIGRATION_ADD_DEMO_SOURCE = """
+ALTER TABLE investigations ADD COLUMN demo_source TEXT;
+"""
+
 
 class InvestigationQueue:
     """SQLite-backed investigation queue with concurrency control."""
@@ -88,6 +93,11 @@ class InvestigationQueue:
                 conn.execute("SELECT codename FROM investigations LIMIT 1")
             except sqlite3.OperationalError:
                 conn.executescript(_MIGRATION_ADD_CODENAME)
+            # Migrate existing databases that lack the demo_source column
+            try:
+                conn.execute("SELECT demo_source FROM investigations LIMIT 1")
+            except sqlite3.OperationalError:
+                conn.executescript(_MIGRATION_ADD_DEMO_SOURCE)
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -132,7 +142,11 @@ class InvestigationQueue:
             return inv_id
 
     def next_ready(self, max_concurrent: int = 2) -> Optional[Investigation]:
-        """Get the next queued investigation if under concurrency limit."""
+        """Get and claim the next queued investigation if under concurrency limit.
+
+        This is atomic: the returned investigation is already marked as
+        'running' so no other dispatcher can pick it up concurrently.
+        """
         with self._connect() as conn:
             running = conn.execute(
                 "SELECT COUNT(*) as cnt FROM investigations WHERE status = 'running'",
@@ -149,14 +163,26 @@ class InvestigationQueue:
             if row is None:
                 return None
 
+            # Atomically claim it
+            conn.execute(
+                "UPDATE investigations SET status='running', started_at=? "
+                "WHERE id=? AND status='queued'",
+                (time.time(), row["id"]),
+            )
+
             return self._row_to_investigation(row)
 
     def start(self, investigation_id: int, workspace_path: str, sandbox_id: Optional[str] = None) -> None:
-        """Mark an investigation as running."""
+        """Set workspace path for a running investigation.
+
+        The investigation may already be in 'running' state (set by
+        ``next_ready``).  This attaches the workspace metadata.
+        For backward compat it also accepts 'queued' status.
+        """
         with self._connect() as conn:
             conn.execute(
-                "UPDATE investigations SET status='running', started_at=?, "
-                "workspace_path=?, sandbox_id=? WHERE id=? AND status='queued'",
+                "UPDATE investigations SET status='running', started_at=COALESCE(started_at, ?), "
+                "workspace_path=?, sandbox_id=? WHERE id=? AND status IN ('queued', 'running')",
                 (time.time(), workspace_path, sandbox_id, investigation_id),
             )
 
@@ -294,6 +320,11 @@ class InvestigationQueue:
         return "\n".join(lines)
 
     def _row_to_investigation(self, row: sqlite3.Row) -> Investigation:
+        demo_source = None
+        try:
+            demo_source = row["demo_source"]
+        except (IndexError, KeyError):
+            pass
         return Investigation(
             id=row["id"],
             chat_id=row["chat_id"],
@@ -309,8 +340,32 @@ class InvestigationQueue:
             sandbox_id=row["sandbox_id"],
             github_url=row["github_url"],
             parent_id=row["parent_id"],
+            demo_source=demo_source,
             created_at=row["created_at"],
             started_at=row["started_at"],
             completed_at=row["completed_at"],
             error=row["error"],
         )
+
+    def set_demo_source(self, investigation_id: int, demo_name: str, demo_path: str) -> None:
+        """Store the demo origin so the dispatcher can copy demo files."""
+        value = f"{demo_name}:{demo_path}"
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE investigations SET demo_source=? WHERE id=?",
+                (value, investigation_id),
+            )
+
+    def get_demo_source(self, investigation_id: int) -> Optional[tuple[str, str]]:
+        """Return (demo_name, demo_path) if this investigation originated from a demo."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT demo_source FROM investigations WHERE id=?",
+                (investigation_id,),
+            ).fetchone()
+            if row is None or row["demo_source"] is None:
+                return None
+            parts = row["demo_source"].split(":", 1)
+            if len(parts) != 2:
+                return None
+            return parts[0], parts[1]
