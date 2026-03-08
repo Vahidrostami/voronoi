@@ -218,13 +218,45 @@ See the `strategic-context` skill for the full document format and maintenance p
 - **Agent CLI** — AI agents dispatched with `-p` flag
 - **Strategic Context** — `.swarm/strategic-context.md` preserves decision rationale across cycles
 
+## Task Granularity — CRITICAL
+
+Worker agents run in a single copilot session with a finite context window (~30 tool calls).
+Tasks that are too large will stall — the agent runs out of context before committing anything,
+producing zero usable output. This is the #1 cause of swarm failure.
+
+**The 30-Minute Rule:** Every task MUST be completable by a single copilot agent in roughly
+30 minutes of wall time. If you can't describe the task's deliverable in 2 sentences, it's too big.
+
+**Decomposition targets by task type:**
+
+| Task type | Max scope | Example good | Example too big |
+|-----------|-----------|-------------|-----------------|
+| Code generation | 1-2 files, <500 lines | "Create data_generator.py with 3 scenario configs" | "Build the entire synthetic data pipeline" |
+| Writing | 1 section, <2000 words | "Write the Related Work section" | "Write the full paper" |
+| Experiments | 1 experiment, 1-2 metrics | "Run encoding ablation on scenarios 1-3, report precision/recall" | "Run all experiments and produce results table" |
+| Data generation | 1 dataset or 2-3 scenarios | "Generate scenarios 1-3 with planted cross-lever effects" | "Generate all 10 scenarios with 100K rows each" |
+| Review | 1 artifact | "Review encoder.py for correctness" | "Review all system code" |
+
+**Decomposition protocol:**
+1. Write the epic (big task) into Beads
+2. Immediately decompose it into 3-8 subtasks, each meeting the 30-Minute Rule
+3. Set dependencies between subtasks
+4. Dispatch subtasks — NEVER dispatch the epic directly to a worker
+
+**Commit checkpoints in prompts:** When writing worker prompts, include explicit commit instructions:
+> "After completing [milestone], run `git add -A && git commit -m '[message]' && git push origin [branch]` BEFORE continuing."
+
+This ensures partial progress is preserved even if the agent's context fills up.
+
 ## Rules
 
 - NEVER dispatch more agents than `max_agents` in `.swarm-config.json`
 - NEVER assign overlapping file scopes to different agents
+- NEVER dispatch a task that would take more than ~30 tool calls to complete — decompose it first
 - ALWAYS set dependencies before dispatching
 - ALWAYS verify `bd ready` before spawning (don't spawn blocked tasks)
 - ALWAYS verify artifact contracts before dispatching: check that all `REQUIRES` files exist and `GATE` files pass
+- ALWAYS include commit checkpoint instructions in every worker prompt (at minimum: "commit and push after each file you create")
 - Each task description MUST specify which files/directories the agent owns
 - Each task MUST declare `PRODUCES` (output files) and `REQUIRES` (input files) in Beads notes
 - Tasks that consume outputs of other tasks MUST have the producing task's output in their `REQUIRES`
