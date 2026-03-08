@@ -16,9 +16,15 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Optional
+
+
+def _which(cmd: str) -> bool:
+    """Check if a command is available on PATH."""
+    return shutil.which(cmd) is not None
 
 
 def _run_bd(*args: str, cwd: str | None = None) -> tuple[int, str]:
@@ -312,11 +318,86 @@ class ReportGenerator:
         return "\n".join(sections)
 
     # ------------------------------------------------------------------
-    # PDF (auto-detects report vs manuscript)
+    # LaTeX detection & compilation
+    # ------------------------------------------------------------------
+
+    def _find_latex_main(self) -> Path | None:
+        """Find the main LaTeX file in the workspace."""
+        # Check common locations for main.tex
+        candidates = [
+            self.ws / "main.tex",
+            self.ws / "paper.tex",
+            self.ws / "manuscript.tex",
+        ]
+        # Also search demos/ subdirectories
+        for d in self.ws.glob("demos/*/"):
+            candidates.append(d / "main.tex")
+            candidates.append(d / "paper.tex")
+        # Search top-level and one level deep
+        for tex in self.ws.glob("*.tex"):
+            if tex not in candidates:
+                candidates.append(tex)
+        for tex in self.ws.glob("*/*.tex"):
+            if tex not in candidates:
+                candidates.append(tex)
+
+        for c in candidates:
+            if c.exists():
+                try:
+                    content = c.read_text()
+                    if r"\documentclass" in content or r"\begin{document}" in content:
+                        return c
+                except OSError:
+                    continue
+        return None
+
+    def _compile_latex(self, tex_path: Path) -> Path | None:
+        """Compile a LaTeX file to PDF using pdflatex or latexmk."""
+        tex_dir = tex_path.parent
+        stem = tex_path.stem
+        pdf_out = tex_dir / f"{stem}.pdf"
+
+        # Try latexmk first (handles multiple passes, bibtex, etc.)
+        for compiler in [
+            ["latexmk", "-pdf", "-interaction=nonstopmode", str(tex_path)],
+            ["pdflatex", "-interaction=nonstopmode", str(tex_path)],
+        ]:
+            if not _which(compiler[0]):
+                continue
+            try:
+                # Run twice for references (pdflatex), latexmk handles this itself
+                passes = 1 if compiler[0] == "latexmk" else 2
+                for _ in range(passes):
+                    subprocess.run(
+                        compiler, capture_output=True, timeout=120,
+                        cwd=str(tex_dir),
+                    )
+                if pdf_out.exists():
+                    return pdf_out
+            except (subprocess.TimeoutExpired, OSError):
+                continue
+        return None
+
+    # ------------------------------------------------------------------
+    # PDF (auto-detects LaTeX paper vs report vs manuscript)
     # ------------------------------------------------------------------
 
     def build_pdf(self) -> Path | None:
-        """Generate a PDF. Auto-detects report vs manuscript format."""
+        """Generate a PDF. Prefers LaTeX compilation, falls back to fpdf2."""
+        # If there's a real LaTeX paper, compile it — that's the real deliverable
+        tex_main = self._find_latex_main()
+        if tex_main:
+            compiled = self._compile_latex(tex_main)
+            if compiled:
+                # Copy to .swarm/ for consistent access
+                dest = self.swarm / "report.pdf"
+                try:
+                    import shutil
+                    shutil.copy2(str(compiled), str(dest))
+                    return dest
+                except OSError:
+                    return compiled
+
         is_manuscript = self.is_manuscript_format()
         md = self.build_manuscript_markdown() if is_manuscript else self.build_markdown()
         filename = "manuscript.pdf" if is_manuscript else "report.pdf"

@@ -105,7 +105,16 @@ class InvestigationDispatcher:
     # ------------------------------------------------------------------
 
     def dispatch_next(self) -> None:
-        """Launch the next queued investigation if capacity allows."""
+        """Launch the next queued investigation if capacity allows.
+
+        Also recovers 'running' investigations from a previous dispatcher
+        instance that died (e.g. bridge restart). If a row is marked
+        'running' in the DB but not tracked in self.running, we re-adopt
+        it so progress monitoring resumes.
+        """
+        # Recovery: re-adopt running investigations we're not tracking
+        self._recover_running()
+
         inv = self.queue.next_ready(self.config.max_concurrent)
         if inv is None:
             logger.debug("dispatch_next: nothing ready (db=%s)", self.queue.db_path)
@@ -120,6 +129,67 @@ class InvestigationDispatcher:
             self.send_message(
                 f"💀 *Voronoi · {label} failed to launch*\n\nError: `{e}`"
             )
+
+    def _recover_running(self) -> None:
+        """Re-adopt running investigations from a previous dispatcher instance.
+
+        If the bridge/dispatcher restarts, self.running is empty but the DB
+        may still have investigations marked 'running' with a workspace_path.
+        For each, check if the tmux session is still alive and re-adopt it.
+        If tmux is dead, check if it completed (deliverable exists) or failed.
+        """
+        try:
+            db_running = self.queue.get_running()
+        except Exception:
+            return
+
+        for inv in db_running:
+            if inv.id in self.running:
+                continue  # already tracking
+
+            if not inv.workspace_path:
+                # No workspace — can't recover, mark failed
+                self.queue.fail(inv.id, "No workspace path — cannot recover")
+                continue
+
+            workspace_path = Path(inv.workspace_path)
+            tmux_session = f"voronoi-inv-{inv.id}"
+
+            result = subprocess.run(
+                ["tmux", "has-session", "-t", tmux_session],
+                capture_output=True,
+            )
+            session_alive = result.returncode == 0
+
+            # Re-create the RunningInvestigation tracker
+            run = RunningInvestigation(
+                investigation_id=inv.id,
+                workspace_path=workspace_path,
+                tmux_session=tmux_session,
+                question=inv.question,
+                mode=inv.mode,
+                codename=inv.codename,
+                chat_id=inv.chat_id,
+                rigor=inv.rigor or "standard",
+                started_at=inv.started_at or time.time(),
+            )
+
+            if not session_alive:
+                # Check if it finished while we were down
+                if (workspace_path / ".swarm" / "deliverable.md").exists():
+                    logger.info("Recovered completed investigation #%d (%s)",
+                                inv.id, inv.codename)
+                    self._handle_completion(run)
+                else:
+                    logger.warning("Recovered dead investigation #%d (%s) — marking failed",
+                                   inv.id, inv.codename)
+                    self._handle_completion(run, failed=True,
+                                            failure_reason="Agent exited (recovered after restart)")
+            else:
+                # Still alive — re-adopt for monitoring
+                self.running[inv.id] = run
+                logger.info("Re-adopted running investigation #%d (%s)",
+                            inv.id, inv.codename)
 
     def _launch_investigation(self, inv) -> None:
         from voronoi.server.repo_url import extract_repo_url
@@ -552,6 +622,9 @@ class InvestigationDispatcher:
         total_tasks = len(run.task_snapshot)
         closed = sum(1 for t in run.task_snapshot.values() if t["status"] == "closed")
 
+        # Always clean up tmux sessions on completion
+        self._cleanup_tmux(run)
+
         if failed:
             logger.warning("Voronoi %s (#%d) FAILED: %s (%d/%d tasks in %.1fmin)",
                           run.label, run.investigation_id, failure_reason,
@@ -592,6 +665,22 @@ class InvestigationDispatcher:
                 )
 
         self._try_publish(run)
+
+    def _cleanup_tmux(self, run: RunningInvestigation) -> None:
+        """Kill all tmux sessions associated with this investigation."""
+        # Kill the main orchestrator session
+        subprocess.run(
+            ["tmux", "kill-session", "-t", run.tmux_session],
+            capture_output=True,
+        )
+        # Kill the swarm worker session (convention: <workspace-name>-swarm)
+        ws_name = run.workspace_path.name
+        for suffix in ["-swarm", "-workers"]:
+            subprocess.run(
+                ["tmux", "kill-session", "-t", f"{ws_name}{suffix}"],
+                capture_output=True,
+            )
+        logger.info("Cleaned up tmux sessions for %s", run.label)
 
     def _try_publish(self, run: RunningInvestigation) -> None:
         try:
