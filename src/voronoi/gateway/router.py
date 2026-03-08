@@ -110,7 +110,10 @@ def _save_msg(project_dir: str, chat_id: str, role: str,
 # ---------------------------------------------------------------------------
 
 def _get_queue(project_dir: str) -> InvestigationQueue:
-    base = Path(project_dir) if project_dir else Path.home() / ".voronoi"
+    # Always use ~/.voronoi/queue.db — the same database the dispatcher reads.
+    # Using project_dir here would create a separate queue.db that the
+    # dispatcher never sees, leading to orphaned or duplicate investigations.
+    base = Path.home() / ".voronoi"
     return InvestigationQueue(base / "queue.db")
 
 
@@ -301,7 +304,24 @@ def handle_add(project_dir: str, title: str) -> str:
 
 
 def handle_abort(project_dir: str) -> str:
-    return "🛑 *Abort requested* — orchestrator will shut down gracefully after current agents complete"
+    # Cancel all queued investigations
+    q = _get_queue(project_dir)
+    cancelled = 0
+    for inv in q.get_queued():
+        if q.cancel(inv.id):
+            cancelled += 1
+
+    # Write abort signal file for the dispatcher to pick up.
+    # The dispatcher's poll_progress reads this and kills running tmux sessions.
+    signal_dir = Path(project_dir) / ".swarm"
+    signal_dir.mkdir(parents=True, exist_ok=True)
+    (signal_dir / "abort-signal").write_text("abort\n")
+
+    parts = ["🛑 *Abort requested*"]
+    if cancelled:
+        parts.append(f"Cancelled {cancelled} queued investigation(s).")
+    parts.append("Running investigations will be stopped on next progress check (~30s).")
+    return "\n".join(parts)
 
 
 def handle_pivot(project_dir: str, message: str) -> str:
@@ -446,6 +466,18 @@ def handle_demo(project_dir: str, demo_name: str, chat_id: str = "") -> str:
     prompt_content = prompt_path.read_text()
 
     q = _get_queue(project_dir)
+
+    # Prevent duplicate: check if this demo is already queued or running
+    slug = make_slug(demo_name)
+    for inv in q.get_queued() + q.get_running():
+        if inv.slug == slug:
+            label = inv.codename or f"#{inv.id}"
+            return (
+                f"⚠️ Demo `{demo_name}` is already {inv.status} "
+                f"as *{label}*.\n\n"
+                f"Use `/voronoi status` to check progress."
+            )
+
     inv = Investigation(
         chat_id=chat_id,
         question=prompt_content,

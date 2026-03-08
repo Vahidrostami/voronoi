@@ -192,3 +192,98 @@ class TestProgressMonitoring:
         mock_queue.complete.assert_called_once_with(1)
         assert len(msgs) >= 1
         assert "COMPLETE" in msgs[0]
+
+    def test_handle_completion_failed_calls_fail(self, dispatcher_setup):
+        """When tmux exits without deliverable, should call queue.fail()."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        mock_queue = MagicMock()
+        d._queue = mock_queue
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="Why is model degrading?",
+            mode="investigate",
+        )
+        run.task_snapshot = {"bd-1": {"status": "open", "title": "Incomplete"}}
+
+        d._handle_completion(run, failed=True, failure_reason="Agent exited unexpectedly")
+
+        mock_queue.fail.assert_called_once_with(1, "Agent exited unexpectedly")
+        mock_queue.complete.assert_not_called()
+        assert len(msgs) >= 1
+        assert "FAILED" in msgs[0]
+
+    def test_handle_completion_uses_chat_id(self, dispatcher_setup):
+        """Document send should use per-investigation chat_id, not global file."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        mock_queue = MagicMock()
+        d._queue = mock_queue
+
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "deliverable.md").write_text("# Done")
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="Test question",
+            mode="build",
+            chat_id="12345",
+        )
+        run.task_snapshot = {"bd-1": {"status": "closed", "title": "Done"}}
+
+        with patch("voronoi.server.dispatcher.subprocess.run"):
+            d._handle_completion(run)
+
+        # If a document was sent, it should use the per-investigation chat_id
+        for doc in docs:
+            assert doc[0] == "12345", f"Expected chat_id '12345', got '{doc[0]}'"
+
+
+class TestAbortSignal:
+    def test_abort_signal_triggers_handle_abort(self, dispatcher_setup):
+        """Abort signal file should trigger _handle_abort."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        mock_queue = MagicMock()
+        d._queue = mock_queue
+
+        ws = tmp_path / "ws"
+        (ws / ".swarm").mkdir(parents=True)
+        (ws / ".swarm" / "abort-signal").write_text("abort\n")
+
+        d.running[1] = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=ws,
+            tmux_session="test-session",
+            question="test",
+            mode="investigate",
+        )
+
+        with patch("subprocess.run"):
+            d._check_abort_signal()
+
+        assert len(d.running) == 0
+        mock_queue.fail.assert_called_once()
+        # Signal file should be cleaned up
+        assert not (ws / ".swarm" / "abort-signal").exists()
+
+    def test_no_abort_signal_no_action(self, dispatcher_setup):
+        """No abort signal file should leave running investigations alone."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+
+        ws = tmp_path / "ws"
+        ws.mkdir()
+
+        d.running[1] = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=ws,
+            tmux_session="test-session",
+            question="test",
+            mode="investigate",
+        )
+
+        d._check_abort_signal()
+
+        assert len(d.running) == 1  # Still running

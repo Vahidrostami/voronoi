@@ -86,7 +86,14 @@ class InvestigationQueue:
         self._init_db()
 
     def _init_db(self) -> None:
-        with self._connect() as conn:
+        # Use a raw connection for schema init because executescript()
+        # implicitly commits and manages its own transactions.
+        conn = sqlite3.connect(str(self.db_path), timeout=10)
+        try:
+            try:
+                conn.execute("PRAGMA journal_mode=WAL")
+            except sqlite3.OperationalError:
+                pass
             conn.executescript(_SCHEMA)
             # Migrate existing databases that lack the codename column
             try:
@@ -98,10 +105,16 @@ class InvestigationQueue:
                 conn.execute("SELECT demo_source FROM investigations LIMIT 1")
             except sqlite3.OperationalError:
                 conn.executescript(_MIGRATION_ADD_DEMO_SOURCE)
+        finally:
+            conn.close()
 
     @contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
-        conn = sqlite3.connect(str(self.db_path), timeout=10)
+    def _connect(self, immediate: bool = False) -> Iterator[sqlite3.Connection]:
+        # isolation_level=None disables Python's implicit transactions,
+        # letting us control BEGIN/COMMIT explicitly (needed for
+        # BEGIN IMMEDIATE in next_ready).
+        conn = sqlite3.connect(str(self.db_path), timeout=10,
+                               isolation_level=None)
         try:
             conn.execute("PRAGMA journal_mode=WAL")
         except sqlite3.OperationalError:
@@ -110,17 +123,21 @@ class InvestigationQueue:
             pass
         conn.row_factory = sqlite3.Row
         try:
+            conn.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
             yield conn
-            conn.commit()
+            conn.execute("COMMIT")
         except Exception:
-            conn.rollback()
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
             raise
         finally:
             conn.close()
 
     def enqueue(self, inv: Investigation) -> int:
         """Add an investigation to the queue. Returns the investigation ID."""
-        with self._connect() as conn:
+        with self._connect(immediate=True) as conn:
             cursor = conn.execute(
                 "INSERT INTO investigations "
                 "(chat_id, status, investigation_type, repo, question, slug, "
@@ -144,10 +161,11 @@ class InvestigationQueue:
     def next_ready(self, max_concurrent: int = 2) -> Optional[Investigation]:
         """Get and claim the next queued investigation if under concurrency limit.
 
-        This is atomic: the returned investigation is already marked as
-        'running' so no other dispatcher can pick it up concurrently.
+        This is atomic: uses BEGIN IMMEDIATE to acquire a write lock
+        before reading, preventing TOCTOU races with concurrent callers.
+        The returned investigation is already marked as 'running'.
         """
-        with self._connect() as conn:
+        with self._connect(immediate=True) as conn:
             running = conn.execute(
                 "SELECT COUNT(*) as cnt FROM investigations WHERE status = 'running'",
             ).fetchone()["cnt"]
@@ -163,14 +181,20 @@ class InvestigationQueue:
             if row is None:
                 return None
 
-            # Atomically claim it
+            now = time.time()
             conn.execute(
                 "UPDATE investigations SET status='running', started_at=? "
                 "WHERE id=? AND status='queued'",
-                (time.time(), row["id"]),
+                (now, row["id"]),
             )
 
-            return self._row_to_investigation(row)
+            # Re-read after update to return accurate state
+            updated_row = conn.execute(
+                "SELECT * FROM investigations WHERE id=?",
+                (row["id"],),
+            ).fetchone()
+
+            return self._row_to_investigation(updated_row)
 
     def start(self, investigation_id: int, workspace_path: str, sandbox_id: Optional[str] = None) -> None:
         """Set workspace path for a running investigation.

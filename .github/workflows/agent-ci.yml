@@ -14,6 +14,9 @@ jobs:
         run: |
           if [ -f "package.json" ]; then
             npm ci && npm test
+          elif [ -f "pyproject.toml" ]; then
+            pip install -e '.[dev]' 2>/dev/null || pip install -e .
+            pytest
           elif [ -f "requirements.txt" ]; then
             pip install -r requirements.txt && pytest
           elif [ -f "go.mod" ]; then

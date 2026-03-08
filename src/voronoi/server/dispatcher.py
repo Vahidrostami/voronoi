@@ -49,6 +49,7 @@ class RunningInvestigation:
     question: str
     mode: str
     codename: str = ""
+    chat_id: str = ""
     rigor: str = "standard"
     started_at: float = field(default_factory=time.time)
     last_update_at: float = 0
@@ -153,6 +154,7 @@ class InvestigationDispatcher:
             question=inv.question,
             mode=inv.mode,
             codename=inv.codename,
+            chat_id=inv.chat_id,
             rigor=getattr(inv, 'rigor', 'standard') or 'standard',
         )
 
@@ -224,6 +226,9 @@ class InvestigationDispatcher:
 
     def poll_progress(self) -> None:
         """Check progress of running investigations and send updates."""
+        # Check for abort signal from the router
+        self._check_abort_signal()
+
         completed_ids = []
 
         for inv_id, run in self.running.items():
@@ -264,12 +269,21 @@ class InvestigationDispatcher:
                         )
                     # Write exhaustion convergence
                     self._write_timeout_convergence(run)
+                    self._handle_completion(run, failed=True,
+                                            failure_reason="Timed out")
+                elif not session_alive and not self._is_complete(run):
+                    reason = "agent crashed"
+                    logger.warning("Investigation #%d agent exited without completing",
+                                   inv_id)
+                    self._handle_completion(run, failed=True,
+                                            failure_reason="Agent exited unexpectedly")
                 elif not session_alive:
-                    reason = "agent exited"
+                    reason = "agent exited (complete)"
+                    self._handle_completion(run)
                 else:
                     reason = "complete"
+                    self._handle_completion(run)
                 logger.info("Investigation #%d finished (%s)", inv_id, reason)
-                self._handle_completion(run)
                 completed_ids.append(inv_id)
 
         for inv_id in completed_ids:
@@ -531,10 +545,24 @@ class InvestigationDispatcher:
     # Completion — teaser + PDF + publish
     # ------------------------------------------------------------------
 
-    def _handle_completion(self, run: RunningInvestigation) -> None:
+    def _handle_completion(self, run: RunningInvestigation, *,
+                           failed: bool = False,
+                           failure_reason: str = "") -> None:
         elapsed = (time.time() - run.started_at) / 60
         total_tasks = len(run.task_snapshot)
         closed = sum(1 for t in run.task_snapshot.values() if t["status"] == "closed")
+
+        if failed:
+            logger.warning("Voronoi %s (#%d) FAILED: %s (%d/%d tasks in %.1fmin)",
+                          run.label, run.investigation_id, failure_reason,
+                          closed, total_tasks, elapsed)
+            self.queue.fail(run.investigation_id, failure_reason)
+            self.send_message(
+                f"💀 *Voronoi · {run.label}* FAILED\n\n"
+                f"Reason: {failure_reason}\n"
+                f"Tasks: {closed}/{total_tasks} completed in {elapsed:.0f}min"
+            )
+            return
 
         logger.info("Voronoi %s (#%d) complete: %d/%d tasks in %.1fmin",
                     run.label, run.investigation_id, closed, total_tasks, elapsed)
@@ -554,9 +582,9 @@ class InvestigationDispatcher:
         # Generate PDF/MD and send as document
         report_path = rg.build_pdf()
         if report_path and report_path.exists():
-            from voronoi.gateway.config import get_chat_id
-            chat_id = get_chat_id(str(run.workspace_path.parent.parent))
             doc_type = "Manuscript" if rg.is_manuscript_format() else "Report"
+            # Use the per-investigation chat_id stored at enqueue time
+            chat_id = run.chat_id
             if chat_id:
                 self.send_document(
                     chat_id, report_path,
@@ -587,3 +615,25 @@ class InvestigationDispatcher:
             self.queue.fail(inv_id, "Aborted by operator")
             self.send_message(f"🛑 Voronoi · {run.label} aborted")
         self.running.clear()
+
+    def _check_abort_signal(self) -> None:
+        """Check if the router wrote an abort signal file and act on it."""
+        for run in self.running.values():
+            signal_path = run.workspace_path / ".swarm" / "abort-signal"
+            if signal_path.exists():
+                logger.info("Abort signal detected — aborting all running investigations")
+                try:
+                    signal_path.unlink()
+                except OSError:
+                    pass
+                self._handle_abort()
+                return
+        # Also check the global project dir (for investigations without workspaces yet)
+        global_signal = self.config.base_dir / ".swarm" / "abort-signal"
+        if global_signal.exists():
+            logger.info("Global abort signal detected")
+            try:
+                global_signal.unlink()
+            except OSError:
+                pass
+            self._handle_abort()

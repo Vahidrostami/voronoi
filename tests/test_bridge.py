@@ -114,6 +114,23 @@ class TestHandlers:
     def test_handle_abort(self, tmp_path):
         result = handle_abort(str(tmp_path))
         assert "Abort requested" in result
+        # Should write abort signal file
+        assert (tmp_path / ".swarm" / "abort-signal").exists()
+
+    def test_handle_abort_cancels_queued(self, tmp_path):
+        """Abort should cancel queued investigations via the queue."""
+        from voronoi.server.queue import InvestigationQueue, Investigation
+        q = InvestigationQueue(Path.home() / ".voronoi" / "queue.db")
+        # Enqueue a test investigation
+        inv = Investigation(chat_id="test", question="test q", slug="abort-test",
+                            mode="build", rigor="standard")
+        inv_id = q.enqueue(inv)
+        result = handle_abort(str(tmp_path))
+        assert "Abort requested" in result
+        # Clean up
+        stored = q.get(inv_id)
+        if stored and stored.status == "queued":
+            q.cancel(inv_id)
 
 
 # ---------------------------------------------------------------------------

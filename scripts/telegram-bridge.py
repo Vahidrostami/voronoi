@@ -235,6 +235,9 @@ def run_bot(config: dict) -> None:
             )
 
             chat_id_file = Path(project_dir) / ".telegram-chat-id"
+            # Capture the main thread's event loop now so callbacks
+            # running in executor threads can schedule coroutines safely.
+            _main_loop = asyncio.get_event_loop()
 
             def _send(text: str) -> None:
                 if not chat_id_file.exists():
@@ -243,13 +246,11 @@ def run_bot(config: dict) -> None:
                 if not cid:
                     return
                 try:
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        asyncio.ensure_future(_async_send(cid, text))
-                    else:
-                        loop.run_until_complete(_async_send(cid, text))
+                    _main_loop.call_soon_threadsafe(
+                        asyncio.ensure_future, _async_send(cid, text)
+                    )
                 except Exception:
-                    pass
+                    logger.debug("Failed to schedule message send", exc_info=True)
 
             async def _async_send(cid: str, text: str) -> None:
                 # Add contextual inline buttons based on message content
@@ -286,11 +287,11 @@ def run_bot(config: dict) -> None:
 
             def _send_document(cid: str, file_path: Path, caption: str = "") -> None:
                 try:
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        asyncio.ensure_future(_async_send_doc(cid, file_path, caption))
+                    _main_loop.call_soon_threadsafe(
+                        asyncio.ensure_future, _async_send_doc(cid, file_path, caption)
+                    )
                 except Exception:
-                    pass
+                    logger.debug("Failed to schedule document send", exc_info=True)
 
             async def _async_send_doc(cid: str, file_path: Path, caption: str) -> None:
                 try:
