@@ -181,21 +181,41 @@ If the investigation produces a LaTeX paper (any `.tex` files with `\documentcla
 you MUST dispatch a final compilation task AFTER the evaluator pass and BEFORE declaring
 convergence. The agent that wrote the paper is responsible for compiling it.
 
+**CRITICAL: Figure generation is a hard dependency of compilation.**
+Papers that reference figures (`\includegraphics`) with missing files will compile with
+blank spaces or errors. The compilation agent MUST generate ALL referenced figures
+before running the LaTeX compiler.
+
 **Final compilation task prompt template:**
 ```
 You are the paper compiler. Your job:
-1. Ensure a LaTeX compiler is available (try in order, stop at first success):
+
+PHASE 1 — FIGURE GENERATION (do this FIRST):
+1. Scan all .tex files for \includegraphics{...} references
+2. List every referenced figure path (e.g. figures/ablation.pdf, figures/pipeline.png)
+3. For each missing figure file:
+   a. Check if a plotting script exists (e.g. src/plot_*.py, scripts/generate_figures.py)
+   b. If yes: run it with `python <script>` — ensure output paths match LaTeX references
+   c. If no script exists: write a matplotlib script that generates the figure from
+      available data (results.json, CSV files in output/data/, etc.)
+   d. If no data exists either: generate a placeholder figure with a clear label
+      "[DATA NOT AVAILABLE — placeholder]" so the paper still compiles
+4. Verify ALL \includegraphics references resolve to actual files on disk
+
+PHASE 2 — LATEX COMPILATION:
+5. Ensure a LaTeX compiler is available (try in order, stop at first success):
    a. `which tectonic` — best option, no sudo needed, auto-downloads packages
    b. `which latexmk` or `which pdflatex` — system texlive
    c. Install tectonic (no sudo): `curl -SL https://github.com/tectonic-typesetting/tectonic/releases/latest/download/tectonic-0.15.0-x86_64-unknown-linux-gnu.tar.gz | tar xz -C ~/.local/bin/`
    d. Only if sudo available: `sudo apt-get install -y texlive-base texlive-latex-extra texlive-fonts-recommended`
-2. Find the main .tex file (look for \documentclass)
-3. Generate any missing figures from experimental data using matplotlib/pgfplots
-4. Compile: `tectonic main.tex` or `latexmk -pdf main.tex` or `pdflatex` + `bibtex` + `pdflatex` × 2
-5. Fix any compilation errors (missing packages, bad references, etc.)
-6. Verify the PDF has all sections, figures, tables, and bibliography
-7. Copy final PDF to `.swarm/report.pdf`
-8. Commit and push
+6. Compile: `tectonic main.tex` or `latexmk -pdf main.tex` or `pdflatex` + `bibtex` + `pdflatex` × 2
+7. Fix any compilation errors (missing packages, bad references, etc.)
+
+PHASE 3 — VERIFICATION:
+8. Verify the PDF has all sections, figures, tables, and bibliography
+9. Check that no figures show as blank boxes or "[?]" references
+10. Copy final PDF to `.swarm/report.pdf`
+11. Commit and push
 ```
 
 The compiled PDF at `.swarm/report.pdf` is what gets sent to the user via Telegram.
