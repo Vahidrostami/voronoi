@@ -43,10 +43,18 @@ and must complete it within your isolated git worktree.
 - If blocked: `bd update <id> --notes "BLOCKED: [reason]"`
 - On completion: `bd close <id> --reason "Completed: [summary]"`
 
-### Git Discipline
-- Commit early and often with clear messages
+### Git Discipline — Commit Early, Commit Often
+- **Commit after every meaningful unit of work** — a new file, a completed function, a passing test.
+  Do NOT wait until "everything is done" to commit. If your context runs out before committing, ALL your work is lost.
+- Rule of thumb: commit every 5-10 tool calls, or after creating/editing each file.
+- Suggested cadence:
+  1. Create/edit a file → `git add -A && git commit -m "feat: <what you did>"`
+  2. Write a test → `git add -A && git commit -m "test: <what you tested>"`
+  3. Before any long operation → commit what you have
+  4. Before closing the task → final commit + push
 - ALWAYS push before stopping: `git push origin <your-branch>`
 - If push fails, rebase and retry
+- **If you sense you're running low on context** (many tool calls spent), immediately commit and push what you have, then close the task with a note about remaining work.
 
 ### Quality
 - Write tests for everything you build

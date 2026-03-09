@@ -175,6 +175,52 @@ if eval_result.overall < 0.75:
     attach_quality_disclosure(deliverable, eval_result)
 ```
 
+## Paper & Report Compilation — MANDATORY
+
+If the investigation produces a LaTeX paper (any `.tex` files with `\documentclass`),
+you MUST dispatch a final compilation task AFTER the evaluator pass and BEFORE declaring
+convergence. The agent that wrote the paper is responsible for compiling it.
+
+**CRITICAL: Figure generation is a hard dependency of compilation.**
+Papers that reference figures (`\includegraphics`) with missing files will compile with
+blank spaces or errors. The compilation agent MUST generate ALL referenced figures
+before running the LaTeX compiler.
+
+**Final compilation task prompt template:**
+```
+You are the paper compiler. Your job:
+
+PHASE 1 — FIGURE GENERATION (do this FIRST):
+1. Scan all .tex files for \includegraphics{...} references
+2. List every referenced figure path (e.g. figures/ablation.pdf, figures/pipeline.png)
+3. For each missing figure file:
+   a. Check if a plotting script exists (e.g. src/plot_*.py, scripts/generate_figures.py)
+   b. If yes: run it with `python <script>` — ensure output paths match LaTeX references
+   c. If no script exists: write a matplotlib script that generates the figure from
+      available data (results.json, CSV files in output/data/, etc.)
+   d. If no data exists either: generate a placeholder figure with a clear label
+      "[DATA NOT AVAILABLE — placeholder]" so the paper still compiles
+4. Verify ALL \includegraphics references resolve to actual files on disk
+
+PHASE 2 — LATEX COMPILATION:
+5. Ensure a LaTeX compiler is available (try in order, stop at first success):
+   a. `which tectonic` — best option, no sudo needed, auto-downloads packages
+   b. `which latexmk` or `which pdflatex` — system texlive
+   c. Install tectonic (no sudo): `curl -SL https://github.com/tectonic-typesetting/tectonic/releases/latest/download/tectonic-0.15.0-x86_64-unknown-linux-gnu.tar.gz | tar xz -C ~/.local/bin/`
+   d. Only if sudo available: `sudo apt-get install -y texlive-base texlive-latex-extra texlive-fonts-recommended`
+6. Compile: `tectonic main.tex` or `latexmk -pdf main.tex` or `pdflatex` + `bibtex` + `pdflatex` × 2
+7. Fix any compilation errors (missing packages, bad references, etc.)
+
+PHASE 3 — VERIFICATION:
+8. Verify the PDF has all sections, figures, tables, and bibliography
+9. Check that no figures show as blank boxes or "[?]" references
+10. Copy final PDF to `.swarm/report.pdf`
+11. Commit and push
+```
+
+The compiled PDF at `.swarm/report.pdf` is what gets sent to the user via Telegram.
+Do NOT rely on post-processing — the agent must produce a publication-ready PDF.
+
 ## Diminishing Returns Detection
 
 Track progress velocity in the Strategic Context Document:
@@ -218,13 +264,45 @@ See the `strategic-context` skill for the full document format and maintenance p
 - **Agent CLI** — AI agents dispatched with `-p` flag
 - **Strategic Context** — `.swarm/strategic-context.md` preserves decision rationale across cycles
 
+## Task Granularity — CRITICAL
+
+Worker agents run in a single copilot session with a finite context window (~30 tool calls).
+Tasks that are too large will stall — the agent runs out of context before committing anything,
+producing zero usable output. This is the #1 cause of swarm failure.
+
+**The 30-Minute Rule:** Every task MUST be completable by a single copilot agent in roughly
+30 minutes of wall time. If you can't describe the task's deliverable in 2 sentences, it's too big.
+
+**Decomposition targets by task type:**
+
+| Task type | Max scope | Example good | Example too big |
+|-----------|-----------|-------------|-----------------|
+| Code generation | 1-2 files, <500 lines | "Create data_generator.py with 3 scenario configs" | "Build the entire synthetic data pipeline" |
+| Writing | 1 section, <2000 words | "Write the Related Work section" | "Write the full paper" |
+| Experiments | 1 experiment, 1-2 metrics | "Run encoding ablation on scenarios 1-3, report precision/recall" | "Run all experiments and produce results table" |
+| Data generation | 1 dataset or 2-3 scenarios | "Generate scenarios 1-3 with planted cross-lever effects" | "Generate all 10 scenarios with 100K rows each" |
+| Review | 1 artifact | "Review encoder.py for correctness" | "Review all system code" |
+
+**Decomposition protocol:**
+1. Write the epic (big task) into Beads
+2. Immediately decompose it into 3-8 subtasks, each meeting the 30-Minute Rule
+3. Set dependencies between subtasks
+4. Dispatch subtasks — NEVER dispatch the epic directly to a worker
+
+**Commit checkpoints in prompts:** When writing worker prompts, include explicit commit instructions:
+> "After completing [milestone], run `git add -A && git commit -m '[message]' && git push origin [branch]` BEFORE continuing."
+
+This ensures partial progress is preserved even if the agent's context fills up.
+
 ## Rules
 
 - NEVER dispatch more agents than `max_agents` in `.swarm-config.json`
 - NEVER assign overlapping file scopes to different agents
+- NEVER dispatch a task that would take more than ~30 tool calls to complete — decompose it first
 - ALWAYS set dependencies before dispatching
 - ALWAYS verify `bd ready` before spawning (don't spawn blocked tasks)
 - ALWAYS verify artifact contracts before dispatching: check that all `REQUIRES` files exist and `GATE` files pass
+- ALWAYS include commit checkpoint instructions in every worker prompt (at minimum: "commit and push after each file you create")
 - Each task description MUST specify which files/directories the agent owns
 - Each task MUST declare `PRODUCES` (output files) and `REQUIRES` (input files) in Beads notes
 - Tasks that consume outputs of other tasks MUST have the producing task's output in their `REQUIRES`

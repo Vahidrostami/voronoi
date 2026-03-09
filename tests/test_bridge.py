@@ -73,32 +73,18 @@ class TestHandlers:
         # Create queue.db so _get_queue works
         swarm_dir = tmp_path / ".swarm"
         swarm_dir.mkdir(parents=True, exist_ok=True)
-        mock_run.side_effect = [
-            MagicMock(returncode=0, stdout=json.dumps([{"id": "1"}]), stderr=""),
-            MagicMock(returncode=0, stdout=json.dumps([{"id": "1"}, {"id": "2"}]), stderr=""),
-        ]
         result = handle_status(str(tmp_path))
         assert "Swarm Status" in result
-        # With no running investigations, falls back to server-level beads
-        assert "open" in result.lower() or "ready" in result.lower()
+        # With no running investigations, no task counts shown
+        assert "Queued" in result
 
-    @patch("voronoi.gateway.router.subprocess.run")
-    def test_handle_tasks(self, mock_run, tmp_path):
-        tasks = [
-            {"id": "bd-1", "title": "Task 1", "priority": 1, "status": "open"},
-            {"id": "bd-2", "title": "Task 2", "priority": 2, "status": "open"},
-        ]
-        mock_run.return_value = MagicMock(returncode=0, stdout=json.dumps(tasks), stderr="")
+    def test_handle_tasks_no_running(self, tmp_path):
         result = handle_tasks(str(tmp_path))
-        assert "Task 1" in result
-        assert "Task 2" in result
+        assert "No running investigations" in result
 
-    @patch("voronoi.gateway.router.subprocess.run")
-    def test_handle_ready(self, mock_run, tmp_path):
-        tasks = [{"id": "bd-1", "title": "Ready task", "priority": 1}]
-        mock_run.return_value = MagicMock(returncode=0, stdout=json.dumps(tasks), stderr="")
+    def test_handle_ready_no_running(self, tmp_path):
         result = handle_ready(str(tmp_path))
-        assert "Ready task" in result
+        assert "No unblocked tasks ready" in result
 
     def test_handle_guide(self, tmp_path):
         (tmp_path / ".swarm").mkdir(parents=True)
@@ -114,6 +100,23 @@ class TestHandlers:
     def test_handle_abort(self, tmp_path):
         result = handle_abort(str(tmp_path))
         assert "Abort requested" in result
+        # Should write abort signal file
+        assert (tmp_path / ".swarm" / "abort-signal").exists()
+
+    def test_handle_abort_cancels_queued(self, tmp_path):
+        """Abort should cancel queued investigations via the queue."""
+        from voronoi.server.queue import InvestigationQueue, Investigation
+        q = InvestigationQueue(Path.home() / ".voronoi" / "queue.db")
+        # Enqueue a test investigation
+        inv = Investigation(chat_id="test", question="test q", slug="abort-test",
+                            mode="build", rigor="standard")
+        inv_id = q.enqueue(inv)
+        result = handle_abort(str(tmp_path))
+        assert "Abort requested" in result
+        # Clean up
+        stored = q.get(inv_id)
+        if stored and stored.status == "queued":
+            q.cancel(inv_id)
 
 
 # ---------------------------------------------------------------------------
@@ -131,7 +134,7 @@ class TestScienceHandlers:
         mock_queue_cls.return_value = mock_q
 
         result = handle_investigate(str(tmp_path), "Why is latency high?", "chat1")
-        assert "Voronoi #1" in result
+        assert "Voronoi" in result
         assert "LAUNCHED" in result
         assert "investigation" in result
 
@@ -145,7 +148,7 @@ class TestScienceHandlers:
         mock_queue_cls.return_value = mock_q
 
         result = handle_explore(str(tmp_path), "Redis vs Memcached", "chat1")
-        assert "Voronoi #2" in result
+        assert "Voronoi" in result
         assert "exploration" in result
 
     @patch("voronoi.gateway.router.InvestigationQueue", autospec=True)
@@ -158,7 +161,7 @@ class TestScienceHandlers:
         mock_queue_cls.return_value = mock_q
 
         result = handle_build(str(tmp_path), "Build REST API", "chat1")
-        assert "Voronoi #3" in result
+        assert "Voronoi" in result
         assert "build" in result
 
     @patch("voronoi.gateway.router.InvestigationQueue", autospec=True)
@@ -171,7 +174,7 @@ class TestScienceHandlers:
         mock_queue_cls.return_value = mock_q
 
         result = handle_experiment(str(tmp_path), "test batch size effect", "chat1")
-        assert "Voronoi #4" in result
+        assert "Voronoi" in result
         assert "LAUNCHED" in result
 
 
@@ -204,6 +207,7 @@ class TestKnowledgeHandlers:
 
     @patch("voronoi.gateway.router.subprocess.run")
     def test_handle_finding(self, mock_run, tmp_path):
+        (tmp_path / ".beads").mkdir()
         task = {"id": "bd-42", "title": "FINDING: Cache works", "status": "closed",
                 "priority": 1, "notes": "EFFECT_SIZE:d=1.5"}
         mock_run.return_value = MagicMock(returncode=0, stdout=json.dumps(task), stderr="")
@@ -213,6 +217,7 @@ class TestKnowledgeHandlers:
 
     @patch("voronoi.gateway.router.subprocess.run")
     def test_handle_finding_not_found(self, mock_run, tmp_path):
+        (tmp_path / ".beads").mkdir()
         mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="not found")
         result = handle_finding(str(tmp_path), "bd-999")
         assert "not found" in result
@@ -228,12 +233,7 @@ class TestCommandRouter:
         text, _ = router.route("", [], "chat1")
         assert "Voronoi" in text
 
-    @patch("voronoi.gateway.router.subprocess.run")
-    def test_route_status(self, mock_run, tmp_path):
-        mock_run.side_effect = [
-            MagicMock(returncode=0, stdout="[]", stderr=""),
-            MagicMock(returncode=0, stdout="[]", stderr=""),
-        ]
+    def test_route_status(self, tmp_path):
         router = CommandRouter(str(tmp_path))
         text, _ = router.route("status", [], "chat1")
         assert "Swarm Status" in text

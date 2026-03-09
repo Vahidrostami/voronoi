@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import fcntl
 import logging
 import sys
 from pathlib import Path
@@ -182,7 +183,10 @@ def run_bot(config: dict) -> None:
         query = update.callback_query
         if query is None:
             return
-        await query.answer()
+        try:
+            await query.answer()
+        except Exception:
+            pass  # query expired — still process the button action
         data = query.data or ""
         chat_id = str(query.message.chat_id) if query.message else "unknown"
 
@@ -231,6 +235,9 @@ def run_bot(config: dict) -> None:
             )
 
             chat_id_file = Path(project_dir) / ".telegram-chat-id"
+            # Capture the main thread's event loop now so callbacks
+            # running in executor threads can schedule coroutines safely.
+            _main_loop = asyncio.get_event_loop()
 
             def _send(text: str) -> None:
                 if not chat_id_file.exists():
@@ -239,13 +246,11 @@ def run_bot(config: dict) -> None:
                 if not cid:
                     return
                 try:
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        asyncio.ensure_future(_async_send(cid, text))
-                    else:
-                        loop.run_until_complete(_async_send(cid, text))
+                    _main_loop.call_soon_threadsafe(
+                        asyncio.ensure_future, _async_send(cid, text)
+                    )
                 except Exception:
-                    pass
+                    logger.debug("Failed to schedule message send", exc_info=True)
 
             async def _async_send(cid: str, text: str) -> None:
                 # Add contextual inline buttons based on message content
@@ -282,11 +287,11 @@ def run_bot(config: dict) -> None:
 
             def _send_document(cid: str, file_path: Path, caption: str = "") -> None:
                 try:
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        asyncio.ensure_future(_async_send_doc(cid, file_path, caption))
+                    _main_loop.call_soon_threadsafe(
+                        asyncio.ensure_future, _async_send_doc(cid, file_path, caption)
+                    )
                 except Exception:
-                    pass
+                    logger.debug("Failed to schedule document send", exc_info=True)
 
             async def _async_send_doc(cid: str, file_path: Path, caption: str) -> None:
                 try:
@@ -305,7 +310,8 @@ def run_bot(config: dict) -> None:
         d = _get_dispatcher()
         if d:
             try:
-                d.dispatch_next()
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, d.dispatch_next)
             except Exception as e:
                 logger.error("Dispatch error: %s", e, exc_info=True)
 
@@ -313,7 +319,8 @@ def run_bot(config: dict) -> None:
         d = _get_dispatcher()
         if d:
             try:
-                d.poll_progress()
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, d.poll_progress)
             except Exception as e:
                 logger.error("Progress poll error: %s", e, exc_info=True)
 
@@ -358,6 +365,16 @@ def main() -> None:
     if not config["bot_token"]:
         print("Error: No Telegram bot token configured", file=sys.stderr)
         print("Set VORONOI_TG_BOT_TOKEN or add to .swarm-config.json", file=sys.stderr)
+        sys.exit(1)
+
+    # Prevent two instances from polling the same bot token simultaneously.
+    lock_path = Path(config.get("project_dir", ".")) / ".bridge.lock"
+    lock_file = open(lock_path, "w")  # noqa: SIM115 — kept open for process lifetime
+    try:
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        print("Error: Another telegram-bridge instance is already running "
+              f"(lock: {lock_path})", file=sys.stderr)
         sys.exit(1)
 
     run_bot(config)

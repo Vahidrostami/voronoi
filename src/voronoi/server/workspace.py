@@ -158,15 +158,65 @@ class WorkspaceManager:
         ]
 
     def _voronoi_init(self, workspace_path: Path) -> None:
-        """Run voronoi init in a workspace (best-effort)."""
+        """Run voronoi init in a workspace, with fallback for .github/ files."""
         try:
             subprocess.run(
                 ["voronoi", "init"],
                 cwd=str(workspace_path),
                 capture_output=True, text=True, timeout=60,
+                input="Y\n",  # auto-confirm bd init prompt
             )
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass  # voronoi CLI may not be on PATH in all environments
+
+        # Ensure .github/agents, prompts, skills always exist — even if
+        # voronoi init failed (e.g. CLI not on PATH).  These are critical
+        # for the orchestrator and worker agents to use role definitions.
+        self._ensure_github_files(workspace_path)
+
+        # Ensure Beads is initialized in the workspace — required for task
+        # tracking.  voronoi init delegates to swarm-init.sh which runs
+        # `bd init`, but that may have been skipped if the CLI or script
+        # wasn't available.  Run it explicitly as a safety net.
+        self._ensure_beads(workspace_path)
+
+    def _ensure_beads(self, workspace_path: Path) -> None:
+        """Initialize Beads (bd) in a workspace if not already present."""
+        beads_dir = workspace_path / ".beads"
+        if beads_dir.is_dir():
+            return
+        if not shutil.which("bd"):
+            return
+        try:
+            subprocess.run(
+                ["bd", "init", "--quiet"],
+                cwd=str(workspace_path),
+                capture_output=True, text=True, timeout=30,
+                input="Y\n",
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+
+    def _ensure_github_files(self, workspace_path: Path) -> None:
+        """Copy .github/{agents,prompts,skills} if missing in workspace."""
+        github_dst = workspace_path / ".github"
+        # If agents/ already exists, voronoi init succeeded — skip
+        if (github_dst / "agents").is_dir():
+            return
+        try:
+            from voronoi.cli import _find_data_dir
+            data = _find_data_dir()
+            github_src = data / ".github"
+            if not github_src.is_dir():
+                return
+            github_dst.mkdir(exist_ok=True)
+            for subdir in ("agents", "prompts", "skills"):
+                src = github_src / subdir
+                dst = github_dst / subdir
+                if src.is_dir() and not dst.is_dir():
+                    shutil.copytree(src, dst)
+        except Exception:
+            pass  # best-effort
 
     def _run_git(self, cmd: list[str], cwd: str) -> subprocess.CompletedProcess:
         """Run a git command."""

@@ -27,10 +27,12 @@ class Investigation:
     slug: str = ""
     mode: str = "investigate"         # investigate | explore | build | experiment
     rigor: str = "scientific"
+    codename: str = ""               # brain-themed codename (e.g. "Dopamine")
     workspace_path: Optional[str] = None
     sandbox_id: Optional[str] = None
     github_url: Optional[str] = None
     parent_id: Optional[int] = None   # for follow-ups
+    demo_source: Optional[str] = None  # demo name:path for demo-originated investigations
     created_at: float = field(default_factory=time.time)
     started_at: Optional[float] = None
     completed_at: Optional[float] = None
@@ -50,6 +52,7 @@ CREATE TABLE IF NOT EXISTS investigations (
     slug              TEXT NOT NULL,
     mode              TEXT NOT NULL DEFAULT 'investigate',
     rigor             TEXT NOT NULL DEFAULT 'scientific',
+    codename          TEXT NOT NULL DEFAULT '',
     workspace_path    TEXT,
     sandbox_id        TEXT,
     github_url        TEXT,
@@ -65,6 +68,14 @@ CREATE INDEX IF NOT EXISTS idx_inv_chat ON investigations(chat_id);
 CREATE INDEX IF NOT EXISTS idx_inv_repo ON investigations(repo);
 """
 
+_MIGRATION_ADD_CODENAME = """
+ALTER TABLE investigations ADD COLUMN codename TEXT NOT NULL DEFAULT '';
+"""
+
+_MIGRATION_ADD_DEMO_SOURCE = """
+ALTER TABLE investigations ADD COLUMN demo_source TEXT;
+"""
+
 
 class InvestigationQueue:
     """SQLite-backed investigation queue with concurrency control."""
@@ -75,40 +86,86 @@ class InvestigationQueue:
         self._init_db()
 
     def _init_db(self) -> None:
-        with self._connect() as conn:
+        # Use a raw connection for schema init because executescript()
+        # implicitly commits and manages its own transactions.
+        conn = sqlite3.connect(str(self.db_path), timeout=10)
+        try:
+            try:
+                conn.execute("PRAGMA journal_mode=WAL")
+            except sqlite3.OperationalError:
+                pass
             conn.executescript(_SCHEMA)
+            # Migrate existing databases that lack the codename column
+            try:
+                conn.execute("SELECT codename FROM investigations LIMIT 1")
+            except sqlite3.OperationalError:
+                conn.executescript(_MIGRATION_ADD_CODENAME)
+            # Migrate existing databases that lack the demo_source column
+            try:
+                conn.execute("SELECT demo_source FROM investigations LIMIT 1")
+            except sqlite3.OperationalError:
+                conn.executescript(_MIGRATION_ADD_DEMO_SOURCE)
+        finally:
+            conn.close()
 
     @contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
-        conn = sqlite3.connect(str(self.db_path), timeout=10)
-        conn.execute("PRAGMA journal_mode=WAL")
+    def _connect(self, immediate: bool = False) -> Iterator[sqlite3.Connection]:
+        # isolation_level=None disables Python's implicit transactions,
+        # letting us control BEGIN/COMMIT explicitly (needed for
+        # BEGIN IMMEDIATE in next_ready).
+        conn = sqlite3.connect(str(self.db_path), timeout=10,
+                               isolation_level=None)
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+        except sqlite3.OperationalError:
+            # WAL requires POSIX shared-memory locking; falls back to
+            # DELETE journal mode on filesystems that lack it (e.g. NFS).
+            pass
         conn.row_factory = sqlite3.Row
         try:
+            conn.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
             yield conn
-            conn.commit()
+            conn.execute("COMMIT")
         except Exception:
-            conn.rollback()
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
             raise
         finally:
             conn.close()
 
     def enqueue(self, inv: Investigation) -> int:
         """Add an investigation to the queue. Returns the investigation ID."""
-        with self._connect() as conn:
+        with self._connect(immediate=True) as conn:
             cursor = conn.execute(
                 "INSERT INTO investigations "
                 "(chat_id, status, investigation_type, repo, question, slug, "
-                " mode, rigor, parent_id, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " mode, rigor, codename, parent_id, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (inv.chat_id, "queued", inv.investigation_type, inv.repo,
                  inv.question, inv.slug, inv.mode, inv.rigor,
-                 inv.parent_id, inv.created_at),
+                 inv.codename, inv.parent_id, inv.created_at),
             )
-            return cursor.lastrowid  # type: ignore[return-value]
+            inv_id: int = cursor.lastrowid  # type: ignore[assignment]
+            # Assign a deterministic codename if none was provided
+            if not inv.codename:
+                from voronoi.gateway.codename import codename_for_id
+                codename = codename_for_id(inv_id)
+                conn.execute(
+                    "UPDATE investigations SET codename=? WHERE id=?",
+                    (codename, inv_id),
+                )
+            return inv_id
 
     def next_ready(self, max_concurrent: int = 2) -> Optional[Investigation]:
-        """Get the next queued investigation if under concurrency limit."""
-        with self._connect() as conn:
+        """Get and claim the next queued investigation if under concurrency limit.
+
+        This is atomic: uses BEGIN IMMEDIATE to acquire a write lock
+        before reading, preventing TOCTOU races with concurrent callers.
+        The returned investigation is already marked as 'running'.
+        """
+        with self._connect(immediate=True) as conn:
             running = conn.execute(
                 "SELECT COUNT(*) as cnt FROM investigations WHERE status = 'running'",
             ).fetchone()["cnt"]
@@ -124,14 +181,32 @@ class InvestigationQueue:
             if row is None:
                 return None
 
-            return self._row_to_investigation(row)
+            now = time.time()
+            conn.execute(
+                "UPDATE investigations SET status='running', started_at=? "
+                "WHERE id=? AND status='queued'",
+                (now, row["id"]),
+            )
+
+            # Re-read after update to return accurate state
+            updated_row = conn.execute(
+                "SELECT * FROM investigations WHERE id=?",
+                (row["id"],),
+            ).fetchone()
+
+            return self._row_to_investigation(updated_row)
 
     def start(self, investigation_id: int, workspace_path: str, sandbox_id: Optional[str] = None) -> None:
-        """Mark an investigation as running."""
+        """Set workspace path for a running investigation.
+
+        The investigation may already be in 'running' state (set by
+        ``next_ready``).  This attaches the workspace metadata.
+        For backward compat it also accepts 'queued' status.
+        """
         with self._connect() as conn:
             conn.execute(
-                "UPDATE investigations SET status='running', started_at=?, "
-                "workspace_path=?, sandbox_id=? WHERE id=? AND status='queued'",
+                "UPDATE investigations SET status='running', started_at=COALESCE(started_at, ?), "
+                "workspace_path=?, sandbox_id=? WHERE id=? AND status IN ('queued', 'running')",
                 (time.time(), workspace_path, sandbox_id, investigation_id),
             )
 
@@ -253,13 +328,15 @@ class InvestigationQueue:
             for inv in running:
                 elapsed = (time.time() - (inv.started_at or inv.created_at)) / 60
                 label = inv.repo or inv.slug
-                lines.append(f"  ⚡ #{inv.id} {label} ({elapsed:.0f}min)")
+                name = inv.codename or f"#{inv.id}"
+                lines.append(f"  ⚡ {name} {label} ({elapsed:.0f}min)")
 
         if queued:
             lines.append("\n*Queued:*")
             for i, inv in enumerate(queued):
                 label = inv.repo or inv.slug
-                lines.append(f"  ⏳ #{inv.id} {label} (position {i+1})")
+                name = inv.codename or f"#{inv.id}"
+                lines.append(f"  ⏳ {name} {label} (position {i+1})")
 
         if not running and not queued:
             lines.append("No active investigations.")
@@ -267,6 +344,11 @@ class InvestigationQueue:
         return "\n".join(lines)
 
     def _row_to_investigation(self, row: sqlite3.Row) -> Investigation:
+        demo_source = None
+        try:
+            demo_source = row["demo_source"]
+        except (IndexError, KeyError):
+            pass
         return Investigation(
             id=row["id"],
             chat_id=row["chat_id"],
@@ -277,12 +359,37 @@ class InvestigationQueue:
             slug=row["slug"],
             mode=row["mode"],
             rigor=row["rigor"],
+            codename=row["codename"],
             workspace_path=row["workspace_path"],
             sandbox_id=row["sandbox_id"],
             github_url=row["github_url"],
             parent_id=row["parent_id"],
+            demo_source=demo_source,
             created_at=row["created_at"],
             started_at=row["started_at"],
             completed_at=row["completed_at"],
             error=row["error"],
         )
+
+    def set_demo_source(self, investigation_id: int, demo_name: str, demo_path: str) -> None:
+        """Store the demo origin so the dispatcher can copy demo files."""
+        value = f"{demo_name}:{demo_path}"
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE investigations SET demo_source=? WHERE id=?",
+                (value, investigation_id),
+            )
+
+    def get_demo_source(self, investigation_id: int) -> Optional[tuple[str, str]]:
+        """Return (demo_name, demo_path) if this investigation originated from a demo."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT demo_source FROM investigations WHERE id=?",
+                (investigation_id,),
+            ).fetchone()
+            if row is None or row["demo_source"] is None:
+                return None
+            parts = row["demo_source"].split(":", 1)
+            if len(parts) != 2:
+                return None
+            return parts[0], parts[1]

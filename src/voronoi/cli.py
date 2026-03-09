@@ -61,91 +61,22 @@ def _ensure_executable(directory: Path) -> None:
 def _build_orchestrator_prompt(
     prompt_path: str, output_dir: str, safe: bool, max_agents: int = 4,
 ) -> str:
-    """Build the prompt that makes Copilot the swarm orchestrator.
+    """Build the orchestrator prompt via the shared builder."""
+    from voronoi.server.prompt import build_orchestrator_prompt
 
-    Replaces the rigid 1000-line bash autopilot with Copilot's own judgment:
-    it reads the project brief, plans tasks in Beads, spawns worker agents,
-    monitors progress, merges completed work, and handles failures.
-    """
-    safe_flag = "--safe " if safe else ""
-    return (
-        "You are the Voronoi swarm orchestrator. Your job: read the project brief, "
-        "plan tasks, spawn parallel worker agents, monitor their progress, merge "
-        "completed work, and repeat until the project is done.\n\n"
-        "## Personality — IMPORTANT\n\n"
-        "Your Telegram notifications should be EXCITED, high-energy, and fun — like a hype crew "
-        "that genuinely loves watching agents crush it. Use fire emojis, exclamation marks, "
-        "celebrate wins, make science feel epic. But always stay INFORMATIVE — every message "
-        "must include real numbers (task counts, progress, findings). Never fluff without facts.\n"
-        "Examples of good messages:\n"
-        '  \"🔥 Wave 2 DONE! 8/12 tasks crushed, 4 agents still cooking. LET\'S GO!\"\n'
-        '  \"🧪 FINDING ALERT! Replay + EWC cuts forgetting by 34%% (d=0.82, p<.001) — HUGE if it replicates!\"\n'
-        '  \"🏁 ALL DONE! 12/12 tasks, 3 waves, 18min. Science delivered. 🎉\"\n'
-        '  \"💀 agent-validation gave up after 3 tries. Skill issue. Moving on.\"\n\n'
-        f"PROJECT BRIEF: Read `{prompt_path}` completely before planning — every line matters.\n"
-        f"OUTPUT DIR: All work scoped under `{output_dir}/` "
-        f"(source in `{output_dir}/src/`, output in `{output_dir}/output/`).\n"
-        f"MAX CONCURRENT AGENTS: {max_agents}.\n\n"
-        "## Tools\n\n"
-        "Task tracking (Beads):\n"
-        "  bd prime                       # Load context at start\n"
-        "  bd create \"title\" -t task -p <1-3> --description \"...\" --json\n"
-        "  bd create \"title\" -t epic -p 1 --json\n"
-        "  bd dep add <child-id> <parent-id>\n"
-        "  bd ready --json                # Unblocked tasks\n"
-        "  bd update <id> --notes \"PRODUCES:file1,file2\"  # Artifact contract\n"
-        "  bd update <id> --notes \"REQUIRES:file1,file2\"  # Input contract\n"
-        "  bd close <id> --reason \"summary\"\n"
-        "  bd list --json / bd show <id> --json\n\n"
-        "Spawn a worker agent:\n"
-        "  1. Write the worker's prompt to a temp file, e.g. /tmp/prompt-<branch>.txt\n"
-        "  2. Run: ./scripts/spawn-agent.sh "
-        f"{safe_flag}<task-id> <branch-name> /tmp/prompt-<branch>.txt\n\n"
-        "Merge completed work:\n"
-        "  ./scripts/merge-agent.sh <branch-name> <task-id>\n\n"
-        "Monitor agents:\n"
-        "  bd show <id> --json                                    # Task status\n"
-        "  git log main..<branch> --oneline                      # Commits\n"
-        "  tmux capture-pane -t $(jq -r .tmux_session .swarm-config.json):<branch> -p 2>/dev/null | tail -20\n\n"
-        "## Workflow\n\n"
-        f"1. Read `{prompt_path}` completely — understand deliverables, success criteria, constraints\n"
-        "2. Run `bd prime`, then create an epic + tasks with dependencies and artifact contracts\n"
-        "   (each task: PRODUCES files it must create, REQUIRES files it needs, clear file scope)\n"
-        "3. OODA loop:\n"
-        "   - Observe:  `bd ready --json` for tasks to dispatch, check agent status\n"
-        "   - Orient:   Any agents done? Failed? Stuck? New tasks unblocked?\n"
-        "   - Decide:   What to spawn, merge, retry, or fix\n"
-        "   - Act:      Spawn agents (with rich prompts), merge completed work, \n"
-        "               diagnose failures, dispatch newly unblocked tasks\n"
-        "   - Repeat until all tasks are done\n"
-        "4. Verify deliverables exist, `git push origin main`, report results\n\n"
-        "## Writing Worker Prompts — CRITICAL\n\n"
-        "Each worker agent is autonomous — it only knows what you tell it. Include:\n"
-        "- WHAT to build: specific files, functions, data structures, algorithms\n"
-        "- FULL relevant context from the project brief (copy sections verbatim)\n"
-        "- Input files with full paths, output files matching PRODUCES artifact contract\n"
-        "- Acceptance criteria: how the agent knows it's done\n"
-        "- Completion: `bd close <task-id> --reason \"...\"` then `git push origin <branch>`\n\n"
-        "## Rules\n"
-        "- Read the FULL project brief before planning\n"
-        "- No overlapping file scopes between agents\n"
-        "- Write detailed, context-rich worker prompts — agents can't infer what you don't provide\n"
-        "- Diagnose failures (check git log, tmux output) before retrying\n"
-        "- Push all completed work to remote when done\n\n"
-        "## Telegram Notifications\n\n"
-        "Spawn and merge scripts send per-agent notifications automatically.\n"
-        "YOU are responsible for these additional notifications (use your Personality above!):\n\n"
-        "  source ./scripts/notify-telegram.sh\n\n"
-        "RIGHT AFTER planning tasks (before first spawn), send the kickoff message:\n"
-        "  notify_telegram \"swarm_start\" \"⚡ <project name> — <N> tasks planned · <M> agents ready\"\n\n"
-        "After completing each wave of merges, send a hype progress update:\n"
-        "  notify_telegram \"wave_complete\" \"🔥 Wave N DONE · X/Y tasks crushed · Z agents still going\"\n\n"
-        "When giving up on a task after repeated failures:\n"
-        "  notify_telegram \"agent_exhausted\" \"💀 <branch> failed after N tries — <reason>\"\n\n"
-        "When the swarm is fully complete:\n"
-        "  notify_telegram \"swarm_complete\" \"🏁 ALL DONE · X/Y tasks · N waves · Mm runtime\"\n\n"
-        "Also check `.swarm/inbox/` for operator commands from Telegram (JSON files).\n"
-        "Process any pending commands before each dispatch round.\n"
+    # Read the PROMPT.md content as the question
+    prompt_file = Path.cwd() / prompt_path
+    question = prompt_file.read_text() if prompt_file.exists() else prompt_path
+
+    return build_orchestrator_prompt(
+        question=question,
+        mode="build",
+        rigor="standard",
+        workspace_path=str(Path.cwd()),
+        prompt_path=prompt_path,
+        output_dir=output_dir,
+        max_agents=max_agents,
+        safe=safe,
     )
 
 
