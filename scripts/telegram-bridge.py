@@ -214,6 +214,14 @@ def run_bot(config: dict) -> None:
 
     app.add_handler(CallbackQueryHandler(handle_callback))
 
+    # -- error handler -----------------------------------------------------
+
+    async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Log errors from the telegram bot without crashing."""
+        logger.error("Telegram error: %s", context.error, exc_info=context.error)
+
+    app.add_error_handler(_error_handler)
+
     # -- dispatcher jobs ----------------------------------------------------
 
     _dispatcher_instance: list = [None]
