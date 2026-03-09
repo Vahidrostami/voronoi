@@ -78,7 +78,7 @@ class TestTeaser:
             {"id": "bd-6", "title": "FINDING: Distillation no effect",
              "notes": "VALENCE:negative\nEFFECT_SIZE:0.08"},
         ]
-        mock_bd.return_value = (0, json.dumps(findings), "")
+        mock_bd.return_value = (0, json.dumps(findings))
 
         rg = ReportGenerator(workspace)
         teaser = rg.build_teaser(7, "Why is performance degrading?", 12, 12, 18.5)
@@ -92,7 +92,7 @@ class TestTeaser:
 
     @patch("voronoi.gateway.report._run_bd")
     def test_teaser_no_findings(self, mock_bd, workspace):
-        mock_bd.return_value = (0, json.dumps([]), "")
+        mock_bd.return_value = (0, json.dumps([]))
 
         rg = ReportGenerator(workspace)
         teaser = rg.build_teaser(1, "test question", 5, 3, 10)
@@ -103,7 +103,7 @@ class TestTeaser:
 
     @patch("voronoi.gateway.report._run_bd")
     def test_teaser_bd_failure(self, mock_bd, workspace):
-        mock_bd.return_value = (1, "", "bd not found")
+        mock_bd.return_value = (1, "")
 
         rg = ReportGenerator(workspace)
         teaser = rg.build_teaser(1, "test", 0, 0, 0)
@@ -120,7 +120,7 @@ class TestTeaser:
             {"id": "bd-3", "title": "FINDING: Medium effect",
              "notes": "EFFECT_SIZE:0.50\nVALENCE:positive"},
         ]
-        mock_bd.return_value = (0, json.dumps(findings), "")
+        mock_bd.return_value = (0, json.dumps(findings))
 
         rg = ReportGenerator(workspace)
         teaser = rg.build_teaser(1, "test", 5, 5, 10)
@@ -138,7 +138,7 @@ class TestTeaser:
             {"id": "bd-2", "title": "FINDING: Beta",
              "notes": "EFFECT_SIZE:0.3\nVALENCE:positive"},
         ]
-        mock_bd.return_value = (0, json.dumps(findings), "")
+        mock_bd.return_value = (0, json.dumps(findings))
 
         rg = ReportGenerator(workspace)
         teaser = rg.build_teaser(1, "test", 5, 5, 10)
@@ -162,7 +162,7 @@ class TestMarkdown:
             {"id": "bd-5", "title": "FINDING: EWC works",
              "notes": "EFFECT_SIZE:0.82\nCI_95:[0.61, 1.03]\nN:500\nSTAT_TEST:t-test\nVALENCE:positive"},
         ]
-        mock_bd.return_value = (0, json.dumps(findings), "")
+        mock_bd.return_value = (0, json.dumps(findings))
 
         rg = ReportGenerator(workspace)
         md = rg.build_markdown()
@@ -179,7 +179,7 @@ class TestMarkdown:
     def test_markdown_minimal(self, mock_bd, tmp_path):
         """Workspace with no .swarm files."""
         (tmp_path / ".swarm").mkdir()
-        mock_bd.return_value = (0, json.dumps([]), "")
+        mock_bd.return_value = (0, json.dumps([]))
 
         rg = ReportGenerator(tmp_path)
         md = rg.build_markdown()
@@ -195,7 +195,7 @@ class TestMarkdown:
                 {"name": "H1", "prior": 0.8, "status": "confirmed"},
             ]
         }))
-        mock_bd.return_value = (0, json.dumps([]), "")
+        mock_bd.return_value = (0, json.dumps([]))
 
         rg = ReportGenerator(workspace)
         md = rg.build_markdown()
@@ -212,7 +212,7 @@ class TestPDF:
     @patch("voronoi.gateway.report._run_bd")
     def test_fallback_to_md(self, mock_bd, workspace):
         """When fpdf2 is not available, fall back to .md file."""
-        mock_bd.return_value = (0, json.dumps([]), "")
+        mock_bd.return_value = (0, json.dumps([]))
 
         rg = ReportGenerator(workspace)
         with patch.dict("sys.modules", {"fpdf": None}):
@@ -228,7 +228,7 @@ class TestPDF:
         mock_bd.return_value = (0, json.dumps([
             {"id": "bd-1", "title": "FINDING: Test result",
              "notes": "EFFECT_SIZE:0.5\nVALENCE:positive"},
-        ]), "")
+        ]))
 
         rg = ReportGenerator(workspace)
         path = rg.build_pdf()
@@ -331,7 +331,7 @@ class TestManuscriptMarkdown:
         mock_bd.return_value = (0, json.dumps([
             {"id": "bd-1", "title": "FINDING: EWC works",
              "notes": "EFFECT_SIZE:0.82\nVALENCE:positive"},
-        ]), "")
+        ]))
 
         rg = ReportGenerator(tmp_path, rigor="scientific")
         md = rg.build_manuscript_markdown()
@@ -350,7 +350,7 @@ class TestManuscriptMarkdown:
         mock_bd.return_value = (0, json.dumps([
             {"id": "bd-1", "title": "FINDING: Replay helps",
              "notes": "EFFECT_SIZE:0.5\nP:<.01"},
-        ]), "")
+        ]))
 
         rg = ReportGenerator(tmp_path, rigor="scientific")
         md = rg.build_manuscript_markdown()
@@ -366,7 +366,7 @@ class TestManuscriptMarkdown:
         swarm = tmp_path / ".swarm"
         swarm.mkdir()
         (swarm / "deliverable.md").write_text("Some deliverable")
-        mock_bd.return_value = (0, json.dumps([]), "")
+        mock_bd.return_value = (0, json.dumps([]))
 
         rg = ReportGenerator(tmp_path, rigor="scientific")
         teaser = rg.build_teaser(1, "test", 5, 5, 10)
@@ -374,7 +374,7 @@ class TestManuscriptMarkdown:
 
     @patch("voronoi.gateway.report._run_bd")
     def test_teaser_says_report_when_not_manuscript(self, mock_bd, workspace):
-        mock_bd.return_value = (0, json.dumps([]), "")
+        mock_bd.return_value = (0, json.dumps([]))
         rg = ReportGenerator(workspace, rigor="standard")
         teaser = rg.build_teaser(1, "test", 5, 5, 10)
         assert "report" in teaser.lower()
@@ -384,7 +384,7 @@ class TestManuscriptMarkdown:
         swarm = tmp_path / ".swarm"
         swarm.mkdir()
         (swarm / "deliverable.md").write_text("Some content for the manuscript")
-        mock_bd.return_value = (0, json.dumps([]), "")
+        mock_bd.return_value = (0, json.dumps([]))
 
         rg = ReportGenerator(tmp_path, rigor="scientific")
         path = rg.build_pdf()
@@ -399,7 +399,7 @@ class TestManuscriptMarkdown:
 class TestAutoMarkdown:
     @patch("voronoi.gateway.report._run_bd")
     def test_auto_markdown_report(self, mock_bd, workspace):
-        mock_bd.return_value = (0, json.dumps([]), "")
+        mock_bd.return_value = (0, json.dumps([]))
         rg = ReportGenerator(workspace, rigor="standard")
         md = rg.build_auto_markdown()
         assert "Investigation Report" in md
@@ -409,7 +409,7 @@ class TestAutoMarkdown:
         swarm = tmp_path / ".swarm"
         swarm.mkdir()
         (swarm / "deliverable.md").write_text("# Paper\n\nContent")
-        mock_bd.return_value = (0, json.dumps([]), "")
+        mock_bd.return_value = (0, json.dumps([]))
         rg = ReportGenerator(tmp_path, rigor="scientific")
         md = rg.build_auto_markdown()
         assert "Paper" in md
@@ -424,7 +424,7 @@ class TestFindingsCache:
     def test_findings_cached_across_calls(self, mock_bd, workspace):
         mock_bd.return_value = (0, json.dumps([
             {"id": "bd-1", "title": "FINDING: X", "notes": "VALENCE:positive"},
-        ]), "")
+        ]))
 
         rg = ReportGenerator(workspace)
         rg._get_findings()

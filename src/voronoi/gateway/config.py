@@ -7,8 +7,11 @@ the Telegram bridge, CLI, and any future UI.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
+
+logger = logging.getLogger("voronoi.config")
 
 
 def load_dotenv(env_path: Path | None = None) -> None:
@@ -51,8 +54,11 @@ def load_config(config_path: str = ".swarm-config.json") -> dict:
     config: dict = {}
     tg: dict = {}
     if path.exists():
-        with open(path) as f:
-            config = json.load(f)
+        try:
+            with open(path) as f:
+                config = json.load(f)
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning("Failed to parse config %s: %s — using defaults", path, exc)
         tg = config.get("notifications", {}).get("telegram", {})
 
     raw_allowlist = os.environ.get(

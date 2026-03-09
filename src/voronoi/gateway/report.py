@@ -16,11 +16,12 @@ headings in the deliverable.
 from __future__ import annotations
 
 import json
-import os
 import re
 import shutil
 import subprocess
 from pathlib import Path
+
+from voronoi.beads import run_bd as _run_bd
 
 
 # ---------------------------------------------------------------------------
@@ -30,24 +31,6 @@ from pathlib import Path
 def _which(cmd: str) -> bool:
     """Check if a command is available on PATH."""
     return shutil.which(cmd) is not None
-
-
-def _run_bd(*args: str, cwd: str | None = None) -> tuple[int, str, str]:
-    """Run a bd command.  Returns (returncode, stdout, stderr)."""
-    env = os.environ.copy()
-    if cwd and "BEADS_DIR" not in env:
-        beads_dir = os.path.join(cwd, ".beads")
-        if os.path.isdir(beads_dir):
-            env["BEADS_DIR"] = beads_dir
-    try:
-        result = subprocess.run(
-            ["bd", *args],
-            capture_output=True, text=True, timeout=30,
-            cwd=cwd, env=env,
-        )
-        return result.returncode, result.stdout.strip(), result.stderr.strip()
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return 1, "", ""
 
 
 def _clean_finding_title(title: str) -> str:
@@ -179,7 +162,7 @@ class ReportGenerator:
         if self._findings_cache is not None:
             return self._findings_cache
 
-        code, stdout, _stderr = _run_bd("list", "--json", cwd=str(self.ws))
+        code, stdout = _run_bd("list", "--json", cwd=str(self.ws))
         if code != 0:
             self._findings_cache = []
             return self._findings_cache

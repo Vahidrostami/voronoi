@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shlex
 import shutil
 import subprocess
 import time
@@ -269,9 +270,13 @@ class InvestigationDispatcher:
         )
         # Launch agent via shell; when it exits the shell exits too,
         # letting poll_progress detect the session is gone.
+        # shlex.quote prevents command injection from config values.
+        safe_ws = shlex.quote(str(workspace_path))
+        safe_cmd = shlex.quote(agent_cmd)
+        safe_flags = shlex.quote(agent_flags)
         subprocess.run(
             ["tmux", "send-keys", "-t", session,
-             f'cd "{workspace_path}" && {agent_cmd} {agent_flags} '
+             f'cd {safe_ws} && {safe_cmd} {safe_flags} '
              f'-p "$(cat .swarm/orchestrator-prompt.txt)" ; exit',
              "Enter"],
             capture_output=True,
@@ -389,6 +394,7 @@ class InvestigationDispatcher:
 
     def _check_progress(self, run: RunningInvestigation) -> list[dict]:
         events: list[dict] = []
+        tasks: list[dict] | None = None
         try:
             result = subprocess.run(
                 ["bd", "list", "--json"],
@@ -400,7 +406,7 @@ class InvestigationDispatcher:
                 events.extend(self._diff_tasks(run, tasks))
         except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError):
             pass
-        events.extend(self._check_findings(run))
+        events.extend(self._check_findings(run, tasks))
         events.extend(self._detect_phase(run))
         return events
 
@@ -432,19 +438,21 @@ class InvestigationDispatcher:
             events.append({"type": "progress", "msg": f"📊 `[{bar}]` {closed}/{total} tasks ({pct}%)"})
         return events
 
-    def _check_findings(self, run: RunningInvestigation) -> list[dict]:
+    def _check_findings(self, run: RunningInvestigation,
+                         tasks: list[dict] | None = None) -> list[dict]:
         events: list[dict] = []
-        try:
-            result = subprocess.run(
-                ["bd", "list", "--json"],
-                capture_output=True, text=True, timeout=15,
-                cwd=str(run.workspace_path),
-            )
-            if result.returncode != 0:
+        if tasks is None:
+            try:
+                result = subprocess.run(
+                    ["bd", "list", "--json"],
+                    capture_output=True, text=True, timeout=15,
+                    cwd=str(run.workspace_path),
+                )
+                if result.returncode != 0:
+                    return events
+                tasks = json.loads(result.stdout)
+            except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError):
                 return events
-            tasks = json.loads(result.stdout)
-        except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError):
-            return events
 
         for task in tasks:
             tid = task.get("id", "")

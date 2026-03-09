@@ -10,12 +10,11 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import subprocess
 import time
 from pathlib import Path
 from typing import Optional
 
+from voronoi.beads import run_bd, has_beads_dir
 from voronoi.gateway.intent import ClassifiedIntent, WorkflowMode, classify
 from voronoi.gateway.progress import MODE_EMOJI, RIGOR_DESCRIPTIONS, MODE_VERB
 from voronoi.server.queue import Investigation, InvestigationQueue
@@ -37,61 +36,34 @@ __all__ = [
 
 
 # ---------------------------------------------------------------------------
-# bd helper
+# bd helper (thin wrapper that short-circuits when no .beads/ exists)
 # ---------------------------------------------------------------------------
 
 def _run_bd(*args: str, cwd: str | None = None) -> tuple[int, str]:
-    env = os.environ.copy()
-    if cwd and "BEADS_DIR" not in env:
-        beads_dir = os.path.join(cwd, ".beads")
-        if os.path.isdir(beads_dir):
-            env["BEADS_DIR"] = beads_dir
-        else:
-            # No .beads dir and no BEADS_DIR — bd will fail trying to
-            # connect to a Dolt server.  Short-circuit to avoid the error.
-            return 1, ""
-    try:
-        result = subprocess.run(
-            ["bd", *args],
-            capture_output=True, text=True, timeout=30,
-            cwd=cwd, env=env,
-        )
-        return result.returncode, result.stdout.strip()
-    except FileNotFoundError:
+    if cwd and not has_beads_dir(cwd):
         return 1, ""
-    except subprocess.TimeoutExpired:
-        return 1, ""
+    return run_bd(*args, cwd=cwd)
 
 
 # ---------------------------------------------------------------------------
-# Conversation memory helpers (best-effort)
+# Conversation memory helpers (best-effort, created per call)
 # ---------------------------------------------------------------------------
-
-_MEMORY_INSTANCE = None
-_KNOWLEDGE_INSTANCE = None
-
 
 def _get_memory(project_dir: str):
-    global _MEMORY_INSTANCE
-    if _MEMORY_INSTANCE is None:
-        try:
-            from voronoi.gateway.memory import ConversationMemory
-            db = Path(project_dir) / ".swarm" / "conversations.db"
-            _MEMORY_INSTANCE = ConversationMemory(db)
-        except ImportError:
-            pass
-    return _MEMORY_INSTANCE
+    try:
+        from voronoi.gateway.memory import ConversationMemory
+        db = Path(project_dir) / ".swarm" / "conversations.db"
+        return ConversationMemory(db)
+    except ImportError:
+        return None
 
 
 def _get_knowledge(project_dir: str):
-    global _KNOWLEDGE_INSTANCE
-    if _KNOWLEDGE_INSTANCE is None:
-        try:
-            from voronoi.gateway.knowledge import KnowledgeStore
-            _KNOWLEDGE_INSTANCE = KnowledgeStore(project_dir)
-        except ImportError:
-            pass
-    return _KNOWLEDGE_INSTANCE
+    try:
+        from voronoi.gateway.knowledge import KnowledgeStore
+        return KnowledgeStore(project_dir)
+    except ImportError:
+        return None
 
 
 def _save_msg(project_dir: str, chat_id: str, role: str,

@@ -21,39 +21,15 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 import re
-import subprocess
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from voronoi.beads import run_bd as _run_bd
+
 logger = logging.getLogger("voronoi.science")
-
-
-# ---------------------------------------------------------------------------
-# Beads helper (shared with other modules)
-# ---------------------------------------------------------------------------
-
-def _run_bd(*args: str, cwd: str | None = None) -> tuple[int, str]:
-    """Run a bd (beads) command."""
-    env = os.environ.copy()
-    if cwd and "BEADS_DIR" not in env:
-        beads_dir = os.path.join(cwd, ".beads")
-        if os.path.isdir(beads_dir):
-            env["BEADS_DIR"] = beads_dir
-    try:
-        result = subprocess.run(
-            ["bd", *args],
-            capture_output=True, text=True, timeout=30,
-            cwd=cwd, env=env,
-        )
-        return result.returncode, (result.stdout + result.stderr).strip()
-    except FileNotFoundError:
-        return 1, "bd (beads) not found"
-    except subprocess.TimeoutExpired:
-        return 1, "Command timed out"
 
 
 # ---------------------------------------------------------------------------
@@ -292,13 +268,16 @@ def check_convergence(workspace: Path, rigor: str,
     if eval_score <= 0.0:
         blockers.append("No evaluator score yet")
 
+    # Fetch tasks once for all convergence checks
+    tasks = _fetch_tasks(workspace)
+
     # Check for consistency conflicts
-    conflicts = _find_consistency_conflicts(workspace)
+    conflicts = _find_consistency_conflicts(workspace, tasks)
     if conflicts:
         blockers.append(f"{len(conflicts)} unresolved consistency conflicts")
 
     # Check for contested findings
-    contested = _find_contested_findings(workspace)
+    contested = _find_contested_findings(workspace, tasks)
     if contested:
         blockers.append(f"{len(contested)} contested findings")
 
@@ -326,23 +305,23 @@ def check_convergence(workspace: Path, rigor: str,
             blockers.append(f"Unresolved hypotheses: {', '.join(unresolved[:3])}")
 
         # At least one competing theory ruled out
-        theories = _find_theories(workspace)
+        theories = _find_theories(workspace, tasks)
         if not any(t.get("status") == "refuted" for t in theories):
             blockers.append("No competing theory ruled out yet")
 
         # Novel prediction tested
-        predictions = _find_tested_predictions(workspace)
+        predictions = _find_tested_predictions(workspace, tasks)
         if not predictions:
             blockers.append("No novel prediction tested")
 
         # All findings must be ROBUST or FRAGILE-documented
-        fragile_undoc = _find_undocumented_fragile(workspace)
+        fragile_undoc = _find_undocumented_fragile(workspace, tasks)
         if fragile_undoc:
             blockers.append(f"{len(fragile_undoc)} fragile findings without conditions documented")
 
     # --- Experimental: replication required ---
     if rigor == "experimental":
-        unreplicated = _find_unreplicated_high_impact(workspace)
+        unreplicated = _find_unreplicated_high_impact(workspace, tasks)
         if unreplicated:
             blockers.append(f"{len(unreplicated)} high-impact findings not yet replicated")
 
@@ -724,14 +703,22 @@ def _extract_field(notes: str, field_name: str) -> str:
     return m.group(1).strip() if m else ""
 
 
-def _find_consistency_conflicts(workspace: Path) -> list[dict]:
-    """Find unresolved consistency conflicts in the workspace."""
+def _fetch_tasks(workspace: Path) -> list[dict] | None:
+    """Fetch all tasks from Beads once.  Returns None on failure."""
     code, output = _run_bd("list", "--json", cwd=str(workspace))
     if code != 0:
-        return []
+        return None
     try:
-        tasks = json.loads(output)
+        return json.loads(output)
     except (json.JSONDecodeError, ValueError):
+        return None
+
+
+def _find_consistency_conflicts(workspace: Path, tasks: list[dict] | None = None) -> list[dict]:
+    """Find unresolved consistency conflicts in the workspace."""
+    if tasks is None:
+        tasks = _fetch_tasks(workspace)
+    if not tasks:
         return []
 
     conflicts = []
@@ -746,27 +733,21 @@ def _find_consistency_conflicts(workspace: Path) -> list[dict]:
     return conflicts
 
 
-def _find_contested_findings(workspace: Path) -> list[str]:
+def _find_contested_findings(workspace: Path, tasks: list[dict] | None = None) -> list[str]:
     """Find findings marked CONTESTED."""
-    code, output = _run_bd("list", "--json", cwd=str(workspace))
-    if code != 0:
-        return []
-    try:
-        tasks = json.loads(output)
-    except (json.JSONDecodeError, ValueError):
+    if tasks is None:
+        tasks = _fetch_tasks(workspace)
+    if not tasks:
         return []
     return [t.get("id", "") for t in tasks
             if "ADVERSARIAL_RESULT: CONTESTED" in t.get("notes", "")]
 
 
-def _find_theories(workspace: Path) -> list[dict]:
+def _find_theories(workspace: Path, tasks: list[dict] | None = None) -> list[dict]:
     """Find theory entries in Beads."""
-    code, output = _run_bd("list", "--json", cwd=str(workspace))
-    if code != 0:
-        return []
-    try:
-        tasks = json.loads(output)
-    except (json.JSONDecodeError, ValueError):
+    if tasks is None:
+        tasks = _fetch_tasks(workspace)
+    if not tasks:
         return []
     theories = []
     for t in tasks:
@@ -777,28 +758,22 @@ def _find_theories(workspace: Path) -> list[dict]:
     return theories
 
 
-def _find_tested_predictions(workspace: Path) -> list[str]:
+def _find_tested_predictions(workspace: Path, tasks: list[dict] | None = None) -> list[str]:
     """Find predictions that have been tested."""
-    code, output = _run_bd("list", "--json", cwd=str(workspace))
-    if code != 0:
-        return []
-    try:
-        tasks = json.loads(output)
-    except (json.JSONDecodeError, ValueError):
+    if tasks is None:
+        tasks = _fetch_tasks(workspace)
+    if not tasks:
         return []
     return [t.get("id", "") for t in tasks
             if "PREDICTION_TESTED" in t.get("notes", "")
             and t.get("status") == "closed"]
 
 
-def _find_undocumented_fragile(workspace: Path) -> list[str]:
+def _find_undocumented_fragile(workspace: Path, tasks: list[dict] | None = None) -> list[str]:
     """Find fragile findings without documented conditions."""
-    code, output = _run_bd("list", "--json", cwd=str(workspace))
-    if code != 0:
-        return []
-    try:
-        tasks = json.loads(output)
-    except (json.JSONDecodeError, ValueError):
+    if tasks is None:
+        tasks = _fetch_tasks(workspace)
+    if not tasks:
         return []
     fragile = []
     for t in tasks:
@@ -808,14 +783,11 @@ def _find_undocumented_fragile(workspace: Path) -> list[str]:
     return fragile
 
 
-def _find_unreplicated_high_impact(workspace: Path) -> list[str]:
+def _find_unreplicated_high_impact(workspace: Path, tasks: list[dict] | None = None) -> list[str]:
     """Find high-impact findings that haven't been replicated."""
-    code, output = _run_bd("list", "--json", cwd=str(workspace))
-    if code != 0:
-        return []
-    try:
-        tasks = json.loads(output)
-    except (json.JSONDecodeError, ValueError):
+    if tasks is None:
+        tasks = _fetch_tasks(workspace)
+    if not tasks:
         return []
     unreplicated = []
     for t in tasks:

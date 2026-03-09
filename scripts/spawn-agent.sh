@@ -90,13 +90,18 @@ else
 fi
 
 # 5. Launch agent CLI in the tmux pane
+# Quote config-derived values to prevent shell injection
+SAFE_CMD=$(printf '%q' "$AGENT_CMD")
+SAFE_FLAGS=$(printf '%q' "$AGENT_FLAGS")
+SAFE_WP=$(printf '%q' "$WORKTREE_PATH")
+
 if [[ -f "$WORKTREE_PATH/.agent-prompt.txt" ]]; then
     tmux send-keys -t "$TMUX_SESSION:$BRANCH_NAME" \
-        "cd \"$WORKTREE_PATH\" && $AGENT_CMD $AGENT_FLAGS -p \"\$(cat .agent-prompt.txt)\"" Enter
+        "cd $SAFE_WP && $SAFE_CMD $SAFE_FLAGS -p \"\$(cat .agent-prompt.txt)\"" Enter
 else
     echo "⚠ No prompt file found — agent will start in interactive mode"
     tmux send-keys -t "$TMUX_SESSION:$BRANCH_NAME" \
-        "cd \"$WORKTREE_PATH\" && $AGENT_CMD $AGENT_FLAGS" Enter
+        "cd $SAFE_WP && $SAFE_CMD $SAFE_FLAGS" Enter
 fi
 
 echo "✓ Agent spawned: $BRANCH_NAME (tmux: $TMUX_SESSION)"
