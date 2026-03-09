@@ -178,22 +178,6 @@ def handle_status(project_dir: str) -> str:
                 label = inv.codename or f"#{inv.id}"
                 lines.append(f"\n⚡ *{label}* _{q_str}_")
                 lines.append(f"   Tasks: {open_count} open · {ready_count} ready")
-    else:
-        # No running investigations — only show task counts if beads
-        # is available in the server directory.
-        beads_available = os.path.isdir(os.path.join(project_dir, ".beads"))
-        if beads_available:
-            _, ready = _run_bd("ready", "--json", cwd=project_dir)
-            _, open_tasks = _run_bd("list", "--status", "open", "--json", cwd=project_dir)
-            try:
-                ready_count = len(json.loads(ready))
-            except Exception:
-                ready_count = "?"
-            try:
-                open_count = len(json.loads(open_tasks))
-            except Exception:
-                open_count = "?"
-            lines.append(f"Tasks: {open_count} open · {ready_count} ready")
 
     return "\n".join(lines)
 

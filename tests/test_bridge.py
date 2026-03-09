@@ -73,15 +73,10 @@ class TestHandlers:
         # Create queue.db so _get_queue works
         swarm_dir = tmp_path / ".swarm"
         swarm_dir.mkdir(parents=True, exist_ok=True)
-        (tmp_path / ".beads").mkdir()
-        mock_run.side_effect = [
-            MagicMock(returncode=0, stdout=json.dumps([{"id": "1"}]), stderr=""),
-            MagicMock(returncode=0, stdout=json.dumps([{"id": "1"}, {"id": "2"}]), stderr=""),
-        ]
         result = handle_status(str(tmp_path))
         assert "Swarm Status" in result
-        # With no running investigations, falls back to server-level beads
-        assert "open" in result.lower() or "ready" in result.lower()
+        # With no running investigations, no task counts shown
+        assert "Queued" in result
 
     @patch("voronoi.gateway.router.subprocess.run")
     def test_handle_tasks(self, mock_run, tmp_path):
