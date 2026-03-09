@@ -13,7 +13,7 @@ keywords = ["ai", "agents", "swarm", "copilot", "claude", "science"]
 
 [project.optional-dependencies]
 dashboard = ["rich>=13.0"]
-telegram = ["python-telegram-bot>=20.0"]
+telegram = ["python-telegram-bot[job-queue]>=20.0"]
 report = ["fpdf2>=2.7", "pypandoc_binary>=1.13"]
 
 [project.scripts]
