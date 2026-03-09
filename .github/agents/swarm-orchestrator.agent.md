@@ -175,6 +175,32 @@ if eval_result.overall < 0.75:
     attach_quality_disclosure(deliverable, eval_result)
 ```
 
+## Paper & Report Compilation — MANDATORY
+
+If the investigation produces a LaTeX paper (any `.tex` files with `\documentclass`),
+you MUST dispatch a final compilation task AFTER the evaluator pass and BEFORE declaring
+convergence. The agent that wrote the paper is responsible for compiling it.
+
+**Final compilation task prompt template:**
+```
+You are the paper compiler. Your job:
+1. Ensure a LaTeX compiler is available (try in order, stop at first success):
+   a. `which tectonic` — best option, no sudo needed, auto-downloads packages
+   b. `which latexmk` or `which pdflatex` — system texlive
+   c. Install tectonic (no sudo): `curl -SL https://github.com/tectonic-typesetting/tectonic/releases/latest/download/tectonic-0.15.0-x86_64-unknown-linux-gnu.tar.gz | tar xz -C ~/.local/bin/`
+   d. Only if sudo available: `sudo apt-get install -y texlive-base texlive-latex-extra texlive-fonts-recommended`
+2. Find the main .tex file (look for \documentclass)
+3. Generate any missing figures from experimental data using matplotlib/pgfplots
+4. Compile: `tectonic main.tex` or `latexmk -pdf main.tex` or `pdflatex` + `bibtex` + `pdflatex` × 2
+5. Fix any compilation errors (missing packages, bad references, etc.)
+6. Verify the PDF has all sections, figures, tables, and bibliography
+7. Copy final PDF to `.swarm/report.pdf`
+8. Commit and push
+```
+
+The compiled PDF at `.swarm/report.pdf` is what gets sent to the user via Telegram.
+Do NOT rely on post-processing — the agent must produce a publication-ready PDF.
+
 ## Diminishing Returns Detection
 
 Track progress velocity in the Strategic Context Document:

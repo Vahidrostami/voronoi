@@ -337,6 +337,17 @@ def _build_workflow_steps(mode: str, rigor: str, prompt_path: str) -> str:
     steps.append(
         f"{ooda_step + 1}. Write `.swarm/deliverable.md` and push results\n"
     )
+    steps.append(
+        f"{ooda_step + 2}. If the project produced LaTeX files, dispatch a final "
+        "compilation agent to:\n"
+        "   - Install texlive if needed (`which pdflatex || sudo apt-get install -y "
+        "texlive-base texlive-latex-extra texlive-fonts-recommended`)\n"
+        "   - Generate figures from experimental data (matplotlib/pgfplots)\n"
+        "   - Compile the paper: `latexmk -pdf main.tex`\n"
+        "   - Fix any compilation errors\n"
+        "   - Copy final PDF to `.swarm/report.pdf`\n"
+        "   - This PDF is what gets sent to the user — make it publication-ready\n"
+    )
     return "".join(steps)
 
 
