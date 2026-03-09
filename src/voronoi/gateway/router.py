@@ -46,17 +46,21 @@ def _run_bd(*args: str, cwd: str | None = None) -> tuple[int, str]:
         beads_dir = os.path.join(cwd, ".beads")
         if os.path.isdir(beads_dir):
             env["BEADS_DIR"] = beads_dir
+        else:
+            # No .beads dir and no BEADS_DIR — bd will fail trying to
+            # connect to a Dolt server.  Short-circuit to avoid the error.
+            return 1, ""
     try:
         result = subprocess.run(
             ["bd", *args],
             capture_output=True, text=True, timeout=30,
             cwd=cwd, env=env,
         )
-        return result.returncode, (result.stdout + result.stderr).strip()
+        return result.returncode, result.stdout.strip()
     except FileNotFoundError:
-        return 1, "bd (beads) not found"
+        return 1, ""
     except subprocess.TimeoutExpired:
-        return 1, "Command timed out"
+        return 1, ""
 
 
 # ---------------------------------------------------------------------------
@@ -175,18 +179,21 @@ def handle_status(project_dir: str) -> str:
                 lines.append(f"\n⚡ *{label}* _{q_str}_")
                 lines.append(f"   Tasks: {open_count} open · {ready_count} ready")
     else:
-        # Fallback: query server-level beads
-        _, ready = _run_bd("ready", "--json", cwd=project_dir)
-        _, open_tasks = _run_bd("list", "--status", "open", "--json", cwd=project_dir)
-        try:
-            ready_count = len(json.loads(ready))
-        except Exception:
-            ready_count = "?"
-        try:
-            open_count = len(json.loads(open_tasks))
-        except Exception:
-            open_count = "?"
-        lines.append(f"Tasks: {open_count} open · {ready_count} ready")
+        # No running investigations — only show task counts if beads
+        # is available in the server directory.
+        beads_available = os.path.isdir(os.path.join(project_dir, ".beads"))
+        if beads_available:
+            _, ready = _run_bd("ready", "--json", cwd=project_dir)
+            _, open_tasks = _run_bd("list", "--status", "open", "--json", cwd=project_dir)
+            try:
+                ready_count = len(json.loads(ready))
+            except Exception:
+                ready_count = "?"
+            try:
+                open_count = len(json.loads(open_tasks))
+            except Exception:
+                open_count = "?"
+            lines.append(f"Tasks: {open_count} open · {ready_count} ready")
 
     return "\n".join(lines)
 

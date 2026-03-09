@@ -73,6 +73,7 @@ class TestHandlers:
         # Create queue.db so _get_queue works
         swarm_dir = tmp_path / ".swarm"
         swarm_dir.mkdir(parents=True, exist_ok=True)
+        (tmp_path / ".beads").mkdir()
         mock_run.side_effect = [
             MagicMock(returncode=0, stdout=json.dumps([{"id": "1"}]), stderr=""),
             MagicMock(returncode=0, stdout=json.dumps([{"id": "1"}, {"id": "2"}]), stderr=""),
@@ -84,6 +85,7 @@ class TestHandlers:
 
     @patch("voronoi.gateway.router.subprocess.run")
     def test_handle_tasks(self, mock_run, tmp_path):
+        (tmp_path / ".beads").mkdir()
         tasks = [
             {"id": "bd-1", "title": "Task 1", "priority": 1, "status": "open"},
             {"id": "bd-2", "title": "Task 2", "priority": 2, "status": "open"},
@@ -95,6 +97,7 @@ class TestHandlers:
 
     @patch("voronoi.gateway.router.subprocess.run")
     def test_handle_ready(self, mock_run, tmp_path):
+        (tmp_path / ".beads").mkdir()
         tasks = [{"id": "bd-1", "title": "Ready task", "priority": 1}]
         mock_run.return_value = MagicMock(returncode=0, stdout=json.dumps(tasks), stderr="")
         result = handle_ready(str(tmp_path))
@@ -221,6 +224,7 @@ class TestKnowledgeHandlers:
 
     @patch("voronoi.gateway.router.subprocess.run")
     def test_handle_finding(self, mock_run, tmp_path):
+        (tmp_path / ".beads").mkdir()
         task = {"id": "bd-42", "title": "FINDING: Cache works", "status": "closed",
                 "priority": 1, "notes": "EFFECT_SIZE:d=1.5"}
         mock_run.return_value = MagicMock(returncode=0, stdout=json.dumps(task), stderr="")

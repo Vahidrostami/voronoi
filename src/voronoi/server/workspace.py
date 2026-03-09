@@ -173,6 +173,29 @@ class WorkspaceManager:
         # for the orchestrator and worker agents to use role definitions.
         self._ensure_github_files(workspace_path)
 
+        # Ensure Beads is initialized in the workspace — required for task
+        # tracking.  voronoi init delegates to swarm-init.sh which runs
+        # `bd init`, but that may have been skipped if the CLI or script
+        # wasn't available.  Run it explicitly as a safety net.
+        self._ensure_beads(workspace_path)
+
+    def _ensure_beads(self, workspace_path: Path) -> None:
+        """Initialize Beads (bd) in a workspace if not already present."""
+        beads_dir = workspace_path / ".beads"
+        if beads_dir.is_dir():
+            return
+        if not shutil.which("bd"):
+            return
+        try:
+            subprocess.run(
+                ["bd", "init", "--quiet"],
+                cwd=str(workspace_path),
+                capture_output=True, text=True, timeout=30,
+                input="Y\n",
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+
     def _ensure_github_files(self, workspace_path: Path) -> None:
         """Copy .github/{agents,prompts,skills} if missing in workspace."""
         github_dst = workspace_path / ".github"
