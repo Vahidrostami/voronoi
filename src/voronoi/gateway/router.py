@@ -520,7 +520,11 @@ def handle_results(project_dir: str, inv_id_str: str = "") -> str:
         if not inv.workspace_path:
             return f"❌ No workspace for investigation #{inv_id_str}"
         from voronoi.gateway.report import ReportGenerator
-        rg = ReportGenerator(Path(inv.workspace_path))
+        rg = ReportGenerator(
+            Path(inv.workspace_path),
+            mode=getattr(inv, "mode", None),
+            rigor=getattr(inv, "rigor", None),
+        )
         return rg.build_teaser(inv.id, inv.question, 0, 0, 0)
     # List recent investigations
     recent = q.get_recent(5)

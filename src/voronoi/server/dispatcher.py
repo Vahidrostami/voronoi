@@ -643,7 +643,7 @@ class InvestigationDispatcher:
 
         # Build teaser + report
         from voronoi.gateway.report import ReportGenerator
-        rg = ReportGenerator(run.workspace_path)
+        rg = ReportGenerator(run.workspace_path, mode=run.mode, rigor=run.rigor)
         teaser = rg.build_teaser(
             run.investigation_id, run.question,
             total_tasks, closed, elapsed,
@@ -655,13 +655,11 @@ class InvestigationDispatcher:
         # Generate PDF/MD and send as document
         report_path = rg.build_pdf()
         if report_path and report_path.exists():
-            doc_type = "Manuscript" if rg.is_manuscript_format() else "Report"
-            # Use the per-investigation chat_id stored at enqueue time
             chat_id = run.chat_id
             if chat_id:
                 self.send_document(
                     chat_id, report_path,
-                    f"Voronoi · {run.label} — {doc_type}",
+                    f"Voronoi · {run.label} — {rg.doc_type.title()}",
                 )
 
         self._try_publish(run)
