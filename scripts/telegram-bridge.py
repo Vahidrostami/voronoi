@@ -376,13 +376,19 @@ def main() -> None:
         sys.exit(1)
 
     # Prevent two instances from polling the same bot token simultaneously.
-    lock_path = Path(config.get("project_dir", ".")) / ".bridge.lock"
+    # Lock path is derived from the token hash under ~/.voronoi/ so that
+    # even bridges started from different working directories can't conflict.
+    import hashlib
+    token_hash = hashlib.sha256(config["bot_token"].encode()).hexdigest()[:12]
+    lock_dir = Path.home() / ".voronoi"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_dir / f".bridge-{token_hash}.lock"
     lock_file = open(lock_path, "w")  # noqa: SIM115 — kept open for process lifetime
     try:
         fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         print("Error: Another telegram-bridge instance is already running "
-              f"(lock: {lock_path})", file=sys.stderr)
+              f"for this bot token (lock: {lock_path})", file=sys.stderr)
         sys.exit(1)
 
     run_bot(config)
