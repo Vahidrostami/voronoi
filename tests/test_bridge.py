@@ -78,25 +78,13 @@ class TestHandlers:
         # With no running investigations, no task counts shown
         assert "Queued" in result
 
-    @patch("voronoi.gateway.router.subprocess.run")
-    def test_handle_tasks(self, mock_run, tmp_path):
-        (tmp_path / ".beads").mkdir()
-        tasks = [
-            {"id": "bd-1", "title": "Task 1", "priority": 1, "status": "open"},
-            {"id": "bd-2", "title": "Task 2", "priority": 2, "status": "open"},
-        ]
-        mock_run.return_value = MagicMock(returncode=0, stdout=json.dumps(tasks), stderr="")
+    def test_handle_tasks_no_running(self, tmp_path):
         result = handle_tasks(str(tmp_path))
-        assert "Task 1" in result
-        assert "Task 2" in result
+        assert "No running investigations" in result
 
-    @patch("voronoi.gateway.router.subprocess.run")
-    def test_handle_ready(self, mock_run, tmp_path):
-        (tmp_path / ".beads").mkdir()
-        tasks = [{"id": "bd-1", "title": "Ready task", "priority": 1}]
-        mock_run.return_value = MagicMock(returncode=0, stdout=json.dumps(tasks), stderr="")
+    def test_handle_ready_no_running(self, tmp_path):
         result = handle_ready(str(tmp_path))
-        assert "Ready task" in result
+        assert "No unblocked tasks ready" in result
 
     def test_handle_guide(self, tmp_path):
         (tmp_path / ".swarm").mkdir(parents=True)
@@ -229,6 +217,7 @@ class TestKnowledgeHandlers:
 
     @patch("voronoi.gateway.router.subprocess.run")
     def test_handle_finding_not_found(self, mock_run, tmp_path):
+        (tmp_path / ".beads").mkdir()
         mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="not found")
         result = handle_finding(str(tmp_path), "bd-999")
         assert "not found" in result
@@ -244,12 +233,7 @@ class TestCommandRouter:
         text, _ = router.route("", [], "chat1")
         assert "Voronoi" in text
 
-    @patch("voronoi.gateway.router.subprocess.run")
-    def test_route_status(self, mock_run, tmp_path):
-        mock_run.side_effect = [
-            MagicMock(returncode=0, stdout="[]", stderr=""),
-            MagicMock(returncode=0, stdout="[]", stderr=""),
-        ]
+    def test_route_status(self, tmp_path):
         router = CommandRouter(str(tmp_path))
         text, _ = router.route("status", [], "chat1")
         assert "Swarm Status" in text

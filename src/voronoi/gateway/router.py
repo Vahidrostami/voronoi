@@ -178,6 +178,10 @@ def handle_status(project_dir: str) -> str:
                 label = inv.codename or f"#{inv.id}"
                 lines.append(f"\n⚡ *{label}* _{q_str}_")
                 lines.append(f"   Tasks: {open_count} open · {ready_count} ready")
+    else:
+        # No running investigations — task counts aren't meaningful
+        # since tasks live in investigation workspaces, not the server dir.
+        pass
 
     return "\n".join(lines)
 
@@ -216,46 +220,45 @@ def handle_tasks(project_dir: str) -> str:
             all_lines.append(f"  … and {len(tasks) - 10} more")
         all_lines.append("")
 
-    # Fallback to server-level beads if no running investigations
+    # No running investigations with tasks
     if not found_any:
-        code, output = _run_bd("list", "--status", "open", "--json", cwd=project_dir)
-        if code != 0:
-            return f"❌ Failed to list tasks: {output}"
-        try:
-            tasks = json.loads(output)
-        except json.JSONDecodeError:
-            return f"❌ Invalid JSON from bd: {output[:200]}"
-        if not tasks:
-            return "✅ No open tasks!"
-        for t in tasks[:20]:
-            tid = t.get("id", "?")
-            title = t.get("title", "?")[:60]
-            priority = t.get("priority", "?")
-            status = t.get("status", "?")
-            all_lines.append(f"• `{tid}` P{priority} [{status}] {title}")
-        if len(tasks) > 20:
-            all_lines.append(f"\n… and {len(tasks) - 20} more")
+        return "📭 No running investigations with open tasks"
 
     return "\n".join(all_lines)
 
 
 def handle_ready(project_dir: str) -> str:
-    code, output = _run_bd("ready", "--json", cwd=project_dir)
-    if code != 0:
-        return f"❌ Failed to get ready tasks: {output}"
-    try:
-        tasks = json.loads(output)
-    except json.JSONDecodeError:
-        return f"❌ Invalid JSON from bd: {output[:200]}"
-    if not tasks:
+    q = _get_queue(project_dir)
+    running_invs = q.get_running()
+    all_lines = ["⚡ *Ready Tasks*\n"]
+    found_any = False
+
+    for inv in running_invs:
+        ws_path = inv.workspace_path
+        if not ws_path:
+            continue
+        code, output = _run_bd("ready", "--json", cwd=ws_path)
+        if code != 0:
+            continue
+        try:
+            tasks = json.loads(output)
+        except json.JSONDecodeError:
+            continue
+        if not tasks:
+            continue
+        found_any = True
+        label = inv.codename or f"#{inv.id}"
+        all_lines.append(f"⚡ *{label}*")
+        for t in tasks[:15]:
+            tid = t.get("id", "?")
+            title = t.get("title", "?")[:60]
+            priority = t.get("priority", "?")
+            all_lines.append(f"  • `{tid}` P{priority} {title}")
+        all_lines.append("")
+
+    if not found_any:
         return "⏳ No unblocked tasks ready"
-    lines = ["⚡ *Ready Tasks*\n"]
-    for t in tasks[:15]:
-        tid = t.get("id", "?")
-        title = t.get("title", "?")[:60]
-        priority = t.get("priority", "?")
-        lines.append(f"• `{tid}` P{priority} {title}")
-    return "\n".join(lines)
+    return "\n".join(all_lines)
 
 
 # ---------------------------------------------------------------------------
