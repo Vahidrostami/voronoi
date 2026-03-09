@@ -60,8 +60,12 @@ fi
 
 # 3. Initialize Beads
 if [ ! -d ".beads" ]; then
-    bd init --quiet
-    echo "✓ Beads initialized"
+    echo "Y" | timeout 30 bd init --quiet 2>/dev/null || true
+    if [ -d ".beads" ]; then
+        echo "✓ Beads initialized"
+    else
+        echo "⚠ Beads init failed or timed out (non-fatal)"
+    fi
 else
     echo "✓ Beads already initialized"
 fi

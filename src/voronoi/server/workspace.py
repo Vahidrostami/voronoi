@@ -164,6 +164,7 @@ class WorkspaceManager:
                 ["voronoi", "init"],
                 cwd=str(workspace_path),
                 capture_output=True, text=True, timeout=60,
+                input="Y\n",  # auto-confirm bd init prompt
             )
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass  # voronoi CLI may not be on PATH in all environments
