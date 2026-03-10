@@ -133,7 +133,7 @@ def run_bot(config: dict) -> None:
         if subcommand in ("investigate", "explore", "build", "experiment") and sub_args:
             buttons = [[("📊 Status", "status"), ("🛑 Abort", "abort")]]
         elif subcommand == "status":
-            buttons = [[("📋 Tasks", "tasks"), ("⚡ Ready", "status")]]
+            buttons = [[("📋 Tasks", "tasks"), ("⚡ Ready", "status"), ("🩺 Health", "health")]]
 
         await _reply(update, reply_text, reply_file, buttons=buttons)
 
@@ -193,6 +193,8 @@ def run_bot(config: dict) -> None:
         # Route button presses through the same command router
         if data == "status":
             reply_text, _ = router.route("status", [], chat_id)
+        elif data == "health":
+            reply_text, _ = router.route("health", [], chat_id)
         elif data == "tasks":
             reply_text, _ = router.route("tasks", [], chat_id)
         elif data == "abort":

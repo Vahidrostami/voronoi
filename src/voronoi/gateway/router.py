@@ -26,7 +26,7 @@ logger = logging.getLogger("voronoi.router")
 # Re-export for tests
 __all__ = [
     "CommandRouter",
-    "handle_status", "handle_tasks", "handle_ready",
+    "handle_status", "handle_tasks", "handle_ready", "handle_health",
     "handle_reprioritize", "handle_pause", "handle_resume", "handle_add",
     "handle_abort", "handle_pivot", "handle_guide",
     "handle_investigate", "handle_explore", "handle_build", "handle_experiment",
@@ -197,6 +197,76 @@ def handle_tasks(project_dir: str) -> str:
         return "📭 No running investigations with open tasks"
 
     return "\n".join(all_lines)
+
+
+def handle_health(project_dir: str) -> str:
+    """Run the health-check script and format results for Telegram."""
+    import subprocess
+    script = Path(project_dir) / "scripts" / "health-check.sh"
+    if not script.exists():
+        # Try the repo checkout layout (project_dir may be a workspace)
+        script = Path(__file__).resolve().parent.parent.parent.parent / "scripts" / "health-check.sh"
+    if not script.exists():
+        return "❌ `health-check.sh` not found"
+    try:
+        result = subprocess.run(
+            ["bash", str(script), "--json", "--no-notify"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        return "⏱ Health check timed out"
+    except FileNotFoundError:
+        return "❌ bash not found"
+
+    if result.returncode == 2:
+        return "❌ No Voronoi sessions found. Is the pipeline running?"
+
+    try:
+        entries = json.loads(result.stdout)
+    except (json.JSONDecodeError, ValueError):
+        return f"❌ Health check failed:\n```\n{result.stderr[:300]}\n```"
+
+    if not entries:
+        return "✅ No sessions to check"
+
+    # Build Telegram-friendly summary
+    counts = {"healthy": 0, "stale": 0, "stuck": 0, "exited": 0}
+    for e in entries:
+        s = e.get("status", "healthy")
+        counts[s] = counts.get(s, 0) + 1
+
+    icon_map = {"healthy": "✅", "stale": "⚠️", "stuck": "🔴", "exited": "⚫"}
+    lines = [
+        "🩺 *Health Check*\n",
+        f"Windows: {len(entries)}  "
+        f"✅{counts['healthy']} ⚠️{counts['stale']} 🔴{counts['stuck']} ⚫{counts['exited']}\n",
+    ]
+
+    current_session = None
+    for e in entries:
+        sess = e.get("session", "")
+        if sess != current_session:
+            current_session = sess
+            lines.append(f"\n*{sess}*")
+        icon = icon_map.get(e["status"], "?")
+        role = e.get("role", "")
+        idle = e.get("pane_idle_secs", 0)
+        idle_fmt = f"{idle // 60}m" if idle >= 60 else f"{idle}s"
+        proc = "🟢" if e.get("has_process") else "⚫"
+        detail = e.get("detail", "")
+        line = f"  {icon} `{e['window']}` {role} idle:{idle_fmt} {proc}"
+        if detail:
+            line += f"  _{detail[:60]}_"
+        lines.append(line)
+
+    if counts["stuck"] > 0:
+        lines.append("\n🔴 *Action needed* — stuck agents detected")
+    elif counts["exited"] > 0:
+        lines.append("\n⚫ Some agent processes have exited")
+    else:
+        lines.append("\n✅ All processes running normally")
+
+    return "\n".join(lines)
 
 
 def handle_ready(project_dir: str) -> str:
@@ -561,7 +631,7 @@ _HELP_MESSAGE = (
     "📚 *Knowledge*\n"
     "`/voronoi recall <query>` · `belief` · `journal` · `finding <id>`\n\n"
     "📋 *Tasks*\n"
-    "`/voronoi status` · `tasks` · `ready` · `results [id]`\n\n"
+    "`/voronoi status` · `tasks` · `ready` · `health` · `results [id]`\n\n"
     "🎛 *Control*\n"
     "`/voronoi guide <msg>` · `pivot <msg>` · `abort`\n\n"
     "_In groups, @mention me or reply to my messages._"
@@ -631,6 +701,8 @@ class CommandRouter:
                 return handle_tasks(self.project_dir), None
             elif sub == "ready":
                 return handle_ready(self.project_dir), None
+            elif sub == "health":
+                return handle_health(self.project_dir), None
             elif sub == "investigate" and args:
                 txt = handle_investigate(self.project_dir, " ".join(args), chat_id)
                 return txt, None

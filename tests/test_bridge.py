@@ -17,6 +17,7 @@ from voronoi.gateway.router import (
     handle_status,
     handle_tasks,
     handle_ready,
+    handle_health,
     handle_guide,
     handle_pivot,
     handle_abort,
@@ -84,6 +85,12 @@ class TestHandlers:
     def test_handle_ready_no_running(self, tmp_path):
         result = handle_ready(str(tmp_path))
         assert "No unblocked tasks ready" in result
+
+    def test_handle_health_no_sessions(self, tmp_path):
+        result = handle_health(str(tmp_path))
+        # Should return a message — either health data or a graceful "not found"
+        assert isinstance(result, str)
+        assert len(result) > 0
 
     def test_handle_guide(self, tmp_path):
         (tmp_path / ".swarm").mkdir(parents=True)
