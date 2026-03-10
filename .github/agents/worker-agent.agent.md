@@ -126,9 +126,22 @@ bd update <your-task-id> --notes "BLOCKED: Required artifact missing: <path>"
 
 1. ✅ Experiment executed per pre-registered design
 2. ✅ Raw data committed with SHA-256 hash recorded in Beads
-3. ✅ All `PRODUCES` artifacts exist (data files, result files)
-4. ✅ Sensitivity analysis completed (2+ parameter variations)
-5. ✅ Finding created in Beads with full evidence trail (TYPE:finding, effect size, CI, N, p-value, data hash, sensitivity results)
-6. ✅ Beads task closed with summary
-7. ✅ Changes pushed to remote
-8. ✅ STOP — do not continue to other tasks
+3. ✅ **Experiment script committed** to `experiments/` — the exact code that produced the data
+4. ✅ All `PRODUCES` artifacts exist (data files, result files)
+5. ✅ Sensitivity analysis completed (2+ parameter variations)
+6. ✅ Finding created in Beads with full evidence trail (TYPE:finding, effect size, CI, N, p-value, data hash, sensitivity results)
+7. ✅ **Numbers verified**: reported N matches actual data row count, effect size computed from raw data
+8. ✅ Beads task closed with summary
+9. ✅ Changes pushed to remote
+10. ✅ STOP — do not continue to other tasks
+
+## Anti-Fabrication Rules — MANDATORY
+
+These rules exist because LLMs can unintentionally generate plausible-looking but incorrect results:
+
+1. **NEVER report numbers you didn't compute.** Every effect size, CI, p-value, and N must come from running actual code on actual data. Do NOT estimate, interpolate, or "fill in" statistics.
+2. **ALWAYS commit your experiment script** to `experiments/`. The merge gate will flag findings without reproducible code.
+3. **ALWAYS compute statistics programmatically**, not by inspection. Write a script that reads the data file and outputs the statistics. Commit this script.
+4. **Data file MUST contain the actual experimental output**, not a hand-crafted summary. If your experiment produces 100 measurements, the file must contain 100 rows.
+5. **If an experiment fails or produces unexpected results**, report them honestly. Do NOT re-run until you get a "nice" result, or adjust numbers to fit the hypothesis.
+6. **The merge gate runs anti-fabrication checks** that cross-verify your reported N against the data file row count, check for suspiciously clean data patterns, and verify data hash integrity. Fabricated data will be caught.

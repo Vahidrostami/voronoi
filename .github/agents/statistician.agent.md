@@ -78,6 +78,25 @@ Flag any of these:
 - P-values clustered just below 0.05
 - Post-hoc hypothesizing disguised as pre-registered
 
+### 4b. Anti-Fabrication Cross-Verification — MANDATORY
+
+**You MUST independently verify reported numbers against the raw data.** LLMs can generate plausible but fabricated statistics. Trust the data file, not the finding notes.
+
+For EVERY finding you review:
+1. **Read the actual data file** referenced in `DATA_FILE`. Do NOT rely solely on the numbers in the finding notes.
+2. **Recompute key statistics** from the raw data:
+   - Count rows → verify reported N
+   - Compute means/SDs per group → verify effect size is in the right ballpark
+   - Recompute p-value if feasible
+3. **Flag discrepancies** between reported and recomputed values:
+   ```bash
+   bd update <finding-id> --notes "FABRICATION_FLAG: Reported N=100 but data has 73 rows"
+   bd update <finding-id> --notes "FABRICATION_FLAG: Reported d=0.82 but recomputed d=0.34 from raw data"
+   bd update <finding-id> --notes "STAT_REVIEW: REJECTED | REASON: Numbers do not match raw data"
+   ```
+4. **Check that experiment script exists** in `experiments/` and that running it would produce the referenced data file.
+5. If data file is missing or DATA_HASH doesn't match, **QUARANTINE the finding immediately** — it cannot contribute to convergence.
+
 ### 5. Replication Agreement (when reviewing replications)
 Apply formal agreement criteria:
 - **Overlapping CIs:** 95% CI of replication overlaps with 95% CI of original

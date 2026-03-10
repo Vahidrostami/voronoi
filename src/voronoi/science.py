@@ -527,6 +527,397 @@ def verify_data_hash(filepath: Path, expected_hash: str) -> bool:
     return actual == expected_hash
 
 
+def compute_data_hash(filepath: Path) -> str:
+    """Compute SHA-256 hash of a data file and return sha256:<hex> string."""
+    sha256 = hashlib.sha256()
+    with open(filepath, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            sha256.update(chunk)
+    return f"sha256:{sha256.hexdigest()}"
+
+
+# ---------------------------------------------------------------------------
+# Anti-Fabrication Verification
+# ---------------------------------------------------------------------------
+
+@dataclass
+class FabricationFlag:
+    """A single red flag raised by anti-fabrication audit."""
+    severity: str  # "critical", "warning", "info"
+    category: str  # e.g. "data_missing", "numbers_mismatch", "too_clean"
+    message: str
+    finding_id: str = ""
+
+
+@dataclass
+class AntiFabricationResult:
+    """Result of anti-fabrication verification for a finding."""
+    finding_id: str
+    passed: bool
+    flags: list[FabricationFlag] = field(default_factory=list)
+    data_file_exists: bool = False
+    hash_verified: bool = False
+    experiment_script_exists: bool = False
+    numbers_verified: bool = False
+
+    @property
+    def critical_flags(self) -> list[FabricationFlag]:
+        return [f for f in self.flags if f.severity == "critical"]
+
+
+def _parse_csv_numbers(filepath: Path) -> list[list[float]]:
+    """Parse numeric columns from a CSV data file.
+
+    Returns list of columns, where each column is a list of floats.
+    Non-numeric values are skipped.
+    """
+    import csv
+
+    columns: dict[int, list[float]] = {}
+    try:
+        with open(filepath, newline="") as f:
+            reader = csv.reader(f)
+            header = next(reader, None)
+            if header is None:
+                return []
+            for row in reader:
+                for i, val in enumerate(row):
+                    try:
+                        columns.setdefault(i, []).append(float(val))
+                    except (ValueError, TypeError):
+                        pass
+    except (OSError, csv.Error):
+        return []
+
+    return [col for col in columns.values() if len(col) >= 2]
+
+
+def _extract_reported_numbers(notes: str) -> dict:
+    """Extract reported statistics from finding notes.
+
+    Returns a dict with keys like 'effect_size', 'ci_lo', 'ci_hi', 'n', 'p'.
+    """
+    result: dict = {}
+
+    effect = _extract_field(notes, "EFFECT_SIZE")
+    if effect:
+        try:
+            result["effect_size"] = float(re.sub(r"[^\d.\-]", "", effect))
+        except ValueError:
+            pass
+
+    ci = _extract_field(notes, "CI_95")
+    if ci:
+        ci_match = re.findall(r"[\-]?\d+\.?\d*", ci)
+        if len(ci_match) >= 2:
+            try:
+                result["ci_lo"] = float(ci_match[0])
+                result["ci_hi"] = float(ci_match[1])
+            except ValueError:
+                pass
+
+    n = _extract_field(notes, "N")
+    if n:
+        try:
+            result["n"] = int(re.sub(r"[^\d]", "", n))
+        except ValueError:
+            pass
+
+    p = _extract_field(notes, "P")
+    if p:
+        try:
+            result["p"] = float(re.sub(r"[^\d.\-]", "", p))
+        except ValueError:
+            pass
+
+    return result
+
+
+def _verify_sample_size_against_data(
+    data_columns: list[list[float]],
+    reported_n: int,
+) -> tuple[bool, str]:
+    """Check if any column's row count is consistent with reported N."""
+    if not data_columns:
+        return False, "No numeric data columns found in file"
+    actual_sizes = [len(col) for col in data_columns]
+    # Reported N could be per-group or total; accept if any column matches
+    # or if sum of two equal columns matches
+    if reported_n in actual_sizes:
+        return True, ""
+    # Check if N is total across two equal groups
+    for size in actual_sizes:
+        if size * 2 == reported_n or size == reported_n:
+            return True, ""
+    # Check if total rows match
+    max_rows = max(actual_sizes) if actual_sizes else 0
+    if max_rows == reported_n:
+        return True, ""
+    return False, (
+        f"Reported N={reported_n} but data file has column sizes "
+        f"{sorted(set(actual_sizes))}. No column matches reported N."
+    )
+
+
+def _check_suspiciously_clean(data_columns: list[list[float]]) -> list[str]:
+    """Detect suspiciously clean data patterns that suggest fabrication.
+
+    Checks for: identical decimal precision, impossibly round numbers,
+    zero variance, and p-values clustered just below 0.05.
+    """
+    warnings: list[str] = []
+
+    for i, col in enumerate(data_columns):
+        if len(col) < 3:
+            continue
+
+        # Check for zero variance (all identical values)
+        if len(set(col)) == 1:
+            warnings.append(
+                f"Column {i}: all {len(col)} values are identical ({col[0]})"
+            )
+
+        # Check for suspiciously uniform decimal precision
+        decimals = []
+        for v in col:
+            s = f"{v:.15g}"
+            if "." in s:
+                decimals.append(len(s.split(".")[1].rstrip("0")) or 0)
+            else:
+                decimals.append(0)
+        if len(set(decimals)) == 1 and decimals[0] > 0 and len(col) > 5:
+            warnings.append(
+                f"Column {i}: all {len(col)} values have exactly "
+                f"{decimals[0]} decimal places (suspiciously uniform precision)"
+            )
+
+        # Check for impossibly round numbers (all integers or all .5)
+        all_round = all(v == int(v) or v * 2 == int(v * 2) for v in col)
+        if all_round and len(col) > 10:
+            warnings.append(
+                f"Column {i}: all {len(col)} values are round numbers "
+                f"(integers or .5 increments)"
+            )
+
+    return warnings
+
+
+def verify_finding_against_data(
+    workspace: Path,
+    finding_notes: str,
+    finding_id: str = "",
+) -> AntiFabricationResult:
+    """Cross-verify a finding's reported numbers against its raw data file.
+
+    This is the core anti-fabrication check. It:
+    1. Verifies the data file exists and its hash matches
+    2. Checks that reported N matches actual data row count
+    3. Flags suspiciously clean data patterns
+    4. Checks for experiment script existence
+    """
+    result = AntiFabricationResult(finding_id=finding_id, passed=True)
+
+    # 1. Check data file exists
+    data_file_str = _extract_field(finding_notes, "DATA_FILE")
+    if not data_file_str:
+        result.flags.append(FabricationFlag(
+            severity="critical",
+            category="data_missing",
+            message="No DATA_FILE referenced in finding — cannot verify",
+            finding_id=finding_id,
+        ))
+        result.passed = False
+        return result
+
+    data_path = workspace / data_file_str.strip()
+    result.data_file_exists = data_path.exists()
+    if not result.data_file_exists:
+        result.flags.append(FabricationFlag(
+            severity="critical",
+            category="data_missing",
+            message=f"DATA_FILE '{data_file_str}' does not exist on disk",
+            finding_id=finding_id,
+        ))
+        result.passed = False
+        return result
+
+    # 2. Verify hash
+    expected_hash = _extract_field(finding_notes, "DATA_HASH")
+    if expected_hash:
+        result.hash_verified = verify_data_hash(data_path, expected_hash.strip())
+        if not result.hash_verified:
+            actual_hash = compute_data_hash(data_path)
+            result.flags.append(FabricationFlag(
+                severity="critical",
+                category="hash_mismatch",
+                message=(
+                    f"DATA_HASH mismatch: expected {expected_hash}, "
+                    f"actual {actual_hash}. Data may have been modified."
+                ),
+                finding_id=finding_id,
+            ))
+            result.passed = False
+    else:
+        result.flags.append(FabricationFlag(
+            severity="warning",
+            category="hash_missing",
+            message="No DATA_HASH in finding — cannot verify data integrity",
+            finding_id=finding_id,
+        ))
+
+    # 3. Parse data and cross-check reported numbers
+    reported = _extract_reported_numbers(finding_notes)
+    if data_path.suffix.lower() == ".csv":
+        columns = _parse_csv_numbers(data_path)
+
+        # Verify sample size
+        if "n" in reported and columns:
+            ok, msg = _verify_sample_size_against_data(columns, reported["n"])
+            if ok:
+                result.numbers_verified = True
+            else:
+                result.flags.append(FabricationFlag(
+                    severity="critical",
+                    category="n_mismatch",
+                    message=msg,
+                    finding_id=finding_id,
+                ))
+                result.passed = False
+
+        # Check for suspicious patterns
+        if columns:
+            clean_warnings = _check_suspiciously_clean(columns)
+            for w in clean_warnings:
+                result.flags.append(FabricationFlag(
+                    severity="warning",
+                    category="too_clean",
+                    message=w,
+                    finding_id=finding_id,
+                ))
+    elif data_path.suffix.lower() == ".json":
+        # For JSON data, at least verify it's valid and non-empty
+        try:
+            data = json.loads(data_path.read_text())
+            if not data:
+                result.flags.append(FabricationFlag(
+                    severity="warning",
+                    category="empty_data",
+                    message="DATA_FILE is valid JSON but empty",
+                    finding_id=finding_id,
+                ))
+        except (json.JSONDecodeError, OSError) as e:
+            result.flags.append(FabricationFlag(
+                severity="critical",
+                category="corrupt_data",
+                message=f"DATA_FILE is not valid JSON: {e}",
+                finding_id=finding_id,
+            ))
+            result.passed = False
+
+    # 4. Check experiment script exists
+    source_task = _extract_field(finding_notes, "SOURCE_TASK")
+    experiment_dir = workspace / "experiments"
+    if experiment_dir.exists():
+        scripts = list(experiment_dir.glob("*.py")) + list(experiment_dir.glob("*.sh"))
+        result.experiment_script_exists = len(scripts) > 0
+    if not result.experiment_script_exists:
+        result.flags.append(FabricationFlag(
+            severity="warning",
+            category="no_experiment_script",
+            message=(
+                "No experiment script found in experiments/. "
+                "Results cannot be independently reproduced."
+            ),
+            finding_id=finding_id,
+        ))
+
+    # 5. Check for p-value clustering just below 0.05
+    if "p" in reported:
+        p = reported["p"]
+        if 0.01 < p < 0.05:
+            result.flags.append(FabricationFlag(
+                severity="info",
+                category="p_cluster",
+                message=(
+                    f"p-value ({p}) is in the suspicious 0.01–0.05 cluster. "
+                    f"Not necessarily fabricated, but merits scrutiny."
+                ),
+                finding_id=finding_id,
+            ))
+
+    # 6. Effect size sanity check
+    if "effect_size" in reported:
+        d = abs(reported["effect_size"])
+        if d > 3.0:
+            result.flags.append(FabricationFlag(
+                severity="warning",
+                category="implausible_effect",
+                message=(
+                    f"Reported effect size d={reported['effect_size']} is "
+                    f"implausibly large (>3.0). Verify this is correct."
+                ),
+                finding_id=finding_id,
+            ))
+
+    return result
+
+
+def audit_all_findings(
+    workspace: Path,
+    tasks: list[dict] | None = None,
+) -> list[AntiFabricationResult]:
+    """Run anti-fabrication verification on ALL findings in the workspace."""
+    if tasks is None:
+        tasks = _fetch_tasks(workspace)
+    if not tasks:
+        return []
+
+    results = []
+    for task in tasks:
+        title = task.get("title", "")
+        if "FINDING" not in title.upper():
+            continue
+        notes = task.get("notes", "")
+        finding_id = str(task.get("id", ""))
+        result = verify_finding_against_data(workspace, notes, finding_id)
+        results.append(result)
+
+    return results
+
+
+def format_fabrication_report(results: list[AntiFabricationResult]) -> str:
+    """Format anti-fabrication audit results into a human-readable report."""
+    if not results:
+        return "No findings to audit."
+
+    lines = ["# Anti-Fabrication Audit Report", ""]
+    total = len(results)
+    passed = sum(1 for r in results if r.passed)
+    critical_count = sum(len(r.critical_flags) for r in results)
+
+    lines.append(f"**{passed}/{total}** findings passed verification")
+    if critical_count:
+        lines.append(f"**{critical_count} CRITICAL flags** — these block convergence")
+    lines.append("")
+
+    for r in results:
+        status = "PASS" if r.passed else "FAIL"
+        icon = "✅" if r.passed else "❌"
+        lines.append(f"## {icon} Finding {r.finding_id} — {status}")
+        lines.append(f"- Data file exists: {'yes' if r.data_file_exists else 'NO'}")
+        lines.append(f"- Hash verified: {'yes' if r.hash_verified else 'no'}")
+        lines.append(f"- Experiment script: {'yes' if r.experiment_script_exists else 'no'}")
+        lines.append(f"- Numbers verified: {'yes' if r.numbers_verified else 'no'}")
+        if r.flags:
+            lines.append("- Flags:")
+            for f in r.flags:
+                sev = {"critical": "🚨", "warning": "⚠️", "info": "ℹ️"}.get(f.severity, "?")
+                lines.append(f"  - {sev} [{f.category}] {f.message}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Gate checks (used by dispatcher)
 # ---------------------------------------------------------------------------
@@ -617,6 +1008,14 @@ def check_merge_gates(task: dict, workspace: Path, rigor: str) -> tuple[bool, li
             blockers.append("Finding needs Critic review")
         elif critic_review == "REJECTED":
             blockers.append("Critic REJECTED this finding")
+
+    # Anti-fabrication verification for findings at Analytical+
+    if "FINDING" in title.upper() and rigor in ("analytical", "scientific", "experimental"):
+        fab_result = verify_finding_against_data(
+            workspace, notes, str(task.get("id", ""))
+        )
+        for flag in fab_result.critical_flags:
+            blockers.append(f"FABRICATION_CHECK: {flag.message}")
 
     return len(blockers) == 0, blockers
 

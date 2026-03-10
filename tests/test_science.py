@@ -6,25 +6,31 @@ from pathlib import Path
 import pytest
 
 from voronoi.science import (
+    AntiFabricationResult,
     BeliefMap,
     ConsistencyConflict,
     ConvergenceResult,
+    FabricationFlag,
     Hypothesis,
     LabNotebookEntry,
     PreRegistration,
     ReplicationNeed,
     append_lab_notebook,
+    audit_all_findings,
     check_consistency,
     check_convergence,
     check_dispatch_gates,
     check_merge_gates,
     check_paradigm_stress,
+    compute_data_hash,
+    format_fabrication_report,
     load_belief_map,
     load_lab_notebook,
     parse_pre_registration,
     save_belief_map,
     validate_pre_registration,
     verify_data_hash,
+    verify_finding_against_data,
     write_convergence,
 )
 
@@ -477,8 +483,21 @@ class TestMergeGates:
         assert any("Statistician" in b for b in blockers)
 
     def test_finding_with_stat_review(self, tmp_path):
+        # Set up valid data file so anti-fabrication check passes
+        data_dir = tmp_path / "data" / "raw"
+        data_dir.mkdir(parents=True)
+        csv_file = data_dir / "results.csv"
+        csv_file.write_text("score\n1\n2\n3\n")
+        from voronoi.science import compute_data_hash
+        h = compute_data_hash(csv_file)
+        exp_dir = tmp_path / "experiments"
+        exp_dir.mkdir()
+        (exp_dir / "run.py").write_text("# experiment\n")
         task = {
-            "notes": "TYPE:finding\nSTAT_REVIEW: APPROVED | QUALITY:0.91",
+            "notes": (
+                "TYPE:finding\nSTAT_REVIEW: APPROVED | QUALITY:0.91\n"
+                f"DATA_FILE:data/raw/results.csv\nDATA_HASH:{h}\nN:3\n"
+            ),
             "title": "FINDING: encoding helps",
         }
         ok, blockers = check_merge_gates(task, tmp_path, "analytical")
@@ -494,8 +513,21 @@ class TestMergeGates:
         assert any("Critic" in b for b in blockers)
 
     def test_finding_fully_reviewed(self, tmp_path):
+        # Set up valid data so anti-fabrication check passes at scientific rigor
+        data_dir = tmp_path / "data" / "raw"
+        data_dir.mkdir(parents=True)
+        csv_file = data_dir / "results.csv"
+        csv_file.write_text("score\n1\n2\n3\n")
+        from voronoi.science import compute_data_hash
+        h = compute_data_hash(csv_file)
+        exp_dir = tmp_path / "experiments"
+        exp_dir.mkdir()
+        (exp_dir / "run.py").write_text("# experiment\n")
         task = {
-            "notes": "TYPE:finding\nSTAT_REVIEW: APPROVED\nCRITIC_REVIEW: APPROVED",
+            "notes": (
+                "TYPE:finding\nSTAT_REVIEW: APPROVED\nCRITIC_REVIEW: APPROVED\n"
+                f"DATA_FILE:data/raw/results.csv\nDATA_HASH:{h}\nN:3\n"
+            ),
             "title": "FINDING: encoding helps",
         }
         ok, blockers = check_merge_gates(task, tmp_path, "scientific")
@@ -732,3 +764,235 @@ class TestFindingInterpretation:
         }
         result = interpret_finding(finding)
         assert result["strength_label"] == "unreviewed"
+
+
+# ---------------------------------------------------------------------------
+# Anti-Fabrication Verification
+# ---------------------------------------------------------------------------
+
+class TestComputeDataHash:
+    def test_hash_matches(self, tmp_path):
+        f = tmp_path / "data.csv"
+        f.write_text("a,b\n1,2\n3,4\n")
+        h = compute_data_hash(f)
+        assert h.startswith("sha256:")
+        assert verify_data_hash(f, h)
+
+    def test_hash_mismatch(self, tmp_path):
+        f = tmp_path / "data.csv"
+        f.write_text("a,b\n1,2\n")
+        assert not verify_data_hash(f, "sha256:0000")
+
+
+class TestVerifyFindingAgainstData:
+    def test_no_data_file_referenced(self, tmp_path):
+        notes = "TYPE:finding\nEFFECT_SIZE:0.5\n"
+        result = verify_finding_against_data(tmp_path, notes, "bd-1")
+        assert not result.passed
+        assert any(f.category == "data_missing" for f in result.flags)
+
+    def test_data_file_missing_on_disk(self, tmp_path):
+        notes = "DATA_FILE:data/raw/results.csv\nEFFECT_SIZE:0.5\n"
+        result = verify_finding_against_data(tmp_path, notes, "bd-1")
+        assert not result.passed
+        assert any(f.category == "data_missing" for f in result.flags)
+
+    def test_hash_mismatch_critical(self, tmp_path):
+        data_dir = tmp_path / "data" / "raw"
+        data_dir.mkdir(parents=True)
+        csv_file = data_dir / "results.csv"
+        csv_file.write_text("group,score\nA,10\nA,12\nB,15\nB,18\n")
+        notes = (
+            "DATA_FILE:data/raw/results.csv\n"
+            "DATA_HASH:sha256:0000badhash\n"
+            "EFFECT_SIZE:1.2\nN:4\n"
+        )
+        result = verify_finding_against_data(tmp_path, notes, "bd-2")
+        assert not result.passed
+        assert any(f.category == "hash_mismatch" for f in result.flags)
+
+    def test_n_mismatch_critical(self, tmp_path):
+        data_dir = tmp_path / "data" / "raw"
+        data_dir.mkdir(parents=True)
+        csv_file = data_dir / "results.csv"
+        csv_file.write_text("group,score\nA,10\nA,12\nB,15\n")
+        actual_hash = compute_data_hash(csv_file)
+        notes = (
+            f"DATA_FILE:data/raw/results.csv\n"
+            f"DATA_HASH:{actual_hash}\n"
+            "EFFECT_SIZE:0.5\nN:100\n"  # reported N=100, actual rows=3
+        )
+        result = verify_finding_against_data(tmp_path, notes, "bd-3")
+        assert not result.passed
+        assert any(f.category == "n_mismatch" for f in result.flags)
+
+    def test_valid_finding_passes(self, tmp_path):
+        data_dir = tmp_path / "data" / "raw"
+        data_dir.mkdir(parents=True)
+        exp_dir = tmp_path / "experiments"
+        exp_dir.mkdir()
+        (exp_dir / "run_experiment.py").write_text("# experiment code\n")
+
+        csv_file = data_dir / "results.csv"
+        rows = ["group,score"] + [f"A,{10 + i * 0.3}" for i in range(50)]
+        rows += [f"B,{12 + i * 0.4}" for i in range(50)]
+        csv_file.write_text("\n".join(rows) + "\n")
+        actual_hash = compute_data_hash(csv_file)
+
+        notes = (
+            f"DATA_FILE:data/raw/results.csv\n"
+            f"DATA_HASH:{actual_hash}\n"
+            "EFFECT_SIZE:0.7\nN:100\nP:0.003\n"
+        )
+        result = verify_finding_against_data(tmp_path, notes, "bd-4")
+        assert result.passed
+        assert result.data_file_exists
+        assert result.hash_verified
+        assert result.experiment_script_exists
+
+    def test_suspiciously_clean_data(self, tmp_path):
+        data_dir = tmp_path / "data" / "raw"
+        data_dir.mkdir(parents=True)
+        csv_file = data_dir / "results.csv"
+        # All identical values = zero variance
+        rows = ["score"] + ["42.0"] * 20
+        csv_file.write_text("\n".join(rows) + "\n")
+        actual_hash = compute_data_hash(csv_file)
+
+        notes = (
+            f"DATA_FILE:data/raw/results.csv\n"
+            f"DATA_HASH:{actual_hash}\n"
+            "N:20\nEFFECT_SIZE:0.5\n"
+        )
+        result = verify_finding_against_data(tmp_path, notes, "bd-5")
+        assert any(f.category == "too_clean" for f in result.flags)
+
+    def test_implausible_effect_size(self, tmp_path):
+        data_dir = tmp_path / "data" / "raw"
+        data_dir.mkdir(parents=True)
+        csv_file = data_dir / "results.csv"
+        csv_file.write_text("score\n1\n2\n3\n4\n5\n")
+        actual_hash = compute_data_hash(csv_file)
+
+        notes = (
+            f"DATA_FILE:data/raw/results.csv\n"
+            f"DATA_HASH:{actual_hash}\n"
+            "N:5\nEFFECT_SIZE:4.5\n"
+        )
+        result = verify_finding_against_data(tmp_path, notes, "bd-6")
+        assert any(f.category == "implausible_effect" for f in result.flags)
+
+    def test_no_experiment_script(self, tmp_path):
+        data_dir = tmp_path / "data" / "raw"
+        data_dir.mkdir(parents=True)
+        csv_file = data_dir / "results.csv"
+        csv_file.write_text("score\n1\n2\n3\n")
+        actual_hash = compute_data_hash(csv_file)
+
+        notes = (
+            f"DATA_FILE:data/raw/results.csv\n"
+            f"DATA_HASH:{actual_hash}\n"
+            "N:3\nEFFECT_SIZE:0.5\n"
+        )
+        result = verify_finding_against_data(tmp_path, notes, "bd-7")
+        assert any(f.category == "no_experiment_script" for f in result.flags)
+
+    def test_json_data_file(self, tmp_path):
+        data_dir = tmp_path / "data" / "raw"
+        data_dir.mkdir(parents=True)
+        json_file = data_dir / "results.json"
+        json_file.write_text(json.dumps({"results": [1, 2, 3]}))
+        actual_hash = compute_data_hash(json_file)
+
+        notes = (
+            f"DATA_FILE:data/raw/results.json\n"
+            f"DATA_HASH:{actual_hash}\n"
+            "N:3\nEFFECT_SIZE:0.5\n"
+        )
+        result = verify_finding_against_data(tmp_path, notes, "bd-8")
+        assert result.data_file_exists
+        assert result.hash_verified
+
+    def test_corrupt_json_data_file(self, tmp_path):
+        data_dir = tmp_path / "data" / "raw"
+        data_dir.mkdir(parents=True)
+        json_file = data_dir / "results.json"
+        json_file.write_text("{bad json")
+        actual_hash = compute_data_hash(json_file)
+
+        notes = (
+            f"DATA_FILE:data/raw/results.json\n"
+            f"DATA_HASH:{actual_hash}\n"
+        )
+        result = verify_finding_against_data(tmp_path, notes, "bd-9")
+        assert not result.passed
+        assert any(f.category == "corrupt_data" for f in result.flags)
+
+
+class TestAuditAllFindings:
+    def test_no_findings(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "voronoi.science._fetch_tasks",
+            lambda ws: [{"id": 1, "title": "Build feature X", "notes": ""}],
+        )
+        results = audit_all_findings(tmp_path)
+        assert results == []
+
+    def test_audit_with_findings(self, tmp_path):
+        data_dir = tmp_path / "data" / "raw"
+        data_dir.mkdir(parents=True)
+        csv_file = data_dir / "results.csv"
+        csv_file.write_text("score\n1\n2\n3\n")
+        actual_hash = compute_data_hash(csv_file)
+
+        tasks = [
+            {
+                "id": 10,
+                "title": "FINDING: effect found",
+                "notes": (
+                    f"DATA_FILE:data/raw/results.csv\n"
+                    f"DATA_HASH:{actual_hash}\n"
+                    "N:3\nEFFECT_SIZE:0.5\n"
+                ),
+            }
+        ]
+        results = audit_all_findings(tmp_path, tasks=tasks)
+        assert len(results) == 1
+        assert results[0].finding_id == "10"
+
+
+class TestFormatFabricationReport:
+    def test_empty(self):
+        report = format_fabrication_report([])
+        assert "No findings" in report
+
+    def test_with_flags(self):
+        result = AntiFabricationResult(
+            finding_id="bd-1",
+            passed=False,
+            data_file_exists=False,
+            flags=[FabricationFlag(
+                severity="critical",
+                category="data_missing",
+                message="No DATA_FILE",
+                finding_id="bd-1",
+            )],
+        )
+        report = format_fabrication_report([result])
+        assert "FAIL" in report
+        assert "CRITICAL" in report
+        assert "bd-1" in report
+
+
+class TestMergeGateAntiFabrication:
+    """Verify that check_merge_gates integrates anti-fabrication checks."""
+
+    def test_finding_without_data_blocked(self, tmp_path, monkeypatch):
+        task = {
+            "id": 42,
+            "title": "FINDING: something discovered",
+            "notes": "TYPE:finding\nEFFECT_SIZE:0.5\nSTAT_REVIEW: APPROVED\nCRITIC_REVIEW: APPROVED\n",
+        }
+        can_merge, blockers = check_merge_gates(task, tmp_path, "analytical")
+        assert not can_merge
+        assert any("FABRICATION_CHECK" in b for b in blockers)

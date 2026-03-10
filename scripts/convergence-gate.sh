@@ -163,7 +163,42 @@ except Exception as e:
 fi
 
 # -------------------------------------------------------------------------
-# Check 6: Figure integrity (if LaTeX present)
+# Check 6: Anti-fabrication audit (Analytical+)
+# -------------------------------------------------------------------------
+if [ "$RIGOR" != "standard" ]; then
+    echo "  Running anti-fabrication audit..."
+    FAB_CHECK=$(python3 -c "
+import sys
+sys.path.insert(0, '${WORKSPACE}/src' if __import__('os').path.isdir('${WORKSPACE}/src') else '.')
+try:
+    from voronoi.science import audit_all_findings, format_fabrication_report
+    from pathlib import Path
+    results = audit_all_findings(Path('$WORKSPACE'))
+    if not results:
+        print('OK:no findings to audit')
+    else:
+        critical = sum(len(r.critical_flags) for r in results)
+        passed = sum(1 for r in results if r.passed)
+        total = len(results)
+        if critical > 0:
+            print('FAIL:' + str(critical) + ' critical flag(s) across ' + str(total) + ' findings')
+        else:
+            print('OK:' + str(passed) + '/' + str(total) + ' findings verified')
+except Exception as e:
+    print('WARN:audit unavailable: ' + str(e))
+" 2>/dev/null || echo "WARN:audit_unavailable")
+
+    if [[ "$FAB_CHECK" == FAIL:* ]]; then
+        BLOCKERS="${BLOCKERS}\n  ✗ Anti-fabrication: ${FAB_CHECK#FAIL:}"
+    elif [[ "$FAB_CHECK" == WARN:* ]]; then
+        WARNINGS="${WARNINGS}\n  ⚠ Anti-fabrication: ${FAB_CHECK#WARN:}"
+    else
+        echo "  ✓ Anti-fabrication audit passed (${FAB_CHECK#OK:})"
+    fi
+fi
+
+# -------------------------------------------------------------------------
+# Check 7: Figure integrity (if LaTeX present)
 # -------------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 if find "$WORKSPACE" -name '*.tex' -not -path '*/.git/*' 2>/dev/null | head -1 | grep -q '.'; then
