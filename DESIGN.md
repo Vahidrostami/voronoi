@@ -305,13 +305,40 @@ flowchart TB
 |------|:--------:|:----------:|:----------:|:------------:|
 | Code review (Critic inline) | ✅ | ✅ | ✅ | ✅ |
 | Statistician review | — | ✅ | ✅ | ✅ |
+| Finding interpretation | — | ✅ | ✅ | ✅ |
+| Claim-evidence registry | — | ✅ | ✅ | ✅ |
 | Final evaluation | — | ✅ | ✅ | ✅ |
 | Methodologist design review | — | — | ✅ advisory | ✅ mandatory |
 | Pre-registration | — | — | ✅ | ✅ |
+| Pre-reg compliance audit | — | — | ✅ | ✅ |
 | Power analysis | — | — | ✅ | ✅ |
 | Partial blinding for Critic | — | — | ✅ | ✅ |
 | Adversarial review loop | — | — | ✅ | ✅ |
 | Replication | — | — | — | ✅ |
+
+### Claim-Evidence Traceability (Analytical+)
+
+Every claim in the deliverable must trace to specific finding IDs via `.swarm/claim-evidence.json`. The Synthesizer produces this registry before writing the deliverable; the Evaluator audits it during Strength scoring.
+
+```
+Synthesizer → claim-evidence.json → deliverable.md → Evaluator audit
+```
+
+**Each claim entry contains:** claim text, supporting finding IDs, hypothesis IDs, strength label (robust/provisional/weak/unsupported), and interpretation text.
+
+**Audit flags:** Orphan findings (uncited), unsupported claims (no evidence), coverage score.
+
+### Finding Interpretation (Analytical+)
+
+The Statistician adds interpretation metadata to every approved finding:
+
+| Field | Description | Example |
+|-------|-------------|---------|
+| `INTERPRETATION` | Practical meaning in domain context | "Encoding produces 82% better cross-lever detection" |
+| `PRACTICAL_SIGNIFICANCE` | Cohen's d category | negligible/small/medium/large/very large |
+| `SUPPORTS_HYPOTHESIS` | Which hypothesis this tests | "H1: Encoding helps" |
+
+The report generator uses these fields to produce interpreted findings (not just raw numbers) and auto-generates: cross-finding comparison, negative results section, limitations from fragile/wide-CI findings, and belief map trajectory.
 
 ---
 

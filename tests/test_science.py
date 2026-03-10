@@ -500,3 +500,235 @@ class TestMergeGates:
         }
         ok, blockers = check_merge_gates(task, tmp_path, "scientific")
         assert ok is True
+
+
+# ---------------------------------------------------------------------------
+# Claim-Evidence Registry
+# ---------------------------------------------------------------------------
+
+class TestClaimEvidenceRegistry:
+    def test_create_and_audit(self):
+        from voronoi.science import ClaimEvidence, ClaimEvidenceRegistry
+        reg = ClaimEvidenceRegistry()
+        reg.add_claim(ClaimEvidence(
+            claim_id="C1", claim_text="Encoding helps",
+            finding_ids=["bd-5"], strength="robust",
+        ))
+        reg.add_claim(ClaimEvidence(
+            claim_id="C2", claim_text="Pipeline scales",
+            finding_ids=[], strength="unsupported",
+        ))
+        reg.audit(["bd-5", "bd-6"])
+        assert reg.coverage_score == 0.5
+        assert "C2" in reg.unsupported_claims
+        assert "bd-6" in reg.orphan_findings
+
+    def test_save_and_load(self, tmp_path):
+        from voronoi.science import (
+            ClaimEvidence, ClaimEvidenceRegistry,
+            save_claim_evidence, load_claim_evidence,
+        )
+        reg = ClaimEvidenceRegistry()
+        reg.add_claim(ClaimEvidence(
+            claim_id="C1", claim_text="Test claim",
+            finding_ids=["bd-1"], strength="provisional",
+            interpretation="Medium practical effect",
+        ))
+        reg.audit(["bd-1"])
+        save_claim_evidence(tmp_path, reg)
+        loaded = load_claim_evidence(tmp_path)
+        assert len(loaded.claims) == 1
+        assert loaded.claims[0].claim_text == "Test claim"
+        assert loaded.claims[0].interpretation == "Medium practical effect"
+        assert loaded.coverage_score == 1.0
+
+    def test_load_missing(self, tmp_path):
+        from voronoi.science import load_claim_evidence
+        reg = load_claim_evidence(tmp_path)
+        assert reg.claims == []
+
+    def test_load_corrupt(self, tmp_path):
+        from voronoi.science import load_claim_evidence
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "claim-evidence.json").write_text("{not json")
+        reg = load_claim_evidence(tmp_path)
+        assert reg.claims == []
+
+    def test_all_claims_supported(self):
+        from voronoi.science import ClaimEvidence, ClaimEvidenceRegistry
+        reg = ClaimEvidenceRegistry()
+        reg.add_claim(ClaimEvidence(
+            claim_id="C1", claim_text="Claim 1",
+            finding_ids=["bd-1"], strength="robust",
+        ))
+        reg.add_claim(ClaimEvidence(
+            claim_id="C2", claim_text="Claim 2",
+            finding_ids=["bd-2"], strength="provisional",
+        ))
+        reg.audit(["bd-1", "bd-2"])
+        assert reg.coverage_score == 1.0
+        assert reg.unsupported_claims == []
+        assert reg.orphan_findings == []
+
+
+# ---------------------------------------------------------------------------
+# Pre-registration Compliance
+# ---------------------------------------------------------------------------
+
+class TestPreRegCompliance:
+    def test_compliant(self):
+        from voronoi.science import audit_pre_registration_compliance
+        notes = (
+            "PRE_REG: HYPOTHESIS=[encoding helps] | METHOD=[ablation] | "
+            "CONTROLS=[same data] | EXPECTED_RESULT=[encoding > raw by d=0.5] | "
+            "CONFOUNDS=[prompt] | STAT_TEST=[t-test] | SAMPLE_SIZE=[100]\n"
+            "VALENCE:positive\nN:100"
+        )
+        result = audit_pre_registration_compliance(notes)
+        assert result.compliant is True
+
+    def test_unexpected_negative_no_deviation(self):
+        from voronoi.science import audit_pre_registration_compliance
+        notes = (
+            "PRE_REG: HYPOTHESIS=[encoding helps] | METHOD=[ablation] | "
+            "CONTROLS=[same data] | EXPECTED_RESULT=[encoding outperforms raw] | "
+            "CONFOUNDS=[prompt] | STAT_TEST=[t-test] | SAMPLE_SIZE=[100]\n"
+            "VALENCE:negative"
+        )
+        result = audit_pre_registration_compliance(notes)
+        assert result.compliant is False
+        assert len(result.undocumented_deviations) > 0
+
+    def test_n_deviation_undocumented(self):
+        from voronoi.science import audit_pre_registration_compliance
+        notes = (
+            "PRE_REG: HYPOTHESIS=[h] | METHOD=[m] | CONTROLS=[c] | "
+            "EXPECTED_RESULT=[positive] | CONFOUNDS=[cf] | STAT_TEST=[t] | "
+            "SAMPLE_SIZE=[100]\n"
+            "VALENCE:positive\nN:50"
+        )
+        result = audit_pre_registration_compliance(notes)
+        assert result.compliant is False
+        assert any("Sample size" in d for d in result.undocumented_deviations)
+
+    def test_n_deviation_documented(self):
+        from voronoi.science import audit_pre_registration_compliance
+        notes = (
+            "PRE_REG: HYPOTHESIS=[h] | METHOD=[m] | CONTROLS=[c] | "
+            "EXPECTED_RESULT=[positive] | CONFOUNDS=[cf] | STAT_TEST=[t] | "
+            "SAMPLE_SIZE=[100]\n"
+            "PRE_REG_DEVIATION: WHAT=[changed sample size from 100 to 50] | WHY=[insufficient data]\n"
+            "VALENCE:positive\nN:50"
+        )
+        result = audit_pre_registration_compliance(notes)
+        assert result.compliant is True
+
+
+# ---------------------------------------------------------------------------
+# Enhanced Consistency Check
+# ---------------------------------------------------------------------------
+
+class TestEnhancedConsistency:
+    def test_direction_conflict_with_stemming(self):
+        from voronoi.science import check_consistency_enhanced
+        findings = [
+            {"id": "bd-1", "title": "FINDING: price elasticity estimation improves revenue prediction",
+             "notes": "STAT_REVIEW: APPROVED\nVALENCE:positive"},
+            {"id": "bd-2", "title": "FINDING: pricing elasticity estimates hurt revenue forecasting",
+             "notes": "STAT_REVIEW: APPROVED\nVALENCE:negative"},
+        ]
+        conflicts = check_consistency_enhanced(findings)
+        assert len(conflicts) == 1
+        assert conflicts[0].conflict_type == "direction"
+
+    def test_no_conflict_different_topics(self):
+        from voronoi.science import check_consistency_enhanced
+        findings = [
+            {"id": "bd-1", "title": "FINDING: cache improves throughput",
+             "notes": "STAT_REVIEW: APPROVED\nVALENCE:positive"},
+            {"id": "bd-2", "title": "FINDING: auth module works correctly",
+             "notes": "STAT_REVIEW: APPROVED\nVALENCE:positive"},
+        ]
+        conflicts = check_consistency_enhanced(findings)
+        assert len(conflicts) == 0
+
+    def test_magnitude_conflict(self):
+        from voronoi.science import check_consistency_enhanced
+        findings = [
+            {"id": "bd-1",
+             "title": "FINDING: encoding helps cross lever discovery via structured input",
+             "notes": "STAT_REVIEW: APPROVED\nVALENCE:positive\nEFFECT_SIZE:2.5"},
+            {"id": "bd-2",
+             "title": "FINDING: encoding boost cross lever detection through structured data",
+             "notes": "STAT_REVIEW: APPROVED\nVALENCE:positive\nEFFECT_SIZE:0.1"},
+        ]
+        conflicts = check_consistency_enhanced(findings)
+        assert len(conflicts) == 1
+        assert conflicts[0].conflict_type == "magnitude"
+
+    def test_tokenize_removes_stopwords(self):
+        from voronoi.science import _tokenize_title
+        tokens = _tokenize_title("FINDING: this is a test with some very basic words")
+        assert "this" not in tokens
+        assert "with" not in tokens
+        assert "some" not in tokens
+        assert "test" in tokens or "basic" in tokens
+
+
+# ---------------------------------------------------------------------------
+# Finding Interpretation
+# ---------------------------------------------------------------------------
+
+class TestFindingInterpretation:
+    def test_classify_effect_size(self):
+        from voronoi.science import classify_effect_size
+        assert classify_effect_size(0.1) == "negligible"
+        assert classify_effect_size(0.3) == "small"
+        assert classify_effect_size(0.6) == "medium"
+        assert classify_effect_size(0.9) == "large"
+        assert classify_effect_size(1.5) == "very large"
+
+    def test_assess_ci_quality(self):
+        from voronoi.science import assess_ci_quality
+        assert assess_ci_quality("0.8", "[0.6, 1.0]") == "adequate"
+        assert assess_ci_quality("0.8", "[0.75, 0.85]") == "precise"
+        assert assess_ci_quality("0.5", "[-0.5, 1.5]") in ("very wide", "wide")
+
+    def test_interpret_finding_robust(self):
+        from voronoi.science import interpret_finding
+        finding = {
+            "title": "FINDING: encoding helps",
+            "notes": (
+                "EFFECT_SIZE:0.82\nCI_95:[0.61, 1.03]\n"
+                "VALENCE:positive\nROBUST:yes\n"
+                "STAT_REVIEW: APPROVED"
+            ),
+        }
+        result = interpret_finding(finding)
+        assert result["practical_significance"] == "large"
+        assert result["strength_label"] == "robust"
+        assert "robust" in result["interpretation_text"]
+
+    def test_interpret_finding_fragile(self):
+        from voronoi.science import interpret_finding
+        finding = {
+            "title": "FINDING: weak signal",
+            "notes": (
+                "EFFECT_SIZE:0.2\nCI_95:[-0.5, 0.9]\n"
+                "VALENCE:inconclusive\nROBUST:no\n"
+                "STAT_REVIEW: APPROVED"
+            ),
+        }
+        result = interpret_finding(finding)
+        assert result["practical_significance"] == "small"
+        assert result["strength_label"] == "fragile"
+        assert "fragile" in result["interpretation_text"]
+
+    def test_interpret_finding_unreviewed(self):
+        from voronoi.science import interpret_finding
+        finding = {
+            "title": "FINDING: preliminary",
+            "notes": "EFFECT_SIZE:0.5\nVALENCE:positive",
+        }
+        result = interpret_finding(finding)
+        assert result["strength_label"] == "unreviewed"

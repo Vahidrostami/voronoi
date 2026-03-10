@@ -160,7 +160,7 @@ class TestMarkdown:
     def test_markdown_full_report(self, mock_bd, workspace):
         findings = [
             {"id": "bd-5", "title": "FINDING: EWC works",
-             "notes": "EFFECT_SIZE:0.82\nCI_95:[0.61, 1.03]\nN:500\nSTAT_TEST:t-test\nVALENCE:positive"},
+             "notes": "EFFECT_SIZE:0.82\nCI_95:[0.61, 1.03]\nN:500\nSTAT_TEST:t-test\nVALENCE:positive\nROBUST:yes\nSTAT_REVIEW: APPROVED"},
         ]
         mock_bd.return_value = (0, json.dumps(findings))
 
@@ -171,9 +171,70 @@ class TestMarkdown:
         assert "Question" in md
         assert "Findings" in md
         assert "EWC works" in md
-        assert "Belief Map" in md
-        assert "Journal" in md
-        assert "Conclusion" in md
+        assert "Summary Table" in md
+        # New structured sections
+        assert "Detailed Conclusion" in md or "Conclusion" in md
+
+    @patch("voronoi.gateway.report._run_bd")
+    def test_markdown_has_interpretation(self, mock_bd, workspace):
+        findings = [
+            {"id": "bd-5", "title": "FINDING: EWC works",
+             "notes": "EFFECT_SIZE:0.82\nCI_95:[0.61, 1.03]\nN:500\nSTAT_TEST:t-test\nVALENCE:positive\nROBUST:yes\nSTAT_REVIEW: APPROVED"},
+        ]
+        mock_bd.return_value = (0, json.dumps(findings))
+
+        rg = ReportGenerator(workspace)
+        md = rg.build_markdown()
+
+        # Should include interpretation data
+        assert "Finding 1" in md
+        assert "Effect size" in md or "Verdict" in md
+
+    @patch("voronoi.gateway.report._run_bd")
+    def test_markdown_has_limitations_for_fragile(self, mock_bd, workspace):
+        findings = [
+            {"id": "bd-5", "title": "FINDING: Fragile result",
+             "notes": "EFFECT_SIZE:0.3\nVALENCE:positive\nROBUST:no\nSTAT_REVIEW: APPROVED"},
+        ]
+        mock_bd.return_value = (0, json.dumps(findings))
+
+        rg = ReportGenerator(workspace)
+        md = rg.build_markdown()
+
+        assert "Limitations" in md
+        assert "Fragile" in md or "fragile" in md
+
+    @patch("voronoi.gateway.report._run_bd")
+    def test_markdown_has_negative_results(self, mock_bd, workspace):
+        findings = [
+            {"id": "bd-5", "title": "FINDING: Strategy A works",
+             "notes": "EFFECT_SIZE:0.82\nVALENCE:positive"},
+            {"id": "bd-6", "title": "FINDING: Strategy B fails",
+             "notes": "EFFECT_SIZE:0.08\nVALENCE:negative"},
+        ]
+        mock_bd.return_value = (0, json.dumps(findings))
+
+        rg = ReportGenerator(workspace)
+        md = rg.build_markdown()
+
+        assert "Negative" in md
+        assert "Strategy B fails" in md
+
+    @patch("voronoi.gateway.report._run_bd")
+    def test_markdown_cross_finding_comparison(self, mock_bd, workspace):
+        findings = [
+            {"id": "bd-5", "title": "FINDING: Large effect",
+             "notes": "EFFECT_SIZE:1.2\nVALENCE:positive"},
+            {"id": "bd-6", "title": "FINDING: Small effect",
+             "notes": "EFFECT_SIZE:0.2\nVALENCE:positive"},
+        ]
+        mock_bd.return_value = (0, json.dumps(findings))
+
+        rg = ReportGenerator(workspace)
+        md = rg.build_markdown()
+
+        assert "Comparative" in md
+        assert "strongest" in md.lower() or "larger" in md.lower()
 
     @patch("voronoi.gateway.report._run_bd")
     def test_markdown_minimal(self, mock_bd, tmp_path):
@@ -330,7 +391,7 @@ class TestManuscriptMarkdown:
         )
         mock_bd.return_value = (0, json.dumps([
             {"id": "bd-1", "title": "FINDING: EWC works",
-             "notes": "EFFECT_SIZE:0.82\nVALENCE:positive"},
+             "notes": "EFFECT_SIZE:0.82\nVALENCE:positive\nROBUST:yes\nSTAT_REVIEW: APPROVED"},
         ]))
 
         rg = ReportGenerator(tmp_path, rigor="scientific")
@@ -338,7 +399,7 @@ class TestManuscriptMarkdown:
 
         assert "Forgetting Mitigation" in md
         assert "Abstract" in md
-        assert "Appendix: Evidence Summary" in md
+        assert "Appendix A: Evidence Summary" in md
         assert "EWC works" in md
 
     @patch("voronoi.gateway.report._run_bd")
@@ -349,7 +410,7 @@ class TestManuscriptMarkdown:
         (swarm / "journal.md").write_text("Ran 3 experiments")
         mock_bd.return_value = (0, json.dumps([
             {"id": "bd-1", "title": "FINDING: Replay helps",
-             "notes": "EFFECT_SIZE:0.5\nP:<.01"},
+             "notes": "EFFECT_SIZE:0.5\nP:<.01\nVALENCE:positive"},
         ]))
 
         rg = ReportGenerator(tmp_path, rigor="scientific")
@@ -433,3 +494,227 @@ class TestFindingsCache:
 
         # bd should only be called once
         assert mock_bd.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Belief narrative tests
+# ---------------------------------------------------------------------------
+
+class TestBeliefNarrative:
+    @patch("voronoi.gateway.report._run_bd")
+    def test_belief_narrative_trajectory(self, mock_bd, tmp_path):
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "belief-map.json").write_text(json.dumps({
+            "hypotheses": [
+                {"name": "EWC works", "prior": 0.5, "posterior": 0.9,
+                 "status": "confirmed", "evidence": ["bd-1", "bd-3"]},
+                {"name": "Distillation works", "prior": 0.6, "posterior": 0.2,
+                 "status": "refuted", "evidence": ["bd-2"]},
+                {"name": "Replay helps", "prior": 0.5, "posterior": 0.5,
+                 "status": "inconclusive", "evidence": []},
+            ]
+        }))
+        mock_bd.return_value = (0, json.dumps([]))
+
+        rg = ReportGenerator(tmp_path)
+        narrative = rg._render_belief_narrative()
+
+        assert narrative is not None
+        assert "EWC works" in narrative
+        assert "confirmed" in narrative
+        assert "refuted" in narrative
+        # Should contain trajectory arrows
+        assert "\u2191" in narrative or "\u2193" in narrative  # up or down arrow
+        # Summary
+        assert "1 confirmed" in narrative
+        assert "1 refuted" in narrative
+        assert "1 inconclusive" in narrative
+
+    @patch("voronoi.gateway.report._run_bd")
+    def test_belief_narrative_falls_back_to_md(self, mock_bd, workspace):
+        """When belief-map.md exists, prefer it."""
+        mock_bd.return_value = (0, json.dumps([]))
+        rg = ReportGenerator(workspace)
+        narrative = rg._render_belief_narrative()
+        # Should contain content from belief-map.md
+        assert narrative is not None
+        assert "EWC" in narrative or "H1" in narrative
+
+
+# ---------------------------------------------------------------------------
+# Evidence chain tests
+# ---------------------------------------------------------------------------
+
+class TestEvidenceChain:
+    @patch("voronoi.gateway.report._run_bd")
+    def test_evidence_chain_rendering(self, mock_bd, tmp_path):
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "claim-evidence.json").write_text(json.dumps({
+            "claims": [
+                {"claim_id": "C1", "claim_text": "Encoding outperforms baseline",
+                 "finding_ids": ["bd-5"], "hypothesis_ids": ["H1"],
+                 "strength": "robust",
+                 "interpretation": "Large practical effect confirmed"},
+                {"claim_id": "C2", "claim_text": "Pipeline scales to 1000+ levers",
+                 "finding_ids": [], "hypothesis_ids": [],
+                 "strength": "unsupported",
+                 "interpretation": ""},
+            ],
+            "orphan_findings": ["bd-6"],
+            "unsupported_claims": ["C2"],
+            "coverage_score": 0.5,
+        }))
+        mock_bd.return_value = (0, json.dumps([]))
+
+        rg = ReportGenerator(tmp_path)
+        chain = rg._render_evidence_chain()
+
+        assert chain is not None
+        assert "Encoding outperforms baseline" in chain
+        assert "robust" in chain
+        assert "Unsupported claims" in chain
+        assert "C2" in chain
+        assert "not cited" in chain.lower() or "orphan" in chain.lower()
+        assert "50%" in chain
+
+    @patch("voronoi.gateway.report._run_bd")
+    def test_evidence_chain_none_without_file(self, mock_bd, tmp_path):
+        (tmp_path / ".swarm").mkdir()
+        mock_bd.return_value = (0, json.dumps([]))
+        rg = ReportGenerator(tmp_path)
+        assert rg._render_evidence_chain() is None
+
+
+# ---------------------------------------------------------------------------
+# Limitations auto-generation tests
+# ---------------------------------------------------------------------------
+
+class TestLimitations:
+    @patch("voronoi.gateway.report._run_bd")
+    def test_limitations_from_fragile(self, mock_bd, workspace):
+        mock_bd.return_value = (0, json.dumps([]))
+        rg = ReportGenerator(workspace)
+        findings = [
+            {"title": "FINDING: EWC fragile", "robust": "no",
+             "notes": "ROBUST:no"},
+        ]
+        lim = rg._render_limitations(findings)
+        assert lim is not None
+        assert "Fragile" in lim
+
+    @patch("voronoi.gateway.report._run_bd")
+    def test_limitations_from_wide_ci(self, mock_bd, workspace):
+        mock_bd.return_value = (0, json.dumps([]))
+        rg = ReportGenerator(workspace)
+        findings = [
+            {"title": "FINDING: Imprecise result",
+             "ci_quality": "very wide", "notes": ""},
+        ]
+        lim = rg._render_limitations(findings)
+        assert lim is not None
+        assert "Imprecise" in lim
+
+    @patch("voronoi.gateway.report._run_bd")
+    def test_limitations_from_inconclusive_hypothesis(self, mock_bd, tmp_path):
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "belief-map.json").write_text(json.dumps({
+            "hypotheses": [
+                {"name": "Untested H", "prior": 0.5, "status": "inconclusive"},
+            ]
+        }))
+        mock_bd.return_value = (0, json.dumps([]))
+        rg = ReportGenerator(tmp_path)
+        findings = [{"title": "FINDING: test", "notes": ""}]
+        lim = rg._render_limitations(findings)
+        assert lim is not None
+        assert "Inconclusive" in lim
+
+    def test_no_limitations_when_all_robust(self):
+        rg = ReportGenerator.__new__(ReportGenerator)
+        rg.ws = Path("/tmp/fake")
+        rg.swarm = Path("/tmp/fake/.swarm")
+        findings = [
+            {"title": "FINDING: Good result", "robust": "yes",
+             "strength_label": "robust", "stat_review": "APPROVED",
+             "notes": "STAT_REVIEW: APPROVED"},
+        ]
+        lim = rg._render_limitations(findings)
+        assert lim is None
+
+
+# ---------------------------------------------------------------------------
+# Cross-finding comparison tests
+# ---------------------------------------------------------------------------
+
+class TestCrossFindingComparison:
+    def test_comparison_two_findings(self):
+        findings = [
+            {"title": "FINDING: Large effect", "effect_size": "1.2",
+             "valence": "positive", "practical_significance": "very large"},
+            {"title": "FINDING: Small effect", "effect_size": "0.2",
+             "valence": "positive", "practical_significance": "small"},
+        ]
+        result = ReportGenerator._render_cross_finding_comparison(findings)
+        assert result is not None
+        assert "Large effect" in result
+        assert "6.0x" in result
+
+    def test_comparison_with_mixed_valence(self):
+        findings = [
+            {"title": "FINDING: Positive", "effect_size": "0.8",
+             "valence": "positive"},
+            {"title": "FINDING: Negative", "effect_size": "0.5",
+             "valence": "negative"},
+        ]
+        result = ReportGenerator._render_cross_finding_comparison(findings)
+        assert result is not None
+        assert "mixed" in result.lower()
+
+    def test_comparison_single_finding(self):
+        findings = [
+            {"title": "FINDING: Only one", "effect_size": "0.5"},
+        ]
+        assert ReportGenerator._render_cross_finding_comparison(findings) is None
+
+    def test_comparison_no_numeric_effects(self):
+        findings = [
+            {"title": "FINDING: One", "effect_size": "large"},
+            {"title": "FINDING: Two", "effect_size": "small"},
+        ]
+        assert ReportGenerator._render_cross_finding_comparison(findings) is None
+
+
+# ---------------------------------------------------------------------------
+# Negative results tests
+# ---------------------------------------------------------------------------
+
+class TestNegativeResults:
+    def test_renders_negative_findings(self):
+        findings = [
+            {"title": "FINDING: Strategy failed", "valence": "negative",
+             "effect_size": "0.08", "p": "0.42"},
+            {"title": "FINDING: Strategy works", "valence": "positive",
+             "effect_size": "0.82"},
+        ]
+        result = ReportGenerator._render_negative_results(findings)
+        assert result is not None
+        assert "Strategy failed" in result
+        assert "Strategy works" not in result
+        assert "negative" in result.lower()
+
+    def test_no_negative_results(self):
+        findings = [
+            {"title": "FINDING: All good", "valence": "positive"},
+        ]
+        assert ReportGenerator._render_negative_results(findings) is None
+
+    def test_inconclusive_included(self):
+        findings = [
+            {"title": "FINDING: Unclear", "valence": "inconclusive"},
+        ]
+        result = ReportGenerator._render_negative_results(findings)
+        assert result is not None
+        assert "Unclear" in result

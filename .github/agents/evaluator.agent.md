@@ -69,9 +69,23 @@ For each major claim:
 - Is the evidence from a properly controlled experiment?
 - Has it survived adversarial review?
 
+**Claim-Evidence Audit (MANDATORY at Analytical+):**
+1. Read `.swarm/claim-evidence.json`
+2. For each claim: verify the linked finding IDs exist and have STAT_REVIEW: APPROVED
+3. Flag unsupported claims (claims with no finding IDs)
+4. Flag orphan findings (findings not cited by any claim)
+5. Check that strength labels match actual review status:
+   - "robust" requires STAT_REVIEW: APPROVED + ROBUST: yes
+   - "provisional" requires STAT_REVIEW: APPROVED
+   - "weak" means unreviewed
+   - "unsupported" means no evidence at all
+
 ```
-STRENGTH = (robust_claims / total_claims) × confidence_weight
+STRENGTH = (robust_claims / total_claims) × confidence_weight × traceability_factor
+traceability_factor = 1.0 if no orphan findings and no unsupported claims, else 0.8
 ```
+
+If `.swarm/claim-evidence.json` does not exist, STRENGTH cannot exceed 0.5 — report this as a blocker.
 
 #### ACTIONABILITY — Could someone act on this output without further research?
 
@@ -182,11 +196,12 @@ bd update <eval-id> --notes "VERDICT:PASS|IMPROVE|FAIL | IMPROVEMENT_ROUND:N | I
 ## Completion Checklist
 
 1. ✅ Abstract decomposed into discrete requirements
-2. ✅ Each dimension scored with detailed justification
-3. ✅ Overall score computed
-4. ✅ Verdict recorded (PASS/IMPROVE/FAIL)
-5. ✅ Improvement tasks created (if IMPROVE/FAIL)
-6. ✅ Diminishing returns checked (if round 2+)
-7. ✅ Quality disclosure attached (if score < 0.75)
-8. ✅ Beads task updated with full evaluation
-9. ✅ Changes pushed to remote
+2. ✅ Claim-evidence registry audited (`.swarm/claim-evidence.json`)
+3. ✅ Each dimension scored with detailed justification
+4. ✅ Overall score computed (with traceability factor)
+5. ✅ Verdict recorded (PASS/IMPROVE/FAIL)
+6. ✅ Improvement tasks created (if IMPROVE/FAIL)
+7. ✅ Diminishing returns checked (if round 2+)
+8. ✅ Quality disclosure attached (if score < 0.75)
+9. ✅ Beads task updated with full evaluation
+10. ✅ Changes pushed to remote

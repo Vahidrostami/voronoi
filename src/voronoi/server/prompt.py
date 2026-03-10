@@ -270,9 +270,47 @@ def _build_science_sections(mode: str, rigor: str) -> str:
             )
         sections.append(
             "- **Synthesizer** (`.github/agents/synthesizer.agent.md`): "
-            "Consistency check against validated findings\n"
+            "Consistency check against validated findings, claim-evidence registry\n"
             "- **Evaluator** (`.github/agents/evaluator.agent.md`): "
-            "Score deliverable (Completeness, Coherence, Strength, Actionability)\n"
+            "Score deliverable (Completeness, Coherence, Strength, Actionability) "
+            "with claim-evidence traceability audit\n"
+        )
+
+    if rigor in ("analytical", "scientific", "experimental"):
+        sections.append(
+            "\n## Claim-Evidence Traceability — MANDATORY\n\n"
+            "Before writing the deliverable, the Synthesizer MUST produce "
+            "`.swarm/claim-evidence.json` with this structure:\n"
+            "```json\n"
+            '{"claims": [{"claim_id": "C1", "claim_text": "...", '
+            '"finding_ids": ["bd-5", "bd-8"], "hypothesis_ids": ["H1"], '
+            '"strength": "robust", "interpretation": "..."}], '
+            '"orphan_findings": [], "unsupported_claims": [], "coverage_score": 0.95}\n'
+            "```\n"
+            "**Rules:**\n"
+            "- Every claim in the deliverable MUST link to at least one finding ID\n"
+            "- Every finding MUST be cited by at least one claim (no orphan findings)\n"
+            "- Unsupported claims or orphan findings block convergence\n"
+            "- The Evaluator checks this registry during Strength scoring\n"
+            "- Strength labels: robust (sensitivity-tested), provisional (reviewed), "
+            "weak (unreviewed), unsupported (no evidence)\n"
+        )
+
+    if rigor in ("analytical", "scientific", "experimental"):
+        sections.append(
+            "\n## Finding Interpretation — MANDATORY\n\n"
+            "The Statistician MUST add interpretation metadata to each finding during review:\n"
+            '```bash\n'
+            'bd update <finding-id> --notes "INTERPRETATION:[what this means practically]"\n'
+            'bd update <finding-id> --notes "PRACTICAL_SIGNIFICANCE:negligible|small|medium|large|very large"\n'
+            'bd update <finding-id> --notes "SUPPORTS_HYPOTHESIS:[hypothesis ID and name]"\n'
+            '```\n'
+            "The final report auto-generates:\n"
+            "- Finding-by-finding interpretation with practical significance\n"
+            "- Cross-finding comparison (ranked by effect size)\n"
+            "- Dedicated Negative Results section for refuted hypotheses\n"
+            "- Auto-generated Limitations from fragile/wide-CI/unreviewed findings\n"
+            "- Belief map trajectory (prior \u2192 posterior with evidence links)\n"
         )
 
     if rigor != "standard":
@@ -335,10 +373,13 @@ def _build_workflow_steps(mode: str, rigor: str, prompt_path: str) -> str:
         "   - Repeat until converged\n"
     )
     steps.append(
-        f"{ooda_step + 1}. Write `.swarm/deliverable.md` and push results\n"
+        f"{ooda_step + 1}. Synthesizer produces `.swarm/claim-evidence.json` mapping every claim to findings\n"
     )
     steps.append(
-        f"{ooda_step + 2}. If the project produced LaTeX files, dispatch a final "
+        f"{ooda_step + 2}. Write `.swarm/deliverable.md` and push results\n"
+    )
+    steps.append(
+        f"{ooda_step + 3}. If the project produced LaTeX files, dispatch a final "
         "compilation agent to:\n"
         "   - FIRST: scan .tex files for \\includegraphics references, generate ALL\n"
         "     missing figures from experimental data using matplotlib (check output/\n"
@@ -359,6 +400,9 @@ def _build_rigor_rules(rigor: str) -> str:
     rules: list[str] = []
     if rigor in ("analytical", "scientific", "experimental"):
         rules.append("- Every finding MUST pass Statistician review\n")
+        rules.append("- Every finding MUST include INTERPRETATION and PRACTICAL_SIGNIFICANCE\n")
+        rules.append("- Synthesizer MUST produce `.swarm/claim-evidence.json` BEFORE deliverable\n")
+        rules.append("- Every claim MUST trace to finding IDs; every finding MUST be cited\n")
         rules.append("- Every task MUST declare PRODUCES and REQUIRES artifact contracts\n")
     if rigor in ("scientific", "experimental"):
         rules.append("- Investigation tasks MUST have pre-registration BEFORE execution\n")
