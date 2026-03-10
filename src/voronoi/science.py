@@ -707,10 +707,18 @@ def _fetch_tasks(workspace: Path) -> list[dict] | None:
     """Fetch all tasks from Beads once.  Returns None on failure."""
     code, output = _run_bd("list", "--json", cwd=str(workspace))
     if code != 0:
+        logger.warning("bd list --json failed (exit=%d) in %s", code, workspace)
+        return None
+    if not output:
         return None
     try:
-        return json.loads(output)
-    except (json.JSONDecodeError, ValueError):
+        data = json.loads(output)
+        if not isinstance(data, list):
+            logger.warning("bd list --json returned non-list: %s", type(data).__name__)
+            return None
+        return data
+    except (json.JSONDecodeError, ValueError) as e:
+        logger.warning("bd list --json returned invalid JSON in %s: %s", workspace, e)
         return None
 
 

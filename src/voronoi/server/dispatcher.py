@@ -370,12 +370,21 @@ class InvestigationDispatcher:
         if eval_path.exists():
             try:
                 data = json.loads(eval_path.read_text())
+                if not isinstance(data, dict):
+                    logger.warning("eval-score.json is not a dict for #%d",
+                                   run.investigation_id)
+                    return
                 score = float(data.get("score", 0.0))
+                if score < 0 or score > 1.0:
+                    logger.warning("eval-score.json score out of range [0,1] for #%d: %s",
+                                   run.investigation_id, score)
+                    return
                 if score > 0:
                     run.eval_score = score
                     run.improvement_rounds = int(data.get("rounds", run.improvement_rounds))
-            except (json.JSONDecodeError, OSError, ValueError):
-                pass
+            except (json.JSONDecodeError, OSError, ValueError) as e:
+                logger.warning("Failed to read eval-score.json for #%d: %s",
+                               run.investigation_id, e)
 
     def _write_timeout_convergence(self, run: RunningInvestigation) -> None:
         """Write convergence.json indicating timeout exhaustion."""
@@ -401,11 +410,26 @@ class InvestigationDispatcher:
                 capture_output=True, text=True, timeout=15,
                 cwd=str(run.workspace_path),
             )
-            if result.returncode == 0:
+            if result.returncode == 0 and result.stdout.strip():
                 tasks = json.loads(result.stdout)
-                events.extend(self._diff_tasks(run, tasks))
-        except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError):
-            pass
+                if isinstance(tasks, list):
+                    events.extend(self._diff_tasks(run, tasks))
+                else:
+                    logger.warning("bd list --json returned non-list for #%d: %s",
+                                   run.investigation_id, type(tasks).__name__)
+                    tasks = None
+            elif result.returncode != 0:
+                logger.debug("bd list --json failed for #%d (exit=%d): %s",
+                             run.investigation_id, result.returncode,
+                             result.stderr.strip()[:200] if result.stderr else "")
+        except subprocess.TimeoutExpired:
+            logger.warning("bd list --json timed out for #%d", run.investigation_id)
+        except FileNotFoundError:
+            logger.error("bd command not found during progress check for #%d",
+                         run.investigation_id)
+        except json.JSONDecodeError as e:
+            logger.warning("bd list --json returned invalid JSON for #%d: %s",
+                           run.investigation_id, e)
         events.extend(self._check_findings(run, tasks))
         events.extend(self._detect_phase(run))
         return events
@@ -448,10 +472,15 @@ class InvestigationDispatcher:
                     capture_output=True, text=True, timeout=15,
                     cwd=str(run.workspace_path),
                 )
-                if result.returncode != 0:
+                if result.returncode != 0 or not result.stdout.strip():
                     return events
-                tasks = json.loads(result.stdout)
-            except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError):
+                parsed = json.loads(result.stdout)
+                if not isinstance(parsed, list):
+                    return events
+                tasks = parsed
+            except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError) as e:
+                logger.debug("Findings check skipped for #%d: %s",
+                             run.investigation_id, e)
                 return events
 
         for task in tasks:
@@ -605,7 +634,11 @@ class InvestigationDispatcher:
         return False
 
     def _try_convergence_check(self, run: RunningInvestigation) -> None:
-        """Attempt to run a convergence check and write convergence.json."""
+        """Attempt to run a convergence check and write convergence.json.
+
+        Also runs the convergence-gate.sh script for multi-signal validation
+        when available, to prevent premature completion.
+        """
         try:
             from voronoi.science import check_convergence, write_convergence
             result = check_convergence(
@@ -614,6 +647,26 @@ class InvestigationDispatcher:
                 improvement_rounds=run.improvement_rounds,
             )
             if result.converged or result.status in ("exhausted", "diminishing_returns"):
+                # Run convergence-gate.sh for additional validation
+                gate_script = run.workspace_path / "scripts" / "convergence-gate.sh"
+                if not gate_script.exists():
+                    # Try project-level scripts directory
+                    gate_script = Path(__file__).resolve().parent.parent.parent.parent / "scripts" / "convergence-gate.sh"
+                if gate_script.exists() and gate_script.stat().st_mode & 0o111:
+                    try:
+                        gate_result = subprocess.run(
+                            [str(gate_script), str(run.workspace_path), run.rigor],
+                            capture_output=True, text=True, timeout=30,
+                            cwd=str(run.workspace_path),
+                        )
+                        if gate_result.returncode != 0:
+                            logger.warning("Convergence gate FAILED for %s: %s",
+                                           run.label, gate_result.stdout.strip()[:300])
+                            # Don't write convergence — gate didn't pass
+                            return
+                    except (subprocess.TimeoutExpired, OSError) as e:
+                        logger.debug("Convergence gate script failed: %s", e)
+
                 write_convergence(run.workspace_path, result)
                 logger.info("Convergence written for %s: %s", run.label, result.status)
         except Exception as e:

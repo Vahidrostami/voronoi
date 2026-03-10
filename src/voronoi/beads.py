@@ -6,15 +6,26 @@ duplicating subprocess boilerplate.
 
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 
+logger = logging.getLogger("voronoi.beads")
 
-def run_bd(*args: str, cwd: str | None = None) -> tuple[int, str]:
+
+class BeadsError(Exception):
+    """Raised when a bd command fails and the caller requested strict mode."""
+
+
+def run_bd(*args: str, cwd: str | None = None,
+           strict: bool = False) -> tuple[int, str]:
     """Run a bd (beads) command.
 
-    Returns (exit_code, stdout).  Stderr is discarded so that
-    JSON-producing commands (``bd list --json``) can be parsed safely.
+    Returns (exit_code, stdout).  Stderr is logged at DEBUG level so that
+    JSON-producing commands (``bd list --json``) can be parsed safely,
+    but failures are no longer silently lost.
+
+    If *strict* is True, raises ``BeadsError`` on non-zero exit code.
     """
     env = os.environ.copy()
     if cwd and "BEADS_DIR" not in env:
@@ -27,11 +38,49 @@ def run_bd(*args: str, cwd: str | None = None) -> tuple[int, str]:
             capture_output=True, text=True, timeout=30,
             cwd=cwd, env=env,
         )
+        if result.stderr:
+            logger.debug("bd %s stderr: %s", " ".join(args), result.stderr.strip())
+        if result.returncode != 0:
+            logger.warning("bd %s exited with code %d (stderr: %s)",
+                           " ".join(args), result.returncode,
+                           result.stderr.strip()[:200])
+            if strict:
+                raise BeadsError(
+                    f"bd {' '.join(args)} failed (exit={result.returncode}): "
+                    f"{result.stderr.strip()[:200]}"
+                )
         return result.returncode, result.stdout.strip()
     except FileNotFoundError:
+        logger.error("bd command not found — is beads installed?")
+        if strict:
+            raise BeadsError("bd command not found")
         return 1, ""
     except subprocess.TimeoutExpired:
+        logger.error("bd %s timed out after 30s", " ".join(args))
+        if strict:
+            raise BeadsError(f"bd {' '.join(args)} timed out")
         return 1, ""
+
+
+def run_bd_json(*args: str, cwd: str | None = None) -> tuple[int, list | dict | None]:
+    """Run a bd command that returns JSON, with safe parsing.
+
+    Returns (exit_code, parsed_data).  On parse failure, returns (exit_code, None)
+    instead of silently returning an empty list — callers must handle None.
+    """
+    code, stdout = run_bd(*args, cwd=cwd)
+    if code != 0:
+        return code, None
+    if not stdout:
+        return code, None
+    try:
+        import json
+        data = json.loads(stdout)
+        return code, data
+    except (json.JSONDecodeError, ValueError) as e:
+        logger.warning("bd %s returned invalid JSON: %s (output: %.100s)",
+                       " ".join(args), e, stdout)
+        return code, None
 
 
 def has_beads_dir(cwd: str | None) -> bool:
