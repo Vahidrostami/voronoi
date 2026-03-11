@@ -26,7 +26,48 @@ and must complete it within your isolated git worktree.
    - `GATE:` — verify the gate file exists AND contains passing verdicts. If not, report `BLOCKED` and STOP.
    - `PRODUCES:` — note these files. You MUST create ALL of them before closing the task. The quality gate will reject your work otherwise.
 6. Understand the codebase structure relevant to your scope
-7. Begin implementation
+7. **Check for METRIC_CONTRACT** in task notes — if present, note the baseline value and acceptance criteria
+8. Begin implementation
+
+## Verify Loop — Self-Healing Before Escalation
+
+Before declaring a task complete or failed, run your **verify loop**. This is your inner iteration — fix your own mistakes before bothering the orchestrator.
+
+### Build Tasks
+
+```
+LOOP (max 5 iterations):
+  1. Run tests: pytest / npm test / make test
+  2. Run lint: ruff check / eslint / etc.
+  3. Check PRODUCES artifacts exist
+  4. ALL PASS → commit, close task
+  5. ANY FAIL → pipe last 50 lines of error output into your next attempt
+```
+
+### Investigation Tasks
+
+```
+LOOP (max 3 iterations per experiment variant):
+  1. Run experiment script
+  2. Extract metric: grep "^metric_name:" run.log
+  3. Check: did it crash? is metric extracted? is raw data committed?
+  4. ALL PASS → record finding, close task
+  5. ANY FAIL → read last 50 lines of error, diagnose, fix, retry
+```
+
+### Rules
+
+- **Redirect long output to files**: `python experiment.py > run.log 2>&1` — then extract metrics with `grep`. Do NOT let full output flood your context.
+- **Log every verify iteration** to Beads:
+  ```bash
+  bd update <id> --notes "VERIFY_ITER:1 | STATUS:fail | ERROR:3 of 12 tests failed | APPROACH:fixing import in encoder.py"
+  ```
+- **On max iterations exceeded** — do NOT silently close the task. Report structured failure:
+  ```bash
+  bd update <id> --notes "VERIFY_EXHAUSTED: Tried [N] iterations. Errors: [summary]. Last attempt: [what you tried]."
+  ```
+  Then close with failure reason so the orchestrator can diagnose.
+- **Self-eval against metric contract** (if present): compare your result to the baseline value. Note whether you beat it and by how much — this helps the orchestrator's OODA loop even if the Statistician hasn't reviewed yet.
 
 ## Rules
 
@@ -115,25 +156,28 @@ bd update <your-task-id> --notes "BLOCKED: Required artifact missing: <path>"
 
 ## Completion Checklist — Build Tasks
 
-1. ✅ All acceptance criteria met
-2. ✅ All `PRODUCES` artifacts exist and are valid
-3. ✅ Tests written and passing
-4. ✅ Beads task closed with summary
-5. ✅ Changes pushed to remote
-6. ✅ STOP — do not continue to other tasks
+1. ✅ Verify loop passed (tests + lint + PRODUCES)
+2. ✅ All acceptance criteria met
+3. ✅ All `PRODUCES` artifacts exist and are valid
+4. ✅ Tests written and passing
+5. ✅ Beads task closed with summary
+6. ✅ Changes pushed to remote
+7. ✅ STOP — do not continue to other tasks
 
 ## Completion Checklist — Investigation Tasks
 
 1. ✅ Experiment executed per pre-registered design
-2. ✅ Raw data committed with SHA-256 hash recorded in Beads
-3. ✅ **Experiment script committed** to `experiments/` — the exact code that produced the data
-4. ✅ All `PRODUCES` artifacts exist (data files, result files)
-5. ✅ Sensitivity analysis completed (2+ parameter variations)
-6. ✅ Finding created in Beads with full evidence trail (TYPE:finding, effect size, CI, N, p-value, data hash, sensitivity results)
-7. ✅ **Numbers verified**: reported N matches actual data row count, effect size computed from raw data
-8. ✅ Beads task closed with summary
-9. ✅ Changes pushed to remote
-10. ✅ STOP — do not continue to other tasks
+2. ✅ Verify loop passed (experiment ran, metric extracted, data committed)
+3. ✅ Raw data committed with SHA-256 hash recorded in Beads
+4. ✅ **Experiment script committed** to `experiments/` — the exact code that produced the data
+5. ✅ All `PRODUCES` artifacts exist (data files, result files)
+6. ✅ Sensitivity analysis completed (2+ parameter variations)
+7. ✅ Finding created in Beads with full evidence trail (TYPE:finding, effect size, CI, N, p-value, data hash, sensitivity results)
+8. ✅ **Numbers verified**: reported N matches actual data row count, effect size computed from raw data
+9. ✅ Append result row to `.swarm/experiments.tsv` (timestamp, task-id, branch, metric, value, status, description)
+10. ✅ Beads task closed with summary
+11. ✅ Changes pushed to remote
+12. ✅ STOP — do not continue to other tasks
 
 ## Anti-Fabrication Rules — MANDATORY
 

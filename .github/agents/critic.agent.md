@@ -93,11 +93,28 @@ bd update <finding-id> --notes "ADVERSARIAL_RESULT: CONTESTED | UNRESOLVED_ISSUE
 
 CONTESTED findings CANNOT contribute to convergence. They require Methodologist + Statistician arbitration.
 
+## Verify Loop
+
+Before closing your review task, verify completeness (max 2 iterations):
+
+```
+LOOP:
+  1. Check: have all 5 checklist items been evaluated?
+  2. Check: is the verdict recorded in Beads?
+  3. Check: at Scientific+ rigor, is the blinding conflict check done?
+  4. ALL PASS → close task
+  5. ANY FAIL → complete missing evaluation, re-check
+```
+
 ## Build Mode (Inline Review)
 
 For build tasks, perform a lighter review:
 - Code correctness: does it work as specified?
 - Test coverage: are there tests for the new code?
+- **Simplicity criterion**: weigh complexity cost against improvement magnitude.
+  A small improvement that adds significant complexity is not worth keeping.
+  A simplification with equal results is always a win.
+  Removing unnecessary code that doesn't degrade function is a positive review finding.
 - Integration: does it break existing functionality?
 - Security: any obvious vulnerabilities?
 

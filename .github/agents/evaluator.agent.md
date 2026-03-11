@@ -94,10 +94,20 @@ If `.swarm/claim-evidence.json` does not exist, STRENGTH cannot exceed 0.5 — r
 - **0.4** — Directionally useful but requires significant follow-up
 - **0.0** — Academic only; cannot be acted upon
 
+#### SIMPLICITY — Bonus/penalty modifier
+
+Evaluate whether the deliverable and its supporting code/experiments are appropriately simple:
+- **Bonus (+0.05)**: Deliverable achieves its goals with notably clean, simple approaches. Code deletes or simplifications that maintain quality. Fewer moving parts than expected.
+- **Neutral (0.00)**: Complexity is proportional to the task.
+- **Penalty (-0.05)**: Unnecessary complexity, over-engineered solutions, convoluted explanations where simple ones suffice.
+
+Apply as a modifier to the final OVERALL score after computing the weighted average.
+
 ### Step 3: Compute Overall Score
 
 ```
-OVERALL = 0.30 × COMPLETENESS + 0.25 × COHERENCE + 0.25 × STRENGTH + 0.20 × ACTIONABILITY
+BASE = 0.30 × COMPLETENESS + 0.25 × COHERENCE + 0.25 × STRENGTH + 0.20 × ACTIONABILITY
+OVERALL = clamp(BASE + SIMPLICITY_MODIFIER, 0.0, 1.0)
 ```
 
 ### Step 4: Record Evaluation

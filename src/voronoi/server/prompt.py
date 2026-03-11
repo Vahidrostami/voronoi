@@ -121,6 +121,20 @@ def build_orchestrator_prompt(
     # -- Science sections (mode + rigor aware) -----------------------------
     sections.append(_build_science_sections(mode, rigor))
 
+    # -- Verify loop guidance ----------------------------------------------
+    sections.append(
+        "\n## Self-Healing Agents (Verify Loop)\n\n"
+        "Every worker agent runs an internal **verify loop** before declaring "
+        "success or failure to you.  Workers retry against their own errors "
+        "(test failures, lint, crashes) up to a role-specific limit before "
+        "escalating.  This means:\n"
+        "- Most execution errors are fixed autonomously by the worker\n"
+        "- When a worker reports `VERIFY_EXHAUSTED`, check their verify "
+        "iteration log in Beads notes before retrying or reassigning\n"
+        "- Do NOT immediately re-dispatch a failed task \u2014 diagnose first\n"
+        "- Workers also log verify iterations to Beads (VERIFY_ITER notes)\n"
+    )
+
     # -- Workflow ----------------------------------------------------------
     sections.append("\n## Workflow\n\n")
     sections.append(_build_workflow_steps(mode, rigor, prompt_path))
@@ -188,9 +202,10 @@ def build_orchestrator_prompt(
         "3. FULL relevant context from the project brief (copy sections verbatim)\n"
         "4. STRATEGIC_CONTEXT: how this task fits the whole\n"
         "5. ARTIFACT CONTRACTS: list PRODUCES and REQUIRES files explicitly in the prompt\n"
-        "6. COMMIT CHECKPOINTS: after each milestone, run "
+        "6. METRIC_CONTRACT: for investigation tasks, include the metric shape, baseline reference, and acceptance criteria\n"
+        "7. COMMIT CHECKPOINTS: after each milestone, run "
         "`git add -A && git commit -m '[msg]' && git push origin <branch>`\n"
-        "7. Completion: `bd close <task-id> --reason \"...\"` then "
+        "8. Completion: `bd close <task-id> --reason \"...\"` then "
         "`git push origin <branch>`\n\n"
         "**Skills to reference in worker prompts** (tell agents to read these):\n"
         "| Skill | When to reference |"
@@ -213,6 +228,12 @@ def build_orchestrator_prompt(
         "- Push all completed work to remote when done\n"
         f"- Max concurrent agents: {max_agents}\n"
         "- EVERY task MUST declare PRODUCES and REQUIRES in Beads notes\n"
+        "- For investigation epics, create a BASELINE task as the FIRST subtask \u2014 "
+        "all experimental tasks depend on it\n"
+        "- For investigation tasks, include METRIC_CONTRACT in Beads notes "
+        "(metric shape, baseline reference, acceptance criteria)\n"
+        "- Workers self-heal via verify loops \u2014 when they report VERIFY_EXHAUSTED, "
+        "read their iteration log before re-dispatching\n"
         "- spawn-agent.sh will REJECT dispatch if REQUIRES files are missing\n"
         "- merge-agent.sh will REJECT merge if PRODUCES files are missing\n"
         "- Include commit checkpoint instructions in EVERY worker prompt:\n"
@@ -382,9 +403,11 @@ def _build_workflow_steps(mode: str, rigor: str, prompt_path: str) -> str:
         if rigor != "standard":
             steps.append("5. Generate hypotheses → write `.swarm/belief-map.json`\n")
             steps.append("6. Inject STRATEGIC_CONTEXT into each task's Beads notes\n")
-            ooda_step = 7
+            steps.append("7. Create `.swarm/experiments.tsv` with header row\n")
+            ooda_step = 8
         else:
-            ooda_step = 5
+            steps.append("5. Create `.swarm/experiments.tsv` with header row\n")
+            ooda_step = 6
     else:
         steps.append("3. Run `bd prime`, create an epic + tasks with dependencies "
                       "and artifact contracts\n")
@@ -392,10 +415,11 @@ def _build_workflow_steps(mode: str, rigor: str, prompt_path: str) -> str:
 
     steps.append(
         f"{ooda_step}. OODA loop:\n"
-        "   - Observe: `bd ready --json`, check findings, belief map, git activity\n"
+        "   - Observe: `bd ready --json`, check findings, belief map, git activity, "
+        "experiment ledger (`.swarm/experiments.tsv`)\n"
         "   - Orient:  Classify events, update strategic context, check convergence\n"
         "   - Decide:  Prioritize by information gain, check review gates\n"
-        "   - Act:     Spawn agents (with role definitions!), merge work, "
+        "   - Act:     Spawn agents (with role definitions + METRIC_CONTRACT!), merge work, "
         "dispatch reviewers\n"
         "   - Repeat until converged\n"
     )

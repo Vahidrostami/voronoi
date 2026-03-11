@@ -171,6 +171,25 @@ bd update <deliverable-id> --notes "OVERALL_SCORE:0.X | MIN_DIMENSION:<weakest> 
 
 If `OVERALL_SCORE < 0.6` or any dimension `< 0.5`: do NOT submit. Iterate and re-score.
 
+## Verify Loop
+
+Before closing your synthesis task, verify completeness (max 3 iterations):
+
+```
+LOOP:
+  1. Check: does .swarm/claim-evidence.json exist?
+  2. Check: are there 0 orphan findings and 0 unsupported claims?
+  3. Check: does .swarm/deliverable.md exist (when convergence is signaled)?
+  4. Check: does self-score meet threshold (all dimensions ≥ 0.6)?
+  5. ALL PASS → close task
+  6. ANY FAIL → fix the gap (add missing citations, strengthen weak claims), re-check
+```
+
+Log iterations:
+```bash
+bd update <your-task-id> --notes "VERIFY_ITER:1 | STATUS:fail | ERROR:2 orphan findings uncited | FIX:adding citations for bd-12, bd-15"
+```
+
 ## Output Format
 
 ### Journal Entry
@@ -192,7 +211,7 @@ The deliverable file is written to `.swarm/deliverable.md` and declared as a `PR
 
 ## Completion Checklist
 
-1. ✅ Claim-evidence registry produced (`.swarm/claim-evidence.json`)
+1. ✅ Verify loop passed: claim-evidence registry complete, no orphan findings, no unsupported claims
 2. ✅ All claims link to finding IDs (no unsupported claims)
 3. ✅ All findings are cited (no orphan findings)
 4. ✅ Journal updated with current cycle summary

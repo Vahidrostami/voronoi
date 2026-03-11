@@ -90,16 +90,41 @@ graph LR
 2. **Classifier** picks the workflow (build / investigate / explore) and rigor level
 3. **Scout** researches existing knowledge, generates hypotheses
 4. **Agents run in parallel** — each in its own git worktree + tmux session
-5. **Review gates** — Statistician, Critic, Evaluator score the output
-6. **You get** a teaser with key findings + a PDF — **report** for investigations, **scientific manuscript** if the scope warrants it
+5. **Self-healing verify loop** — each agent iterates against its own errors (test failures, lint, crashes) before escalating. Builders retry up to 5 times; investigators retry each experiment variant up to 3 times.
+6. **Metric contracts** — orchestrator declares what success looks like (metric shape + baseline). Workers fill in the concrete metric at pre-registration. Results are directly comparable across agents.
+7. **Review gates** — Statistician, Critic, Evaluator score the output
+8. **You get** a teaser with key findings + a PDF — **report** for investigations, **scientific manuscript** if the scope warrants it
 
 Every finding ships with **effect size, confidence interval, sample size, p-value, and data hash**.
 
 > _"Investigate catastrophic forgetting mitigation"_ → the system runs experiments, gathers evidence, then assembles a structured manuscript (Abstract, Methods, Results, Discussion) with real statistical findings. Auto-detected — no special flag needed.
 
+### Two loops, not one
+
+Voronoi runs a **fast inner loop** per agent (try → verify → retry) and a **deliberate outer loop** at the orchestrator level (OODA: observe → orient → decide → act). The inner loop handles execution errors autonomously. The outer loop handles strategic decisions — which hypotheses to pursue, when to change direction, when to converge.
+
+```mermaid
+graph LR
+    subgraph Inner["Inner Loop (per agent)"]
+        A1["Execute"] --> A2["Verify"]
+        A2 -->|fail| A3["Retry with error context"]
+        A3 --> A1
+        A2 -->|pass| A4["Done"]
+    end
+
+    subgraph Outer["Outer Loop (orchestrator)"]
+        B1["Observe"] --> B2["Orient"]
+        B2 --> B3["Decide"]
+        B3 --> B4["Act"]
+        B4 --> B1
+    end
+
+    A4 --> B1
+```
+
 ### Tasks form a dependency graph, not a flat queue
 
-In real investigations, work has structure — you need baselines before hybrids, data before analysis, controls before treatments. Voronoi preserves this:
+In real investigations, work has structure — you need baselines before hybrids, data before analysis, controls before treatments. Voronoi enforces **baseline-first**: every investigation epic's first subtask is always a baseline measurement. All experimental tasks are blocked until the baseline completes. This gives every agent a concrete number to beat.
 
 ```mermaid
 graph TD
@@ -186,6 +211,23 @@ FINDING bd-42: Sleep Replay + EWC hybrid outperforms all
   Data: data/raw/forgetting_benchmark.csv (SHA-256: e7b3f...)
   Reviewed: Statistician + Critic + Methodologist
 ```
+
+**Self-Healing Agents** — each agent runs a verify loop:
+- Builders: test + lint + artifact check, up to 5 retries
+- Investigators: experiment + metric extraction, up to 3 retries per variant
+- Only escalates to orchestrator after exhausting self-repair attempts
+- Every verify iteration is logged to `.swarm/verify-log-<id>.jsonl`
+
+**Metric Contracts** — structured agreements between orchestrator and worker:
+- Orchestrator declares metric *shape* at dispatch (direction, constraint, baseline)
+- Worker fills concrete metric at pre-registration
+- Statistician validates the metric *choice*, not just the number
+- Results are directly comparable across agents
+
+**Experiment Ledger** — append-only `.swarm/experiments.tsv`:
+- Every experiment attempt (success, failure, crash) gets one row
+- Greppable chronological audit trail
+- Orchestrator reads at each OODA observe step
 
 </details>
 
