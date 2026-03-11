@@ -236,37 +236,84 @@ def handle_health(project_dir: str) -> str:
         counts[s] = counts.get(s, 0) + 1
 
     icon_map = {"healthy": "✅", "stale": "⚠️", "stuck": "🔴", "exited": "⚫"}
+
+    # Summary line — only show non-zero counts
+    summary_parts = []
+    for key, icon in icon_map.items():
+        if counts[key] > 0:
+            summary_parts.append(f"{icon}{counts[key]}")
     lines = [
         "🩺 *Health Check*\n",
-        f"Windows: {len(entries)}  "
-        f"✅{counts['healthy']} ⚠️{counts['stale']} 🔴{counts['stuck']} ⚫{counts['exited']}\n",
+        f"{len(entries)} windows: {' '.join(summary_parts)}\n",
     ]
 
-    current_session = None
+    # Partition entries by session
+    sessions: dict[str, list[dict]] = {}
     for e in entries:
-        sess = e.get("session", "")
-        if sess != current_session:
-            current_session = sess
-            lines.append(f"\n*{sess}*")
-        icon = icon_map.get(e["status"], "?")
-        role = e.get("role", "")
-        idle = e.get("pane_idle_secs", 0)
-        idle_fmt = f"{idle // 60}m" if idle >= 60 else f"{idle}s"
-        proc = "🟢" if e.get("has_process") else "⚫"
-        detail = e.get("detail", "")
-        line = f"  {icon} `{e['window']}` {role} idle:{idle_fmt} {proc}"
-        if detail:
-            line += f"  _{detail[:60]}_"
-        lines.append(line)
+        sessions.setdefault(e.get("session", ""), []).append(e)
 
+    for sess, sess_entries in sessions.items():
+        lines.append(f"\n*{sess}*")
+
+        # Separate active (healthy/stale/stuck) from exited
+        active = [e for e in sess_entries if e.get("status") != "exited"]
+        exited = [e for e in sess_entries if e.get("status") == "exited"]
+
+        # Show active agents with detail
+        for e in active:
+            icon = icon_map.get(e["status"], "?")
+            idle = e.get("pane_idle_secs", 0)
+            idle_fmt = f"{idle // 60}m" if idle >= 60 else f"{idle}s"
+            last = _truncate_word(e.get("last_output", ""), 80)
+            line = f"  {icon} `{e['window']}` active {idle_fmt}"
+            lines.append(line)
+            if last:
+                lines.append(f"    ↳ _{last}_")
+            detail = e.get("detail", "")
+            if detail and e["status"] != "healthy":
+                lines.append(f"    ⚠ _{detail[:60]}_")
+
+        # Collapse exited agents into one compact line
+        if exited:
+            names = [e["window"] for e in exited]
+            if len(names) <= 3:
+                names_str = ", ".join(f"`{n}`" for n in names)
+            else:
+                names_str = (
+                    ", ".join(f"`{n}`" for n in names[:2])
+                    + f" +{len(names) - 2} more"
+                )
+            lines.append(f"  ⚫ {len(exited)} exited: {names_str}")
+
+    # Footer
     if counts["stuck"] > 0:
-        lines.append("\n🔴 *Action needed* — stuck agents detected")
+        lines.append(
+            f"\n🔴 *{counts['stuck']} stuck* — "
+            "no output or commits; may need restart"
+        )
+    elif counts["exited"] > 0 and counts["healthy"] > 0:
+        lines.append(
+            f"\n⚫ {counts['exited']} finished, "
+            f"{counts['healthy']} still working"
+        )
     elif counts["exited"] > 0:
-        lines.append("\n⚫ Some agent processes have exited")
+        lines.append(f"\n⚫ All {counts['exited']} agents have exited")
     else:
-        lines.append("\n✅ All processes running normally")
+        lines.append("\n✅ All agents running")
 
     return "\n".join(lines)
+
+
+def _truncate_word(text: str, max_len: int) -> str:
+    """Truncate *text* at a word boundary, appending '…' if shortened."""
+    text = text.strip()
+    if len(text) <= max_len:
+        return text
+    # Cut at last space before max_len
+    cut = text[:max_len].rfind(" ")
+    if cut <= 0:
+        cut = max_len
+    return text[:cut] + "…"
 
 
 def handle_ready(project_dir: str) -> str:
