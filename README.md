@@ -214,7 +214,9 @@ FINDING bd-42: Sleep Replay + EWC hybrid outperforms all
 
 **Self-Healing Agents** — each agent runs a verify loop:
 - Builders: test + lint + artifact check, up to 5 retries
-- Investigators: experiment + metric extraction, up to 3 retries per variant
+- Investigators: experiment + metric extraction + **validity audit (EVA)**, up to 3 retries per variant
+- EVA catches experiments that run but don't test what they claim (truncation, caching, collapsed conditions)
+- Invalid experiments are escalated for Methodologist post-mortem, not rationalized as findings
 - Only escalates to orchestrator after exhausting self-repair attempts
 - Every verify iteration is logged to `.swarm/verify-log-<id>.jsonl`
 

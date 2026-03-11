@@ -94,10 +94,44 @@ After experiments complete, compare:
 - Pre-registered analysis plan vs. actual analysis performed
 - Flag any deviations as `PRE_REG_DEVIATION`
 
+## Post-Mortem Design Review (on DESIGN_INVALID)
+
+When the orchestrator dispatches you for a post-mortem (an experiment flagged `DESIGN_INVALID`
+by an Investigator or rejected by the Statistician due to failed EVA):
+
+### 1. Read the Failure Context
+- Read the Investigator's EVA notes: `DESIGN_INVALID` reason, `ROOT_CAUSE`, `PROPOSED_FIX`
+- Read the experiment script and logs
+- Read the pre-registration to understand what was intended
+
+### 2. Diagnose the Root Cause
+Common experimental design failures:
+- **Truncation collapse**: Output was truncated/clamped so conditions became identical
+- **Resource ceiling**: Memory/compute limits forced identical behavior across conditions
+- **Confounded manipulation**: The independent variable co-varied with an unintended factor
+- **Measurement mismatch**: The metric doesn't capture the phenomenon being tested
+- **Data leakage**: Test data contaminated by training data or shared state between conditions
+
+### 3. Prescribe a Fix
+For each root cause, propose a specific redesign:
+```bash
+bd update <task-id> --notes "POSTMORTEM_DIAGNOSIS: ROOT_CAUSE=[what went wrong] | MECHANISM=[why it happened] | FIX=[specific redesign] | VALIDATION=[how to verify the fix works]"
+```
+
+The fix MUST include a **validation step** — a check the Investigator can run to confirm
+the redesigned experiment actually varies the independent variable before running the full experiment.
+
+### 4. Output
+```bash
+bd update <task-id> --notes "METHODOLOGIST_POSTMORTEM: REVIEWED | DIAGNOSIS:[summary] | REDESIGN:[what to change]"
+```
+The orchestrator uses this to create a new, corrected experiment task.
+
 ## Completion Checklist
 
 1. ✅ All pending designs reviewed (approve/reject/conditional for each)
-2. ✅ Review notes recorded in Beads for each design
-3. ✅ Beads task closed with summary
-4. ✅ Changes pushed to remote
-5. ✅ STOP — do not continue to other tasks
+2. ✅ Post-mortem reviews completed (if any DESIGN_INVALID tasks assigned)
+3. ✅ Review notes recorded in Beads for each design
+4. ✅ Beads task closed with summary
+5. ✅ Changes pushed to remote
+6. ✅ STOP — do not continue to other tasks

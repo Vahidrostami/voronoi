@@ -77,6 +77,8 @@ Flag any of these:
 - Suspiciously clean results (no noise)
 - P-values clustered just below 0.05
 - Post-hoc hypothesizing disguised as pre-registered
+- **Missing or failed EVA** — if EVA notes are absent or show FAIL, reject immediately
+- **Null result without manipulation verification** — a d≈0 finding must have EVA:PASS proving conditions actually differed; otherwise it's an invalid experiment, not a null result
 
 ### 4b. Anti-Fabrication Cross-Verification — MANDATORY
 
@@ -96,6 +98,24 @@ For EVERY finding you review:
    ```
 4. **Check that experiment script exists** in `experiments/` and that running it would produce the referenced data file.
 5. If data file is missing or DATA_HASH doesn't match, **QUARANTINE the finding immediately** — it cannot contribute to convergence.
+
+### 4c. Experimental Validity Cross-Check — MANDATORY
+
+**You MUST verify the EVA (Experimental Validity Audit) was performed and passed.**
+
+For EVERY finding you review:
+1. **Check for EVA notes** on the source task: look for `EVA: PASS` in the task notes
+2. **If EVA is missing:** Reject the finding — the Investigator skipped the validity check
+   ```bash
+   bd update <finding-id> --notes "STAT_REVIEW: REJECTED | REASON: No EVA performed — cannot verify experiment tested what it claimed"
+   ```
+3. **If EVA failed but a finding was committed anyway:** Flag as critical error
+   ```bash
+   bd update <finding-id> --notes "STAT_REVIEW: REJECTED | REASON: EVA:FAIL on source task — finding from invalid experiment"
+   ```
+4. **If EVA passed:** Verify the manipulation check is plausible for this experiment type.
+   For encoding/ablation studies: did each condition actually present different content?
+   For parameter sweeps: did different parameter values produce different model behaviors?
 
 ### 5. Replication Agreement (when reviewing replications)
 Apply formal agreement criteria:

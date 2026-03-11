@@ -123,7 +123,7 @@ def build_orchestrator_prompt(
 
     # -- Verify loop guidance ----------------------------------------------
     sections.append(
-        "\n## Self-Healing Agents (Verify Loop)\n\n"
+        "\n## Self-Healing Agents (Verify Loop + EVA)\n\n"
         "Every worker agent runs an internal **verify loop** before declaring "
         "success or failure to you.  Workers retry against their own errors "
         "(test failures, lint, crashes) up to a role-specific limit before "
@@ -132,7 +132,21 @@ def build_orchestrator_prompt(
         "- When a worker reports `VERIFY_EXHAUSTED`, check their verify "
         "iteration log in Beads notes before retrying or reassigning\n"
         "- Do NOT immediately re-dispatch a failed task \u2014 diagnose first\n"
-        "- Workers also log verify iterations to Beads (VERIFY_ITER notes)\n"
+        "- Workers also log verify iterations to Beads (VERIFY_ITER notes)\n\n"
+        "**Experimental Validity Audit (EVA) \u2014 Investigation tasks only:**\n"
+        "After the verify loop passes (experiment ran, metric extracted), "
+        "Investigators run a mandatory EVA that checks:\n"
+        "1. Was the independent variable actually varied across conditions?\n"
+        "2. Did practical constraints (truncation, caching, resource limits) collapse the conditions?\n"
+        "3. Is the effect size plausible, or does a ~0 delta indicate a broken manipulation?\n\n"
+        "If EVA fails, the Investigator flags `DESIGN_INVALID` and escalates to you "
+        "with a diagnosis and proposed fix. Your response:\n"
+        "1. Dispatch Methodologist for post-mortem design review\n"
+        "2. Wait for Methodologist's POSTMORTEM_DIAGNOSIS\n"
+        "3. Create a corrected experiment task incorporating the redesign\n"
+        "4. The corrected task must validate the fix before running the full experiment\n"
+        "5. NEVER rationalize an invalid experiment as 'a finding to discuss' \u2014 fix and re-run\n"
+        "6. NEVER enter a worker's worktree to fix code yourself \u2014 dispatch a new agent\n"
     )
 
     # -- Workflow ----------------------------------------------------------
@@ -234,6 +248,11 @@ def build_orchestrator_prompt(
         "(metric shape, baseline reference, acceptance criteria)\n"
         "- Workers self-heal via verify loops \u2014 when they report VERIFY_EXHAUSTED, "
         "read their iteration log before re-dispatching\n"
+        "- When a worker reports DESIGN_INVALID, dispatch Methodologist for post-mortem "
+        "\u2192 create corrected experiment task\n"
+        "- NEVER enter a worker's worktree to fix code yourself \u2014 "
+        "dispatch a new agent or reassign the task\n"
+        "- NEVER rationalize an invalid experiment as a finding \u2014 fix the design and re-run\n"
         "- spawn-agent.sh will REJECT dispatch if REQUIRES files are missing\n"
         "- merge-agent.sh will REJECT merge if PRODUCES files are missing\n"
         "- Include commit checkpoint instructions in EVERY worker prompt:\n"

@@ -396,7 +396,7 @@ flowchart LR
 | Role | Verification | Completion Promise | Max Iterations |
 |------|-------------|-------------------|----------------|
 | **Builder** | Tests pass + lint clean + PRODUCES exist | `BUILD_COMPLETE` | 5 |
-| **Investigator** | Experiment runs without crash + metric extracted + raw data committed | `EXPERIMENT_COMPLETE` | 3 per variant |
+| **Investigator** | Experiment runs without crash + metric extracted + **EVA passed** + raw data committed | `EXPERIMENT_COMPLETE` | 3 per variant |
 | **Scout** | Knowledge brief written + sources cited | `SCOUT_COMPLETE` | 3 |
 | **Critic** | All 5 checklist items evaluated | `REVIEW_COMPLETE` | 2 |
 | **Synthesizer** | Claim-evidence registry complete + no orphan findings | `SYNTHESIS_COMPLETE` | 3 |
@@ -406,8 +406,9 @@ flowchart LR
 1. **Agent attempts the task** — writes code, runs experiments, etc.
 2. **Verification step** — agent runs its verification suite (tests, lint, metric extraction, artifact existence check).
 3. **On failure** — the error output (stack trace, test failures, lint errors) is piped back as context for the next attempt. The agent does NOT escalate to the orchestrator yet.
-4. **On success** — emits its completion promise and closes the task.
-5. **On max iterations exceeded** — escalates to orchestrator with structured failure report including all attempted approaches.
+4. **On success** — for Investigators, runs the **Experimental Validity Audit (EVA)** before declaring completion. For other roles, emits completion promise.
+5. **EVA failure** — if the experiment produced a number but didn't actually test what it claimed (e.g., conditions were identical due to truncation), the agent flags `DESIGN_INVALID` and escalates with a diagnosis. The orchestrator dispatches the Methodologist for post-mortem review.
+6. **On max iterations exceeded** — escalates to orchestrator with structured failure report including all attempted approaches.
 
 ### Verify loop output contract
 
@@ -427,6 +428,53 @@ The verify loop is designed to work within a single agent session. To prevent co
 - Error output is summarized before re-injection (last 50 lines of stack trace, not full output)
 - Previous attempt logs are referenced by file path, not pasted inline
 - On the final iteration, the agent writes a `VERIFY_EXHAUSTED` note to Beads with a structured summary
+
+---
+
+## 10b. Experimental Validity Audit (EVA)
+
+The verify loop (§10) catches **execution failures** — crashes, missing metrics, broken scripts. But a subtler failure mode exists: experiments that run successfully and produce numbers, but **don't actually test what they claim**. This happens when practical constraints (context window limits, memory ceilings, caching) silently collapse the independent variable so all conditions are identical.
+
+The EVA is a mandatory step for Investigators, inserted **between the verify loop passing and the finding being committed**.
+
+### The problem it solves
+
+Consider an encoding ablation study with 4 levels (Naive RAG → Full Structured). The encoder produces 33K chars at Level 1, but the LLM context window truncates everything to 6K chars. All four levels now present identical content to the LLM. The experiment "runs successfully" — it produces F1 scores for each level — but it measured nothing. Without EVA, this meaningless result gets committed as a "finding," reviewed by the Statistician (who sees a legitimate null result), and enters the deliverable as evidence.
+
+### Three mandatory checks
+
+| Check | Question | Catches |
+|-------|----------|--------|
+| **Manipulation check** | Was the independent variable actually varied across conditions? | Truncation collapse, identical configs, caching, shared state |
+| **Artifact check** | Did practical constraints nullify the manipulation? | Context window limits, memory ceilings, rate limiting, overflow |
+| **Sanity check** | Is the effect size plausible given the design? | Distinguishes genuine null results (valid experiment) from broken manipulations |
+
+### Decision tree
+
+```
+Experiment produces a number
+  │
+  ├─ EVA check 1: Were conditions actually different? ── NO → DESIGN_INVALID
+  │
+  ├─ EVA check 2: Any practical artifacts? ── YES → DESIGN_INVALID
+  │
+  ├─ EVA check 3: Effect size ~ 0?
+  │     ├─ Manipulation verified? YES → Valid null result → report as negative finding
+  │     └─ Manipulation broken? → DESIGN_INVALID
+  │
+  └─ All pass → commit finding
+```
+
+### Escalation path for DESIGN_INVALID
+
+1. Investigator flags `DESIGN_INVALID` with diagnosis and proposed fix
+2. Orchestrator classifies this as a `design_invalid` event in its OODA Orient phase
+3. Orchestrator dispatches Methodologist for **post-mortem design review**
+4. Methodologist diagnoses root cause and prescribes a specific redesign with a validation step
+5. Orchestrator creates a new corrected experiment task
+6. The new task's first step is **validation**: confirm the fix actually resolves the root cause before running the full experiment
+
+The key principle: **a null result from a valid experiment is a valuable finding; a null result from an invalid experiment is garbage.** The EVA distinguishes the two.
 
 ---
 
@@ -542,8 +590,10 @@ timestamp	task_id	branch	metric_name	metric_value	status	description
 | `.github/` fallback copy | `_ensure_github_files()` copies even if `voronoi init` subprocess fails. |
 | Timeout (8h default) | Prevents zombie investigations; writes exhaustion convergence. |
 | Inner verify loop before escalation | Workers retry against own errors (Ralph pattern) before bothering orchestrator. |
+| **Experimental Validity Audit (EVA)** | Catches experiments that run but don't test what they claim (truncation, caching, collapsed conditions). Prevents meaningless results from entering the evidence store. |
 | Metric contracts (shape at dispatch, fill at pre-reg) | Bridges open-ended investigations with comparable cross-agent metrics. |
 | Baseline-first as hard gate | Every investigation has a control measurement; all experiments are comparable. |
+| Orchestrator never enters worktrees | Orchestrator dispatches and monitors; it never fixes code in a worker's worktree. If an agent fails, dispatch a new agent or Methodologist. |
 | Append-only experiment ledger | Quick chronological audit trail; greppable and human-readable. |
 | File-mediated orchestrator state | Orchestrator externalizes state to `.swarm/` files between OODA cycles; prevents context loss on compaction. |
 | Log-redirect + grep for metrics | Workers redirect command output to files and extract metrics with grep, preserving context window for reasoning. |

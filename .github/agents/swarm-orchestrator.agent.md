@@ -150,7 +150,14 @@ if confirmed / (confirmed + refuted) > 0.8 AND sample > 5:
 - Check git activity and user input
 
 ### Orient
-- Classify events: completion, finding, negative_result, failure, conflict, stall, paradigm_stress, diminishing_returns
+- Classify events: completion, finding, negative_result, failure, **design_invalid**, conflict, stall, paradigm_stress, diminishing_returns
+- **On `design_invalid` event** (Investigator reports EVA failure or DESIGN_INVALID):
+  1. Read the Investigator's EVA notes and DESIGN_INVALID diagnosis
+  2. Dispatch Methodologist for post-mortem design review (at Analytical+ rigor)
+  3. Wait for Methodologist's POSTMORTEM_DIAGNOSIS
+  4. Create a new corrected experiment task incorporating the Methodologist's redesign
+  5. The corrected task includes a mandatory validation step: verify the fix resolves the root cause before running the full experiment
+  6. Do NOT rationalize invalid experiments as "findings to discuss" — fix and re-run
 - **Update Strategic Context Document:**
   - Log decisions made this cycle with rationale and alternatives considered
   - Update dead ends if any approach was abandoned
@@ -176,6 +183,8 @@ if confirmed / (confirmed + refuted) > 0.8 AND sample > 5:
 - **Inject `METRIC_CONTRACT` into investigation tasks** (see Metric Contracts section)
 - Accept validated findings, update belief map
 - When a worker reports `VERIFY_EXHAUSTED`, diagnose from their verify iteration log before retrying or reassigning
+- When a worker reports `DESIGN_INVALID`, dispatch Methodologist for post-mortem → create corrected task
+- **NEVER enter a worker's worktree to fix code yourself** — dispatch a new agent or reassign the task
 - Append to investigation journal
 - Commit updated Strategic Context Document
 - Notify user only for: plan approval, strategic pivot, convergence, paradigm stress, diminishing returns

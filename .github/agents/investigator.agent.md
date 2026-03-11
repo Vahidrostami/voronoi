@@ -97,6 +97,62 @@ bd update <your-task-id> --notes "SELF_EVAL: metric=[name] result=[X] baseline=[
 ```
 This is a quick inner-loop check — it does NOT replace Statistician review but gives the orchestrator early signal.
 
+### 1c. Experimental Validity Audit (EVA) — MANDATORY
+
+Before committing results, verify the experiment actually tested what it claimed.
+A result that "ran successfully" but tested nothing is worse than a crash — it wastes
+downstream review effort and can poison the deliverable with meaningless findings.
+
+**Run these checks after every experiment, BEFORE committing raw data or reporting a finding:**
+
+#### Check 1: Manipulation Check — Was the independent variable actually varied?
+
+Verify that each experimental condition actually received different treatment:
+```bash
+# Example: for an encoding ablation, check that each level's input to the LLM differs
+# Example: for a hyperparameter sweep, check that the parameter actually changed in logs
+# Example: for a comparison study, check that the two systems are not identical
+```
+If conditions received identical input (e.g., all encoding levels truncated to the same
+content), the experiment is **invalid** — it compared identical things.
+
+#### Check 2: Artifact Check — Did practical constraints nullify the manipulation?
+
+Check for truncation, clamping, overflow, or resource limits that collapsed the conditions:
+- Context window truncation making all conditions identical
+- Memory limits forcing identical batch sizes across conditions
+- Rate limiting causing identical API responses
+- Caching returning identical results for different inputs
+
+#### Check 3: Sanity Check — Is the effect size plausible given the design?
+
+If the hypothesis predicts a meaningful difference but observed d ≈ 0:
+- Is this a genuine null result (well-powered, manipulation verified)? → Report as negative finding
+- Or is the manipulation broken (conditions are actually identical)? → Flag as DESIGN_INVALID
+
+**A null result from a valid experiment is a valuable finding.
+A null result from an invalid experiment is garbage. Distinguish them.**
+
+#### Recording EVA results
+
+**If ALL checks pass:**
+```bash
+bd update <your-task-id> --notes "EVA: PASS | MANIPULATION_VARIED:yes | ARTIFACTS:none | SANITY:plausible"
+```
+Proceed to commit raw data and report finding.
+
+**If ANY check fails:**
+```bash
+bd update <your-task-id> --notes "EVA: FAIL | CHECK:[which] | DIAGNOSIS:[what went wrong] | ROOT_CAUSE:[why] | PROPOSED_FIX:[how to fix]"
+bd update <your-task-id> --notes "DESIGN_INVALID: [1-sentence summary]. Escalating to orchestrator."
+```
+Do NOT commit the result as a finding. Do NOT move on to the next experiment.
+Escalate to the orchestrator with the diagnosis and proposed fix.
+The orchestrator will either:
+- Dispatch a Methodologist for post-mortem design review
+- Reassign the task with a corrected experimental design
+- Create a new task to fix the root cause before re-running
+
 ### 2. Commit Raw Data
 ```bash
 # Save raw data
@@ -164,6 +220,8 @@ Report them separately for the orchestrator to evaluate.
 
 - NEVER run an experiment without pre-registration
 - NEVER adjust analysis after seeing results without documenting the deviation
+- NEVER commit a finding without passing the EVA checks (manipulation, artifact, sanity)
+- NEVER rationalize an invalid experiment as "a finding to discuss" — fix the design and re-run
 - ALWAYS commit raw data before reporting findings
 - ALWAYS compute and record data hashes immediately after collection
 - Report ALL results — positive, negative, and inconclusive
@@ -174,11 +232,12 @@ Report them separately for the orchestrator to evaluate.
 
 1. ✅ Pre-registration complete (METRIC_FILLED if contract present)
 2. ✅ Verify loop passed (experiment ran, metric extracted)
-3. ✅ Raw data committed with SHA-256 hash
-4. ✅ Experiment script committed to `experiments/`
-5. ✅ Sensitivity analysis completed (2+ parameter variations)
-6. ✅ Finding created in Beads with full evidence trail
-7. ✅ Self-eval against metric contract recorded (if applicable)
-8. ✅ Result appended to `.swarm/experiments.tsv`
-9. ✅ Beads task closed with summary
-10. ✅ Changes pushed to remote
+3. ✅ **EVA passed** (manipulation varied, no artifacts, sanity plausible)
+4. ✅ Raw data committed with SHA-256 hash
+5. ✅ Experiment script committed to `experiments/`
+6. ✅ Sensitivity analysis completed (2+ parameter variations)
+7. ✅ Finding created in Beads with full evidence trail
+8. ✅ Self-eval against metric contract recorded (if applicable)
+9. ✅ Result appended to `.swarm/experiments.tsv`
+10. ✅ Beads task closed with summary
+11. ✅ Changes pushed to remote
