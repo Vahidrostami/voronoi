@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 import logging
+import random
+import re
 import time
 from pathlib import Path
 from typing import Optional
@@ -237,15 +239,21 @@ def handle_health(project_dir: str) -> str:
 
     icon_map = {"healthy": "✅", "stale": "⚠️", "stuck": "🔴", "exited": "⚫"}
 
+    # -- Mood indicator (#3) --
+    mood = _swarm_mood(counts)
+
     # Summary line — only show non-zero counts
     summary_parts = []
     for key, icon in icon_map.items():
         if counts[key] > 0:
             summary_parts.append(f"{icon}{counts[key]}")
     lines = [
-        "🩺 *Health Check*\n",
+        f"🩺 *Health Check*  {mood}\n",
         f"{len(entries)} windows: {' '.join(summary_parts)}\n",
     ]
+
+    # Build investigation lookup for session context (#6)
+    inv_map = _build_inv_map(project_dir)
 
     # Partition entries by session
     sessions: dict[str, list[dict]] = {}
@@ -253,7 +261,9 @@ def handle_health(project_dir: str) -> str:
         sessions.setdefault(e.get("session", ""), []).append(e)
 
     for sess, sess_entries in sessions.items():
-        lines.append(f"\n*{sess}*")
+        # -- Investigation-aware session header (#6) --
+        header = _session_header(sess, inv_map)
+        lines.append(f"\n{header}")
 
         # Separate active (healthy/stale/stuck) from exited
         active = [e for e in sess_entries if e.get("status") != "exited"]
@@ -264,11 +274,18 @@ def handle_health(project_dir: str) -> str:
             icon = icon_map.get(e["status"], "?")
             idle = e.get("pane_idle_secs", 0)
             idle_fmt = f"{idle // 60}m" if idle >= 60 else f"{idle}s"
-            last = _truncate_word(e.get("last_output", ""), 80)
-            line = f"  {icon} `{e['window']}` active {idle_fmt}"
+            raw_last = e.get("last_output", "")
+
+            # -- Activity translation (#4) --
+            activity = _translate_activity(raw_last)
+
+            # -- Streak badge (#5) --
+            streak = _streak_badge(e)
+
+            line = f"  {icon} `{e['window']}` active {idle_fmt}{streak}"
             lines.append(line)
-            if last:
-                lines.append(f"    ↳ _{last}_")
+            if activity:
+                lines.append(f"    ↳ _{activity}_")
             detail = e.get("detail", "")
             if detail and e["status"] != "healthy":
                 lines.append(f"    ⚠ _{detail[:60]}_")
@@ -285,23 +302,154 @@ def handle_health(project_dir: str) -> str:
                 )
             lines.append(f"  ⚫ {len(exited)} exited: {names_str}")
 
-    # Footer
-    if counts["stuck"] > 0:
-        lines.append(
-            f"\n🔴 *{counts['stuck']} stuck* — "
-            "no output or commits; may need restart"
-        )
-    elif counts["exited"] > 0 and counts["healthy"] > 0:
-        lines.append(
-            f"\n⚫ {counts['exited']} finished, "
-            f"{counts['healthy']} still working"
-        )
-    elif counts["exited"] > 0:
-        lines.append(f"\n⚫ All {counts['exited']} agents have exited")
-    else:
-        lines.append("\n✅ All agents running")
+    # -- Quip footer (#1) --
+    lines.append(f"\n{_health_quip(counts)}")
 
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Health-check helpers (kept minimal to avoid overhead)
+# ---------------------------------------------------------------------------
+
+# (#1) Rotating quips — random.choice per state
+_QUIPS_ALL_HEALTHY = [
+    "☕ Swarm is vibing. Nothing to see here.",
+    "🏖️ Smooth sailing — go touch grass.",
+    "💅 All agents doing their thing.",
+    "🚀 Full throttle. No issues.",
+]
+_QUIPS_MIXED = [
+    "🐝 {healthy} still buzzing, {exited} back at the hive.",
+    "⏳ Skeleton crew — {healthy} holding the fort.",
+    "🔧 {healthy} working, {exited} done for the day.",
+]
+_QUIPS_ALL_EXITED = [
+    "🪦 The swarm has left the building.",
+    "🎬 That's a wrap. All agents clocked out.",
+    "💤 Swarm is asleep. Wake it when you're ready.",
+]
+_QUIPS_STUCK = [
+    "🧊 Frozen agents detected — poke them?",
+    "🔴 Houston, we have a problem.",
+    "🪫 Something's stuck. Time for a nudge.",
+]
+_QUIPS_STALE = [
+    "🐌 Some agents seem slow — could be a long operation.",
+    "⏸️ A few agents are quiet. Might be thinking hard.",
+]
+
+
+def _health_quip(counts: dict[str, int]) -> str:
+    if counts["stuck"] > 0:
+        return random.choice(_QUIPS_STUCK)
+    if counts["stale"] > 0:
+        return random.choice(_QUIPS_STALE)
+    if counts["exited"] > 0 and counts["healthy"] > 0:
+        template = random.choice(_QUIPS_MIXED)
+        return template.format(
+            healthy=counts["healthy"], exited=counts["exited"],
+        )
+    if counts["exited"] > 0 and counts["healthy"] == 0:
+        return random.choice(_QUIPS_ALL_EXITED)
+    return random.choice(_QUIPS_ALL_HEALTHY)
+
+
+# (#3) Mood indicator
+def _swarm_mood(counts: dict[str, int]) -> str:
+    if counts["stuck"] > 0:
+        return "😰"
+    total = sum(counts.values())
+    if total == 0:
+        return "💤"
+    if counts["exited"] == total:
+        return "💤"
+    if counts["exited"] > total / 2:
+        return "🌙"
+    if counts["stale"] > 0:
+        return "🧘"
+    return "🔥"
+
+
+# (#4) Activity translation — small regex map, O(1) per entry
+_ACTIVITY_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"pytest|test_|unittest", re.I), "🧪 Running tests"),
+    (re.compile(r"git push", re.I), "📤 Pushing code"),
+    (re.compile(r"git pull|git fetch", re.I), "📥 Pulling updates"),
+    (re.compile(r"git commit", re.I), "💾 Committing changes"),
+    (re.compile(r"bd close", re.I), "✅ Closing a task"),
+    (re.compile(r"bd update.*--claim", re.I), "🙋 Claiming a task"),
+    (re.compile(r"bd create", re.I), "📝 Creating a task"),
+    (re.compile(r"pip install|uv pip|conda install", re.I), "📦 Installing packages"),
+    (re.compile(r"python\s+scripts/", re.I), "⚙️ Running a script"),
+    (re.compile(r"python\s+experiments/", re.I), "🔬 Running experiment"),
+    (re.compile(r"compil|latex|pdflatex|xelatex", re.I), "📄 Compiling paper"),
+    (re.compile(r"npm|yarn|pnpm|webpack|vite", re.I), "🌐 Building frontend"),
+]
+
+
+def _translate_activity(raw: str) -> str:
+    """Translate raw pane output into a friendly activity label."""
+    raw = raw.strip()
+    if not raw:
+        return ""
+    for pattern, label in _ACTIVITY_PATTERNS:
+        if pattern.search(raw):
+            return label
+    return _truncate_word(raw, 80)
+
+
+# (#5) Streak badge — uses pane_idle_secs as a proxy (no extra I/O)
+def _streak_badge(entry: dict) -> str:
+    idle = entry.get("pane_idle_secs", 0)
+    if idle <= 5:
+        return "  🆕"
+    if idle < 300:
+        return ""
+    # Active for a while — show streak
+    mins = idle // 60
+    if mins >= 60:
+        return f"  🏅 {mins // 60}h streak"
+    return f"  🏅 {mins}m streak"
+
+
+# (#6) Investigation-aware session headers
+def _build_inv_map(project_dir: str) -> dict[str, Investigation]:
+    """Map session-name fragments to running investigations (one DB query)."""
+    try:
+        q = _get_queue(project_dir)
+        invs = q.get_running()
+    except Exception:
+        return {}
+    result: dict[str, Investigation] = {}
+    for inv in invs:
+        # Map by slug and by inv id so we can match session names
+        if inv.slug:
+            result[inv.slug] = inv
+        result[str(inv.id)] = inv
+    return result
+
+
+def _session_header(session_name: str, inv_map: dict[str, Investigation]) -> str:
+    """Build a rich session header with codename + question if available."""
+    # Try to match session name to an investigation
+    # Session patterns: "voronoi-inv-7", "inv-7-coupled-decisions-swarm"
+    inv: Investigation | None = None
+    for fragment, candidate in inv_map.items():
+        if fragment in session_name:
+            inv = candidate
+            break
+
+    if inv is None:
+        return f"*{session_name}*"
+
+    emoji = MODE_EMOJI.get(inv.mode, "🔬")
+    codename = inv.codename or codename_for_id(inv.id)
+    question_short = _truncate_word(inv.question, 60) if inv.question else ""
+    header = f"*{emoji} {codename}* (`{session_name}`)"
+    if question_short:
+        header += f"\n  _{question_short}_"
+    return header
 
 
 def _truncate_word(text: str, max_len: int) -> str:
