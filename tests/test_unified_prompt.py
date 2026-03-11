@@ -142,6 +142,16 @@ class TestScienceSections:
         # Must reference the actual agent files
         assert ".github/agents/statistician.agent.md" in prompt
         assert ".github/agents/critic.agent.md" in prompt
+        # Must require claim-evidence traceability
+        assert "claim-evidence" in prompt.lower()
+
+    def test_analytical_has_claim_evidence(self):
+        prompt = build_orchestrator_prompt(
+            question="test", mode="explore", rigor="analytical",
+        )
+        assert "claim-evidence" in prompt.lower()
+        assert "INTERPRETATION" in prompt or "interpretation" in prompt.lower()
+        assert "PRACTICAL_SIGNIFICANCE" in prompt
 
     def test_analytical_has_stats_but_no_critic(self):
         prompt = build_orchestrator_prompt(

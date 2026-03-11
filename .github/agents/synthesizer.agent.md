@@ -65,14 +65,47 @@ bd update <belief-map-id> --notes "UPDATED:cycle-N | HYPOTHESES_TOTAL:X | TESTED
 bd update <belief-map-id> --notes "H1:[name] | STATUS:<status> | P:0.X | EVIDENCE:[finding-ids]"
 ```
 
-### 4. Final Deliverable Production
+### 4. Claim-Evidence Registry — MANDATORY
+
+**Before writing the deliverable**, produce `.swarm/claim-evidence.json` that links every claim to its supporting evidence:
+
+```json
+{
+  "claims": [
+    {
+      "claim_id": "C1",
+      "claim_text": "Encoding layer outperforms raw-table baseline",
+      "finding_ids": ["bd-5", "bd-8"],
+      "hypothesis_ids": ["H1"],
+      "strength": "robust",
+      "interpretation": "The encoding layer produces a large practical effect (d=0.82), robust under sensitivity analysis. This confirms H1 and rules out the null hypothesis."
+    }
+  ],
+  "orphan_findings": [],
+  "unsupported_claims": [],
+  "coverage_score": 0.95
+}
+```
+
+**Rules:**
+- Every claim you make in the deliverable MUST appear in the registry with finding IDs
+- Every finding MUST be cited by at least one claim (no orphan findings)
+- Strength must be: `robust` (sensitivity-tested + reviewed), `provisional` (reviewed), `weak` (unreviewed), `unsupported` (no evidence)
+- Include an `interpretation` field that explains what the evidence means practically — not just what the numbers are
+- The Evaluator will audit this registry — unsupported claims or orphan findings cause STRENGTH score reduction
+- Coverage score = (claims with evidence) / (total claims)
+
+### 5. Final Deliverable Production
 
 **This is your most critical responsibility.** When the orchestrator signals convergence (or requests a final output), you produce a structured deliverable that:
 
 - **Maps back to the original abstract** — every part of the user's request has a corresponding section
 - **Integrates all validated findings** — not just lists them, but weaves them into a narrative
-- **Highlights evidence strength** — which conclusions are robust, which are provisional
+- **Highlights evidence strength** — which conclusions are robust, which are provisional, using claim-evidence registry
+- **Includes cross-finding comparison** — ranks findings by effect size with relative magnitude discussion
+- **Dedicates a section to negative results** — refuted hypotheses and null findings that narrow the solution space
 - **Identifies remaining gaps** — what we couldn't answer and why
+- **Auto-generates limitations** — from fragile findings, wide CIs, inconclusive hypotheses
 - **Is actionable** — someone can act on this without further research
 
 #### Final Deliverable Format
@@ -138,6 +171,25 @@ bd update <deliverable-id> --notes "OVERALL_SCORE:0.X | MIN_DIMENSION:<weakest> 
 
 If `OVERALL_SCORE < 0.6` or any dimension `< 0.5`: do NOT submit. Iterate and re-score.
 
+## Verify Loop
+
+Before closing your synthesis task, verify completeness (max 3 iterations):
+
+```
+LOOP:
+  1. Check: does .swarm/claim-evidence.json exist?
+  2. Check: are there 0 orphan findings and 0 unsupported claims?
+  3. Check: does .swarm/deliverable.md exist (when convergence is signaled)?
+  4. Check: does self-score meet threshold (all dimensions ≥ 0.6)?
+  5. ALL PASS → close task
+  6. ANY FAIL → fix the gap (add missing citations, strengthen weak claims), re-check
+```
+
+Log iterations:
+```bash
+bd update <your-task-id> --notes "VERIFY_ITER:1 | STATUS:fail | ERROR:2 orphan findings uncited | FIX:adding citations for bd-12, bd-15"
+```
+
 ## Output Format
 
 ### Journal Entry
@@ -159,12 +211,16 @@ The deliverable file is written to `.swarm/deliverable.md` and declared as a `PR
 
 ## Completion Checklist
 
-1. ✅ Journal updated with current cycle summary
-2. ✅ Belief map updated with latest finding integration
-3. ✅ Consistency gate passed (no unresolved CONSISTENCY_CONFLICTs)
-4. ✅ Final deliverable produced (when convergence signaled)
-5. ✅ Deliverable self-scored against quality rubric
-6. ✅ All quality dimensions ≥ 0.6, overall ≥ 0.6
-7. ✅ Deliverable maps back to every part of original abstract
-8. ✅ Beads task closed with summary
-9. ✅ Changes pushed to remote
+1. ✅ Verify loop passed: claim-evidence registry complete, no orphan findings, no unsupported claims
+2. ✅ All claims link to finding IDs (no unsupported claims)
+3. ✅ All findings are cited (no orphan findings)
+4. ✅ Journal updated with current cycle summary
+5. ✅ Belief map updated with latest finding integration
+6. ✅ Consistency gate passed (no unresolved CONSISTENCY_CONFLICTs)
+7. ✅ Final deliverable produced (when convergence signaled)
+8. ✅ Deliverable self-scored against quality rubric
+9. ✅ All quality dimensions ≥ 0.6, overall ≥ 0.6
+10. ✅ Deliverable maps back to every part of original abstract
+11. ✅ Negative results included in deliverable
+12. ✅ Beads task closed with summary
+13. ✅ Changes pushed to remote

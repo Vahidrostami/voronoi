@@ -20,8 +20,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import fcntl
 import logging
+import socket
 import sys
 from pathlib import Path
 
@@ -133,7 +133,7 @@ def run_bot(config: dict) -> None:
         if subcommand in ("investigate", "explore", "build", "experiment") and sub_args:
             buttons = [[("📊 Status", "status"), ("🛑 Abort", "abort")]]
         elif subcommand == "status":
-            buttons = [[("📋 Tasks", "tasks"), ("⚡ Ready", "status")]]
+            buttons = [[("📋 Tasks", "tasks"), ("⚡ Ready", "status"), ("🩺 Health", "health")]]
 
         await _reply(update, reply_text, reply_file, buttons=buttons)
 
@@ -168,6 +168,8 @@ def run_bot(config: dict) -> None:
     app = Application.builder().token(bot_token).build()
 
     async def _post_init(application: Application) -> None:
+        # Clear any stale polling sessions from a previous unclean shutdown.
+        await application.bot.delete_webhook(drop_pending_updates=True)
         me = await application.bot.get_me()
         _bot_username[0] = me.username
         logger.info("Bot username: @%s", me.username)
@@ -193,6 +195,8 @@ def run_bot(config: dict) -> None:
         # Route button presses through the same command router
         if data == "status":
             reply_text, _ = router.route("status", [], chat_id)
+        elif data == "health":
+            reply_text, _ = router.route("health", [], chat_id)
         elif data == "tasks":
             reply_text, _ = router.route("tasks", [], chat_id)
         elif data == "abort":
@@ -213,6 +217,14 @@ def run_bot(config: dict) -> None:
             await query.message.reply_text(reply_text)
 
     app.add_handler(CallbackQueryHandler(handle_callback))
+
+    # -- error handler -----------------------------------------------------
+
+    async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Log errors from the telegram bot without crashing."""
+        logger.error("Telegram error: %s", context.error, exc_info=context.error)
+
+    app.add_error_handler(_error_handler)
 
     # -- dispatcher jobs ----------------------------------------------------
 
@@ -368,13 +380,18 @@ def main() -> None:
         sys.exit(1)
 
     # Prevent two instances from polling the same bot token simultaneously.
-    lock_path = Path(config.get("project_dir", ".")) / ".bridge.lock"
-    lock_file = open(lock_path, "w")  # noqa: SIM115 — kept open for process lifetime
+    # Use a TCP socket bound to a localhost port (derived from the token hash)
+    # as a singleton lock.  This is OS-enforced, works on NFS, and auto-releases
+    # when the process exits — no stale lock files to clean up.
+    import hashlib
+    token_hash = hashlib.sha256(config["bot_token"].encode()).hexdigest()[:12]
+    lock_port = 49152 + int(token_hash, 16) % 16384  # ephemeral range
+    _lock_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _lock_sock.bind(("127.0.0.1", lock_port))
     except OSError:
         print("Error: Another telegram-bridge instance is already running "
-              f"(lock: {lock_path})", file=sys.stderr)
+              f"for this bot token (lock port: {lock_port})", file=sys.stderr)
         sys.exit(1)
 
     run_bot(config)

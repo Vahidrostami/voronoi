@@ -71,6 +71,59 @@ priority(H) = uncertainty(H) × impact(H) × testability(H)
 
 Build tasks use simple P1/P2/P3 priority ordering.
 
+## Metric Contracts
+
+For investigation tasks, declare a **metric contract** when dispatching each experiment. This ensures cross-agent comparability and enables workers to self-evaluate.
+
+### At dispatch time, add to each investigation task's notes:
+
+```bash
+bd update <task-id> --notes "METRIC_CONTRACT: PRIMARY={name: TBD, direction: lower_is_better|higher_is_better, type: numeric} | CONSTRAINT={name: runtime_seconds, max: 600} | BASELINE_TASK=<baseline-task-id> | ACCEPTANCE={min_effect_size: 0.5, max_p_value: 0.05}"
+```
+
+- **PRIMARY**: The metric shape. `name: TBD` means the worker fills in the concrete name at pre-registration. Use a concrete name if you already know the metric.
+- **CONSTRAINT**: Soft resource limits (runtime, memory, etc.). Workers should stay within these but a meaningful improvement justifies modest overrun.
+- **BASELINE_TASK**: Reference to the baseline task whose metric value is the number to beat.
+- **ACCEPTANCE**: Minimum bar for "interesting" — guides the worker's self-eval and the Statistician's review.
+
+The worker fills the contract at pre-registration:
+```bash
+bd update <task-id> --notes "METRIC_FILLED: PRIMARY={name: accuracy_retention_pct, direction: higher_is_better, baseline_value: 45.2}"
+```
+
+**For build tasks**: no metric contract needed. The verify loop (tests pass, lint clean, PRODUCES exist) serves as the acceptance criterion.
+
+**For exploration tasks**: metric contracts are optional. Exploration is about discovering WHAT to measure, not optimizing a known metric. If the orchestrator has a comparison criterion (e.g., response time, token cost), declare it; otherwise omit and let the Explorer define evaluation criteria.
+
+## Baseline-First Protocol
+
+Every investigation epic's **first subtask** MUST be a baseline measurement:
+
+1. Create a baseline task as the first subtask of every investigation epic
+2. The baseline runs the unmodified / control condition and records the primary metric
+3. Set all experimental tasks to depend on (be blocked by) the baseline task
+4. The baseline finding anchors `.swarm/belief-map.json`
+5. All subsequent METRIC_CONTRACT entries reference the baseline task ID and value
+
+This ensures every experiment has a concrete number to beat and all results are directly comparable.
+
+**Exception**: In pure exploration mode where there is no prior system to measure, the baseline step is skipped. The Explorer defines criteria from scratch.
+
+## Experiment Ledger
+
+At investigation start, create `.swarm/experiments.tsv` with the header:
+```
+timestamp	task_id	branch	metric_name	metric_value	status	description
+```
+
+Worker agents append one row per experiment attempt (including crashes). Read this file at each OODA Observe step for a quick chronological overview of all experiments run so far.
+
+**Rules:**
+- Tab-separated (commas break in descriptions)
+- `status` is one of: `keep`, `discard`, `crash`
+- `metric_value` is `0.0` for crashes
+- This file is workspace state, not committed to git
+
 ## Paradigm Check (Scientific+)
 
 Every OODA Orient phase:
@@ -93,10 +146,18 @@ if confirmed / (confirmed + refuted) > 0.8 AND sample > 5:
 - Read Beads status for all tasks
 - At Analytical+: read knowledge store, journal, belief map
 - Read Strategic Context Document (`.swarm/strategic-context.md`)
+- Read experiment ledger (`.swarm/experiments.tsv`) for chronological experiment overview
 - Check git activity and user input
 
 ### Orient
-- Classify events: completion, finding, negative_result, failure, conflict, stall, paradigm_stress, diminishing_returns
+- Classify events: completion, finding, negative_result, failure, **design_invalid**, conflict, stall, paradigm_stress, diminishing_returns
+- **On `design_invalid` event** (Investigator reports EVA failure or DESIGN_INVALID):
+  1. Read the Investigator's EVA notes and DESIGN_INVALID diagnosis
+  2. Dispatch Methodologist for post-mortem design review (at Analytical+ rigor)
+  3. Wait for Methodologist's POSTMORTEM_DIAGNOSIS
+  4. Create a new corrected experiment task incorporating the Methodologist's redesign
+  5. The corrected task includes a mandatory validation step: verify the fix resolves the root cause before running the full experiment
+  6. Do NOT rationalize invalid experiments as "findings to discuss" — fix and re-run
 - **Update Strategic Context Document:**
   - Log decisions made this cycle with rationale and alternatives considered
   - Update dead ends if any approach was abandoned
@@ -119,7 +180,11 @@ if confirmed / (confirmed + refuted) > 0.8 AND sample > 5:
   ```bash
   bd update <task-id> --notes "STRATEGIC_CONTEXT: This task tests whether [X], which matters because [Y]. A strong result here would [Z]. A weak result means we need to [W]. Dead ends to avoid: [list]."
   ```
+- **Inject `METRIC_CONTRACT` into investigation tasks** (see Metric Contracts section)
 - Accept validated findings, update belief map
+- When a worker reports `VERIFY_EXHAUSTED`, diagnose from their verify iteration log before retrying or reassigning
+- When a worker reports `DESIGN_INVALID`, dispatch Methodologist for post-mortem → create corrected task
+- **NEVER enter a worker's worktree to fix code yourself** — dispatch a new agent or reassign the task
 - Append to investigation journal
 - Commit updated Strategic Context Document
 - Notify user only for: plan approval, strategic pivot, convergence, paradigm stress, diminishing returns

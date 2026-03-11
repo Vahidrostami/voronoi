@@ -16,11 +16,12 @@ headings in the deliverable.
 from __future__ import annotations
 
 import json
-import os
 import re
 import shutil
 import subprocess
 from pathlib import Path
+
+from voronoi.beads import run_bd as _run_bd
 
 
 # ---------------------------------------------------------------------------
@@ -30,24 +31,6 @@ from pathlib import Path
 def _which(cmd: str) -> bool:
     """Check if a command is available on PATH."""
     return shutil.which(cmd) is not None
-
-
-def _run_bd(*args: str, cwd: str | None = None) -> tuple[int, str, str]:
-    """Run a bd command.  Returns (returncode, stdout, stderr)."""
-    env = os.environ.copy()
-    if cwd and "BEADS_DIR" not in env:
-        beads_dir = os.path.join(cwd, ".beads")
-        if os.path.isdir(beads_dir):
-            env["BEADS_DIR"] = beads_dir
-    try:
-        result = subprocess.run(
-            ["bd", *args],
-            capture_output=True, text=True, timeout=30,
-            cwd=cwd, env=env,
-        )
-        return result.returncode, result.stdout.strip(), result.stderr.strip()
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return 1, "", ""
 
 
 def _clean_finding_title(title: str) -> str:
@@ -175,11 +158,11 @@ class ReportGenerator:
         return None
 
     def _get_findings(self) -> list[dict]:
-        """Extract FINDING tasks from Beads (cached per instance)."""
+        """Extract FINDING tasks from Beads with interpretation metadata."""
         if self._findings_cache is not None:
             return self._findings_cache
 
-        code, stdout, _stderr = _run_bd("list", "--json", cwd=str(self.ws))
+        code, stdout = _run_bd("list", "--json", cwd=str(self.ws))
         if code != 0:
             self._findings_cache = []
             return self._findings_cache
@@ -195,11 +178,27 @@ class ReportGenerator:
             if "FINDING" not in title.upper():
                 continue
             notes = t.get("notes", "")
-            f: dict = {"title": title, "id": t.get("id", "?")}
-            for key in ("EFFECT_SIZE", "CI_95", "N", "STAT_TEST", "VALENCE", "P", "ROBUST"):
+            f: dict = {"title": title, "id": t.get("id", "?"),
+                       "notes": notes}
+            for key in ("EFFECT_SIZE", "CI_95", "N", "STAT_TEST",
+                        "VALENCE", "P", "ROBUST", "STAT_REVIEW",
+                        "INTERPRETATION", "PRACTICAL_SIGNIFICANCE",
+                        "SUPPORTS_HYPOTHESIS", "CONDITIONS"):
                 val = _parse_note_value(notes, key)
                 if val:
                     f[key.lower()] = val
+            # Auto-compute interpretation if not provided by Statistician
+            if "interpretation" not in f or "practical_significance" not in f:
+                from voronoi.science import interpret_finding
+                interp = interpret_finding(t)
+                if "practical_significance" not in f:
+                    f["practical_significance"] = interp["practical_significance"]
+                if "ci_quality" not in f:
+                    f["ci_quality"] = interp["ci_quality"]
+                if "strength_label" not in f:
+                    f["strength_label"] = interp["strength_label"]
+                if "interpretation" not in f and interp["interpretation_text"]:
+                    f["interpretation"] = interp["interpretation_text"]
             findings.append(f)
 
         self._findings_cache = findings
@@ -211,9 +210,9 @@ class ReportGenerator:
 
     @staticmethod
     def _render_findings_table(findings: list[dict], placeholder: str = "\u2014") -> list[str]:
-        """Render a markdown findings table."""
-        rows = ["| # | Finding | Effect | CI | N | Test | Verdict |",
-                "|---|---------|--------|----|---|------|---------|"]
+        """Render a markdown findings table with strength indicators."""
+        rows = ["| # | Finding | Effect | CI | N | Test | Verdict | Strength |",
+                "|---|---------|--------|----|---|------|---------|----------|"]
         for i, f in enumerate(findings, 1):
             title = _clean_finding_title(f["title"])
             effect = f.get("effect_size", placeholder)
@@ -221,8 +220,59 @@ class ReportGenerator:
             n = f.get("n", placeholder)
             test = f.get("stat_test", placeholder)
             valence = f.get("valence", placeholder)
-            rows.append(f"| {i} | {title} | {effect} | {ci} | {n} | {test} | {valence} |")
+            strength = f.get("strength_label", f.get("practical_significance", placeholder))
+            rows.append(f"| {i} | {title} | {effect} | {ci} | {n} | {test} | {valence} | {strength} |")
         return rows
+
+    @staticmethod
+    def _render_findings_interpreted(findings: list[dict]) -> list[str]:
+        """Render findings with interpretation and practical significance."""
+        lines: list[str] = []
+        for i, f in enumerate(findings, 1):
+            title = _clean_finding_title(f["title"])
+            valence = f.get("valence", "unknown")
+            effect = f.get("effect_size", "")
+            ci = f.get("ci_95", "")
+            p_val = f.get("p", "")
+            n = f.get("n", "")
+            practical = f.get("practical_significance", "")
+            strength = f.get("strength_label", "")
+            interp = f.get("interpretation", "")
+            supports = f.get("supports_hypothesis", "")
+
+            lines.append(f"### Finding {i}: {title}\n")
+
+            # Statistical summary
+            stat_parts = []
+            if effect:
+                stat_parts.append(f"**Effect size:** d={effect}")
+                if practical and practical != "unknown":
+                    stat_parts.append(f"({practical} practical effect)")
+            if ci:
+                stat_parts.append(f"**CI 95%:** {ci}")
+            if p_val:
+                stat_parts.append(f"**p:** {p_val}")
+            if n:
+                stat_parts.append(f"**N:** {n}")
+            if stat_parts:
+                lines.append(" | ".join(stat_parts) + "\n")
+
+            # Verdict and strength
+            lines.append(f"**Verdict:** {valence}")
+            if strength and strength not in ("unknown", "unreviewed"):
+                lines.append(f" | **Evidence strength:** {strength}")
+            lines.append("\n")
+
+            # Interpretation
+            if interp:
+                lines.append(f"**Interpretation:** {interp}\n")
+
+            # Hypothesis link
+            if supports:
+                lines.append(f"**Supports hypothesis:** {supports}\n")
+
+            lines.append("")
+        return lines
 
     @staticmethod
     def _pick_headline(findings: list[dict]) -> dict:
@@ -265,6 +315,256 @@ class ReportGenerator:
                 f"- **{h.get('name', '?')}**: P={h.get('prior', '?')} [{h.get('status', '?')}]"
             )
         return "\n".join(lines) if lines else None
+
+    def _render_belief_narrative(self) -> str | None:
+        """Render belief map with prior->posterior trajectory and evidence links."""
+        belief_json = self._read_file(".swarm", "belief-map.json")
+        if not belief_json:
+            return self._render_belief_map()
+        try:
+            data = json.loads(belief_json)
+        except (json.JSONDecodeError, ValueError):
+            return self._render_belief_map()
+
+        hypotheses = data.get("hypotheses", [])
+        if not hypotheses:
+            return self._render_belief_map()
+
+        lines = []
+        confirmed = []
+        refuted = []
+        inconclusive = []
+
+        for h in hypotheses:
+            name = h.get("name", "?")
+            prior = h.get("prior", "?")
+            posterior = h.get("posterior", prior)
+            status = h.get("status", "untested")
+            evidence = h.get("evidence", [])
+
+            # Build trajectory arrow
+            try:
+                p_val = float(prior)
+                q_val = float(posterior)
+                if q_val > p_val + 0.1:
+                    arrow = "\u2191"  # up arrow
+                elif q_val < p_val - 0.1:
+                    arrow = "\u2193"  # down arrow
+                else:
+                    arrow = "\u2192"  # right arrow (stable)
+            except (ValueError, TypeError):
+                arrow = "\u2192"
+
+            evidence_str = ""
+            if evidence:
+                evidence_str = f" (evidence: {', '.join(evidence[:3])})"
+
+            entry = f"- **{name}**: P({prior}) {arrow} P({posterior}) [{status}]{evidence_str}"
+            lines.append(entry)
+
+            if status == "confirmed":
+                confirmed.append(name)
+            elif status == "refuted":
+                refuted.append(name)
+            elif status == "inconclusive":
+                inconclusive.append(name)
+
+        # Summary line
+        summary_parts = []
+        if confirmed:
+            summary_parts.append(f"{len(confirmed)} confirmed")
+        if refuted:
+            summary_parts.append(f"{len(refuted)} refuted")
+        if inconclusive:
+            summary_parts.append(f"{len(inconclusive)} inconclusive")
+        if summary_parts:
+            lines.append(f"\n**Summary:** {', '.join(summary_parts)} "
+                         f"out of {len(hypotheses)} hypotheses")
+
+        return "\n".join(lines) if lines else None
+
+    # ------------------------------------------------------------------
+    # Evidence chain from claim-evidence registry
+    # ------------------------------------------------------------------
+
+    def _render_evidence_chain(self) -> str | None:
+        """Render claim-evidence traceability from .swarm/claim-evidence.json."""
+        from voronoi.science import load_claim_evidence
+        reg = load_claim_evidence(self.ws)
+        if not reg.claims:
+            return None
+
+        lines = []
+        for c in reg.claims:
+            strength_badge = {"robust": "\u2705", "provisional": "\u26a0\ufe0f",
+                              "weak": "\u274c", "unsupported": "\u2b55"}.get(
+                c.strength, "\u2753")
+            lines.append(f"### {strength_badge} {c.claim_text}\n")
+            lines.append(f"**Evidence strength:** {c.strength}")
+            if c.finding_ids:
+                lines.append(f" | **Supported by:** {', '.join(c.finding_ids)}")
+            if c.hypothesis_ids:
+                lines.append(f" | **Tests:** {', '.join(c.hypothesis_ids)}")
+            lines.append("\n")
+            if c.interpretation:
+                lines.append(f"{c.interpretation}\n")
+            lines.append("")
+
+        # Audit warnings
+        if reg.unsupported_claims:
+            lines.append("\n**\u26a0\ufe0f Unsupported claims:** "
+                         f"{', '.join(reg.unsupported_claims)}\n")
+        if reg.orphan_findings:
+            lines.append("**\u2139\ufe0f Findings not cited in claims:** "
+                         f"{', '.join(reg.orphan_findings)}\n")
+
+        lines.append(f"\n**Evidence coverage:** {reg.coverage_score:.0%} of claims "
+                     f"have supporting evidence\n")
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # Auto-generated Limitations section
+    # ------------------------------------------------------------------
+
+    def _render_limitations(self, findings: list[dict]) -> str | None:
+        """Auto-generate limitations from fragile, contested, wide-CI findings."""
+        limitations: list[str] = []
+
+        # Fragile findings
+        fragile = [f for f in findings
+                   if f.get("robust", "").lower() == "no"]
+        for f in fragile:
+            title = _clean_finding_title(f["title"])
+            conditions = f.get("conditions", "conditions not documented")
+            limitations.append(
+                f"- **Fragile result:** {title} "
+                f"(not robust under sensitivity analysis; {conditions})"
+            )
+
+        # Wide confidence intervals
+        for f in findings:
+            ci_q = f.get("ci_quality", "")
+            if ci_q in ("wide", "very wide"):
+                title = _clean_finding_title(f["title"])
+                limitations.append(
+                    f"- **Imprecise estimate:** {title} "
+                    f"(CI quality: {ci_q} — interpret with caution)"
+                )
+
+        # Unreviewed findings
+        unreviewed = [f for f in findings
+                      if f.get("strength_label") in ("unreviewed", None)
+                      and not f.get("stat_review")]
+        if unreviewed:
+            titles = [_clean_finding_title(f["title"]) for f in unreviewed[:3]]
+            limitations.append(
+                f"- **Unreviewed evidence:** {len(unreviewed)} finding(s) "
+                f"not yet reviewed by Statistician ({', '.join(titles)})"
+            )
+
+        # Rejected findings
+        rejected = [f for f in findings
+                    if f.get("strength_label") == "rejected"]
+        for f in rejected:
+            title = _clean_finding_title(f["title"])
+            limitations.append(
+                f"- **Rejected by review:** {title} (failed statistical review)"
+            )
+
+        # Check for inconclusive hypotheses in belief map
+        belief_json = self._read_file(".swarm", "belief-map.json")
+        if belief_json:
+            try:
+                bm_data = json.loads(belief_json)
+                for h in bm_data.get("hypotheses", []):
+                    if h.get("status") == "inconclusive":
+                        limitations.append(
+                            f"- **Inconclusive hypothesis:** {h.get('name', '?')} "
+                            f"(insufficient evidence to confirm or refute)"
+                        )
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+        return "\n".join(limitations) if limitations else None
+
+    # ------------------------------------------------------------------
+    # Cross-finding comparison
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _render_cross_finding_comparison(findings: list[dict]) -> str | None:
+        """Rank findings by effect size and narrate relative magnitudes."""
+        scored: list[tuple[float, dict]] = []
+        for f in findings:
+            es = f.get("effect_size", "")
+            try:
+                val = abs(float(es))
+                scored.append((val, f))
+            except (ValueError, TypeError):
+                continue
+
+        if len(scored) < 2:
+            return None
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        lines = []
+        top = scored[0]
+        top_title = _clean_finding_title(top[1]["title"])
+        lines.append(f"The strongest effect observed was **{top_title}** "
+                     f"(d={top[1].get('effect_size', '?')}"
+                     f"{', ' + top[1].get('practical_significance', '') if top[1].get('practical_significance') else ''}).")
+
+        if len(scored) >= 2:
+            bot = scored[-1]
+            bot_title = _clean_finding_title(bot[1]["title"])
+            if top[0] > 0 and bot[0] > 0:
+                ratio = top[0] / bot[0]
+                lines.append(
+                    f"This is {ratio:.1f}x larger than the weakest effect, "
+                    f"**{bot_title}** (d={bot[1].get('effect_size', '?')}).")
+
+        # Note any findings with opposing valence
+        positive = [f for _, f in scored if f.get("valence", "").lower() == "positive"]
+        negative = [f for _, f in scored if f.get("valence", "").lower() == "negative"]
+        if positive and negative:
+            pos_titles = [_clean_finding_title(f["title"]) for f in positive[:2]]
+            neg_titles = [_clean_finding_title(f["title"]) for f in negative[:2]]
+            lines.append(
+                f"\nNotably, results were mixed: {', '.join(pos_titles)} showed "
+                f"positive effects while {', '.join(neg_titles)} showed negative effects."
+            )
+
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # Negative results section
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _render_negative_results(findings: list[dict]) -> str | None:
+        """Render a dedicated section for negative/inconclusive findings."""
+        negative = [f for f in findings
+                    if f.get("valence", "").lower() in ("negative", "inconclusive")]
+        if not negative:
+            return None
+
+        lines = ["The following hypotheses were tested and did not produce "
+                 "the expected positive result. These negative results are "
+                 "scientifically valuable as they narrow the solution space "
+                 "and prevent future wasted effort.\n"]
+        for f in negative:
+            title = _clean_finding_title(f["title"])
+            effect = f.get("effect_size", "")
+            p_val = f.get("p", "")
+            valence = f.get("valence", "")
+            stat_parts = []
+            if effect:
+                stat_parts.append(f"d={effect}")
+            if p_val:
+                stat_parts.append(f"p={p_val}")
+            stat_str = f" ({', '.join(stat_parts)})" if stat_parts else ""
+            lines.append(f"- **{title}**{stat_str} \u2014 {valence}")
+        return "\n".join(lines)
 
     # ------------------------------------------------------------------
     # Teaser (Telegram message)
@@ -346,7 +646,7 @@ class ReportGenerator:
     # ------------------------------------------------------------------
 
     def build_markdown(self) -> str:
-        """Assemble the full investigation report as Markdown."""
+        """Assemble a structured investigation report with evidence chain."""
         sections: list[str] = []
 
         prompt = self._read_file("PROMPT.md")
@@ -356,23 +656,66 @@ class ReportGenerator:
         else:
             sections.append("# Investigation Report\n")
 
+        # Executive summary from deliverable (first paragraph)
+        deliverable = self._read_file(".swarm", "deliverable.md")
+        if deliverable:
+            first_para = deliverable.split("\n\n")[0]
+            if len(first_para) > 50:
+                sections.append(f"## Executive Summary\n\n{first_para}\n")
+
         findings = self._get_findings()
+
+        # Evidence chain (if claim-evidence registry exists)
+        evidence_chain = self._render_evidence_chain()
+        if evidence_chain:
+            sections.append(f"## Evidence Chain\n\n{evidence_chain}\n")
+
+        # Findings with interpretation
         if findings:
             sections.append("## Findings\n")
+            interpreted = self._render_findings_interpreted(findings)
+            if interpreted:
+                sections.extend(interpreted)
+            sections.append("")
+            # Summary table
+            sections.append("### Summary Table\n")
             sections.extend(self._render_findings_table(findings))
             sections.append("")
 
-        belief = self._render_belief_map()
+        # Cross-finding comparison
+        if findings and len(findings) >= 2:
+            comparison = self._render_cross_finding_comparison(findings)
+            if comparison:
+                sections.append(f"### Comparative Analysis\n\n{comparison}\n")
+
+        # Negative results (dedicated section)
+        if findings:
+            negatives = self._render_negative_results(findings)
+            if negatives:
+                sections.append(f"## Negative & Inconclusive Results\n\n{negatives}\n")
+
+        # Belief map with narrative trajectory
+        belief = self._render_belief_narrative()
         if belief:
-            sections.append(f"## Belief Map\n\n{belief}\n")
+            sections.append(f"## Hypothesis Trajectory\n\n{belief}\n")
+        else:
+            belief_simple = self._render_belief_map()
+            if belief_simple:
+                sections.append(f"## Belief Map\n\n{belief_simple}\n")
 
         journal = self._read_file(".swarm", "journal.md")
         if journal:
             sections.append(f"## Methodology & Journal\n\n{journal}\n")
 
-        deliverable = self._read_file(".swarm", "deliverable.md")
+        # Full deliverable
         if deliverable:
-            sections.append(f"## Conclusion\n\n{deliverable}\n")
+            sections.append(f"## Detailed Conclusion\n\n{deliverable}\n")
+
+        # Auto-generated limitations
+        if findings:
+            limitations = self._render_limitations(findings)
+            if limitations:
+                sections.append(f"## Limitations & Caveats\n\n{limitations}\n")
 
         return "\n".join(sections)
 
@@ -381,7 +724,7 @@ class ReportGenerator:
     # ------------------------------------------------------------------
 
     def build_manuscript_markdown(self) -> str:
-        """Assemble a structured scientific manuscript from the deliverable + evidence."""
+        """Assemble a structured scientific manuscript with full evidence trail."""
         sections: list[str] = []
         deliverable = self._read_file(".swarm", "deliverable.md") or ""
         prompt = self._read_file("PROMPT.md") or ""
@@ -389,40 +732,80 @@ class ReportGenerator:
 
         if deliverable:
             sections.append(deliverable)
-            # Append findings table if not already embedded
+
+            # Append evidence chain if available and not already in deliverable
+            evidence_chain = self._render_evidence_chain()
+            if evidence_chain and "evidence chain" not in deliverable.lower():
+                sections.append("\n## Evidence Chain\n")
+                sections.append(evidence_chain)
+
+            # Append interpreted findings if not already embedded
             if findings and "finding" not in deliverable.lower():
-                sections.append("\n## Appendix: Evidence Summary\n")
+                sections.append("\n## Appendix A: Evidence Summary\n")
+                sections.extend(self._render_findings_interpreted(findings))
+                sections.append("\n### Summary Table\n")
                 sections.extend(self._render_findings_table(findings, placeholder="-"))
                 sections.append("")
+
+            # Cross-finding comparison
+            if findings and len(findings) >= 2:
+                comparison = self._render_cross_finding_comparison(findings)
+                if comparison and "comparative" not in deliverable.lower():
+                    sections.append(f"\n### Comparative Analysis\n\n{comparison}\n")
+
+            # Negative results
+            if findings:
+                negatives = self._render_negative_results(findings)
+                if negatives and "negative result" not in deliverable.lower():
+                    sections.append(f"\n## Appendix B: Negative Results\n\n{negatives}\n")
+
+            # Auto-generated limitations
+            if findings:
+                limitations = self._render_limitations(findings)
+                if limitations and "limitation" not in deliverable.lower():
+                    sections.append(f"\n## Limitations\n\n{limitations}\n")
+
         else:
+            # No deliverable — build manuscript skeleton from evidence
             sections.append("# Research Manuscript\n")
             if prompt:
                 sections.append(f"## Abstract\n\n{prompt}\n")
+
             if findings:
                 sections.append("## Results\n")
-                for f in findings:
-                    title = _clean_finding_title(f["title"])
-                    stats = []
-                    if f.get("effect_size"):
-                        stats.append(f"d={f['effect_size']}")
-                    if f.get("ci_95"):
-                        stats.append(f"CI {f['ci_95']}")
-                    if f.get("n"):
-                        stats.append(f"N={f['n']}")
-                    if f.get("p"):
-                        stats.append(f"p={f['p']}")
-                    line = f"**{title}**"
-                    if stats:
-                        line += f" ({', '.join(stats)})"
-                    sections.append(f"\n{line}\n")
+                sections.extend(self._render_findings_interpreted(findings))
+
+                if len(findings) >= 2:
+                    comparison = self._render_cross_finding_comparison(findings)
+                    if comparison:
+                        sections.append(f"\n### Comparative Analysis\n\n{comparison}\n")
+
+                negatives = self._render_negative_results(findings)
+                if negatives:
+                    sections.append(f"\n### Negative Results\n\n{negatives}\n")
 
             journal = self._read_file(".swarm", "journal.md")
             if journal:
                 sections.append(f"## Methods\n\n{journal}\n")
 
-            belief = self._read_file(".swarm", "belief-map.md")
-            if belief:
-                sections.append(f"## Discussion\n\n{belief}\n")
+            # Belief map narrative for Discussion
+            belief_narrative = self._render_belief_narrative()
+            if belief_narrative:
+                sections.append(f"## Discussion\n\n{belief_narrative}\n")
+            else:
+                belief = self._read_file(".swarm", "belief-map.md")
+                if belief:
+                    sections.append(f"## Discussion\n\n{belief}\n")
+
+            # Evidence chain
+            evidence_chain = self._render_evidence_chain()
+            if evidence_chain:
+                sections.append(f"## Evidence Chain\n\n{evidence_chain}\n")
+
+            if findings:
+                limitations = self._render_limitations(findings)
+                if limitations:
+                    sections.append(f"## Limitations\n\n{limitations}\n")
 
         return "\n".join(sections)
 

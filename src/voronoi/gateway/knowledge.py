@@ -7,12 +7,12 @@ Queries the Beads database and evidence store to answer questions like
 from __future__ import annotations
 
 import json
-import os
 import re
-import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+
+from voronoi.beads import run_bd as _run_bd
 
 
 @dataclass
@@ -71,26 +71,6 @@ def _parse_finding_notes(notes_str: str) -> dict:
             if m:
                 fields[key.lower()] = m.group(1).strip()
     return fields
-
-
-def _run_bd(*args: str, cwd: Optional[str] = None) -> tuple[int, str]:
-    """Run a bd (beads) command."""
-    env = os.environ.copy()
-    if cwd and "BEADS_DIR" not in env:
-        beads_dir = os.path.join(cwd, ".beads")
-        if os.path.isdir(beads_dir):
-            env["BEADS_DIR"] = beads_dir
-    try:
-        result = subprocess.run(
-            ["bd", *args],
-            capture_output=True, text=True, timeout=30,
-            cwd=cwd, env=env,
-        )
-        return result.returncode, (result.stdout + result.stderr).strip()
-    except FileNotFoundError:
-        return 1, "bd (beads) not found"
-    except subprocess.TimeoutExpired:
-        return 1, "Command timed out"
 
 
 class KnowledgeStore:

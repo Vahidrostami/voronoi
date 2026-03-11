@@ -271,8 +271,8 @@ stateDiagram-v2
 | Raw Data | `data/raw/` | CSV/JSON with SHA-256 integrity hash |
 | Belief Map | `.swarm/belief-map.json` | Hypothesis probabilities, information-gain prioritization |
 | Journal | `.swarm/journal.md` | Narrative continuity across OODA cycles |
-| Strategic Context | `.swarm/strategic-context.md` | Decision rationale, dead ends, remaining gaps |
-| Deliverable | `.swarm/deliverable.md` | Final output artifact scored by Evaluator |
+| Strategic Context | `.swarm/strategic-context.md` | Decision rationale, dead ends, remaining gaps || Experiment Ledger | `.swarm/experiments.tsv` | Append-only chronological record of all experiments |
+| Verify Logs | `.swarm/verify-log-<id>.jsonl` | Per-task iteration history for self-healing agents || Deliverable | `.swarm/deliverable.md` | Final output artifact scored by Evaluator |
 | Eval Score | `.swarm/eval-score.json` | Evaluator score for convergence tracking |
 
 ### OODA workflow
@@ -305,13 +305,40 @@ flowchart TB
 |------|:--------:|:----------:|:----------:|:------------:|
 | Code review (Critic inline) | ✅ | ✅ | ✅ | ✅ |
 | Statistician review | — | ✅ | ✅ | ✅ |
+| Finding interpretation | — | ✅ | ✅ | ✅ |
+| Claim-evidence registry | — | ✅ | ✅ | ✅ |
 | Final evaluation | — | ✅ | ✅ | ✅ |
 | Methodologist design review | — | — | ✅ advisory | ✅ mandatory |
 | Pre-registration | — | — | ✅ | ✅ |
+| Pre-reg compliance audit | — | — | ✅ | ✅ |
 | Power analysis | — | — | ✅ | ✅ |
 | Partial blinding for Critic | — | — | ✅ | ✅ |
 | Adversarial review loop | — | — | ✅ | ✅ |
 | Replication | — | — | — | ✅ |
+
+### Claim-Evidence Traceability (Analytical+)
+
+Every claim in the deliverable must trace to specific finding IDs via `.swarm/claim-evidence.json`. The Synthesizer produces this registry before writing the deliverable; the Evaluator audits it during Strength scoring.
+
+```
+Synthesizer → claim-evidence.json → deliverable.md → Evaluator audit
+```
+
+**Each claim entry contains:** claim text, supporting finding IDs, hypothesis IDs, strength label (robust/provisional/weak/unsupported), and interpretation text.
+
+**Audit flags:** Orphan findings (uncited), unsupported claims (no evidence), coverage score.
+
+### Finding Interpretation (Analytical+)
+
+The Statistician adds interpretation metadata to every approved finding:
+
+| Field | Description | Example |
+|-------|-------------|---------|
+| `INTERPRETATION` | Practical meaning in domain context | "Encoding produces 82% better cross-lever detection" |
+| `PRACTICAL_SIGNIFICANCE` | Cohen's d category | negligible/small/medium/large/very large |
+| `SUPPORTS_HYPOTHESIS` | Which hypothesis this tests | "H1: Encoding helps" |
+
+The report generator uses these fields to produce interpreted findings (not just raw numbers) and auto-generates: cross-finding comparison, negative results section, limitations from fragile/wide-CI findings, and belief map trajectory.
 
 ---
 
@@ -327,9 +354,226 @@ GATE: output/validation_report.json
 
 **Enforcement:** Dispatch blocked until REQUIRES/GATE exist. Merge rejected if PRODUCES missing. Worker agents check these at startup per `worker-agent.agent.md`.
 
+### Simplicity criterion
+
+All else being equal, simpler is better. When evaluating whether to keep a change (especially in build and investigation tasks), weigh complexity cost against improvement magnitude:
+
+- A small improvement that adds significant complexity is **not worth keeping**
+- A small improvement from **deleting** code is **always worth keeping**
+- Equal results with simpler code is a **simplification win** — keep it
+- The Critic evaluates complexity cost as part of its review checklist
+- The Evaluator penalizes deliverables that include unnecessary complexity
+
 ---
 
-## 10. Key Design Decisions
+## 10. Verify Loop (Self-Healing Agents)
+
+Inspired by the Ralph Wiggum technique and autoresearch's keep/discard inner loop. Every worker agent runs an internal **verify loop** before declaring success or failure to the orchestrator. This separates the fast **inner loop** (agent iterates against its own errors) from the deliberate **outer loop** (orchestrator OODA cycle).
+
+### The Two Loops
+
+```mermaid
+flowchart LR
+    subgraph Inner["Inner Loop — per agent (fast)"]
+        DO["Execute task"] --> VERIFY["Run verification"]
+        VERIFY -->|pass| DONE["Emit completion\npromise"]
+        VERIFY -->|fail| DIAG["Pipe error context\nback into own prompt"]
+        DIAG --> DO
+    end
+
+    subgraph Outer["Outer Loop — orchestrator (deliberate)"]
+        OBS["Observe"] --> ORI["Orient"]
+        ORI --> DEC["Decide"]
+        DEC --> ACT["Spawn / merge"]
+        ACT --> OBS
+    end
+
+    DONE --> ACT
+```
+
+### Per-role verify loops
+
+| Role | Verification | Completion Promise | Max Iterations |
+|------|-------------|-------------------|----------------|
+| **Builder** | Tests pass + lint clean + PRODUCES exist | `BUILD_COMPLETE` | 5 |
+| **Investigator** | Experiment runs without crash + metric extracted + **EVA passed** + raw data committed | `EXPERIMENT_COMPLETE` | 3 per variant |
+| **Scout** | Knowledge brief written + sources cited | `SCOUT_COMPLETE` | 3 |
+| **Critic** | All 5 checklist items evaluated | `REVIEW_COMPLETE` | 2 |
+| **Synthesizer** | Claim-evidence registry complete + no orphan findings | `SYNTHESIS_COMPLETE` | 3 |
+
+### How it works
+
+1. **Agent attempts the task** — writes code, runs experiments, etc.
+2. **Verification step** — agent runs its verification suite (tests, lint, metric extraction, artifact existence check).
+3. **On failure** — the error output (stack trace, test failures, lint errors) is piped back as context for the next attempt. The agent does NOT escalate to the orchestrator yet.
+4. **On success** — for Investigators, runs the **Experimental Validity Audit (EVA)** before declaring completion. For other roles, emits completion promise.
+5. **EVA failure** — if the experiment produced a number but didn't actually test what it claimed (e.g., conditions were identical due to truncation), the agent flags `DESIGN_INVALID` and escalates with a diagnosis. The orchestrator dispatches the Methodologist for post-mortem review.
+6. **On max iterations exceeded** — escalates to orchestrator with structured failure report including all attempted approaches.
+
+### Verify loop output contract
+
+Each verify iteration appends to `.swarm/verify-log-<task-id>.jsonl`:
+
+```json
+{"iteration": 1, "status": "fail", "error_type": "test_failure", "summary": "3 of 12 tests failed", "timestamp": "..."}
+{"iteration": 2, "status": "fail", "error_type": "lint", "summary": "unused import in encoder.py", "timestamp": "..."}
+{"iteration": 3, "status": "pass", "summary": "all tests pass, lint clean, PRODUCES verified", "timestamp": "..."}
+```
+
+This gives the orchestrator a structured diagnostic if the agent fails — not just "it didn't work" but "it tried 5 times and here's what each attempt hit."
+
+### Context management
+
+The verify loop is designed to work within a single agent session. To prevent context bloat:
+- Error output is summarized before re-injection (last 50 lines of stack trace, not full output)
+- Previous attempt logs are referenced by file path, not pasted inline
+- On the final iteration, the agent writes a `VERIFY_EXHAUSTED` note to Beads with a structured summary
+
+---
+
+## 10b. Experimental Validity Audit (EVA)
+
+The verify loop (§10) catches **execution failures** — crashes, missing metrics, broken scripts. But a subtler failure mode exists: experiments that run successfully and produce numbers, but **don't actually test what they claim**. This happens when practical constraints (context window limits, memory ceilings, caching) silently collapse the independent variable so all conditions are identical.
+
+The EVA is a mandatory step for Investigators, inserted **between the verify loop passing and the finding being committed**.
+
+### The problem it solves
+
+Consider an encoding ablation study with 4 levels (Naive RAG → Full Structured). The encoder produces 33K chars at Level 1, but the LLM context window truncates everything to 6K chars. All four levels now present identical content to the LLM. The experiment "runs successfully" — it produces F1 scores for each level — but it measured nothing. Without EVA, this meaningless result gets committed as a "finding," reviewed by the Statistician (who sees a legitimate null result), and enters the deliverable as evidence.
+
+### Three mandatory checks
+
+| Check | Question | Catches |
+|-------|----------|--------|
+| **Manipulation check** | Was the independent variable actually varied across conditions? | Truncation collapse, identical configs, caching, shared state |
+| **Artifact check** | Did practical constraints nullify the manipulation? | Context window limits, memory ceilings, rate limiting, overflow |
+| **Sanity check** | Is the effect size plausible given the design? | Distinguishes genuine null results (valid experiment) from broken manipulations |
+
+### Decision tree
+
+```
+Experiment produces a number
+  │
+  ├─ EVA check 1: Were conditions actually different? ── NO → DESIGN_INVALID
+  │
+  ├─ EVA check 2: Any practical artifacts? ── YES → DESIGN_INVALID
+  │
+  ├─ EVA check 3: Effect size ~ 0?
+  │     ├─ Manipulation verified? YES → Valid null result → report as negative finding
+  │     └─ Manipulation broken? → DESIGN_INVALID
+  │
+  └─ All pass → commit finding
+```
+
+### Escalation path for DESIGN_INVALID
+
+1. Investigator flags `DESIGN_INVALID` with diagnosis and proposed fix
+2. Orchestrator classifies this as a `design_invalid` event in its OODA Orient phase
+3. Orchestrator dispatches Methodologist for **post-mortem design review**
+4. Methodologist diagnoses root cause and prescribes a specific redesign with a validation step
+5. Orchestrator creates a new corrected experiment task
+6. The new task's first step is **validation**: confirm the fix actually resolves the root cause before running the full experiment
+
+The key principle: **a null result from a valid experiment is a valuable finding; a null result from an invalid experiment is garbage.** The EVA distinguishes the two.
+
+---
+
+## 11. Metric Contracts
+
+Every investigation task operates against a **metric contract** — a structured agreement between orchestrator and worker about what success looks like. This bridges the gap between autoresearch's single fixed metric (`val_bpb`) and Voronoi's open-ended investigations where the metric is part of the research question.
+
+### The problem
+
+The orchestrator dispatches an investigator to "test whether EWC prevents catastrophic forgetting." But at dispatch time, nobody knows the exact metric. The investigator might measure accuracy retention, Fisher information divergence, or gradient interference. Without a contract, the orchestrator can't compare results across agents or determine if a result is meaningful.
+
+### Metric contract structure
+
+At dispatch, the orchestrator declares a **metric shape** in the task notes:
+
+```
+METRIC_CONTRACT:
+  PRIMARY: {name: TBD, direction: lower_is_better|higher_is_better, type: numeric|categorical|binary}
+  CONSTRAINT: {name: "runtime_seconds", max: 600}
+  BASELINE_TASK: bd-17
+  ACCEPTANCE: {min_effect_size: 0.5, max_p_value: 0.05}
+```
+
+The worker fills in the concrete metric at pre-registration time:
+
+```
+METRIC_FILLED:
+  PRIMARY: {name: "accuracy_retention_pct", direction: higher_is_better, baseline_value: 45.2}
+  CONSTRAINT: {name: "runtime_seconds", actual: 312}
+```
+
+### Metric contract flow
+
+| Step | Who | What |
+|------|-----|------|
+| Dispatch | Orchestrator | Declares metric shape + baseline task reference |
+| Pre-registration | Worker | Fills concrete metric name, expected value, stat test |
+| Execution | Worker | Runs experiment, logs raw data |
+| Self-eval | Worker | Compares result to baseline — binary keep/discard for inner loop |
+| Finding | Worker | Reports structured finding with effect size, CI, N |
+| Metric review | Statistician | Validates metric choice is appropriate for the hypothesis |
+| Cross-agent comparison | Orchestrator | Compares findings across agents using the metric contracts |
+
+### Metric categories
+
+Most investigation tasks fall into a handful of shapes:
+
+| Task Type | Typical Primary Metric | Direction | Common Constraint |
+|-----------|----------------------|-----------|-------------------|
+| Performance comparison | Accuracy, F1, loss, throughput | context-dependent | Runtime, memory |
+| Ablation study | Delta from baseline | smaller = less important | None |
+| Scaling experiment | Metric at different N | varies | Compute budget |
+| Bug investigation | Reproduction rate, error magnitude | lower = better | None |
+| Architecture search | val_loss (autoresearch-style) | lower = better | VRAM, time |
+| Build task | Tests passing, lint clean | binary | None |
+
+### Baseline-first protocol
+
+Every investigation epic's **first subtask** is always a baseline measurement. This is a hard gate:
+
+1. Orchestrator creates baseline task as first subtask of every investigation epic
+2. All experimental tasks depend on (are blocked by) the baseline task
+3. Baseline finding becomes the anchor in `.swarm/belief-map.json`
+4. All subsequent agents receive the baseline finding ID and value in their `METRIC_CONTRACT`
+5. Workers can self-evaluate ("my result vs baseline") without waiting for a Statistician
+
+---
+
+## 12. Experiment Ledger
+
+Every experiment — success, failure, or crash — is logged to a flat, append-only, human-readable TSV file. This doesn't replace Beads findings; it provides a quick chronological audit trail that the orchestrator and human can scan in seconds.
+
+### Location
+
+`.swarm/experiments.tsv` — created by the orchestrator at investigation start.
+
+### Format
+
+```
+timestamp	task_id	branch	metric_name	metric_value	status	description
+2026-03-11T08:15:00Z	bd-17	baseline	accuracy_retention_pct	45.2	keep	Baseline: sequential training, no mitigation
+2026-03-11T08:22:00Z	bd-18	ewc-agent	accuracy_retention_pct	67.8	keep	EWC lambda=400, Fisher computed on task boundaries
+2026-03-11T08:30:00Z	bd-19	replay-agent	accuracy_retention_pct	0.0	crash	OOM at buffer_size=50000
+2026-03-11T08:38:00Z	bd-19	replay-agent	accuracy_retention_pct	61.3	keep	Replay buffer_size=10000 (reduced after OOM)
+```
+
+### Rules
+
+- Tab-separated (commas break in descriptions)
+- Header row written at investigation start
+- Each agent appends exactly one row per experiment attempt (including crashes)
+- `status` is one of: `keep`, `discard`, `crash`
+- `metric_value` is `0.0` for crashes
+- The orchestrator reads this file at each OODA observe step for a quick overview
+- This file is NOT committed to git (`.gitignore`); it's ephemeral workspace state
+
+---
+
+## 13. Key Design Decisions
 
 | Decision | Rationale |
 |----------|-----------|
@@ -345,10 +589,18 @@ GATE: output/validation_report.json
 | Atomic queue claiming | `next_ready()` marks as running in same transaction — no double-dispatch. |
 | `.github/` fallback copy | `_ensure_github_files()` copies even if `voronoi init` subprocess fails. |
 | Timeout (8h default) | Prevents zombie investigations; writes exhaustion convergence. |
+| Inner verify loop before escalation | Workers retry against own errors (Ralph pattern) before bothering orchestrator. |
+| **Experimental Validity Audit (EVA)** | Catches experiments that run but don't test what they claim (truncation, caching, collapsed conditions). Prevents meaningless results from entering the evidence store. |
+| Metric contracts (shape at dispatch, fill at pre-reg) | Bridges open-ended investigations with comparable cross-agent metrics. |
+| Baseline-first as hard gate | Every investigation has a control measurement; all experiments are comparable. |
+| Orchestrator never enters worktrees | Orchestrator dispatches and monitors; it never fixes code in a worker's worktree. If an agent fails, dispatch a new agent or Methodologist. |
+| Append-only experiment ledger | Quick chronological audit trail; greppable and human-readable. |
+| File-mediated orchestrator state | Orchestrator externalizes state to `.swarm/` files between OODA cycles; prevents context loss on compaction. |
+| Log-redirect + grep for metrics | Workers redirect command output to files and extract metrics with grep, preserving context window for reasoning. |
 
 ---
 
-## 11. Module Map
+## 14. Module Map
 
 ```
 voronoi/

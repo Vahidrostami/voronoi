@@ -121,6 +121,34 @@ def build_orchestrator_prompt(
     # -- Science sections (mode + rigor aware) -----------------------------
     sections.append(_build_science_sections(mode, rigor))
 
+    # -- Verify loop guidance ----------------------------------------------
+    sections.append(
+        "\n## Self-Healing Agents (Verify Loop + EVA)\n\n"
+        "Every worker agent runs an internal **verify loop** before declaring "
+        "success or failure to you.  Workers retry against their own errors "
+        "(test failures, lint, crashes) up to a role-specific limit before "
+        "escalating.  This means:\n"
+        "- Most execution errors are fixed autonomously by the worker\n"
+        "- When a worker reports `VERIFY_EXHAUSTED`, check their verify "
+        "iteration log in Beads notes before retrying or reassigning\n"
+        "- Do NOT immediately re-dispatch a failed task \u2014 diagnose first\n"
+        "- Workers also log verify iterations to Beads (VERIFY_ITER notes)\n\n"
+        "**Experimental Validity Audit (EVA) \u2014 Investigation tasks only:**\n"
+        "After the verify loop passes (experiment ran, metric extracted), "
+        "Investigators run a mandatory EVA that checks:\n"
+        "1. Was the independent variable actually varied across conditions?\n"
+        "2. Did practical constraints (truncation, caching, resource limits) collapse the conditions?\n"
+        "3. Is the effect size plausible, or does a ~0 delta indicate a broken manipulation?\n\n"
+        "If EVA fails, the Investigator flags `DESIGN_INVALID` and escalates to you "
+        "with a diagnosis and proposed fix. Your response:\n"
+        "1. Dispatch Methodologist for post-mortem design review\n"
+        "2. Wait for Methodologist's POSTMORTEM_DIAGNOSIS\n"
+        "3. Create a corrected experiment task incorporating the redesign\n"
+        "4. The corrected task must validate the fix before running the full experiment\n"
+        "5. NEVER rationalize an invalid experiment as 'a finding to discuss' \u2014 fix and re-run\n"
+        "6. NEVER enter a worker's worktree to fix code yourself \u2014 dispatch a new agent\n"
+    )
+
     # -- Workflow ----------------------------------------------------------
     sections.append("\n## Workflow\n\n")
     sections.append(_build_workflow_steps(mode, rigor, prompt_path))
@@ -140,9 +168,16 @@ def build_orchestrator_prompt(
         "  bd list --json / bd show <id> --json\n\n"
         "Spawn a worker agent:\n"
         "  1. Write the worker's prompt to a temp file, e.g. /tmp/prompt-<branch>.txt\n"
-        f"  2. Run: ./scripts/spawn-agent.sh {safe_flag}<task-id> <branch-name> /tmp/prompt-<branch>.txt\n\n"
+        f"  2. Run: ./scripts/spawn-agent.sh {safe_flag}<task-id> <branch-name> /tmp/prompt-<branch>.txt\n"
+        "  NOTE: spawn-agent.sh enforces REQUIRES/GATE checks — dispatch will FAIL if\n"
+        "  required input artifacts are missing. This is intentional. Fix upstream first.\n\n"
         "Merge completed work:\n"
-        "  ./scripts/merge-agent.sh <branch-name> <task-id>\n\n"
+        "  ./scripts/merge-agent.sh <branch-name> <task-id>\n"
+        "  NOTE: merge-agent.sh enforces PRODUCES checks — merge will FAIL if the agent\n"
+        "  didn't create its declared output artifacts. Agent must fix and retry.\n\n"
+        "Validation hooks (called automatically by spawn/merge, but available standalone):\n"
+        "  ./scripts/figure-lint.sh <workspace>           # Verify all \\includegraphics refs resolve\n"
+        "  ./scripts/convergence-gate.sh <workspace> <rigor>  # Multi-signal convergence check\n\n"
         "Monitor agents:\n"
         "  bd show <id> --json                                    # Task status\n"
         "  git log main..<branch> --oneline                      # Commits\n"
@@ -180,8 +215,20 @@ def build_orchestrator_prompt(
         "acceptance criteria\n"
         "3. FULL relevant context from the project brief (copy sections verbatim)\n"
         "4. STRATEGIC_CONTEXT: how this task fits the whole\n"
-        "5. Completion: `bd close <task-id> --reason \"...\"` then "
-        "`git push origin <branch>`\n"
+        "5. ARTIFACT CONTRACTS: list PRODUCES and REQUIRES files explicitly in the prompt\n"
+        "6. METRIC_CONTRACT: for investigation tasks, include the metric shape, baseline reference, and acceptance criteria\n"
+        "7. COMMIT CHECKPOINTS: after each milestone, run "
+        "`git add -A && git commit -m '[msg]' && git push origin <branch>`\n"
+        "8. Completion: `bd close <task-id> --reason \"...\"` then "
+        "`git push origin <branch>`\n\n"
+        "**Skills to reference in worker prompts** (tell agents to read these):\n"
+        "| Skill | When to reference |"
+        "\n|-------|-------------------|"
+        "\n| `.github/skills/figure-generation/SKILL.md` | Any task producing figures or charts |"
+        "\n| `.github/skills/compilation-protocol/SKILL.md` | LaTeX compilation tasks |"
+        "\n| `.github/skills/investigation-protocol/SKILL.md` | Investigation/experiment tasks |"
+        "\n| `.github/skills/evidence-system/SKILL.md` | Tasks producing findings |"
+        "\n| `.github/skills/artifact-gates/SKILL.md` | Tasks with PRODUCES/REQUIRES contracts |\n"
     )
 
     # -- Rules -------------------------------------------------------------
@@ -194,6 +241,26 @@ def build_orchestrator_prompt(
         "- Diagnose failures (check git log, tmux output) before retrying\n"
         "- Push all completed work to remote when done\n"
         f"- Max concurrent agents: {max_agents}\n"
+        "- EVERY task MUST declare PRODUCES and REQUIRES in Beads notes\n"
+        "- For investigation epics, create a BASELINE task as the FIRST subtask \u2014 "
+        "all experimental tasks depend on it\n"
+        "- For investigation tasks, include METRIC_CONTRACT in Beads notes "
+        "(metric shape, baseline reference, acceptance criteria)\n"
+        "- Workers self-heal via verify loops \u2014 when they report VERIFY_EXHAUSTED, "
+        "read their iteration log before re-dispatching\n"
+        "- When a worker reports DESIGN_INVALID, dispatch Methodologist for post-mortem "
+        "\u2192 create corrected experiment task\n"
+        "- NEVER enter a worker's worktree to fix code yourself \u2014 "
+        "dispatch a new agent or reassign the task\n"
+        "- NEVER rationalize an invalid experiment as a finding \u2014 fix the design and re-run\n"
+        "- spawn-agent.sh will REJECT dispatch if REQUIRES files are missing\n"
+        "- merge-agent.sh will REJECT merge if PRODUCES files are missing\n"
+        "- Include commit checkpoint instructions in EVERY worker prompt:\n"
+        '  "After completing [milestone], run git add -A && git commit -m \'[msg]\' '
+        "&& git push origin [branch] BEFORE continuing\"\n"
+        "- For figure-producing tasks, reference `.github/skills/figure-generation/SKILL.md`\n"
+        "- For LaTeX compilation tasks, reference `.github/skills/compilation-protocol/SKILL.md`\n"
+        "- Before declaring convergence, run: `./scripts/convergence-gate.sh . <rigor>`\n"
     )
     sections.append(_build_rigor_rules(rigor))
 
@@ -270,9 +337,47 @@ def _build_science_sections(mode: str, rigor: str) -> str:
             )
         sections.append(
             "- **Synthesizer** (`.github/agents/synthesizer.agent.md`): "
-            "Consistency check against validated findings\n"
+            "Consistency check against validated findings, claim-evidence registry\n"
             "- **Evaluator** (`.github/agents/evaluator.agent.md`): "
-            "Score deliverable (Completeness, Coherence, Strength, Actionability)\n"
+            "Score deliverable (Completeness, Coherence, Strength, Actionability) "
+            "with claim-evidence traceability audit\n"
+        )
+
+    if rigor in ("analytical", "scientific", "experimental"):
+        sections.append(
+            "\n## Claim-Evidence Traceability — MANDATORY\n\n"
+            "Before writing the deliverable, the Synthesizer MUST produce "
+            "`.swarm/claim-evidence.json` with this structure:\n"
+            "```json\n"
+            '{"claims": [{"claim_id": "C1", "claim_text": "...", '
+            '"finding_ids": ["bd-5", "bd-8"], "hypothesis_ids": ["H1"], '
+            '"strength": "robust", "interpretation": "..."}], '
+            '"orphan_findings": [], "unsupported_claims": [], "coverage_score": 0.95}\n'
+            "```\n"
+            "**Rules:**\n"
+            "- Every claim in the deliverable MUST link to at least one finding ID\n"
+            "- Every finding MUST be cited by at least one claim (no orphan findings)\n"
+            "- Unsupported claims or orphan findings block convergence\n"
+            "- The Evaluator checks this registry during Strength scoring\n"
+            "- Strength labels: robust (sensitivity-tested), provisional (reviewed), "
+            "weak (unreviewed), unsupported (no evidence)\n"
+        )
+
+    if rigor in ("analytical", "scientific", "experimental"):
+        sections.append(
+            "\n## Finding Interpretation — MANDATORY\n\n"
+            "The Statistician MUST add interpretation metadata to each finding during review:\n"
+            '```bash\n'
+            'bd update <finding-id> --notes "INTERPRETATION:[what this means practically]"\n'
+            'bd update <finding-id> --notes "PRACTICAL_SIGNIFICANCE:negligible|small|medium|large|very large"\n'
+            'bd update <finding-id> --notes "SUPPORTS_HYPOTHESIS:[hypothesis ID and name]"\n'
+            '```\n'
+            "The final report auto-generates:\n"
+            "- Finding-by-finding interpretation with practical significance\n"
+            "- Cross-finding comparison (ranked by effect size)\n"
+            "- Dedicated Negative Results section for refuted hypotheses\n"
+            "- Auto-generated Limitations from fragile/wide-CI/unreviewed findings\n"
+            "- Belief map trajectory (prior \u2192 posterior with evidence links)\n"
         )
 
     if rigor != "standard":
@@ -317,9 +422,11 @@ def _build_workflow_steps(mode: str, rigor: str, prompt_path: str) -> str:
         if rigor != "standard":
             steps.append("5. Generate hypotheses → write `.swarm/belief-map.json`\n")
             steps.append("6. Inject STRATEGIC_CONTEXT into each task's Beads notes\n")
-            ooda_step = 7
+            steps.append("7. Create `.swarm/experiments.tsv` with header row\n")
+            ooda_step = 8
         else:
-            ooda_step = 5
+            steps.append("5. Create `.swarm/experiments.tsv` with header row\n")
+            ooda_step = 6
     else:
         steps.append("3. Run `bd prime`, create an epic + tasks with dependencies "
                       "and artifact contracts\n")
@@ -327,29 +434,40 @@ def _build_workflow_steps(mode: str, rigor: str, prompt_path: str) -> str:
 
     steps.append(
         f"{ooda_step}. OODA loop:\n"
-        "   - Observe: `bd ready --json`, check findings, belief map, git activity\n"
+        "   - Observe: `bd ready --json`, check findings, belief map, git activity, "
+        "experiment ledger (`.swarm/experiments.tsv`)\n"
         "   - Orient:  Classify events, update strategic context, check convergence\n"
         "   - Decide:  Prioritize by information gain, check review gates\n"
-        "   - Act:     Spawn agents (with role definitions!), merge work, "
+        "   - Act:     Spawn agents (with role definitions + METRIC_CONTRACT!), merge work, "
         "dispatch reviewers\n"
         "   - Repeat until converged\n"
     )
     steps.append(
-        f"{ooda_step + 1}. Write `.swarm/deliverable.md` and push results\n"
+        f"{ooda_step + 1}. Synthesizer produces `.swarm/claim-evidence.json` mapping every claim to findings\n"
     )
     steps.append(
-        f"{ooda_step + 2}. If the project produced LaTeX files, dispatch a final "
+        f"{ooda_step + 2}. Write `.swarm/deliverable.md` and push results\n"
+    )
+    steps.append(
+        f"{ooda_step + 3}. If the project produced LaTeX files, dispatch a final "
         "compilation agent to:\n"
-        "   - FIRST: scan .tex files for \\includegraphics references, generate ALL\n"
-        "     missing figures from experimental data using matplotlib (check output/\n"
-        "     for results.json, CSV data, etc.). Every referenced figure MUST exist\n"
-        "     on disk before compilation — empty figures/ dirs cause blank PDFs.\n"
-        "   - Install texlive if needed (`which tectonic || which pdflatex || ...`)\n"
-        "   - Compile the paper: `tectonic main.tex` or `latexmk -pdf main.tex`\n"
-        "   - Fix any compilation errors\n"
-        "   - Verify figures render (not blank boxes)\n"
-        "   - Copy final PDF to `.swarm/report.pdf`\n"
-        "   - This PDF is what gets sent to the user — make it publication-ready\n"
+        "   - READ `.github/skills/figure-generation/SKILL.md` and "
+        "`.github/skills/compilation-protocol/SKILL.md` — follow them precisely\n"
+        "   - This task MUST declare `REQUIRES:` for ALL figure source data files\n"
+        "   - This task MUST declare `PRODUCES:.swarm/report.pdf`\n"
+        "   - PHASE 1 (BLOCKING): Scan .tex files for \\includegraphics references.\n"
+        "     For EACH referenced figure that doesn't exist on disk:\n"
+        "     a. Check for plotting scripts (plot_*.py, generate_*.py, make_figures.py)\n"
+        "     b. If script exists: run it, verify output path matches LaTeX reference\n"
+        "     c. If no script: write a matplotlib script from available data\n"
+        "     d. If no data: generate a placeholder with label '[DATA NOT AVAILABLE]'\n"
+        "     e. Commit EACH figure individually before generating the next\n"
+        "   - Run `./scripts/figure-lint.sh .` — this MUST pass before proceeding\n"
+        "   - PHASE 2: Compile LaTeX (tectonic > latexmk > pdflatex)\n"
+        "   - PHASE 3: Verify PDF (page count, no undefined refs, no blank boxes)\n"
+        "   - Copy final PDF to `.swarm/report.pdf`, commit, push\n"
+        "   - spawn-agent.sh will block this dispatch if REQUIRES data is missing\n"
+        "   - merge-agent.sh will block merge if report.pdf is not produced\n"
     )
     return "".join(steps)
 
@@ -359,6 +477,9 @@ def _build_rigor_rules(rigor: str) -> str:
     rules: list[str] = []
     if rigor in ("analytical", "scientific", "experimental"):
         rules.append("- Every finding MUST pass Statistician review\n")
+        rules.append("- Every finding MUST include INTERPRETATION and PRACTICAL_SIGNIFICANCE\n")
+        rules.append("- Synthesizer MUST produce `.swarm/claim-evidence.json` BEFORE deliverable\n")
+        rules.append("- Every claim MUST trace to finding IDs; every finding MUST be cited\n")
         rules.append("- Every task MUST declare PRODUCES and REQUIRES artifact contracts\n")
     if rigor in ("scientific", "experimental"):
         rules.append("- Investigation tasks MUST have pre-registration BEFORE execution\n")

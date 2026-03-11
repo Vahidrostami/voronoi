@@ -10,12 +10,13 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import subprocess
+import random
+import re
 import time
 from pathlib import Path
 from typing import Optional
 
+from voronoi.beads import run_bd, has_beads_dir
 from voronoi.gateway.intent import ClassifiedIntent, WorkflowMode, classify
 from voronoi.gateway.progress import MODE_EMOJI, RIGOR_DESCRIPTIONS, MODE_VERB
 from voronoi.server.queue import Investigation, InvestigationQueue
@@ -27,7 +28,7 @@ logger = logging.getLogger("voronoi.router")
 # Re-export for tests
 __all__ = [
     "CommandRouter",
-    "handle_status", "handle_tasks", "handle_ready",
+    "handle_status", "handle_tasks", "handle_ready", "handle_health",
     "handle_reprioritize", "handle_pause", "handle_resume", "handle_add",
     "handle_abort", "handle_pivot", "handle_guide",
     "handle_investigate", "handle_explore", "handle_build", "handle_experiment",
@@ -37,61 +38,34 @@ __all__ = [
 
 
 # ---------------------------------------------------------------------------
-# bd helper
+# bd helper (thin wrapper that short-circuits when no .beads/ exists)
 # ---------------------------------------------------------------------------
 
 def _run_bd(*args: str, cwd: str | None = None) -> tuple[int, str]:
-    env = os.environ.copy()
-    if cwd and "BEADS_DIR" not in env:
-        beads_dir = os.path.join(cwd, ".beads")
-        if os.path.isdir(beads_dir):
-            env["BEADS_DIR"] = beads_dir
-        else:
-            # No .beads dir and no BEADS_DIR — bd will fail trying to
-            # connect to a Dolt server.  Short-circuit to avoid the error.
-            return 1, ""
-    try:
-        result = subprocess.run(
-            ["bd", *args],
-            capture_output=True, text=True, timeout=30,
-            cwd=cwd, env=env,
-        )
-        return result.returncode, result.stdout.strip()
-    except FileNotFoundError:
+    if cwd and not has_beads_dir(cwd):
         return 1, ""
-    except subprocess.TimeoutExpired:
-        return 1, ""
+    return run_bd(*args, cwd=cwd)
 
 
 # ---------------------------------------------------------------------------
-# Conversation memory helpers (best-effort)
+# Conversation memory helpers (best-effort, created per call)
 # ---------------------------------------------------------------------------
-
-_MEMORY_INSTANCE = None
-_KNOWLEDGE_INSTANCE = None
-
 
 def _get_memory(project_dir: str):
-    global _MEMORY_INSTANCE
-    if _MEMORY_INSTANCE is None:
-        try:
-            from voronoi.gateway.memory import ConversationMemory
-            db = Path(project_dir) / ".swarm" / "conversations.db"
-            _MEMORY_INSTANCE = ConversationMemory(db)
-        except ImportError:
-            pass
-    return _MEMORY_INSTANCE
+    try:
+        from voronoi.gateway.memory import ConversationMemory
+        db = Path(project_dir) / ".swarm" / "conversations.db"
+        return ConversationMemory(db)
+    except ImportError:
+        return None
 
 
 def _get_knowledge(project_dir: str):
-    global _KNOWLEDGE_INSTANCE
-    if _KNOWLEDGE_INSTANCE is None:
-        try:
-            from voronoi.gateway.knowledge import KnowledgeStore
-            _KNOWLEDGE_INSTANCE = KnowledgeStore(project_dir)
-        except ImportError:
-            pass
-    return _KNOWLEDGE_INSTANCE
+    try:
+        from voronoi.gateway.knowledge import KnowledgeStore
+        return KnowledgeStore(project_dir)
+    except ImportError:
+        return None
 
 
 def _save_msg(project_dir: str, chat_id: str, role: str,
@@ -225,6 +199,269 @@ def handle_tasks(project_dir: str) -> str:
         return "📭 No running investigations with open tasks"
 
     return "\n".join(all_lines)
+
+
+def handle_health(project_dir: str) -> str:
+    """Run the health-check script and format results for Telegram."""
+    import subprocess
+    script = Path(project_dir) / "scripts" / "health-check.sh"
+    if not script.exists():
+        # Try the repo checkout layout (project_dir may be a workspace)
+        script = Path(__file__).resolve().parent.parent.parent.parent / "scripts" / "health-check.sh"
+    if not script.exists():
+        return "❌ `health-check.sh` not found"
+    try:
+        result = subprocess.run(
+            ["bash", str(script), "--json", "--no-notify"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        return "⏱ Health check timed out"
+    except FileNotFoundError:
+        return "❌ bash not found"
+
+    if result.returncode == 2:
+        return "❌ No Voronoi sessions found. Is the pipeline running?"
+
+    try:
+        entries = json.loads(result.stdout)
+    except (json.JSONDecodeError, ValueError):
+        return f"❌ Health check failed:\n```\n{result.stderr[:300]}\n```"
+
+    if not entries:
+        return "✅ No sessions to check"
+
+    # Build Telegram-friendly summary
+    counts = {"healthy": 0, "stale": 0, "stuck": 0, "exited": 0}
+    for e in entries:
+        s = e.get("status", "healthy")
+        counts[s] = counts.get(s, 0) + 1
+
+    icon_map = {"healthy": "✅", "stale": "⚠️", "stuck": "🔴", "exited": "⚫"}
+
+    # -- Mood indicator (#3) --
+    mood = _swarm_mood(counts)
+
+    # Summary line — only show non-zero counts
+    summary_parts = []
+    for key, icon in icon_map.items():
+        if counts[key] > 0:
+            summary_parts.append(f"{icon}{counts[key]}")
+    lines = [
+        f"🩺 *Health Check*  {mood}\n",
+        f"{len(entries)} windows: {' '.join(summary_parts)}\n",
+    ]
+
+    # Build investigation lookup for session context (#6)
+    inv_map = _build_inv_map(project_dir)
+
+    # Partition entries by session
+    sessions: dict[str, list[dict]] = {}
+    for e in entries:
+        sessions.setdefault(e.get("session", ""), []).append(e)
+
+    for sess, sess_entries in sessions.items():
+        # -- Investigation-aware session header (#6) --
+        header = _session_header(sess, inv_map)
+        lines.append(f"\n{header}")
+
+        # Separate active (healthy/stale/stuck) from exited
+        active = [e for e in sess_entries if e.get("status") != "exited"]
+        exited = [e for e in sess_entries if e.get("status") == "exited"]
+
+        # Show active agents with detail
+        for e in active:
+            icon = icon_map.get(e["status"], "?")
+            idle = e.get("pane_idle_secs", 0)
+            idle_fmt = f"{idle // 60}m" if idle >= 60 else f"{idle}s"
+            raw_last = e.get("last_output", "")
+
+            # -- Activity translation (#4) --
+            activity = _translate_activity(raw_last)
+
+            # -- Streak badge (#5) --
+            streak = _streak_badge(e)
+
+            line = f"  {icon} `{e['window']}` active {idle_fmt}{streak}"
+            lines.append(line)
+            if activity:
+                lines.append(f"    ↳ _{activity}_")
+            detail = e.get("detail", "")
+            if detail and e["status"] != "healthy":
+                lines.append(f"    ⚠ _{detail[:60]}_")
+
+        # Collapse exited agents into one compact line
+        if exited:
+            names = [e["window"] for e in exited]
+            if len(names) <= 3:
+                names_str = ", ".join(f"`{n}`" for n in names)
+            else:
+                names_str = (
+                    ", ".join(f"`{n}`" for n in names[:2])
+                    + f" +{len(names) - 2} more"
+                )
+            lines.append(f"  ⚫ {len(exited)} exited: {names_str}")
+
+    # -- Quip footer (#1) --
+    lines.append(f"\n{_health_quip(counts)}")
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Health-check helpers (kept minimal to avoid overhead)
+# ---------------------------------------------------------------------------
+
+# (#1) Rotating quips — random.choice per state
+_QUIPS_ALL_HEALTHY = [
+    "☕ Swarm is vibing. Nothing to see here.",
+    "🏖️ Smooth sailing — go touch grass.",
+    "💅 All agents doing their thing.",
+    "🚀 Full throttle. No issues.",
+]
+_QUIPS_MIXED = [
+    "🐝 {healthy} still buzzing, {exited} back at the hive.",
+    "⏳ Skeleton crew — {healthy} holding the fort.",
+    "🔧 {healthy} working, {exited} done for the day.",
+]
+_QUIPS_ALL_EXITED = [
+    "🪦 The swarm has left the building.",
+    "🎬 That's a wrap. All agents clocked out.",
+    "💤 Swarm is asleep. Wake it when you're ready.",
+]
+_QUIPS_STUCK = [
+    "🧊 Frozen agents detected — poke them?",
+    "🔴 Houston, we have a problem.",
+    "🪫 Something's stuck. Time for a nudge.",
+]
+_QUIPS_STALE = [
+    "🐌 Some agents seem slow — could be a long operation.",
+    "⏸️ A few agents are quiet. Might be thinking hard.",
+]
+
+
+def _health_quip(counts: dict[str, int]) -> str:
+    if counts["stuck"] > 0:
+        return random.choice(_QUIPS_STUCK)
+    if counts["stale"] > 0:
+        return random.choice(_QUIPS_STALE)
+    if counts["exited"] > 0 and counts["healthy"] > 0:
+        template = random.choice(_QUIPS_MIXED)
+        return template.format(
+            healthy=counts["healthy"], exited=counts["exited"],
+        )
+    if counts["exited"] > 0 and counts["healthy"] == 0:
+        return random.choice(_QUIPS_ALL_EXITED)
+    return random.choice(_QUIPS_ALL_HEALTHY)
+
+
+# (#3) Mood indicator
+def _swarm_mood(counts: dict[str, int]) -> str:
+    if counts["stuck"] > 0:
+        return "😰"
+    total = sum(counts.values())
+    if total == 0:
+        return "💤"
+    if counts["exited"] == total:
+        return "💤"
+    if counts["exited"] > total / 2:
+        return "🌙"
+    if counts["stale"] > 0:
+        return "🧘"
+    return "🔥"
+
+
+# (#4) Activity translation — small regex map, O(1) per entry
+_ACTIVITY_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"pytest|test_|unittest", re.I), "🧪 Running tests"),
+    (re.compile(r"git push", re.I), "📤 Pushing code"),
+    (re.compile(r"git pull|git fetch", re.I), "📥 Pulling updates"),
+    (re.compile(r"git commit", re.I), "💾 Committing changes"),
+    (re.compile(r"bd close", re.I), "✅ Closing a task"),
+    (re.compile(r"bd update.*--claim", re.I), "🙋 Claiming a task"),
+    (re.compile(r"bd create", re.I), "📝 Creating a task"),
+    (re.compile(r"pip install|uv pip|conda install", re.I), "📦 Installing packages"),
+    (re.compile(r"python\s+scripts/", re.I), "⚙️ Running a script"),
+    (re.compile(r"python\s+experiments/", re.I), "🔬 Running experiment"),
+    (re.compile(r"compil|latex|pdflatex|xelatex", re.I), "📄 Compiling paper"),
+    (re.compile(r"npm|yarn|pnpm|webpack|vite", re.I), "🌐 Building frontend"),
+]
+
+
+def _translate_activity(raw: str) -> str:
+    """Translate raw pane output into a friendly activity label."""
+    raw = raw.strip()
+    if not raw:
+        return ""
+    for pattern, label in _ACTIVITY_PATTERNS:
+        if pattern.search(raw):
+            return label
+    return _truncate_word(raw, 80)
+
+
+# (#5) Streak badge — uses pane_idle_secs as a proxy (no extra I/O)
+def _streak_badge(entry: dict) -> str:
+    idle = entry.get("pane_idle_secs", 0)
+    if idle <= 5:
+        return "  🆕"
+    if idle < 300:
+        return ""
+    # Active for a while — show streak
+    mins = idle // 60
+    if mins >= 60:
+        return f"  🏅 {mins // 60}h streak"
+    return f"  🏅 {mins}m streak"
+
+
+# (#6) Investigation-aware session headers
+def _build_inv_map(project_dir: str) -> dict[str, Investigation]:
+    """Map session-name fragments to running investigations (one DB query)."""
+    try:
+        q = _get_queue(project_dir)
+        invs = q.get_running()
+    except Exception:
+        return {}
+    result: dict[str, Investigation] = {}
+    for inv in invs:
+        # Map by slug and by inv id so we can match session names
+        if inv.slug:
+            result[inv.slug] = inv
+        result[str(inv.id)] = inv
+    return result
+
+
+def _session_header(session_name: str, inv_map: dict[str, Investigation]) -> str:
+    """Build a rich session header with codename + question if available."""
+    # Try to match session name to an investigation
+    # Session patterns: "voronoi-inv-7", "inv-7-coupled-decisions-swarm"
+    inv: Investigation | None = None
+    for fragment, candidate in inv_map.items():
+        if fragment in session_name:
+            inv = candidate
+            break
+
+    if inv is None:
+        return f"*{session_name}*"
+
+    emoji = MODE_EMOJI.get(inv.mode, "🔬")
+    codename = inv.codename or codename_for_id(inv.id)
+    question_short = _truncate_word(inv.question, 60) if inv.question else ""
+    header = f"*{emoji} {codename}* (`{session_name}`)"
+    if question_short:
+        header += f"\n  _{question_short}_"
+    return header
+
+
+def _truncate_word(text: str, max_len: int) -> str:
+    """Truncate *text* at a word boundary, appending '…' if shortened."""
+    text = text.strip()
+    if len(text) <= max_len:
+        return text
+    # Cut at last space before max_len
+    cut = text[:max_len].rfind(" ")
+    if cut <= 0:
+        cut = max_len
+    return text[:cut] + "…"
 
 
 def handle_ready(project_dir: str) -> str:
@@ -589,7 +826,7 @@ _HELP_MESSAGE = (
     "📚 *Knowledge*\n"
     "`/voronoi recall <query>` · `belief` · `journal` · `finding <id>`\n\n"
     "📋 *Tasks*\n"
-    "`/voronoi status` · `tasks` · `ready` · `results [id]`\n\n"
+    "`/voronoi status` · `tasks` · `ready` · `health` · `results [id]`\n\n"
     "🎛 *Control*\n"
     "`/voronoi guide <msg>` · `pivot <msg>` · `abort`\n\n"
     "_In groups, @mention me or reply to my messages._"
@@ -659,6 +896,8 @@ class CommandRouter:
                 return handle_tasks(self.project_dir), None
             elif sub == "ready":
                 return handle_ready(self.project_dir), None
+            elif sub == "health":
+                return handle_health(self.project_dir), None
             elif sub == "investigate" and args:
                 txt = handle_investigate(self.project_dir, " ".join(args), chat_id)
                 return txt, None

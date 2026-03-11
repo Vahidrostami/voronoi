@@ -19,11 +19,17 @@ command -v tmux >/dev/null 2>&1 || { echo "Install tmux: $PKG_HINT tmux"; exit 1
 command -v gh   >/dev/null 2>&1 && echo "✓ GitHub CLI found" || echo "⚠ GitHub CLI (gh) not found — optional, needed for PR workflows"
 command -v docker >/dev/null 2>&1 && echo "✓ Docker found" || echo "⚠ Docker not found — agent code will run on host (no sandbox)"
 
-# Load .env if present (before any checks that depend on env vars)
+# Load .env safely — only KEY=VALUE lines (no command execution)
 if [[ -f "$PROJECT_DIR/.env" ]]; then
-    set -a
-    source "$PROJECT_DIR/.env"
-    set +a
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%%#*}"   # strip comments
+        line="${line#"${line%%[![:space:]]*}"}"  # ltrim
+        line="${line%"${line##*[![:space:]]}"}"  # rtrim
+        [[ -z "$line" ]] && continue
+        if [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+            export "$line"
+        fi
+    done < "$PROJECT_DIR/.env"
     echo "✓ Loaded .env"
 fi
 

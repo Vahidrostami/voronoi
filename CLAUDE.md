@@ -29,6 +29,16 @@ This project uses Beads (bd) for ALL planning and task tracking.
 - Run the test suite before closing a task.
 - Leave the codebase cleaner than you found it.
 
+## Anti-Fabrication — MANDATORY
+LLMs can unintentionally fabricate plausible-looking results. These rules prevent that:
+- NEVER report numbers you didn't compute from actual data using actual code.
+- ALWAYS commit experiment scripts to `experiments/` alongside raw data in `data/raw/`.
+- ALWAYS compute statistics programmatically — write a script that reads the raw data and outputs the numbers.
+- If an experiment fails, report honestly. NEVER re-run until you get a "nice" result.
+- The merge gate runs `verify_finding_against_data()` which cross-checks reported N against data file rows, verifies data hashes, and flags suspiciously clean patterns.
+- The convergence gate runs `audit_all_findings()` which blocks convergence if any finding has critical fabrication flags.
+- The Statistician MUST independently recompute statistics from raw data — never trust agent-reported numbers alone.
+
 ## Artifact Contracts — MANDATORY
 Tasks may declare file-level dependencies in Beads notes. You MUST respect them:
 - `PRODUCES:file1, file2` — Files you MUST create before closing the task. The quality gate rejects merges with missing outputs.

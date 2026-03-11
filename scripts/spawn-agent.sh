@@ -55,6 +55,92 @@ WORKTREE_PATH="${SWARM_DIR}/${BRANCH_NAME}"
 
 echo "--- Spawning agent: $BRANCH_NAME ---"
 
+# =========================================================================
+# Pre-dispatch artifact validation (REQUIRES / GATE checks)
+# =========================================================================
+TASK_JSON=$(bd show "$TASK_ID" --json 2>/dev/null || echo "{}")
+TASK_NOTES=$(echo "$TASK_JSON" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    print(data.get('notes', ''))
+except Exception:
+    print('')
+" 2>/dev/null || echo "")
+
+# Check REQUIRES: files must exist before dispatch
+REQUIRES_LIST=$(echo "$TASK_NOTES" | python3 -c "
+import sys, re
+notes = sys.stdin.read()
+for line in notes.split('\n'):
+    m = re.match(r'REQUIRES:\s*(.+)', line.strip())
+    if m:
+        for f in m.group(1).split(','):
+            f = f.strip()
+            if f:
+                print(f)
+" 2>/dev/null || true)
+
+if [ -n "$REQUIRES_LIST" ]; then
+    MISSING_REQUIRES=""
+    while IFS= read -r req; do
+        [ -z "$req" ] && continue
+        if [ ! -e "${PROJECT_DIR}/${req}" ]; then
+            MISSING_REQUIRES="${MISSING_REQUIRES}  - ${req}\n"
+        fi
+    done <<< "$REQUIRES_LIST"
+    if [ -n "$MISSING_REQUIRES" ]; then
+        echo "✗ Pre-dispatch FAILED: Missing REQUIRES artifacts:"
+        echo -e "$MISSING_REQUIRES"
+        bd update "$TASK_ID" --notes "BLOCKED: Missing required artifacts — dispatch deferred" 2>/dev/null || true
+        echo "  Task $TASK_ID marked BLOCKED. Fix upstream tasks first."
+        exit 1
+    fi
+    echo "✓ Pre-dispatch: All REQUIRES artifacts present"
+fi
+
+# Check GATE: validation file must exist AND pass
+GATE_PATH=$(echo "$TASK_NOTES" | python3 -c "
+import sys, re
+notes = sys.stdin.read()
+for line in notes.split('\n'):
+    m = re.match(r'GATE:\s*(.+)', line.strip())
+    if m:
+        print(m.group(1).strip())
+        break
+" 2>/dev/null || true)
+
+if [ -n "$GATE_PATH" ]; then
+    GATE_FULL="${PROJECT_DIR}/${GATE_PATH}"
+    if [ ! -f "$GATE_FULL" ]; then
+        echo "✗ Pre-dispatch FAILED: GATE file missing: $GATE_PATH"
+        bd update "$TASK_ID" --notes "BLOCKED: GATE artifact missing — dispatch deferred" 2>/dev/null || true
+        exit 1
+    fi
+    # Verify GATE contains passing verdict
+    GATE_STATUS=$(python3 -c "
+import sys, json
+try:
+    data = json.load(open('$GATE_FULL'))
+    status = data.get('status', '')
+    converged = data.get('converged', False)
+    if status in ('converged', 'pass', 'passed') or converged:
+        print('PASS')
+    else:
+        print('FAIL:' + status)
+except Exception as e:
+    print('ERROR:' + str(e))
+" 2>/dev/null || echo "ERROR:parse_failed")
+    if [[ "$GATE_STATUS" != "PASS" ]]; then
+        echo "✗ Pre-dispatch FAILED: GATE not passing: $GATE_PATH ($GATE_STATUS)"
+        bd update "$TASK_ID" --notes "BLOCKED: GATE validation not passing — dispatch deferred" 2>/dev/null || true
+        exit 1
+    fi
+    echo "✓ Pre-dispatch: GATE $GATE_PATH is passing"
+fi
+
+echo "✓ Pre-dispatch validation complete"
+
 # 1. Create worktree on a new branch
 cd "$PROJECT_DIR"
 git worktree add "$WORKTREE_PATH" -b "$BRANCH_NAME" 2>/dev/null || {
@@ -90,13 +176,18 @@ else
 fi
 
 # 5. Launch agent CLI in the tmux pane
+# Quote config-derived values to prevent shell injection
+SAFE_CMD=$(printf '%q' "$AGENT_CMD")
+SAFE_FLAGS=$(printf '%q' "$AGENT_FLAGS")
+SAFE_WP=$(printf '%q' "$WORKTREE_PATH")
+
 if [[ -f "$WORKTREE_PATH/.agent-prompt.txt" ]]; then
     tmux send-keys -t "$TMUX_SESSION:$BRANCH_NAME" \
-        "cd \"$WORKTREE_PATH\" && $AGENT_CMD $AGENT_FLAGS -p \"\$(cat .agent-prompt.txt)\"" Enter
+        "cd $SAFE_WP && $SAFE_CMD $SAFE_FLAGS -p \"\$(cat .agent-prompt.txt)\"" Enter
 else
     echo "⚠ No prompt file found — agent will start in interactive mode"
     tmux send-keys -t "$TMUX_SESSION:$BRANCH_NAME" \
-        "cd \"$WORKTREE_PATH\" && $AGENT_CMD $AGENT_FLAGS" Enter
+        "cd $SAFE_WP && $SAFE_CMD $SAFE_FLAGS" Enter
 fi
 
 echo "✓ Agent spawned: $BRANCH_NAME (tmux: $TMUX_SESSION)"

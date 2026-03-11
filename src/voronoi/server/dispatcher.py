@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shlex
 import shutil
 import subprocess
 import time
@@ -38,6 +39,8 @@ class DispatcherConfig:
     agent_flags: str = "--allow-all"
     progress_interval: int = 30  # seconds between progress updates
     timeout_hours: int = 8       # max hours before marking investigation exhausted
+    max_retries: int = 2         # max times to restart a dead agent
+    stall_minutes: int = 45      # warn/restart if 0 tasks after this long
 
 
 @dataclass
@@ -59,10 +62,16 @@ class RunningInvestigation:
     phase: str = "starting"
     improvement_rounds: int = 0
     eval_score: float = 0.0
+    retry_count: int = 0
+    stall_warned: bool = False
 
     @property
     def label(self) -> str:
         return self.codename or f"#{self.investigation_id}"
+
+    @property
+    def log_path(self) -> Path:
+        return self.workspace_path / ".swarm" / "agent.log"
 
 
 class InvestigationDispatcher:
@@ -180,6 +189,11 @@ class InvestigationDispatcher:
                     logger.info("Recovered completed investigation #%d (%s)",
                                 inv.id, inv.codename)
                     self._handle_completion(run)
+                elif self._try_restart(run):
+                    # Try to restart instead of marking failed
+                    self.running[inv.id] = run
+                    logger.info("Recovered and restarted investigation #%d (%s)",
+                                inv.id, inv.codename)
                 else:
                     logger.warning("Recovered dead investigation #%d (%s) — marking failed",
                                    inv.id, inv.codename)
@@ -263,15 +277,28 @@ class InvestigationDispatcher:
         if not shutil.which(agent_bin):
             raise RuntimeError(f"Agent CLI not found: {agent_bin}")
 
+        log_path = workspace_path / ".swarm" / "agent.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+
         subprocess.run(
             ["tmux", "new-session", "-d", "-s", session, "-c", str(workspace_path)],
             capture_output=True,
         )
-        # Launch agent via shell; when it exits the shell exits too,
-        # letting poll_progress detect the session is gone.
+        # Enable tmux pane logging so we can inspect crashes after the fact.
+        subprocess.run(
+            ["tmux", "pipe-pane", "-t", session,
+             f"cat >> {shlex.quote(str(log_path))}"],
+            capture_output=True,
+        )
+        # Launch the agent.  The prompt is read from a file via shell
+        # redirection to avoid ARG_MAX / tmux send-keys buffer issues
+        # with large prompts.  shlex.quote prevents command injection.
+        safe_ws = shlex.quote(str(workspace_path))
+        safe_cmd = shlex.quote(agent_cmd)
+        safe_flags = shlex.quote(agent_flags)
         subprocess.run(
             ["tmux", "send-keys", "-t", session,
-             f'cd "{workspace_path}" && {agent_cmd} {agent_flags} '
+             f'cd {safe_ws} && {safe_cmd} {safe_flags} '
              f'-p "$(cat .swarm/orchestrator-prompt.txt)" ; exit',
              "Enter"],
             capture_output=True,
@@ -326,6 +353,20 @@ class InvestigationDispatcher:
             elapsed_hours = (now - run.started_at) / 3600
             timed_out = elapsed_hours >= self.config.timeout_hours
 
+            # Stall detection: warn if 0 tasks after stall_minutes
+            if (session_alive and not run.stall_warned
+                    and not run.task_snapshot
+                    and elapsed_hours * 60 >= self.config.stall_minutes):
+                run.stall_warned = True
+                logger.warning("Investigation #%d stalled — 0 tasks after %.0fmin",
+                               inv_id, elapsed_hours * 60)
+                self.send_message(
+                    f"⚠️ *Voronoi · {run.label}* — stalled\n\n"
+                    f"No tasks created after {elapsed_hours * 60:.0f}min. "
+                    f"The orchestrator may be stuck. "
+                    f"Will auto-restart if the agent exits."
+                )
+
             if not session_alive or self._is_complete(run) or timed_out:
                 if timed_out and not self._is_complete(run):
                     reason = f"timeout ({self.config.timeout_hours}h)"
@@ -342,6 +383,12 @@ class InvestigationDispatcher:
                     self._handle_completion(run, failed=True,
                                             failure_reason="Timed out")
                 elif not session_alive and not self._is_complete(run):
+                    # Try to restart the agent instead of giving up
+                    if self._try_restart(run):
+                        reason = "restarted"
+                        logger.info("Investigation #%d restarted (attempt %d)",
+                                    inv_id, run.retry_count)
+                        continue  # don't add to completed_ids
                     reason = "agent crashed"
                     logger.warning("Investigation #%d agent exited without completing",
                                    inv_id)
@@ -365,12 +412,21 @@ class InvestigationDispatcher:
         if eval_path.exists():
             try:
                 data = json.loads(eval_path.read_text())
+                if not isinstance(data, dict):
+                    logger.warning("eval-score.json is not a dict for #%d",
+                                   run.investigation_id)
+                    return
                 score = float(data.get("score", 0.0))
+                if score < 0 or score > 1.0:
+                    logger.warning("eval-score.json score out of range [0,1] for #%d: %s",
+                                   run.investigation_id, score)
+                    return
                 if score > 0:
                     run.eval_score = score
                     run.improvement_rounds = int(data.get("rounds", run.improvement_rounds))
-            except (json.JSONDecodeError, OSError, ValueError):
-                pass
+            except (json.JSONDecodeError, OSError, ValueError) as e:
+                logger.warning("Failed to read eval-score.json for #%d: %s",
+                               run.investigation_id, e)
 
     def _write_timeout_convergence(self, run: RunningInvestigation) -> None:
         """Write convergence.json indicating timeout exhaustion."""
@@ -389,18 +445,34 @@ class InvestigationDispatcher:
 
     def _check_progress(self, run: RunningInvestigation) -> list[dict]:
         events: list[dict] = []
+        tasks: list[dict] | None = None
         try:
             result = subprocess.run(
                 ["bd", "list", "--json"],
                 capture_output=True, text=True, timeout=15,
                 cwd=str(run.workspace_path),
             )
-            if result.returncode == 0:
+            if result.returncode == 0 and result.stdout.strip():
                 tasks = json.loads(result.stdout)
-                events.extend(self._diff_tasks(run, tasks))
-        except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError):
-            pass
-        events.extend(self._check_findings(run))
+                if isinstance(tasks, list):
+                    events.extend(self._diff_tasks(run, tasks))
+                else:
+                    logger.warning("bd list --json returned non-list for #%d: %s",
+                                   run.investigation_id, type(tasks).__name__)
+                    tasks = None
+            elif result.returncode != 0:
+                logger.debug("bd list --json failed for #%d (exit=%d): %s",
+                             run.investigation_id, result.returncode,
+                             result.stderr.strip()[:200] if result.stderr else "")
+        except subprocess.TimeoutExpired:
+            logger.warning("bd list --json timed out for #%d", run.investigation_id)
+        except FileNotFoundError:
+            logger.error("bd command not found during progress check for #%d",
+                         run.investigation_id)
+        except json.JSONDecodeError as e:
+            logger.warning("bd list --json returned invalid JSON for #%d: %s",
+                           run.investigation_id, e)
+        events.extend(self._check_findings(run, tasks))
         events.extend(self._detect_phase(run))
         return events
 
@@ -432,19 +504,26 @@ class InvestigationDispatcher:
             events.append({"type": "progress", "msg": f"📊 `[{bar}]` {closed}/{total} tasks ({pct}%)"})
         return events
 
-    def _check_findings(self, run: RunningInvestigation) -> list[dict]:
+    def _check_findings(self, run: RunningInvestigation,
+                         tasks: list[dict] | None = None) -> list[dict]:
         events: list[dict] = []
-        try:
-            result = subprocess.run(
-                ["bd", "list", "--json"],
-                capture_output=True, text=True, timeout=15,
-                cwd=str(run.workspace_path),
-            )
-            if result.returncode != 0:
+        if tasks is None:
+            try:
+                result = subprocess.run(
+                    ["bd", "list", "--json"],
+                    capture_output=True, text=True, timeout=15,
+                    cwd=str(run.workspace_path),
+                )
+                if result.returncode != 0 or not result.stdout.strip():
+                    return events
+                parsed = json.loads(result.stdout)
+                if not isinstance(parsed, list):
+                    return events
+                tasks = parsed
+            except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError) as e:
+                logger.debug("Findings check skipped for #%d: %s",
+                             run.investigation_id, e)
                 return events
-            tasks = json.loads(result.stdout)
-        except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError):
-            return events
 
         for task in tasks:
             tid = task.get("id", "")
@@ -597,7 +676,11 @@ class InvestigationDispatcher:
         return False
 
     def _try_convergence_check(self, run: RunningInvestigation) -> None:
-        """Attempt to run a convergence check and write convergence.json."""
+        """Attempt to run a convergence check and write convergence.json.
+
+        Also runs the convergence-gate.sh script for multi-signal validation
+        when available, to prevent premature completion.
+        """
         try:
             from voronoi.science import check_convergence, write_convergence
             result = check_convergence(
@@ -606,6 +689,26 @@ class InvestigationDispatcher:
                 improvement_rounds=run.improvement_rounds,
             )
             if result.converged or result.status in ("exhausted", "diminishing_returns"):
+                # Run convergence-gate.sh for additional validation
+                gate_script = run.workspace_path / "scripts" / "convergence-gate.sh"
+                if not gate_script.exists():
+                    # Try project-level scripts directory
+                    gate_script = Path(__file__).resolve().parent.parent.parent.parent / "scripts" / "convergence-gate.sh"
+                if gate_script.exists() and gate_script.stat().st_mode & 0o111:
+                    try:
+                        gate_result = subprocess.run(
+                            [str(gate_script), str(run.workspace_path), run.rigor],
+                            capture_output=True, text=True, timeout=30,
+                            cwd=str(run.workspace_path),
+                        )
+                        if gate_result.returncode != 0:
+                            logger.warning("Convergence gate FAILED for %s: %s",
+                                           run.label, gate_result.stdout.strip()[:300])
+                            # Don't write convergence — gate didn't pass
+                            return
+                    except (subprocess.TimeoutExpired, OSError) as e:
+                        logger.debug("Convergence gate script failed: %s", e)
+
                 write_convergence(run.workspace_path, result)
                 logger.info("Convergence written for %s: %s", run.label, result.status)
         except Exception as e:
@@ -630,11 +733,25 @@ class InvestigationDispatcher:
                           run.label, run.investigation_id, failure_reason,
                           closed, total_tasks, elapsed)
             self.queue.fail(run.investigation_id, failure_reason)
-            self.send_message(
-                f"💀 *Voronoi · {run.label}* FAILED\n\n"
-                f"Reason: {failure_reason}\n"
-                f"Tasks: {closed}/{total_tasks} completed in {elapsed:.0f}min"
-            )
+
+            # Include log tail in the failure message for diagnostics
+            log_tail = ""
+            if run.log_path.exists():
+                try:
+                    raw = run.log_path.read_text(errors="replace")
+                    last_lines = raw.strip().splitlines()[-10:]
+                    log_tail = "\n".join(last_lines)
+                except OSError:
+                    pass
+
+            msg = (f"💀 *Voronoi · {run.label}* FAILED\n\n"
+                   f"Reason: {failure_reason}\n"
+                   f"Tasks: {closed}/{total_tasks} completed in {elapsed:.0f}min")
+            if run.retry_count > 0:
+                msg += f"\nRetries: {run.retry_count}/{self.config.max_retries}"
+            if log_tail:
+                msg += f"\n\nLast log:\n```\n{log_tail[-400:]}\n```"
+            self.send_message(msg)
             return
 
         logger.info("Voronoi %s (#%d) complete: %d/%d tasks in %.1fmin",
@@ -663,6 +780,60 @@ class InvestigationDispatcher:
                 )
 
         self._try_publish(run)
+
+    def _try_restart(self, run: RunningInvestigation) -> bool:
+        """Attempt to restart a dead agent session.
+
+        Returns True if the agent was successfully restarted, False if
+        retries are exhausted or the workspace is in an unrecoverable state.
+        """
+        if run.retry_count >= self.config.max_retries:
+            logger.warning("Investigation #%d exhausted %d retries — giving up",
+                           run.investigation_id, run.retry_count)
+            return False
+
+        run.retry_count += 1
+
+        # Extract the last lines from the agent log for diagnostics
+        tail = ""
+        if run.log_path.exists():
+            try:
+                raw = run.log_path.read_text(errors="replace")
+                tail = "\n".join(raw.strip().splitlines()[-20:])
+            except OSError:
+                pass
+
+        logger.info("Restarting investigation #%d (attempt %d/%d)",
+                    run.investigation_id, run.retry_count, self.config.max_retries)
+
+        self.send_message(
+            f"🔄 *Voronoi · {run.label}* — agent died, restarting "
+            f"(attempt {run.retry_count}/{self.config.max_retries})\n\n"
+            + (f"Last log:\n```\n{tail[-500:]}\n```" if tail else "No log captured.")
+        )
+
+        # Ensure orchestrator prompt still exists
+        prompt_file = run.workspace_path / ".swarm" / "orchestrator-prompt.txt"
+        if not prompt_file.exists():
+            logger.error("Prompt file missing for #%d — cannot restart",
+                         run.investigation_id)
+            return False
+
+        # Rotate the log file so the new session starts clean
+        if run.log_path.exists():
+            rotated = run.log_path.with_suffix(f".{run.retry_count}.log")
+            try:
+                run.log_path.rename(rotated)
+            except OSError:
+                pass
+
+        try:
+            self._launch_in_tmux(run.tmux_session, run.workspace_path)
+            run.stall_warned = False
+            return True
+        except Exception as e:
+            logger.error("Failed to restart #%d: %s", run.investigation_id, e)
+            return False
 
     def _cleanup_tmux(self, run: RunningInvestigation) -> None:
         """Kill all tmux sessions associated with this investigation."""

@@ -30,6 +30,67 @@ fi
 # Load Telegram notifications (fire-and-forget, never fails the merge)
 source "${PROJECT_DIR}/scripts/notify-telegram.sh" 2>/dev/null || true
 
+# =========================================================================
+# Pre-merge artifact validation (PRODUCES checks)
+# =========================================================================
+if [ -n "$TASK_ID" ]; then
+    TASK_JSON=$(bd show "$TASK_ID" --json 2>/dev/null || echo "{}")
+    PRODUCES_LIST=$(echo "$TASK_JSON" | python3 -c "
+import sys, json, re
+try:
+    data = json.load(sys.stdin)
+    notes = data.get('notes', '')
+    for line in notes.split('\n'):
+        m = re.match(r'PRODUCES:\s*(.+)', line.strip())
+        if m:
+            for f in m.group(1).split(','):
+                f = f.strip()
+                if f:
+                    print(f)
+except Exception:
+    pass
+" 2>/dev/null || true)
+
+    if [ -n "$PRODUCES_LIST" ]; then
+        MISSING_PRODUCES=""
+        while IFS= read -r prod; do
+            [ -z "$prod" ] && continue
+            # Check in worktree first, then project root
+            if [ ! -e "${WORKTREE_PATH}/${prod}" ] && [ ! -e "${PROJECT_DIR}/${prod}" ]; then
+                MISSING_PRODUCES="${MISSING_PRODUCES}  - ${prod}\n"
+            fi
+        done <<< "$PRODUCES_LIST"
+        if [ -n "$MISSING_PRODUCES" ]; then
+            echo "✗ Pre-merge FAILED: Missing PRODUCES artifacts:"
+            echo -e "$MISSING_PRODUCES"
+            echo "  Branch $BRANCH_NAME safely on remote. Fix and retry."
+            bd update "$TASK_ID" --notes "MERGE_BLOCKED: Missing output artifacts — merge deferred" 2>/dev/null || true
+            notify_telegram "merge_blocked" "⚠️ Merge blocked: \`${BRANCH_NAME}\` — missing PRODUCES artifacts" 2>/dev/null || true
+            exit 1
+        fi
+        echo "✓ Pre-merge: All PRODUCES artifacts present"
+    fi
+
+    # Run figure-lint if task produces LaTeX or figure files
+    HAS_LATEX=$(echo "$PRODUCES_LIST" | grep -i '\.tex\|\.pdf\|figures/' || true)
+    if [ -n "$HAS_LATEX" ]; then
+        if [ -x "${PROJECT_DIR}/scripts/figure-lint.sh" ]; then
+            echo "  Running figure-lint check..."
+            SEARCH_DIR="$WORKTREE_PATH"
+            [ ! -d "$SEARCH_DIR" ] && SEARCH_DIR="$PROJECT_DIR"
+            if ! "${PROJECT_DIR}/scripts/figure-lint.sh" "$SEARCH_DIR"; then
+                echo "⚠ Figure-lint found missing figures (non-blocking warning)"
+                bd update "$TASK_ID" --notes "WARNING: figure-lint detected missing figures" 2>/dev/null || true
+                notify_telegram "figure_warning" "⚠️ \`${BRANCH_NAME}\`: figure-lint found missing figures" 2>/dev/null || true
+            else
+                echo "✓ Pre-merge: Figure-lint passed"
+            fi
+        fi
+    fi
+
+    echo "✓ Pre-merge validation complete"
+fi
+
 # 1. Ensure we're on main
 git checkout main
 git pull --rebase

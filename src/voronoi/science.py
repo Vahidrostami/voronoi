@@ -21,39 +21,15 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 import re
-import subprocess
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from voronoi.beads import run_bd as _run_bd
+
 logger = logging.getLogger("voronoi.science")
-
-
-# ---------------------------------------------------------------------------
-# Beads helper (shared with other modules)
-# ---------------------------------------------------------------------------
-
-def _run_bd(*args: str, cwd: str | None = None) -> tuple[int, str]:
-    """Run a bd (beads) command."""
-    env = os.environ.copy()
-    if cwd and "BEADS_DIR" not in env:
-        beads_dir = os.path.join(cwd, ".beads")
-        if os.path.isdir(beads_dir):
-            env["BEADS_DIR"] = beads_dir
-    try:
-        result = subprocess.run(
-            ["bd", *args],
-            capture_output=True, text=True, timeout=30,
-            cwd=cwd, env=env,
-        )
-        return result.returncode, (result.stdout + result.stderr).strip()
-    except FileNotFoundError:
-        return 1, "bd (beads) not found"
-    except subprocess.TimeoutExpired:
-        return 1, "Command timed out"
 
 
 # ---------------------------------------------------------------------------
@@ -292,13 +268,16 @@ def check_convergence(workspace: Path, rigor: str,
     if eval_score <= 0.0:
         blockers.append("No evaluator score yet")
 
+    # Fetch tasks once for all convergence checks
+    tasks = _fetch_tasks(workspace)
+
     # Check for consistency conflicts
-    conflicts = _find_consistency_conflicts(workspace)
+    conflicts = _find_consistency_conflicts(workspace, tasks)
     if conflicts:
         blockers.append(f"{len(conflicts)} unresolved consistency conflicts")
 
     # Check for contested findings
-    contested = _find_contested_findings(workspace)
+    contested = _find_contested_findings(workspace, tasks)
     if contested:
         blockers.append(f"{len(contested)} contested findings")
 
@@ -326,23 +305,23 @@ def check_convergence(workspace: Path, rigor: str,
             blockers.append(f"Unresolved hypotheses: {', '.join(unresolved[:3])}")
 
         # At least one competing theory ruled out
-        theories = _find_theories(workspace)
+        theories = _find_theories(workspace, tasks)
         if not any(t.get("status") == "refuted" for t in theories):
             blockers.append("No competing theory ruled out yet")
 
         # Novel prediction tested
-        predictions = _find_tested_predictions(workspace)
+        predictions = _find_tested_predictions(workspace, tasks)
         if not predictions:
             blockers.append("No novel prediction tested")
 
         # All findings must be ROBUST or FRAGILE-documented
-        fragile_undoc = _find_undocumented_fragile(workspace)
+        fragile_undoc = _find_undocumented_fragile(workspace, tasks)
         if fragile_undoc:
             blockers.append(f"{len(fragile_undoc)} fragile findings without conditions documented")
 
     # --- Experimental: replication required ---
     if rigor == "experimental":
-        unreplicated = _find_unreplicated_high_impact(workspace)
+        unreplicated = _find_unreplicated_high_impact(workspace, tasks)
         if unreplicated:
             blockers.append(f"{len(unreplicated)} high-impact findings not yet replicated")
 
@@ -548,6 +527,397 @@ def verify_data_hash(filepath: Path, expected_hash: str) -> bool:
     return actual == expected_hash
 
 
+def compute_data_hash(filepath: Path) -> str:
+    """Compute SHA-256 hash of a data file and return sha256:<hex> string."""
+    sha256 = hashlib.sha256()
+    with open(filepath, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            sha256.update(chunk)
+    return f"sha256:{sha256.hexdigest()}"
+
+
+# ---------------------------------------------------------------------------
+# Anti-Fabrication Verification
+# ---------------------------------------------------------------------------
+
+@dataclass
+class FabricationFlag:
+    """A single red flag raised by anti-fabrication audit."""
+    severity: str  # "critical", "warning", "info"
+    category: str  # e.g. "data_missing", "numbers_mismatch", "too_clean"
+    message: str
+    finding_id: str = ""
+
+
+@dataclass
+class AntiFabricationResult:
+    """Result of anti-fabrication verification for a finding."""
+    finding_id: str
+    passed: bool
+    flags: list[FabricationFlag] = field(default_factory=list)
+    data_file_exists: bool = False
+    hash_verified: bool = False
+    experiment_script_exists: bool = False
+    numbers_verified: bool = False
+
+    @property
+    def critical_flags(self) -> list[FabricationFlag]:
+        return [f for f in self.flags if f.severity == "critical"]
+
+
+def _parse_csv_numbers(filepath: Path) -> list[list[float]]:
+    """Parse numeric columns from a CSV data file.
+
+    Returns list of columns, where each column is a list of floats.
+    Non-numeric values are skipped.
+    """
+    import csv
+
+    columns: dict[int, list[float]] = {}
+    try:
+        with open(filepath, newline="") as f:
+            reader = csv.reader(f)
+            header = next(reader, None)
+            if header is None:
+                return []
+            for row in reader:
+                for i, val in enumerate(row):
+                    try:
+                        columns.setdefault(i, []).append(float(val))
+                    except (ValueError, TypeError):
+                        pass
+    except (OSError, csv.Error):
+        return []
+
+    return [col for col in columns.values() if len(col) >= 2]
+
+
+def _extract_reported_numbers(notes: str) -> dict:
+    """Extract reported statistics from finding notes.
+
+    Returns a dict with keys like 'effect_size', 'ci_lo', 'ci_hi', 'n', 'p'.
+    """
+    result: dict = {}
+
+    effect = _extract_field(notes, "EFFECT_SIZE")
+    if effect:
+        try:
+            result["effect_size"] = float(re.sub(r"[^\d.\-]", "", effect))
+        except ValueError:
+            pass
+
+    ci = _extract_field(notes, "CI_95")
+    if ci:
+        ci_match = re.findall(r"[\-]?\d+\.?\d*", ci)
+        if len(ci_match) >= 2:
+            try:
+                result["ci_lo"] = float(ci_match[0])
+                result["ci_hi"] = float(ci_match[1])
+            except ValueError:
+                pass
+
+    n = _extract_field(notes, "N")
+    if n:
+        try:
+            result["n"] = int(re.sub(r"[^\d]", "", n))
+        except ValueError:
+            pass
+
+    p = _extract_field(notes, "P")
+    if p:
+        try:
+            result["p"] = float(re.sub(r"[^\d.\-]", "", p))
+        except ValueError:
+            pass
+
+    return result
+
+
+def _verify_sample_size_against_data(
+    data_columns: list[list[float]],
+    reported_n: int,
+) -> tuple[bool, str]:
+    """Check if any column's row count is consistent with reported N."""
+    if not data_columns:
+        return False, "No numeric data columns found in file"
+    actual_sizes = [len(col) for col in data_columns]
+    # Reported N could be per-group or total; accept if any column matches
+    # or if sum of two equal columns matches
+    if reported_n in actual_sizes:
+        return True, ""
+    # Check if N is total across two equal groups
+    for size in actual_sizes:
+        if size * 2 == reported_n or size == reported_n:
+            return True, ""
+    # Check if total rows match
+    max_rows = max(actual_sizes) if actual_sizes else 0
+    if max_rows == reported_n:
+        return True, ""
+    return False, (
+        f"Reported N={reported_n} but data file has column sizes "
+        f"{sorted(set(actual_sizes))}. No column matches reported N."
+    )
+
+
+def _check_suspiciously_clean(data_columns: list[list[float]]) -> list[str]:
+    """Detect suspiciously clean data patterns that suggest fabrication.
+
+    Checks for: identical decimal precision, impossibly round numbers,
+    zero variance, and p-values clustered just below 0.05.
+    """
+    warnings: list[str] = []
+
+    for i, col in enumerate(data_columns):
+        if len(col) < 3:
+            continue
+
+        # Check for zero variance (all identical values)
+        if len(set(col)) == 1:
+            warnings.append(
+                f"Column {i}: all {len(col)} values are identical ({col[0]})"
+            )
+
+        # Check for suspiciously uniform decimal precision
+        decimals = []
+        for v in col:
+            s = f"{v:.15g}"
+            if "." in s:
+                decimals.append(len(s.split(".")[1].rstrip("0")) or 0)
+            else:
+                decimals.append(0)
+        if len(set(decimals)) == 1 and decimals[0] > 0 and len(col) > 5:
+            warnings.append(
+                f"Column {i}: all {len(col)} values have exactly "
+                f"{decimals[0]} decimal places (suspiciously uniform precision)"
+            )
+
+        # Check for impossibly round numbers (all integers or all .5)
+        all_round = all(v == int(v) or v * 2 == int(v * 2) for v in col)
+        if all_round and len(col) > 10:
+            warnings.append(
+                f"Column {i}: all {len(col)} values are round numbers "
+                f"(integers or .5 increments)"
+            )
+
+    return warnings
+
+
+def verify_finding_against_data(
+    workspace: Path,
+    finding_notes: str,
+    finding_id: str = "",
+) -> AntiFabricationResult:
+    """Cross-verify a finding's reported numbers against its raw data file.
+
+    This is the core anti-fabrication check. It:
+    1. Verifies the data file exists and its hash matches
+    2. Checks that reported N matches actual data row count
+    3. Flags suspiciously clean data patterns
+    4. Checks for experiment script existence
+    """
+    result = AntiFabricationResult(finding_id=finding_id, passed=True)
+
+    # 1. Check data file exists
+    data_file_str = _extract_field(finding_notes, "DATA_FILE")
+    if not data_file_str:
+        result.flags.append(FabricationFlag(
+            severity="critical",
+            category="data_missing",
+            message="No DATA_FILE referenced in finding — cannot verify",
+            finding_id=finding_id,
+        ))
+        result.passed = False
+        return result
+
+    data_path = workspace / data_file_str.strip()
+    result.data_file_exists = data_path.exists()
+    if not result.data_file_exists:
+        result.flags.append(FabricationFlag(
+            severity="critical",
+            category="data_missing",
+            message=f"DATA_FILE '{data_file_str}' does not exist on disk",
+            finding_id=finding_id,
+        ))
+        result.passed = False
+        return result
+
+    # 2. Verify hash
+    expected_hash = _extract_field(finding_notes, "DATA_HASH")
+    if expected_hash:
+        result.hash_verified = verify_data_hash(data_path, expected_hash.strip())
+        if not result.hash_verified:
+            actual_hash = compute_data_hash(data_path)
+            result.flags.append(FabricationFlag(
+                severity="critical",
+                category="hash_mismatch",
+                message=(
+                    f"DATA_HASH mismatch: expected {expected_hash}, "
+                    f"actual {actual_hash}. Data may have been modified."
+                ),
+                finding_id=finding_id,
+            ))
+            result.passed = False
+    else:
+        result.flags.append(FabricationFlag(
+            severity="warning",
+            category="hash_missing",
+            message="No DATA_HASH in finding — cannot verify data integrity",
+            finding_id=finding_id,
+        ))
+
+    # 3. Parse data and cross-check reported numbers
+    reported = _extract_reported_numbers(finding_notes)
+    if data_path.suffix.lower() == ".csv":
+        columns = _parse_csv_numbers(data_path)
+
+        # Verify sample size
+        if "n" in reported and columns:
+            ok, msg = _verify_sample_size_against_data(columns, reported["n"])
+            if ok:
+                result.numbers_verified = True
+            else:
+                result.flags.append(FabricationFlag(
+                    severity="critical",
+                    category="n_mismatch",
+                    message=msg,
+                    finding_id=finding_id,
+                ))
+                result.passed = False
+
+        # Check for suspicious patterns
+        if columns:
+            clean_warnings = _check_suspiciously_clean(columns)
+            for w in clean_warnings:
+                result.flags.append(FabricationFlag(
+                    severity="warning",
+                    category="too_clean",
+                    message=w,
+                    finding_id=finding_id,
+                ))
+    elif data_path.suffix.lower() == ".json":
+        # For JSON data, at least verify it's valid and non-empty
+        try:
+            data = json.loads(data_path.read_text())
+            if not data:
+                result.flags.append(FabricationFlag(
+                    severity="warning",
+                    category="empty_data",
+                    message="DATA_FILE is valid JSON but empty",
+                    finding_id=finding_id,
+                ))
+        except (json.JSONDecodeError, OSError) as e:
+            result.flags.append(FabricationFlag(
+                severity="critical",
+                category="corrupt_data",
+                message=f"DATA_FILE is not valid JSON: {e}",
+                finding_id=finding_id,
+            ))
+            result.passed = False
+
+    # 4. Check experiment script exists
+    source_task = _extract_field(finding_notes, "SOURCE_TASK")
+    experiment_dir = workspace / "experiments"
+    if experiment_dir.exists():
+        scripts = list(experiment_dir.glob("*.py")) + list(experiment_dir.glob("*.sh"))
+        result.experiment_script_exists = len(scripts) > 0
+    if not result.experiment_script_exists:
+        result.flags.append(FabricationFlag(
+            severity="warning",
+            category="no_experiment_script",
+            message=(
+                "No experiment script found in experiments/. "
+                "Results cannot be independently reproduced."
+            ),
+            finding_id=finding_id,
+        ))
+
+    # 5. Check for p-value clustering just below 0.05
+    if "p" in reported:
+        p = reported["p"]
+        if 0.01 < p < 0.05:
+            result.flags.append(FabricationFlag(
+                severity="info",
+                category="p_cluster",
+                message=(
+                    f"p-value ({p}) is in the suspicious 0.01–0.05 cluster. "
+                    f"Not necessarily fabricated, but merits scrutiny."
+                ),
+                finding_id=finding_id,
+            ))
+
+    # 6. Effect size sanity check
+    if "effect_size" in reported:
+        d = abs(reported["effect_size"])
+        if d > 3.0:
+            result.flags.append(FabricationFlag(
+                severity="warning",
+                category="implausible_effect",
+                message=(
+                    f"Reported effect size d={reported['effect_size']} is "
+                    f"implausibly large (>3.0). Verify this is correct."
+                ),
+                finding_id=finding_id,
+            ))
+
+    return result
+
+
+def audit_all_findings(
+    workspace: Path,
+    tasks: list[dict] | None = None,
+) -> list[AntiFabricationResult]:
+    """Run anti-fabrication verification on ALL findings in the workspace."""
+    if tasks is None:
+        tasks = _fetch_tasks(workspace)
+    if not tasks:
+        return []
+
+    results = []
+    for task in tasks:
+        title = task.get("title", "")
+        if "FINDING" not in title.upper():
+            continue
+        notes = task.get("notes", "")
+        finding_id = str(task.get("id", ""))
+        result = verify_finding_against_data(workspace, notes, finding_id)
+        results.append(result)
+
+    return results
+
+
+def format_fabrication_report(results: list[AntiFabricationResult]) -> str:
+    """Format anti-fabrication audit results into a human-readable report."""
+    if not results:
+        return "No findings to audit."
+
+    lines = ["# Anti-Fabrication Audit Report", ""]
+    total = len(results)
+    passed = sum(1 for r in results if r.passed)
+    critical_count = sum(len(r.critical_flags) for r in results)
+
+    lines.append(f"**{passed}/{total}** findings passed verification")
+    if critical_count:
+        lines.append(f"**{critical_count} CRITICAL flags** — these block convergence")
+    lines.append("")
+
+    for r in results:
+        status = "PASS" if r.passed else "FAIL"
+        icon = "✅" if r.passed else "❌"
+        lines.append(f"## {icon} Finding {r.finding_id} — {status}")
+        lines.append(f"- Data file exists: {'yes' if r.data_file_exists else 'NO'}")
+        lines.append(f"- Hash verified: {'yes' if r.hash_verified else 'no'}")
+        lines.append(f"- Experiment script: {'yes' if r.experiment_script_exists else 'no'}")
+        lines.append(f"- Numbers verified: {'yes' if r.numbers_verified else 'no'}")
+        if r.flags:
+            lines.append("- Flags:")
+            for f in r.flags:
+                sev = {"critical": "🚨", "warning": "⚠️", "info": "ℹ️"}.get(f.severity, "?")
+                lines.append(f"  - {sev} [{f.category}] {f.message}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Gate checks (used by dispatcher)
 # ---------------------------------------------------------------------------
@@ -639,6 +1009,14 @@ def check_merge_gates(task: dict, workspace: Path, rigor: str) -> tuple[bool, li
         elif critic_review == "REJECTED":
             blockers.append("Critic REJECTED this finding")
 
+    # Anti-fabrication verification for findings at Analytical+
+    if "FINDING" in title.upper() and rigor in ("analytical", "scientific", "experimental"):
+        fab_result = verify_finding_against_data(
+            workspace, notes, str(task.get("id", ""))
+        )
+        for flag in fab_result.critical_flags:
+            blockers.append(f"FABRICATION_CHECK: {flag.message}")
+
     return len(blockers) == 0, blockers
 
 
@@ -724,14 +1102,30 @@ def _extract_field(notes: str, field_name: str) -> str:
     return m.group(1).strip() if m else ""
 
 
-def _find_consistency_conflicts(workspace: Path) -> list[dict]:
-    """Find unresolved consistency conflicts in the workspace."""
+def _fetch_tasks(workspace: Path) -> list[dict] | None:
+    """Fetch all tasks from Beads once.  Returns None on failure."""
     code, output = _run_bd("list", "--json", cwd=str(workspace))
     if code != 0:
-        return []
+        logger.warning("bd list --json failed (exit=%d) in %s", code, workspace)
+        return None
+    if not output:
+        return None
     try:
-        tasks = json.loads(output)
-    except (json.JSONDecodeError, ValueError):
+        data = json.loads(output)
+        if not isinstance(data, list):
+            logger.warning("bd list --json returned non-list: %s", type(data).__name__)
+            return None
+        return data
+    except (json.JSONDecodeError, ValueError) as e:
+        logger.warning("bd list --json returned invalid JSON in %s: %s", workspace, e)
+        return None
+
+
+def _find_consistency_conflicts(workspace: Path, tasks: list[dict] | None = None) -> list[dict]:
+    """Find unresolved consistency conflicts in the workspace."""
+    if tasks is None:
+        tasks = _fetch_tasks(workspace)
+    if not tasks:
         return []
 
     conflicts = []
@@ -746,27 +1140,21 @@ def _find_consistency_conflicts(workspace: Path) -> list[dict]:
     return conflicts
 
 
-def _find_contested_findings(workspace: Path) -> list[str]:
+def _find_contested_findings(workspace: Path, tasks: list[dict] | None = None) -> list[str]:
     """Find findings marked CONTESTED."""
-    code, output = _run_bd("list", "--json", cwd=str(workspace))
-    if code != 0:
-        return []
-    try:
-        tasks = json.loads(output)
-    except (json.JSONDecodeError, ValueError):
+    if tasks is None:
+        tasks = _fetch_tasks(workspace)
+    if not tasks:
         return []
     return [t.get("id", "") for t in tasks
             if "ADVERSARIAL_RESULT: CONTESTED" in t.get("notes", "")]
 
 
-def _find_theories(workspace: Path) -> list[dict]:
+def _find_theories(workspace: Path, tasks: list[dict] | None = None) -> list[dict]:
     """Find theory entries in Beads."""
-    code, output = _run_bd("list", "--json", cwd=str(workspace))
-    if code != 0:
-        return []
-    try:
-        tasks = json.loads(output)
-    except (json.JSONDecodeError, ValueError):
+    if tasks is None:
+        tasks = _fetch_tasks(workspace)
+    if not tasks:
         return []
     theories = []
     for t in tasks:
@@ -777,28 +1165,22 @@ def _find_theories(workspace: Path) -> list[dict]:
     return theories
 
 
-def _find_tested_predictions(workspace: Path) -> list[str]:
+def _find_tested_predictions(workspace: Path, tasks: list[dict] | None = None) -> list[str]:
     """Find predictions that have been tested."""
-    code, output = _run_bd("list", "--json", cwd=str(workspace))
-    if code != 0:
-        return []
-    try:
-        tasks = json.loads(output)
-    except (json.JSONDecodeError, ValueError):
+    if tasks is None:
+        tasks = _fetch_tasks(workspace)
+    if not tasks:
         return []
     return [t.get("id", "") for t in tasks
             if "PREDICTION_TESTED" in t.get("notes", "")
             and t.get("status") == "closed"]
 
 
-def _find_undocumented_fragile(workspace: Path) -> list[str]:
+def _find_undocumented_fragile(workspace: Path, tasks: list[dict] | None = None) -> list[str]:
     """Find fragile findings without documented conditions."""
-    code, output = _run_bd("list", "--json", cwd=str(workspace))
-    if code != 0:
-        return []
-    try:
-        tasks = json.loads(output)
-    except (json.JSONDecodeError, ValueError):
+    if tasks is None:
+        tasks = _fetch_tasks(workspace)
+    if not tasks:
         return []
     fragile = []
     for t in tasks:
@@ -808,14 +1190,11 @@ def _find_undocumented_fragile(workspace: Path) -> list[str]:
     return fragile
 
 
-def _find_unreplicated_high_impact(workspace: Path) -> list[str]:
+def _find_unreplicated_high_impact(workspace: Path, tasks: list[dict] | None = None) -> list[str]:
     """Find high-impact findings that haven't been replicated."""
-    code, output = _run_bd("list", "--json", cwd=str(workspace))
-    if code != 0:
-        return []
-    try:
-        tasks = json.loads(output)
-    except (json.JSONDecodeError, ValueError):
+    if tasks is None:
+        tasks = _fetch_tasks(workspace)
+    if not tasks:
         return []
     unreplicated = []
     for t in tasks:
@@ -828,3 +1207,373 @@ def _find_unreplicated_high_impact(workspace: Path) -> list[str]:
             if "REPLICATED:no" in notes.lower() or "REPLICATED" not in notes:
                 unreplicated.append(t.get("id", ""))
     return unreplicated
+
+
+# ---------------------------------------------------------------------------
+# Claim-Evidence Registry
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ClaimEvidence:
+    """A single claim linked to its supporting evidence."""
+    claim_id: str
+    claim_text: str
+    finding_ids: list[str] = field(default_factory=list)
+    hypothesis_ids: list[str] = field(default_factory=list)
+    strength: str = "provisional"  # robust, provisional, weak, unsupported
+    interpretation: str = ""
+
+
+@dataclass
+class ClaimEvidenceRegistry:
+    """Maps every claim in the deliverable to supporting findings."""
+    claims: list[ClaimEvidence] = field(default_factory=list)
+    orphan_findings: list[str] = field(default_factory=list)  # findings not cited
+    unsupported_claims: list[str] = field(default_factory=list)  # claims with no evidence
+    coverage_score: float = 0.0
+
+    def add_claim(self, claim: ClaimEvidence) -> None:
+        self.claims.append(claim)
+
+    def audit(self, all_finding_ids: list[str]) -> None:
+        """Compute orphan findings and unsupported claims."""
+        cited = set()
+        for c in self.claims:
+            cited.update(c.finding_ids)
+            if not c.finding_ids:
+                self.unsupported_claims.append(c.claim_id)
+        self.orphan_findings = [f for f in all_finding_ids if f not in cited]
+        total = len(self.claims)
+        supported = total - len(self.unsupported_claims)
+        self.coverage_score = supported / total if total > 0 else 0.0
+
+
+def load_claim_evidence(workspace: Path) -> ClaimEvidenceRegistry:
+    """Load claim-evidence registry from .swarm/claim-evidence.json."""
+    path = workspace / ".swarm" / "claim-evidence.json"
+    if not path.exists():
+        return ClaimEvidenceRegistry()
+    try:
+        data = json.loads(path.read_text())
+        reg = ClaimEvidenceRegistry(
+            orphan_findings=data.get("orphan_findings", []),
+            unsupported_claims=data.get("unsupported_claims", []),
+            coverage_score=data.get("coverage_score", 0.0),
+        )
+        for c in data.get("claims", []):
+            reg.claims.append(ClaimEvidence(
+                claim_id=c.get("claim_id", ""),
+                claim_text=c.get("claim_text", ""),
+                finding_ids=c.get("finding_ids", []),
+                hypothesis_ids=c.get("hypothesis_ids", []),
+                strength=c.get("strength", "provisional"),
+                interpretation=c.get("interpretation", ""),
+            ))
+        return reg
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning("Failed to load claim-evidence registry: %s", e)
+        return ClaimEvidenceRegistry()
+
+
+def save_claim_evidence(workspace: Path, reg: ClaimEvidenceRegistry) -> None:
+    """Save claim-evidence registry to .swarm/claim-evidence.json."""
+    path = workspace / ".swarm" / "claim-evidence.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        "claims": [asdict(c) for c in reg.claims],
+        "orphan_findings": reg.orphan_findings,
+        "unsupported_claims": reg.unsupported_claims,
+        "coverage_score": reg.coverage_score,
+    }
+    path.write_text(json.dumps(data, indent=2))
+
+
+# ---------------------------------------------------------------------------
+# Pre-registration Compliance Audit
+# ---------------------------------------------------------------------------
+
+@dataclass
+class PreRegComplianceResult:
+    """Result of checking whether execution matched pre-registered design."""
+    compliant: bool
+    deviations: list[str] = field(default_factory=list)
+    undocumented_deviations: list[str] = field(default_factory=list)
+    message: str = ""
+
+
+def audit_pre_registration_compliance(task_notes: str) -> PreRegComplianceResult:
+    """Check whether a completed investigation documented all deviations.
+
+    Looks for PRE_REG fields and then checks that any PRE_REG_DEVIATION
+    entries exist if the results diverge from expected results.
+    """
+    pre_reg = parse_pre_registration(task_notes)
+    deviations = pre_reg.deviations
+    issues: list[str] = []
+
+    # Check if expected result was achieved
+    actual_valence = _extract_field(task_notes, "VALENCE")
+    if pre_reg.expected_result and actual_valence:
+        expected_positive = any(w in pre_reg.expected_result.lower()
+                                for w in ("higher", "better", "increase", "outperform",
+                                          "improve", "greater", "more"))
+        actual_negative = actual_valence.lower() in ("negative", "inconclusive")
+        # If expected positive but got negative, check for deviation doc
+        if expected_positive and actual_negative and not deviations:
+            issues.append(
+                "Result contradicts expected outcome but no PRE_REG_DEVIATION documented"
+            )
+
+    # Check for sample size deviations
+    planned_n = pre_reg.sample_size
+    actual_n = _extract_field(task_notes, "N")
+    if planned_n and actual_n:
+        try:
+            planned = int(re.sub(r'[^\d]', '', planned_n))
+            actual = int(re.sub(r'[^\d]', '', actual_n))
+            if planned > 0 and abs(actual - planned) / planned > 0.2:
+                deviation_noted = any("sample" in d.lower() or "N " in d
+                                      for d in deviations)
+                if not deviation_noted:
+                    issues.append(
+                        f"Sample size changed from {planned} to {actual} "
+                        f"without PRE_REG_DEVIATION"
+                    )
+        except (ValueError, ZeroDivisionError):
+            pass
+
+    return PreRegComplianceResult(
+        compliant=len(issues) == 0,
+        deviations=deviations,
+        undocumented_deviations=issues,
+        message="; ".join(issues) if issues else "Pre-registration compliance OK",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Enhanced Consistency Check — Semantic Similarity
+# ---------------------------------------------------------------------------
+
+def _tokenize_title(title: str) -> set[str]:
+    """Extract meaningful tokens from a finding title for topic comparison.
+
+    Uses stemming-like suffix stripping and stopword removal for better
+    topic matching than raw 4-char word overlap.
+    """
+    _STOPWORDS = frozenset({
+        "finding", "that", "this", "with", "from", "have", "been", "were",
+        "does", "more", "than", "also", "into", "when", "each", "only",
+        "both", "over", "some", "other", "about", "between", "through",
+        "after", "before", "under", "above", "such", "most", "very",
+        "just", "those", "these", "their", "there", "which", "while",
+        "would", "could", "should", "shall", "will", "being", "having",
+        "make", "made", "like", "used",
+    })
+    # Extract words 3+ chars, lowercase
+    words = set(re.findall(r'\b[a-z]{3,}\b', title.lower()))
+    words -= _STOPWORDS
+    # Simple suffix stripping (s, ing, ed, tion, ness, ment, ly)
+    stemmed = set()
+    for w in words:
+        for suffix in ("ation", "tion", "ness", "ment", "ting", "ing",
+                        "ies", "ied", "ed", "ly", "er", "es", "ss"):
+            if w.endswith(suffix) and len(w) - len(suffix) >= 3:
+                w = w[:-len(suffix)]
+                break
+        stemmed.add(w)
+    return stemmed
+
+
+def check_consistency_enhanced(findings: list[dict]) -> list[ConsistencyConflict]:
+    """Enhanced pairwise consistency check with better topic matching.
+
+    Uses stemmed token overlap and checks for magnitude conflicts
+    in addition to valence direction.
+    """
+    conflicts: list[ConsistencyConflict] = []
+    validated = [f for f in findings
+                 if "STAT_REVIEW: APPROVED" in f.get("notes", "")]
+
+    for i, a in enumerate(validated):
+        for b in validated[i + 1:]:
+            conflict = _check_pair_enhanced(a, b)
+            if conflict:
+                conflicts.append(conflict)
+
+    return conflicts
+
+
+def _check_pair_enhanced(a: dict, b: dict) -> Optional[ConsistencyConflict]:
+    """Enhanced pair consistency check — direction + magnitude + overlap."""
+    notes_a = a.get("notes", "")
+    notes_b = b.get("notes", "")
+
+    title_a = a.get("title", "")
+    title_b = b.get("title", "")
+
+    tokens_a = _tokenize_title(title_a)
+    tokens_b = _tokenize_title(title_b)
+    overlap = tokens_a & tokens_b
+
+    if len(overlap) < 2:
+        return None  # Different topics
+
+    valence_a = _extract_field(notes_a, "VALENCE")
+    valence_b = _extract_field(notes_b, "VALENCE")
+
+    # Direction conflict: opposing valence on overlapping topic
+    if valence_a and valence_b:
+        if {valence_a.lower(), valence_b.lower()} == {"positive", "negative"}:
+            return ConsistencyConflict(
+                finding_a=a.get("id", ""),
+                finding_b=b.get("id", ""),
+                conflict_type="direction",
+                description=f"Opposing valence on related topic "
+                            f"(shared: {', '.join(sorted(overlap)[:5])}): "
+                            f"{title_a} ({valence_a}) vs "
+                            f"{title_b} ({valence_b})",
+            )
+
+    # Magnitude conflict: same valence but very different effect sizes
+    es_a = _extract_field(notes_a, "EFFECT_SIZE")
+    es_b = _extract_field(notes_b, "EFFECT_SIZE")
+    if es_a and es_b and len(overlap) >= 3:
+        try:
+            nums_a = re.findall(r'[-+]?\d*\.?\d+', es_a)
+            nums_b = re.findall(r'[-+]?\d*\.?\d+', es_b)
+            if nums_a and nums_b:
+                val_a = abs(float(nums_a[0]))
+                val_b = abs(float(nums_b[0]))
+                if val_a > 0 and val_b > 0:
+                    ratio = max(val_a, val_b) / min(val_a, val_b)
+                    if ratio > 3.0:  # 3x difference on same topic = suspicious
+                        return ConsistencyConflict(
+                            finding_a=a.get("id", ""),
+                            finding_b=b.get("id", ""),
+                            conflict_type="magnitude",
+                            description=f"Large magnitude difference on related topic "
+                                        f"(shared: {', '.join(sorted(overlap)[:5])}): "
+                                        f"d={es_a} vs d={es_b} ({ratio:.1f}x)",
+                        )
+        except (ValueError, ZeroDivisionError):
+            pass
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Finding Interpretation Helpers
+# ---------------------------------------------------------------------------
+
+def classify_effect_size(d: float) -> str:
+    """Classify Cohen's d into practical significance categories."""
+    d = abs(d)
+    if d < 0.2:
+        return "negligible"
+    if d < 0.5:
+        return "small"
+    if d < 0.8:
+        return "medium"
+    if d < 1.2:
+        return "large"
+    return "very large"
+
+
+def assess_ci_quality(effect_str: str, ci_str: str) -> str:
+    """Assess confidence interval precision relative to effect size."""
+    try:
+        nums_e = re.findall(r'[-+]?\d*\.?\d+', effect_str)
+        nums_ci = re.findall(r'[-+]?\d*\.?\d+', ci_str)
+        if not nums_e or len(nums_ci) < 2:
+            return "unknown"
+        effect = abs(float(nums_e[0]))
+        lo, hi = float(nums_ci[0]), float(nums_ci[1])
+        width = hi - lo
+        if effect <= 0:
+            return "unknown"
+        ratio = width / effect
+        if ratio < 0.5:
+            return "precise"
+        if ratio < 1.0:
+            return "adequate"
+        if ratio < 1.5:
+            return "wide"
+        return "very wide"
+    except (ValueError, IndexError):
+        return "unknown"
+
+
+def interpret_finding(finding: dict) -> dict:
+    """Produce a rich interpretation of a finding for report generation.
+
+    Returns dict with fields: practical_significance, ci_quality,
+    interpretation_text, strength_label.
+    """
+    notes = finding.get("notes", "")
+    es = _extract_field(notes, "EFFECT_SIZE")
+    ci = _extract_field(notes, "CI_95")
+    valence = _extract_field(notes, "VALENCE")
+    robust = _extract_field(notes, "ROBUST")
+    stat_review = _extract_field(notes, "STAT_REVIEW")
+    p_val = _extract_field(notes, "P")
+
+    result: dict = {
+        "practical_significance": "unknown",
+        "ci_quality": "unknown",
+        "interpretation_text": "",
+        "strength_label": "unreviewed",
+    }
+
+    # Effect size interpretation
+    if es:
+        try:
+            nums = re.findall(r'[-+]?\d*\.?\d+', es)
+            if nums:
+                d_val = float(nums[0])
+                result["practical_significance"] = classify_effect_size(d_val)
+        except ValueError:
+            pass
+
+    # CI quality
+    if es and ci:
+        result["ci_quality"] = assess_ci_quality(es, ci)
+
+    # Strength label
+    if "APPROVED" in str(stat_review):
+        if robust and robust.lower() == "yes":
+            result["strength_label"] = "robust"
+        elif robust and robust.lower() == "no":
+            result["strength_label"] = "fragile"
+        else:
+            result["strength_label"] = "reviewed"
+    elif "REJECTED" in str(stat_review):
+        result["strength_label"] = "rejected"
+
+    # Build interpretation text
+    title = _clean_finding_title(finding.get("title", ""))
+    parts = []
+    if valence:
+        parts.append(f"{valence} result")
+    if result["practical_significance"] != "unknown":
+        parts.append(f"{result['practical_significance']} practical effect")
+    if result["ci_quality"] in ("wide", "very wide"):
+        parts.append("imprecise estimate — interpret with caution")
+    elif result["ci_quality"] == "precise":
+        parts.append("precisely estimated")
+    if result["strength_label"] == "robust":
+        parts.append("robust under sensitivity analysis")
+    elif result["strength_label"] == "fragile":
+        parts.append("fragile — conditions documented")
+
+    result["interpretation_text"] = "; ".join(parts) if parts else ""
+
+    return result
+
+
+def _clean_finding_title(title: str) -> str:
+    """Strip leading FINDING: prefix."""
+    for prefix in ("FINDING:", "FINDING"):
+        if title.upper().startswith(prefix):
+            title = title[len(prefix):]
+            break
+    return title.strip()

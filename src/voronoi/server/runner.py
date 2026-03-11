@@ -17,7 +17,7 @@ from typing import Optional
 
 from voronoi.server.queue import Investigation, InvestigationQueue
 from voronoi.server.repo_url import RepoRef, extract_repo_url, strip_repo_url
-from voronoi.server.sandbox import SandboxConfig, SandboxManager
+from voronoi.server.sandbox import SandboxConfig
 from voronoi.server.workspace import WorkspaceManager
 
 

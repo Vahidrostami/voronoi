@@ -17,6 +17,7 @@ from voronoi.gateway.router import (
     handle_status,
     handle_tasks,
     handle_ready,
+    handle_health,
     handle_guide,
     handle_pivot,
     handle_abort,
@@ -68,8 +69,7 @@ class TestConfig:
 # ---------------------------------------------------------------------------
 
 class TestHandlers:
-    @patch("voronoi.gateway.router.subprocess.run")
-    def test_handle_status(self, mock_run, tmp_path):
+    def test_handle_status(self, tmp_path):
         # Create queue.db so _get_queue works
         swarm_dir = tmp_path / ".swarm"
         swarm_dir.mkdir(parents=True, exist_ok=True)
@@ -85,6 +85,12 @@ class TestHandlers:
     def test_handle_ready_no_running(self, tmp_path):
         result = handle_ready(str(tmp_path))
         assert "No unblocked tasks ready" in result
+
+    def test_handle_health_no_sessions(self, tmp_path):
+        result = handle_health(str(tmp_path))
+        # Should return a message — either health data or a graceful "not found"
+        assert isinstance(result, str)
+        assert len(result) > 0
 
     def test_handle_guide(self, tmp_path):
         (tmp_path / ".swarm").mkdir(parents=True)
@@ -205,20 +211,20 @@ class TestKnowledgeHandlers:
         result = handle_journal(str(tmp_path))
         assert "Found something" in result
 
-    @patch("voronoi.gateway.router.subprocess.run")
-    def test_handle_finding(self, mock_run, tmp_path):
+    @patch("voronoi.gateway.router._run_bd")
+    def test_handle_finding(self, mock_bd, tmp_path):
         (tmp_path / ".beads").mkdir()
         task = {"id": "bd-42", "title": "FINDING: Cache works", "status": "closed",
                 "priority": 1, "notes": "EFFECT_SIZE:d=1.5"}
-        mock_run.return_value = MagicMock(returncode=0, stdout=json.dumps(task), stderr="")
+        mock_bd.return_value = (0, json.dumps(task))
         result = handle_finding(str(tmp_path), "bd-42")
         assert "bd-42" in result
         assert "Cache works" in result
 
-    @patch("voronoi.gateway.router.subprocess.run")
-    def test_handle_finding_not_found(self, mock_run, tmp_path):
+    @patch("voronoi.gateway.router._run_bd")
+    def test_handle_finding_not_found(self, mock_bd, tmp_path):
         (tmp_path / ".beads").mkdir()
-        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="not found")
+        mock_bd.return_value = (1, "not found")
         result = handle_finding(str(tmp_path), "bd-999")
         assert "not found" in result
 

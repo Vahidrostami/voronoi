@@ -1,22 +1,33 @@
 # Demo: Coupled Decision Spaces
 
-**Can LLM-powered agents reason over coupled commercial levers better than siloed analysis?**
+**Does structured encoding of heterogeneous knowledge beat naive RAG for coupled decision reasoning?**
 
-A multi-agent system that synthesizes heterogeneous knowledge sources (quantitative data, codified policies, expert judgment) to navigate a combinatorial decision space with ~10^18 combinations — validated against planted ground truth.
+A multi-agent system that encodes heterogeneous knowledge sources (quantitative data, codified policies, expert judgment, decision playbooks) into reasoning-ready representations — then validates whether structured encoding outperforms "just paste everything into the prompt" on a combinatorial decision space with planted ground truth.
 
 ## What It Does
 
-Generates a synthetic beverage company dataset ("BevCo") with 5 planted cross-lever effects that **only** appear when analyzing multiple decision levers jointly. An agent system must discover these effects, validate them experimentally, and write an academic paper with the results.
+Generates a synthetic beverage company dataset ("BevCo") with planted effects that are **genuinely misleading in raw form** but correctly interpretable with structured encoding. An agent system must discover these effects, validate them experimentally, and write an academic paper with the results.
 
-### The 5 Planted Effects
+### Encoding Ablation Ladder (the core experiment)
 
-| # | Effect | Why Siloed Analysis Misses It |
-|---|--------|------|
-| 1 | Price-Promotion Trap | Promo ROI looks positive independently; joint analysis reveals base-price cut is better |
-| 2 | Assortment-Distribution Synergy | Neither lever alone works; combined they yield +9% revenue |
-| 3 | Pack-Price Cannibalization Mask | 12-pack appears to grow volume but cannibalizes 6-pack margin |
-| 4 | Cross-Source Signal | Quant + policy + expert must all be synthesized for correct answer |
-| 5 | Constraint-Coupling Conflict | Expert is directionally right but scoped wrong without policy constraints |
+| Level | Data | Knowledge | Playbook | What it tests |
+|-------|------|-----------|----------|--------------|
+| **1. Naive RAG** | N rows as markdown table | Policies as bullets, beliefs as prose | Prose description | The "just paste it" baseline |
+| **2. + Statistical pre-computation** | Statistical profiles (distributions, correlations, segments, trends) | Still unstructured text | Still prose | Value of Python-computed analytics |
+| **3. + Type-aware encoding** | Statistical profiles | Tiered constraint vectors, temporal belief objects with decay | Still prose | Value of epistemic typing |
+| **4. Full structured** | Statistical profiles | Typed constraints, temporal beliefs | Process graphs, typed rule catalog, technique registry | Value of playbook structuring |
+
+All levels receive the **same data sample** (same N rows) and **all four knowledge sources** — only encoding quality varies.
+
+### Planted Effect Categories (designed to break naive RAG)
+
+| Category | Why Raw Rows Mislead | What Encoding Fixes It |
+|----------|---------------------|----------------------|
+| Simpson's paradox (≥2) | Aggregate correlation tells the wrong story | Segment-aware statistical profiles resolve it |
+| Confounded coupling (≥1) | Shared temporal confound creates spurious correlation | Temporal detrending removes it |
+| Constraint-boundary effect (≥2) | Data says "go" but a hard constraint says "stop" | Typed constraint vectors with scope flag it |
+| Decayed belief trap (≥1) | Expert belief was true historically, data has shifted | Temporal belief metadata + trend break detection |
+| Nonlinear segment interaction (≥1) | Linear correlation across all rows shows nothing | Segment-aware sub-population splits surface it |
 
 ### Playbook Complexity (30–50 queries across 6+ question types)
 
@@ -31,8 +42,9 @@ Generates a synthetic beverage company dataset ("BevCo") with 5 planted cross-le
 ### Knowledge Sources
 
 - **Quantitative**: ~1M transaction rows, price elasticities, market share data
-- **Policy**: 15 codified business rules (hard/soft constraints)
-- **Expert**: 15-20 qualitative beliefs with confidence scores (mix of correct, outdated, conditional)
+- **Policy**: 15+ codified business rules (hard/soft constraints with scope and strictness per question type)
+- **Expert**: 15–20 qualitative beliefs with confidence scores, temporal validity, and decay (mix of correct, outdated, conditional)
+- **Playbook**: 6+ question types with processes, 20+ overlapping rules, 10+ shared techniques, cross-question dependencies
 
 ## How to Run
 
@@ -58,9 +70,9 @@ copilot
 ## Wave Structure
 
 ```
-Wave 1: Data generator (synthetic BevCo scenario with planted effects)
+Wave 1: Data generator (synthetic BevCo with encoding-sensitive planted effects)
 Wave 2: Knowledge encoding + multi-agent reasoning system (parallel)
-Wave 3: Experiments (encoding validation, ablation, progressive reduction, cross-domain)
+Wave 3: Experiments (encoding ablation ladder, cross-source, pipeline compression, playbook reasoning)
 Wave 4: Validation gate (statistical audit, methodology critique, reproducibility, adversarial)
 Wave 5: Paper + webapp (parallel — gated on validation passing)
 ```

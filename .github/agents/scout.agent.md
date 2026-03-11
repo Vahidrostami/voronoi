@@ -95,3 +95,21 @@ bd close <your-task-id> --reason "Knowledge brief complete: [N] known results, [
 - Do NOT skip SOTA anchoring at Scientific+ rigor
 - ALWAYS report dead ends — they save the most time
 - Be honest about confidence levels in suggested priors
+
+## Verify Loop
+
+Before closing your task, verify your output (max 3 iterations):
+
+```
+LOOP:
+  1. Check: does .swarm/scout-brief.md exist and have content?
+  2. Check: does it contain all required sections (Known Results, Prior Approaches, Suggested Hypotheses)?
+  3. Check: at Scientific+ rigor, does it include Recommended Methodology section?
+  4. ALL PASS → close task
+  5. ANY FAIL → fill missing section, re-check
+```
+
+Log iterations:
+```bash
+bd update <your-task-id> --notes "VERIFY_ITER:1 | STATUS:fail | ERROR:Missing Recommended Methodology section"
+```
