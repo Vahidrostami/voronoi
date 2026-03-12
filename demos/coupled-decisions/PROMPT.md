@@ -50,22 +50,25 @@ Generate data for **2 pilot scenarios** only. Run L1 and L4 only. Compute recall
 - `output/encoding_hashes.json` — SHA-256 of the full LLM input at each encoding level, all 4 must differ
 
 **Phase 1 HARD GATE — ALL must pass before Phase 2 begins:**
-1. `recall_l4 > recall_l1` by ≥10 percentage points
-2. `recall_l1 ≤ 0.40`
-3. `recall_l4 ≥ 0.50`
+1. `recall_l4 > recall_l1` by ≥20 percentage points
+2. `recall_l1 ≤ 0.35`
+3. `recall_l4 ≥ 0.55`
 4. All 4 encoding-level input hashes are distinct (no collapsed conditions)
-5. Character count of L4 input > character count of L1 input
+5. Character count of L4 input is within [0.7×, 1.5×] of L1 input character count — the representations should be comparable in length but different in structure
+6. Precision at L4 > precision at L1 — structured encoding should reduce hallucinated findings, not increase them. If L4 generates MORE findings than L1 with LOWER precision, the encoding is prompting verbosity, not accuracy
 
 If ANY criterion fails: **STOP. Diagnose. Create a REVISE task.** Common fixes:
 - If L1 ≈ L4 recall → planted effects are not encoding-sensitive. Add more Simpson's paradoxes, increase noise, make confounders subtler
-- If L4 recall < 0.50 → effects are too hard. Increase signal magnitude
+- If L4 recall < 0.55 → effects are too hard. Increase signal magnitude
 - If encoding hashes collide → encoding implementation is broken. Fix the encoder
 - If L1 > L4 → the structured encoding is confusing the LLM or raw text accidentally leaks structure. Verify L1 truly sends raw CSV text with NO pre-computation
+- If L4 character count > 1.5× L1 character count → encoding is bloated. Compress it: remove redundant tables, use compact JSON/YAML notation, reference process graph nodes by ID instead of inlining
+- If L1 recall > 0.35 → effects aren't encoding-sensitive enough. Add more subgroups, increase noise, add distractor policy sentences
 
 Report calibration results:
 ```bash
-bd update <id> --notes "CALIBRATION_TARGET:recall_l4=[0.50, 0.70]"
-bd update <id> --notes "CALIBRATION_TARGET:recall_l1=[0.20, 0.40]"
+bd update <id> --notes "CALIBRATION_TARGET:recall_l4=[0.55, 0.75]"
+bd update <id> --notes "CALIBRATION_TARGET:recall_l1=[0.15, 0.35]"
 bd update <id> --notes "CALIBRATION_ACTUAL:recall_l4=<value>"
 bd update <id> --notes "CALIBRATION_ACTUAL:recall_l1=<value>"
 ```
@@ -82,7 +85,16 @@ Generate all scenarios (you decide how many — sized for ≥0.80 power to detec
 1. L4 F1 > L1 F1 with p < 0.05 (primary success criterion)
 2. If NOT met: flag `DESIGN_INVALID`, file `RESULT_CONTRADICTS_HYPOTHESIS`, do NOT proceed to Phase 3
 
-If the primary criterion fails after a valid experiment (EVA passes, manipulation verified), you MAY proceed to Phase 3 but MUST:
+**Phase 2 DIAGNOSTIC CHECKS (run after all scenarios, before declaring results):**
+
+1. If L4 F1 < L1 F1, check:
+   a. Is L4 context length > 1.5× L1? → Encoding is bloated, compress and re-run
+   b. Is L4 generating more findings than L1? → Discovery prompt is too open-ended, constrain and re-run
+   c. Is L1 recall > 0.35? → Effects aren't encoding-sensitive, redesign and re-run
+   
+   Only declare a genuine negative result if ALL three checks pass (encoding is compact, output is constrained, effects are hard for L1) and L4 still loses.
+
+If the primary criterion fails after a valid experiment (EVA passes, manipulation verified, diagnostic checks pass), you MAY proceed to Phase 3 but MUST:
 - Report the negative result honestly with full statistics
 - Include detailed diagnosis in the limitations section
 - Mark success criterion SC1 as `met: false`
@@ -99,22 +111,27 @@ Write paper, generate figures from actual results, compile LaTeX, build webapp.
 
 ### The Four-Level Encoding Ablation
 
-All levels receive the **same N=500 row sample** and **all four knowledge sources** (data, policies, expert beliefs, playbook). Only encoding quality varies:
+All levels receive the **same information content** from the **same N=500 row sample** and **all four knowledge sources** (data, policies, expert beliefs, playbook). Only the *representation* varies.
+
+**CRITICAL DESIGN CONSTRAINT: Structured encoding REPLACES raw content, it does not APPEND to it.** L4 must be within 1.5× the character count of L1. If L4 exceeds 1.5× L1, the encoding is bloated — compress the structured representations until the constraint is satisfied. The hypothesis is about *how* information is represented, not about *how much* information is present.
 
 | Level | Data | Knowledge | Playbook |
 |-------|------|-----------|----------|
-| **L1: Raw text (post-retrieval baseline)** | `str(dataframe)` — raw CSV text dumped verbatim. NO column header repetition, NO summary statistics, NO aggregation. Just the raw rows as a text blob. This represents: "you retrieved the right data, now what?" | Policy sentences as plain prose paragraphs. NO structure, NO bullet hierarchy. | Playbook as one flat paragraph of prose. |
-| **L2: +Stats** | Statistical profiles computed via numpy/scipy (means, medians, correlations, distributions by segment) | Bullets + prose (same as L1 for knowledge) | Prose (same as L1 for playbook) |
-| **L3: +Typed** | Statistical profiles (same as L2) | Constraint vectors with explicit tiers + temporal belief objects with confidence and decay | Prose (same as L1 for playbook) |
-| **L4: Full** | Statistical profiles (same as L2) | Typed constraints + beliefs (same as L3) | Process graphs + rule catalog + technique registry |
+| **L1: Raw text** | `str(dataframe)` — raw CSV text dumped verbatim. NO column headers repeated, NO summary stats, NO aggregation. Just raw rows as a text blob. | Policy sentences as plain prose paragraphs. NO structure, NO hierarchy. | Playbook as one flat paragraph. |
+| **L2: +Stats (replaces raw rows)** | Raw rows are REMOVED. Replaced by statistical profiles: means, medians, correlations, distributions by segment, computed via numpy/scipy. The LLM never sees raw rows. | Prose (same as L1) | Prose (same as L1) |
+| **L3: +Typed (replaces prose)** | Statistical profiles (same as L2, NO raw rows) | Constraint vectors with explicit tiers + temporal belief objects with confidence/decay. Raw policy prose is REMOVED. | Prose (same as L1) |
+| **L4: Full (all transformed)** | Statistical profiles (same as L2, NO raw rows) | Typed constraints + beliefs (same as L3, NO raw prose) | Process graph references + rule catalog + technique registry. Raw playbook prose is REMOVED. |
+
+**Why this works:** L1 has raw CSV text (long, unprocessed). L4 has compact structured summaries (shorter or similar length, but semantically richer). The experiment now isolates representation quality from context length. The LLM at L1 must mentally parse 500 raw rows to find a Simpson's paradox; at L4 the segment-level statistics are pre-computed and handed to it directly.
 
 **Encoding Level Separation Verification (MANDATORY before any experiment run):**
 1. Compute character count of the full LLM input at each level
 2. Compute SHA-256 hash of the full LLM input at each level
 3. All 4 hashes MUST be different
-4. L4 character count MUST be > L1 character count (structured encoding adds information)
+4. L4 character count is within [0.7×, 1.5×] of L1 character count — if L4 is longer than 1.5× L1, the encoding is bloated and MUST be compressed
 5. Record these in `output/encoding_hashes.json`
 6. If L1 and L4 produce identical or near-identical inputs (>90% overlap by longest-common-subsequence): the encoding is BROKEN — fix it
+7. Verify that L2+ inputs do NOT contain raw CSV rows — search for comma-separated numeric sequences that match the original dataframe
 
 This is the paper's primary experiment — allocate the most effort here. Run on enough scenarios for ≥0.80 statistical power to detect d=1.0 effects.
 
@@ -129,7 +146,12 @@ Effects must be designed to **mislead at L1 but resolve at L4**. Categories that
 
 **Why these mislead L1 specifically:** L1 receives raw CSV text and prose. It cannot compute segment-level statistics (Simpson's), cannot detrend temporal confounds (confounded coupling), cannot parse constraint hierarchy from prose (constraint-boundary), cannot detect belief decay from flat prose (decayed beliefs), and cannot segment-aggregate (nonlinear interactions). L4 has all of these pre-computed.
 
-**Calibration targets:** ~50-70% discoverable at L4, ~20-40% at L1. These are checked in the Phase 1 pilot gate.
+**Calibration targets:**
+- L4: 55-75% recall (structured encoding should make most effects discoverable)
+- L1: 15-35% recall (raw text should catch only the most obvious effects)
+- L4 − L1 gap: ≥20 percentage points (not just 10)
+
+These are checked in the Phase 1 pilot gate.
 
 **If calibration fails (L1 ≥ L4 or L4 < 50%):**
 1. Check encoding separation (are LLM inputs actually different?)
@@ -139,11 +161,29 @@ Effects must be designed to **mislead at L1 but resolve at L4**. Categories that
 5. Reduce signal-to-noise ratio in aggregate statistics
 6. Create a REVISE task with diagnosis and repeat Phase 1
 
+### Strengthening Encoding Sensitivity
+
+The key to making effects encoding-sensitive is that L1 gives the LLM RAW ROWS (no computation), while L2+ gives PRE-COMPUTED STATISTICS (no raw rows). Design effects that require computation the LLM cannot reliably perform in-context:
+
+- **Simpson's paradox with N=500 rows**: At 500 rows, an LLM CANNOT reliably compute subgroup means by mentally scanning CSV text. But L2+ hands it the subgroup means directly. Use ≥3 subgroups with different reversal magnitudes to prevent lucky guessing.
+
+- **Confounded coupling**: Embed the confound in a temporal trend that requires actual detrending (residual computation). L1 sees raw time-stamped rows; L2+ sees detrended correlations.
+
+- **Constraint boundary**: At L1, the constraint is buried in a paragraph of 10+ policy sentences — the LLM must identify which sentence is the binding constraint and mentally check it against 500 rows. At L3+, the hard constraint is tagged with a type and threshold, making the violation obvious.
+
+- **Decayed belief**: At L1, the belief and its date are in prose with no computation of staleness. At L3+, the decay function is pre-evaluated with current confidence shown.
+
+**Calibration emphasis:** If L1 recall > 0.35 in the pilot, the effects are NOT encoding-sensitive enough. Common fixes:
+  - Increase N to 500+ rows (more rows = harder to mentally aggregate)
+  - Add more subgroups to Simpson's paradox cases
+  - Increase the number of distractor policy sentences around the binding constraint
+  - Add more noise to the temporal trends
+
 ### Secondary Experiments
 
-- **Cross-source reasoning**: At L4, vary which sources are included (data-only → all). If data-only matches all-sources on recall, the planted effects are too easy — redesign.
-- **Playbook reasoning**: Process selection accuracy across question types. Target ≥80%.
-- **Pipeline compression**: Quantify space reduction at each stage.
+- **Cross-source reasoning**: Run on ALL scenarios (not just 2). At L4, compare data-only vs. all-sources. Report means, CIs, and paired tests. If data-only matches all-sources on recall, the planted effects are too easy — redesign.
+- **Playbook reasoning**: Process selection accuracy across question types. Run on ≥4 scenarios. Target ≥80%.
+- **Pipeline compression**: Run on ALL scenarios (not just 2). Quantify space reduction at each stage.
 - **Generalization**: Brief qualitative discussion of 1-2 other domains. No deep experiments.
 
 ---
@@ -179,11 +219,29 @@ One entry point: `run_experiments.py`. No duplicates.
 
 All reasoning through `copilot -p "<prompt>" -s --no-color --allow-all`. Cache by prompt hash in `.llm_cache/`. No heuristic fallbacks — any judgment call without an LLM invocation is a bug. Identify the model at startup and record in `results.json` under `"model"`.
 
+### 6. CONSTRAIN DISCOVERY OUTPUT VOLUME
+
+The discovery prompt must instruct the LLM to report ONLY findings it has HIGH CONFIDENCE in, limited to the TOP 5-8 most important. Do NOT ask for "all noteworthy findings" — this produces 20+ low-precision findings that destroy F1.
+
+Template: "Analyze this context and identify the 5-8 most significant cross-lever effects, anomalies, or contradictions. For each, provide: (1) the specific finding, (2) which levers are involved, (3) the evidence supporting it, (4) your confidence level. Only include findings where you have clear evidence."
+
+This is NOT leading the prompt (it doesn't name effect categories). It's constraining output volume to improve signal-to-noise ratio.
+
 ---
 
 ## What Agents Decide (Do Not Over-Specify)
 
-The orchestrator and worker agents own all implementation decisions. The PROMPT.md specifies **what to prove**, not **how to build it**. Specifically, agents decide:
+The orchestrator and worker agents own all implementation decisions. The PROMPT.md specifies **what to prove**, not **how to build it**.
+
+### ENCODING DESIGN PRINCIPLE: TRANSFORM, DON'T APPEND
+
+The encoding layer's job is to REPLACE raw content with reasoning-ready representations, NOT to add structured annotations on top of raw content.
+
+Think of it like a compiler: the source code (raw text) is transformed into machine code (structured encoding). You don't ship both — you ship the compiled version because it's what the executor (the LLM) can work with efficiently.
+
+The agents must verify that at each encoding level, the raw content from the previous level is REMOVED and REPLACED, not retained alongside the new encoding.
+
+Specifically, agents decide:
 
 - Number of scenarios, rows per scenario, stores, SKUs, levers, rules, beliefs, queries — sized for adequate statistical power
 - Exact encoding representations (what goes into a "statistical profile" or "constraint vector")

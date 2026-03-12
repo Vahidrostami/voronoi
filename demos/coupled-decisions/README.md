@@ -10,14 +10,16 @@ Generates a synthetic beverage company dataset ("BevCo") with planted effects th
 
 ### Encoding Ablation Ladder (the core experiment)
 
+**Design principle: structured encoding REPLACES raw content, it does not append to it.** L4 must be within 1.5× the character count of L1.
+
 | Level | Data | Knowledge | Playbook | What it tests |
 |-------|------|-----------|----------|--------------|
-| **1. Naive RAG** | N rows as markdown table | Policies as bullets, beliefs as prose | Prose description | The "just paste it" baseline |
-| **2. + Statistical pre-computation** | Statistical profiles (distributions, correlations, segments, trends) | Still unstructured text | Still prose | Value of Python-computed analytics |
-| **3. + Type-aware encoding** | Statistical profiles | Tiered constraint vectors, temporal belief objects with decay | Still prose | Value of epistemic typing |
-| **4. Full structured** | Statistical profiles | Typed constraints, temporal beliefs | Process graphs, typed rule catalog, technique registry | Value of playbook structuring |
+| **1. Raw text** | N rows as raw CSV text | Policies as prose, beliefs as prose | Prose description | The "just paste it" baseline |
+| **2. + Statistical pre-computation** | Raw rows REMOVED → statistical profiles (distributions, correlations, segments, trends) | Still unstructured text | Still prose | Value of replacing raw rows with computed analytics |
+| **3. + Type-aware encoding** | Statistical profiles (no raw rows) | Raw prose REMOVED → tiered constraint vectors, temporal belief objects with decay | Still prose | Value of replacing prose with epistemic typing |
+| **4. Full structured** | Statistical profiles (no raw rows) | Typed constraints, temporal beliefs (no raw prose) | Raw playbook REMOVED → process graphs, typed rule catalog, technique registry | Value of full transformation |
 
-All levels receive the **same data sample** (same N rows) and **all four knowledge sources** — only encoding quality varies.
+All levels receive the **same information content** from the **same data sample** and **all four knowledge sources** — only the *representation* varies. Context length should be comparable across levels.
 
 ### Planted Effect Categories (designed to break naive RAG)
 
