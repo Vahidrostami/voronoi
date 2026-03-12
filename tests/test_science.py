@@ -8,30 +8,50 @@ import pytest
 from voronoi.science import (
     AntiFabricationResult,
     BeliefMap,
+    CalibrationResult,
     ConsistencyConflict,
     ConvergenceResult,
     FabricationFlag,
+    Heartbeat,
     Hypothesis,
+    Invariant,
+    InvariantCheckResult,
+    JudgeRubric,
+    JudgeVerdict,
     LabNotebookEntry,
     PreRegistration,
     ReplicationNeed,
     append_lab_notebook,
     audit_all_findings,
+    check_calibration,
     check_consistency,
     check_convergence,
     check_dispatch_gates,
+    check_heartbeat_stall,
+    check_invariants,
     check_merge_gates,
     check_paradigm_stress,
     compute_data_hash,
     format_fabrication_report,
+    format_invariants_for_prompt,
+    format_judge_prompt,
     load_belief_map,
+    load_invariants,
     load_lab_notebook,
+    load_success_criteria,
+    log_judge_call,
+    parse_judge_verdict,
     parse_pre_registration,
+    parse_revise_context,
+    read_heartbeats,
     save_belief_map,
+    save_invariants,
+    save_success_criteria,
     validate_pre_registration,
     verify_data_hash,
     verify_finding_against_data,
     write_convergence,
+    write_heartbeat,
 )
 
 
@@ -996,3 +1016,477 @@ class TestMergeGateAntiFabrication:
         can_merge, blockers = check_merge_gates(task, tmp_path, "analytical")
         assert not can_merge
         assert any("FABRICATION_CHECK" in b for b in blockers)
+
+
+# ---------------------------------------------------------------------------
+# Investigation-Level Invariants
+# ---------------------------------------------------------------------------
+
+class TestInvariants:
+    def test_save_and_load(self, tmp_path):
+        invariants = [
+            Invariant(id="NO_TRUNCATION", description="Never truncate context",
+                      check_type="custom"),
+            Invariant(id="NO_LEADING", description="Don't list expected effects",
+                      check_type="output_excludes",
+                      params={"text": "Simpson's paradox"}),
+        ]
+        save_invariants(tmp_path, invariants)
+        loaded = load_invariants(tmp_path)
+        assert len(loaded) == 2
+        assert loaded[0].id == "NO_TRUNCATION"
+        assert loaded[1].params["text"] == "Simpson's paradox"
+
+    def test_load_missing(self, tmp_path):
+        assert load_invariants(tmp_path) == []
+
+    def test_load_corrupt(self, tmp_path):
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "invariants.json").write_text("{bad")
+        assert load_invariants(tmp_path) == []
+
+    def test_load_skips_invalid_entries(self, tmp_path):
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "invariants.json").write_text(
+            json.dumps([{"id": "GOOD", "description": "ok"}, {"no_id": True}, "not a dict"])
+        )
+        loaded = load_invariants(tmp_path)
+        assert len(loaded) == 1
+        assert loaded[0].id == "GOOD"
+
+    def test_format_for_prompt(self):
+        invariants = [
+            Invariant(id="NO_TRUNC", description="Never truncate", check_type="custom"),
+        ]
+        text = format_invariants_for_prompt(invariants)
+        assert "NO_TRUNC" in text
+        assert "Never truncate" in text
+        assert "MANDATORY" in text
+
+    def test_format_empty(self):
+        assert format_invariants_for_prompt([]) == ""
+
+    def test_check_prompt_contains_pass(self):
+        inv = [Invariant(id="HAS_WARNING", description="must warn",
+                         check_type="prompt_contains", params={"text": "WARNING"})]
+        result = check_invariants(inv, "This prompt has a WARNING embedded")
+        assert result.passed is True
+
+    def test_check_prompt_contains_fail(self):
+        inv = [Invariant(id="HAS_WARNING", description="must warn",
+                         check_type="prompt_contains", params={"text": "WARNING"})]
+        result = check_invariants(inv, "This prompt has no alerts")
+        assert result.passed is False
+        assert "HAS_WARNING" in result.violations[0]
+
+    def test_check_output_excludes_pass(self):
+        inv = [Invariant(id="NO_LEAK", description="no leaks",
+                         check_type="output_excludes", params={"text": "SECRET"})]
+        result = check_invariants(inv, "This output is clean")
+        assert result.passed is True
+
+    def test_check_output_excludes_fail(self):
+        inv = [Invariant(id="NO_LEAK", description="no leaks",
+                         check_type="output_excludes", params={"text": "SECRET"})]
+        result = check_invariants(inv, "This output contains SECRET data")
+        assert result.passed is False
+
+    def test_check_custom_type_passes(self):
+        inv = [Invariant(id="CUSTOM", description="custom check",
+                         check_type="custom")]
+        result = check_invariants(inv, "anything")
+        assert result.passed is True
+
+
+# ---------------------------------------------------------------------------
+# REVISE Task & Calibration Check
+# ---------------------------------------------------------------------------
+
+class TestCalibration:
+    def test_calibration_passes(self):
+        notes = (
+            "CALIBRATION_TARGET:recall_l4=[0.50, 0.70]\n"
+            "CALIBRATION_ACTUAL:recall_l4=0.62\n"
+        )
+        results = check_calibration(notes)
+        assert len(results) == 1
+        assert results[0].passed is True
+        assert results[0].metric_name == "recall_l4"
+
+    def test_calibration_fails_too_high(self):
+        notes = (
+            "CALIBRATION_TARGET:recall_l4=[0.50, 0.70]\n"
+            "CALIBRATION_ACTUAL:recall_l4=0.85\n"
+        )
+        results = check_calibration(notes)
+        assert len(results) == 1
+        assert results[0].passed is False
+
+    def test_calibration_fails_too_low(self):
+        notes = (
+            "CALIBRATION_TARGET:recall_l1=[0.20, 0.40]\n"
+            "CALIBRATION_ACTUAL:recall_l1=0.05\n"
+        )
+        results = check_calibration(notes)
+        assert results[0].passed is False
+
+    def test_calibration_missing_actual(self):
+        notes = "CALIBRATION_TARGET:recall_l4=[0.50, 0.70]\n"
+        results = check_calibration(notes)
+        assert len(results) == 1
+        assert results[0].passed is False
+        assert "no actual" in results[0].message
+
+    def test_calibration_multiple_metrics(self):
+        notes = (
+            "CALIBRATION_TARGET:recall_l4=[0.50, 0.70]\n"
+            "CALIBRATION_TARGET:recall_l1=[0.20, 0.40]\n"
+            "CALIBRATION_ACTUAL:recall_l4=0.60\n"
+            "CALIBRATION_ACTUAL:recall_l1=0.30\n"
+        )
+        results = check_calibration(notes)
+        assert len(results) == 2
+        assert all(r.passed for r in results)
+
+    def test_calibration_no_targets(self):
+        results = check_calibration("just some notes")
+        assert results == []
+
+
+class TestReviseContext:
+    def test_parse_revise(self):
+        notes = (
+            "REVISE_OF:bd-42\n"
+            "PRIOR_RESULT:L4 recall was 0.95 (too easy)\n"
+            "FAILURE_DIAGNOSIS:planted effects not encoding-sensitive\n"
+            "REVISED_PARAMS:increase noise, add confounders\n"
+        )
+        ctx = parse_revise_context(notes)
+        assert ctx["revise_of"] == "bd-42"
+        assert "too easy" in ctx["prior_result"]
+        assert "encoding-sensitive" in ctx["failure_diagnosis"]
+        assert "confounders" in ctx["revised_params"]
+
+    def test_parse_revise_empty(self):
+        ctx = parse_revise_context("some normal notes")
+        assert ctx == {}
+
+    def test_parse_revise_partial(self):
+        notes = "REVISE_OF:bd-10\nPRIOR_RESULT:failed calibration\n"
+        ctx = parse_revise_context(notes)
+        assert "revise_of" in ctx
+        assert "prior_result" in ctx
+        assert "failure_diagnosis" not in ctx
+
+
+# ---------------------------------------------------------------------------
+# Structured Heartbeats
+# ---------------------------------------------------------------------------
+
+class TestHeartbeats:
+    def test_write_and_read(self, tmp_path):
+        hb = Heartbeat(branch="test-branch", phase="investigating",
+                       iteration=5, last_action="running experiment",
+                       status="active")
+        write_heartbeat(tmp_path, hb)
+        beats = read_heartbeats(tmp_path, "test-branch")
+        assert len(beats) == 1
+        assert beats[0].phase == "investigating"
+        assert beats[0].iteration == 5
+        assert beats[0].timestamp != ""
+
+    def test_write_multiple(self, tmp_path):
+        for i in range(5):
+            hb = Heartbeat(branch="worker", phase="building",
+                           iteration=i, last_action=f"step {i}",
+                           status="active")
+            write_heartbeat(tmp_path, hb)
+        beats = read_heartbeats(tmp_path, "worker")
+        assert len(beats) == 5
+
+    def test_read_last_n(self, tmp_path):
+        for i in range(10):
+            write_heartbeat(tmp_path, Heartbeat(
+                branch="worker", phase="x", iteration=i,
+                last_action="y", status="z"))
+        beats = read_heartbeats(tmp_path, "worker", last_n=3)
+        assert len(beats) == 3
+
+    def test_read_missing(self, tmp_path):
+        assert read_heartbeats(tmp_path, "nonexistent") == []
+
+    def test_stall_detected(self, tmp_path):
+        from datetime import datetime, timezone, timedelta
+        base = datetime.now(timezone.utc) - timedelta(minutes=15)
+        path = tmp_path / ".swarm" / "heartbeat-stuck.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lines = []
+        for i in range(5):
+            ts = (base + timedelta(minutes=i * 3)).isoformat()
+            lines.append(json.dumps({
+                "branch": "stuck", "phase": "building", "iteration": 1,
+                "last_action": "waiting", "status": "idle", "timestamp": ts,
+            }))
+        path.write_text("\n".join(lines) + "\n")
+        assert check_heartbeat_stall(tmp_path, "stuck") is True
+
+    def test_no_stall_when_changing(self, tmp_path):
+        from datetime import datetime, timezone, timedelta
+        base = datetime.now(timezone.utc) - timedelta(minutes=15)
+        path = tmp_path / ".swarm" / "heartbeat-active.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lines = []
+        for i in range(5):
+            ts = (base + timedelta(minutes=i * 3)).isoformat()
+            lines.append(json.dumps({
+                "branch": "active", "phase": f"phase-{i}", "iteration": i,
+                "last_action": "working", "status": "active", "timestamp": ts,
+            }))
+        path.write_text("\n".join(lines) + "\n")
+        assert check_heartbeat_stall(tmp_path, "active") is False
+
+    def test_no_stall_too_few_beats(self, tmp_path):
+        write_heartbeat(tmp_path, Heartbeat(
+            branch="new", phase="start", iteration=0,
+            last_action="init", status="active"))
+        assert check_heartbeat_stall(tmp_path, "new") is False
+
+
+# ---------------------------------------------------------------------------
+# LLM-as-Judge Primitive
+# ---------------------------------------------------------------------------
+
+class TestJudgePrimitive:
+    def test_format_judge_prompt(self):
+        rubric = JudgeRubric(
+            rubric_id="finding-match",
+            criteria="Does the candidate finding match the reference ground truth?",
+            scale="binary",
+        )
+        prompt = format_judge_prompt(rubric, "Found Simpson's paradox in segment A",
+                                     "Planted Simpson's paradox: aggregate vs segment A")
+        assert "Rubric" in prompt
+        assert "candidate finding match" in prompt
+        assert "Reference" in prompt
+        assert "Candidate" in prompt
+        assert "binary" in prompt
+
+    def test_format_judge_prompt_with_examples(self):
+        rubric = JudgeRubric(
+            rubric_id="test", criteria="Match?", scale="binary",
+            examples="YES: 'found X' matches 'planted X'\nNO: vague != specific",
+        )
+        prompt = format_judge_prompt(rubric, "a", "b")
+        assert "Examples" in prompt
+
+    def test_parse_verdict_json(self):
+        raw = '{"match": true, "confidence": 0.92, "justification": "Exact match on segment A"}'
+        v = parse_judge_verdict(raw, rubric_id="r1", model="gpt-4")
+        assert v.match is True
+        assert v.confidence == pytest.approx(0.92)
+        assert "Exact match" in v.justification
+        assert v.rubric_id == "r1"
+        assert v.model == "gpt-4"
+
+    def test_parse_verdict_false(self):
+        raw = '{"match": false, "confidence": 0.3, "justification": "No overlap"}'
+        v = parse_judge_verdict(raw)
+        assert v.match is False
+
+    def test_parse_verdict_json_embedded(self):
+        raw = 'Here is my verdict:\n{"match": true, "confidence": 0.8, "justification": "ok"}\nEnd.'
+        v = parse_judge_verdict(raw)
+        assert v.match is True
+        assert v.confidence == pytest.approx(0.8)
+
+    def test_parse_verdict_fallback_yes(self):
+        raw = "Yes, the candidate matches the reference."
+        v = parse_judge_verdict(raw)
+        assert v.match is True
+        assert v.confidence == pytest.approx(0.5)
+
+    def test_parse_verdict_fallback_no(self):
+        raw = "No match whatsoever."
+        v = parse_judge_verdict(raw)
+        assert v.match is False
+
+    def test_log_judge_call(self, tmp_path):
+        rubric = JudgeRubric(rubric_id="r1", criteria="Does it match?")
+        verdict = JudgeVerdict(match=True, confidence=0.9,
+                               justification="yes", model="gpt-4")
+        log_judge_call(tmp_path, rubric, verdict)
+        log_path = tmp_path / ".swarm" / "judge-log.jsonl"
+        assert log_path.exists()
+        entry = json.loads(log_path.read_text().strip())
+        assert entry["rubric_id"] == "r1"
+        assert entry["match"] is True
+        assert entry["model"] == "gpt-4"
+
+
+# ---------------------------------------------------------------------------
+# Success Criteria
+# ---------------------------------------------------------------------------
+
+class TestSuccessCriteria:
+    def test_save_and_load(self, tmp_path):
+        criteria = [
+            {"id": "SC1", "description": "L4 > L1 on F1", "met": False},
+            {"id": "SC2", "description": "Pipeline compresses 10x", "met": True},
+        ]
+        save_success_criteria(tmp_path, criteria)
+        loaded = load_success_criteria(tmp_path)
+        assert len(loaded) == 2
+        assert loaded[0]["id"] == "SC1"
+        assert loaded[1]["met"] is True
+
+    def test_load_missing(self, tmp_path):
+        assert load_success_criteria(tmp_path) == []
+
+    def test_load_corrupt(self, tmp_path):
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "success-criteria.json").write_text("{bad")
+        assert load_success_criteria(tmp_path) == []
+
+
+# ---------------------------------------------------------------------------
+# Convergence — DESIGN_INVALID blocking
+# ---------------------------------------------------------------------------
+
+class TestConvergenceDesignInvalid:
+    def test_design_invalid_blocks_convergence(self, tmp_path, monkeypatch):
+        (tmp_path / ".swarm").mkdir()
+        monkeypatch.setattr(
+            "voronoi.science._fetch_tasks",
+            lambda ws: [
+                {"id": "bd-1", "title": "Test H1", "status": "open",
+                 "notes": "DESIGN_INVALID: L1 beats L4, encoding broken"},
+            ],
+        )
+        result = check_convergence(tmp_path, "analytical", eval_score=0.80)
+        assert result.converged is False
+        assert any("DESIGN_INVALID" in b for b in result.blockers)
+
+    def test_closed_design_invalid_does_not_block(self, tmp_path, monkeypatch):
+        (tmp_path / ".swarm").mkdir()
+        monkeypatch.setattr(
+            "voronoi.science._fetch_tasks",
+            lambda ws: [
+                {"id": "bd-1", "title": "Test H1", "status": "closed",
+                 "notes": "DESIGN_INVALID: was broken, now fixed"},
+            ],
+        )
+        result = check_convergence(tmp_path, "analytical", eval_score=0.80)
+        assert not any("DESIGN_INVALID" in b for b in result.blockers)
+
+
+# ---------------------------------------------------------------------------
+# Convergence — Success criteria blocking
+# ---------------------------------------------------------------------------
+
+class TestConvergenceSuccessCriteria:
+    def test_unmet_criterion_blocks(self, tmp_path, monkeypatch):
+        (tmp_path / ".swarm").mkdir()
+        save_success_criteria(tmp_path, [
+            {"id": "SC1", "description": "L4 > L1", "met": False},
+        ])
+        monkeypatch.setattr("voronoi.science._fetch_tasks", lambda ws: [])
+        result = check_convergence(tmp_path, "analytical", eval_score=0.80)
+        assert result.converged is False
+        assert any("SC1" in b for b in result.blockers)
+
+    def test_all_met_does_not_block(self, tmp_path, monkeypatch):
+        (tmp_path / ".swarm").mkdir()
+        save_success_criteria(tmp_path, [
+            {"id": "SC1", "description": "L4 > L1", "met": True},
+            {"id": "SC2", "description": "Pipeline 10x", "met": True},
+        ])
+        monkeypatch.setattr("voronoi.science._fetch_tasks", lambda ws: [])
+        result = check_convergence(tmp_path, "analytical", eval_score=0.80)
+        assert not any("Success criterion" in b for b in result.blockers)
+
+    def test_no_criteria_file_does_not_block(self, tmp_path, monkeypatch):
+        (tmp_path / ".swarm").mkdir()
+        monkeypatch.setattr("voronoi.science._fetch_tasks", lambda ws: [])
+        result = check_convergence(tmp_path, "analytical", eval_score=0.80)
+        assert not any("Success criterion" in b for b in result.blockers)
+
+
+# ---------------------------------------------------------------------------
+# Convergence — Hypothesis alignment blocking
+# ---------------------------------------------------------------------------
+
+class TestConvergenceHypothesisAlignment:
+    def test_contradicting_hypothesis_blocks(self, tmp_path, monkeypatch):
+        (tmp_path / ".swarm").mkdir()
+        monkeypatch.setattr(
+            "voronoi.science._fetch_tasks",
+            lambda ws: [
+                {"id": "bd-5", "title": "Primary experiment", "status": "open",
+                 "notes": "RESULT_CONTRADICTS_HYPOTHESIS:Expected L4>L1 but observed L1>L4"},
+            ],
+        )
+        result = check_convergence(tmp_path, "analytical", eval_score=0.80)
+        assert result.converged is False
+        assert any("contradicts hypothesis" in b.lower() for b in result.blockers)
+
+    def test_closed_contradiction_does_not_block(self, tmp_path, monkeypatch):
+        (tmp_path / ".swarm").mkdir()
+        monkeypatch.setattr(
+            "voronoi.science._fetch_tasks",
+            lambda ws: [
+                {"id": "bd-5", "title": "Primary experiment", "status": "closed",
+                 "notes": "RESULT_CONTRADICTS_HYPOTHESIS:Was broken, redesigned"},
+            ],
+        )
+        result = check_convergence(tmp_path, "analytical", eval_score=0.80)
+        assert not any("contradicts hypothesis" in b.lower() for b in result.blockers)
+
+
+# ---------------------------------------------------------------------------
+# Merge Gates — EVA enforcement
+# ---------------------------------------------------------------------------
+
+class TestMergeGateEVA:
+    def test_investigation_without_eva_blocked(self, tmp_path):
+        task = {
+            "title": "FINDING: encoding helps",
+            "notes": "TASK_TYPE:investigation\nSTAT_REVIEW: APPROVED",
+        }
+        ok, blockers = check_merge_gates(task, tmp_path, "analytical")
+        assert ok is False
+        assert any("EVA" in b for b in blockers)
+
+    def test_investigation_with_eva_pass(self, tmp_path):
+        data_dir = tmp_path / "data" / "raw"
+        data_dir.mkdir(parents=True)
+        csv_file = data_dir / "r.csv"
+        csv_file.write_text("s\n1\n2\n3\n")
+        h = compute_data_hash(csv_file)
+        exp_dir = tmp_path / "experiments"
+        exp_dir.mkdir()
+        (exp_dir / "run.py").write_text("#")
+        task = {
+            "title": "FINDING: encoding helps",
+            "notes": (
+                "TASK_TYPE:investigation\n"
+                "STAT_REVIEW: APPROVED\n"
+                "EVA: PASS | MANIPULATION_VARIED:yes\n"
+                f"DATA_FILE:data/raw/r.csv\nDATA_HASH:{h}\nN:3\n"
+            ),
+        }
+        ok, blockers = check_merge_gates(task, tmp_path, "analytical")
+        assert ok is True
+
+    def test_investigation_with_eva_fail_blocked(self, tmp_path):
+        task = {
+            "title": "FINDING: encoding helps",
+            "notes": "TASK_TYPE:investigation\nSTAT_REVIEW: APPROVED\nEVA: FAIL | CHECK:manipulation",
+        }
+        ok, blockers = check_merge_gates(task, tmp_path, "analytical")
+        assert ok is False
+        assert any("EVA FAILED" in b for b in blockers)
+
+    def test_non_investigation_no_eva_required(self, tmp_path):
+        task = {"title": "Build encoder", "notes": "TASK_TYPE:build"}
+        ok, blockers = check_merge_gates(task, tmp_path, "analytical")
+        assert ok is True

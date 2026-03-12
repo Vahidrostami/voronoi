@@ -287,3 +287,106 @@ class TestAbortSignal:
         d._check_abort_signal()
 
         assert len(d.running) == 1  # Still running
+
+
+# ---------------------------------------------------------------------------
+# Heartbeat stall detection in dispatcher
+# ---------------------------------------------------------------------------
+
+class TestHeartbeatStallDetection:
+    def test_check_heartbeat_no_files(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="investigate",
+        )
+        events = d._check_heartbeat_stalls(run)
+        assert events == []
+
+    def test_check_heartbeat_stalled(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="investigate",
+        )
+        # Create a stalled heartbeat file
+        from datetime import datetime, timezone, timedelta
+        base = datetime.now(timezone.utc) - timedelta(minutes=15)
+        path = tmp_path / ".swarm" / "heartbeat-stuck-agent.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lines = []
+        for i in range(5):
+            ts = (base + timedelta(minutes=i * 3)).isoformat()
+            lines.append(json.dumps({
+                "branch": "stuck-agent", "phase": "building", "iteration": 1,
+                "last_action": "waiting", "status": "idle", "timestamp": ts,
+            }))
+        path.write_text("\n".join(lines) + "\n")
+
+        events = d._check_heartbeat_stalls(run)
+        assert len(events) == 1
+        assert "stuck" in events[0]["msg"]
+
+
+# ---------------------------------------------------------------------------
+# DESIGN_INVALID detection
+# ---------------------------------------------------------------------------
+
+class TestDesignInvalidDetection:
+    def test_detects_design_invalid(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="investigate",
+        )
+        tasks = [
+            {"id": "bd-5", "title": "Test encoding ablation", "status": "open",
+             "notes": "DESIGN_INVALID: L1 beats L4, encoding inputs identical"},
+        ]
+        events = d._check_design_invalid(run, tasks)
+        assert len(events) == 1
+        assert events[0]["type"] == "design_invalid"
+        assert "DESIGN INVALID" in events[0]["msg"]
+
+    def test_ignores_closed_design_invalid(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="investigate",
+        )
+        tasks = [
+            {"id": "bd-5", "title": "Test encoding", "status": "closed",
+             "notes": "DESIGN_INVALID: was fixed"},
+        ]
+        events = d._check_design_invalid(run, tasks)
+        assert len(events) == 0
+
+    def test_notifies_only_once(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="investigate",
+        )
+        tasks = [
+            {"id": "bd-5", "title": "Test", "status": "open",
+             "notes": "DESIGN_INVALID: broken"},
+        ]
+        events1 = d._check_design_invalid(run, tasks)
+        events2 = d._check_design_invalid(run, tasks)
+        assert len(events1) == 1
+        assert len(events2) == 0  # Already notified

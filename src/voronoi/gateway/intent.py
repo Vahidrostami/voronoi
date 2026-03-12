@@ -7,7 +7,7 @@ matching the classification logic defined in DESIGN.md §3.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
@@ -301,3 +301,105 @@ def _make_summary(text: str, max_len: int = 80) -> str:
     if len(cleaned) <= max_len:
         return cleaned
     return cleaned[:max_len - 3] + "..."
+
+
+# ---------------------------------------------------------------------------
+# Compound / Phased Intent Detection
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ClassifiedPhase:
+    """A single phase in a compound intent."""
+    mode: WorkflowMode
+    rigor: RigorLevel
+    description: str
+    order: int
+
+
+# Phase boundary markers — patterns indicating a new phase
+_PHASE_BOUNDARIES = [
+    # "then" / "after that" / "once done" indicate sequencing
+    re.compile(r"\.\s*then\s", re.I),
+    re.compile(r"\.\s*after\s+that\s*,", re.I),
+    re.compile(r"\.\s*once\s+(done|complete)", re.I),
+    re.compile(r"\.\s*finally\s*,", re.I),
+    re.compile(r"\.\s*next\s*,", re.I),
+    # Numbered steps
+    re.compile(r"(?:^|\n)\s*\d+\.\s", re.M),
+    # Explicit section headers (## Phase, ## Step)
+    re.compile(r"(?:^|\n)##\s+", re.M),
+    # Deliverables section as boundary
+    re.compile(r"(?:^|\n)##?\s*Deliverables?\b", re.I | re.M),
+]
+
+
+def classify_compound(text: str) -> list[ClassifiedPhase]:
+    """Classify a multi-phase prompt into an ordered sequence of phases.
+
+    For simple single-phase prompts, returns a list with one phase.
+    For compound prompts (BUILD→INVESTIGATE→BUILD), returns the full sequence.
+    """
+    text = text.strip()
+    if not text:
+        return []
+
+    # Split text at phase boundaries
+    segments = _split_into_segments(text)
+
+    if len(segments) <= 1:
+        # Single phase — delegate to classify()
+        result = classify(text)
+        return [ClassifiedPhase(
+            mode=result.mode, rigor=result.rigor,
+            description=result.summary, order=0,
+        )]
+
+    phases: list[ClassifiedPhase] = []
+    for i, segment in enumerate(segments):
+        segment = segment.strip()
+        if len(segment) < 10:
+            continue  # Skip tiny fragments
+        result = classify(segment)
+        if result.is_meta:
+            continue  # Skip meta commands in compound prompts
+        phases.append(ClassifiedPhase(
+            mode=result.mode, rigor=result.rigor,
+            description=result.summary, order=i,
+        ))
+
+    # Deduplicate consecutive identical modes
+    deduped: list[ClassifiedPhase] = []
+    for phase in phases:
+        if deduped and deduped[-1].mode == phase.mode and deduped[-1].rigor == phase.rigor:
+            continue
+        deduped.append(phase)
+
+    return deduped if deduped else [ClassifiedPhase(
+        mode=WorkflowMode.GUIDE, rigor=RigorLevel.STANDARD,
+        description=_make_summary(text), order=0,
+    )]
+
+
+def _split_into_segments(text: str) -> list[str]:
+    """Split text into segments at phase boundaries."""
+    # Collect all split positions
+    positions: set[int] = set()
+    for pattern in _PHASE_BOUNDARIES:
+        for match in pattern.finditer(text):
+            positions.add(match.start())
+
+    if not positions:
+        return [text]
+
+    # Sort and split
+    sorted_pos = sorted(positions)
+    segments: list[str] = []
+    prev = 0
+    for pos in sorted_pos:
+        if pos > prev:
+            segments.append(text[prev:pos])
+        prev = pos
+    if prev < len(text):
+        segments.append(text[prev:])
+
+    return [s for s in segments if s.strip()]

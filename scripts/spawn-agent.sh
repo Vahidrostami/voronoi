@@ -141,6 +141,22 @@ fi
 
 echo "✓ Pre-dispatch validation complete"
 
+# =========================================================================
+# BLIND directive: remove files the agent must not see
+# Format in Beads notes: BLIND:path/to/file
+# =========================================================================
+BLIND_LIST=$(echo "$TASK_NOTES" | python3 -c "
+import sys, re
+notes = sys.stdin.read()
+for line in notes.split('\n'):
+    m = re.match(r'BLIND:\s*(.+)', line.strip())
+    if m:
+        for f in m.group(1).split(','):
+            f = f.strip()
+            if f:
+                print(f)
+" 2>/dev/null || true)
+
 # 1. Create worktree on a new branch
 cd "$PROJECT_DIR"
 git worktree add "$WORKTREE_PATH" -b "$BRANCH_NAME" 2>/dev/null || {
@@ -157,6 +173,18 @@ fi
 
 # 2. Claim the task in Beads
 bd update "$TASK_ID" --claim 2>/dev/null || echo "Warning: claim failed (may already be claimed)"
+
+# 2b. Enforce BLIND directive: remove blinded files from worktree
+if [ -n "$BLIND_LIST" ]; then
+    while IFS= read -r blind_file; do
+        [ -z "$blind_file" ] && continue
+        BLIND_TARGET="${WORKTREE_PATH}/${blind_file}"
+        if [ -e "$BLIND_TARGET" ]; then
+            rm -f "$BLIND_TARGET"
+            echo "🔒 BLIND: removed $blind_file from agent worktree"
+        fi
+    done <<< "$BLIND_LIST"
+fi
 
 # 3. Copy prompt file into worktree if provided
 if [[ -n "$PROMPT_FILE" && -f "$PROMPT_FILE" ]]; then

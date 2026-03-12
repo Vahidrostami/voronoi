@@ -335,7 +335,7 @@ class TestRoleMapping:
     EXPECTED_ROLES = [
         "worker-agent", "scout", "investigator", "explorer",
         "statistician", "critic", "theorist", "methodologist",
-        "synthesizer", "evaluator",
+        "synthesizer", "scribe", "evaluator",
     ]
 
     def test_all_roles_in_mapping_table(self):
@@ -345,3 +345,52 @@ class TestRoleMapping:
         for role in self.EXPECTED_ROLES:
             assert f".github/agents/{role}.agent.md" in prompt, \
                 f"Missing role {role} in prompt mapping table"
+
+
+# ---------------------------------------------------------------------------
+# Invariants & REVISE sections in prompts
+# ---------------------------------------------------------------------------
+
+class TestInvariantsInPrompt:
+    """Verify invariants and REVISE sections appear in prompts."""
+
+    def test_invariants_section_present(self):
+        prompt = build_orchestrator_prompt(
+            question="test", mode="investigate", rigor="scientific",
+        )
+        assert "Investigation Invariants" in prompt
+        assert "invariants.json" in prompt
+
+    def test_revise_section_present(self):
+        prompt = build_orchestrator_prompt(
+            question="test", mode="investigate", rigor="scientific",
+        )
+        assert "REVISE" in prompt
+        assert "REVISE_OF" in prompt
+        assert "CALIBRATION" in prompt
+
+    def test_invariants_in_build_mode_too(self):
+        prompt = build_orchestrator_prompt(
+            question="test", mode="build", rigor="standard",
+        )
+        assert "Investigation Invariants" in prompt
+
+    def test_scribe_in_role_mapping(self):
+        prompt = build_orchestrator_prompt(
+            question="test", mode="investigate", rigor="scientific",
+        )
+        assert "scribe.agent.md" in prompt
+
+    def test_success_criteria_tracking_section(self):
+        prompt = build_orchestrator_prompt(
+            question="test", mode="investigate", rigor="scientific",
+        )
+        assert "Success Criteria Tracking" in prompt
+        assert "success-criteria.json" in prompt
+        assert "RESULT_CONTRADICTS_HYPOTHESIS" in prompt
+
+    def test_success_criteria_in_build_too(self):
+        prompt = build_orchestrator_prompt(
+            question="test", mode="build", rigor="standard",
+        )
+        assert "Success Criteria Tracking" in prompt

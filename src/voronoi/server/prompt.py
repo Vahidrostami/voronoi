@@ -121,6 +121,39 @@ def build_orchestrator_prompt(
     # -- Science sections (mode + rigor aware) -----------------------------
     sections.append(_build_science_sections(mode, rigor))
 
+    # -- Investigation invariants (injected into every prompt) -------------
+    sections.append(
+        "\n## Investigation Invariants\n\n"
+        "If `.swarm/invariants.json` exists, read it at startup and enforce "
+        "every invariant listed.  Include ALL invariants verbatim in every "
+        "worker prompt you write.  Violations are structural failures — "
+        "not judgment calls.\n\n"
+        "Workers: check invariants during your EVA self-audit.  If you detect "
+        "a violation, flag `INVARIANT_VIOLATED:<id>` in Beads notes and stop.\n"
+    )
+
+    # -- REVISE task support -----------------------------------------------
+    sections.append(
+        "\n## REVISE Tasks (Iterative Experiment Design)\n\n"
+        "When a pilot experiment fails calibration or results are unexpected, "
+        "create a REVISE task instead of a fresh task.  REVISE tasks carry "
+        "forward context from the previous attempt:\n\n"
+        "```bash\n"
+        "bd create \"REVISE: <description>\" -t task -p 1 --json\n"
+        "bd update <id> --notes \"REVISE_OF:<previous-task-id>\"\n"
+        "bd update <id> --notes \"PRIOR_RESULT:<what happened>\"\n"
+        "bd update <id> --notes \"FAILURE_DIAGNOSIS:<why it failed>\"\n"
+        "bd update <id> --notes \"REVISED_PARAMS:<what changed>\"\n"
+        "```\n\n"
+        "The worker receiving a REVISE task gets the full context of what was "
+        "tried and why it failed.  Include ALL revise context in the worker prompt.\n\n"
+        "**Calibration workflow:**\n"
+        "1. Dispatch a PILOT task (small N, quick run)\n"
+        "2. Read pilot results — check CALIBRATION_TARGET vs CALIBRATION_ACTUAL\n"
+        "3. If calibration fails, create a REVISE task with diagnosis\n"
+        "4. Only dispatch the full experiment after calibration passes\n"
+    )
+
     # -- Verify loop guidance ----------------------------------------------
     sections.append(
         "\n## Self-Healing Agents (Verify Loop + EVA)\n\n"
@@ -147,6 +180,30 @@ def build_orchestrator_prompt(
         "4. The corrected task must validate the fix before running the full experiment\n"
         "5. NEVER rationalize an invalid experiment as 'a finding to discuss' \u2014 fix and re-run\n"
         "6. NEVER enter a worker's worktree to fix code yourself \u2014 dispatch a new agent\n"
+    )
+
+    # -- Success criteria ---------------------------------------------------
+    sections.append(
+        "\n## Success Criteria Tracking\n\n"
+        "At investigation start, write `.swarm/success-criteria.json` capturing "
+        "the PROMPT's measurable success criteria.  Format:\n"
+        "```json\n"
+        "[{\"id\": \"SC1\", \"description\": \"L4 outperforms L1 on F1\", \"met\": false},\n"
+        " {\"id\": \"SC2\", \"description\": \"Pipeline compresses >=10x\", \"met\": false}]\n"
+        "```\n\n"
+        "During each OODA Orient cycle, check whether results satisfy each criterion.\n"
+        "Update `met: true` when evidence supports it.  **Convergence is blocked** "
+        "while any criterion has `met: false`.\n\n"
+        "If a criterion is unmet AND the experiment ran validly, document why in "
+        "the limitations section.  If it's unmet because the experiment was broken "
+        "(DESIGN_INVALID), fix and re-run — do NOT ship broken results.\n\n"
+        "**Result-hypothesis alignment:**\n"
+        "When the primary hypothesis predicts direction X (e.g., L4 > L1) but "
+        "results show the opposite, flag:\n"
+        "```bash\n"
+        "bd update <id> --notes \"RESULT_CONTRADICTS_HYPOTHESIS:Expected L4>L1 but observed L1>L4\"\n"
+        "```\n"
+        "This blocks convergence until resolved (redesign experiment or revise hypothesis).\n"
     )
 
     # -- Workflow ----------------------------------------------------------
@@ -208,6 +265,7 @@ def build_orchestrator_prompt(
         "| Theory development | `.github/agents/theorist.agent.md` |\n"
         "| Methodology review | `.github/agents/methodologist.agent.md` |\n"
         "| Synthesis | `.github/agents/synthesizer.agent.md` |\n"
+        "| Paper writing | `.github/agents/scribe.agent.md` |\n"
         "| Final evaluation | `.github/agents/evaluator.agent.md` |\n\n"
         "For each worker prompt, include:\n"
         "1. The FULL content of the matching `.github/agents/<role>.agent.md` file\n"

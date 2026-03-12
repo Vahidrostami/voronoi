@@ -367,6 +367,10 @@ class InvestigationDispatcher:
                     f"Will auto-restart if the agent exits."
                 )
 
+            # Heartbeat-based stall detection for active agents
+            if session_alive and run.task_snapshot:
+                events.extend(self._check_heartbeat_stalls(run))
+
             if not session_alive or self._is_complete(run) or timed_out:
                 if timed_out and not self._is_complete(run):
                     reason = f"timeout ({self.config.timeout_hours}h)"
@@ -473,6 +477,7 @@ class InvestigationDispatcher:
             logger.warning("bd list --json returned invalid JSON for #%d: %s",
                            run.investigation_id, e)
         events.extend(self._check_findings(run, tasks))
+        events.extend(self._check_design_invalid(run, tasks))
         events.extend(self._detect_phase(run))
         return events
 
@@ -541,6 +546,33 @@ class InvestigationDispatcher:
                 events.append({"type": "finding", "msg": msg})
         return events
 
+    def _check_design_invalid(self, run: RunningInvestigation,
+                               tasks: list[dict] | None = None) -> list[dict]:
+        """Detect DESIGN_INVALID flags in task notes and alert."""
+        events: list[dict] = []
+        if tasks is None:
+            return events
+        for task in tasks:
+            tid = task.get("id", "")
+            notes = task.get("notes", "")
+            title = task.get("title", "")
+            if ("DESIGN_INVALID" in notes
+                    and task.get("status") != "closed"
+                    and tid not in getattr(run, "_notified_design_invalid", set())):
+                if not hasattr(run, "_notified_design_invalid"):
+                    run._notified_design_invalid = set()
+                run._notified_design_invalid.add(tid)
+                diagnosis = ""
+                for line in notes.split("\n"):
+                    if "DESIGN_INVALID" in line:
+                        diagnosis = line.strip()[:200]
+                        break
+                events.append({
+                    "type": "design_invalid",
+                    "msg": f"🚨 *DESIGN INVALID* — {title}\n  {diagnosis}",
+                })
+        return events
+
     def _detect_phase(self, run: RunningInvestigation) -> list[dict]:
         events: list[dict] = []
         ws = run.workspace_path
@@ -598,6 +630,26 @@ class InvestigationDispatcher:
                 })
         except Exception as e:
             logger.debug("Paradigm stress check failed: %s", e)
+        return events
+
+    def _check_heartbeat_stalls(self, run: RunningInvestigation) -> list[dict]:
+        """Check agent heartbeats for stalled workers."""
+        events: list[dict] = []
+        try:
+            from voronoi.science import check_heartbeat_stall
+            swarm_dir = run.workspace_path / ".swarm"
+            if not swarm_dir.exists():
+                return events
+            for hb_file in swarm_dir.glob("heartbeat-*.jsonl"):
+                branch = hb_file.stem.replace("heartbeat-", "")
+                if check_heartbeat_stall(run.workspace_path, branch):
+                    events.append({
+                        "type": "heartbeat_stall",
+                        "msg": f"⚠️ Agent `{branch}` may be stuck "
+                               f"(same status for 10+ min)",
+                    })
+        except Exception as e:
+            logger.debug("Heartbeat stall check failed: %s", e)
         return events
 
     def _send_progress_batch(self, run: RunningInvestigation, events: list[dict]) -> None:
