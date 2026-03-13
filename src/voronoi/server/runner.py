@@ -39,6 +39,8 @@ class ServerConfig:
         self.max_agents_per_investigation = 4
         self.agent_command = "copilot"
         self.agent_flags = "--allow-all"
+        self.orchestrator_model = ""  # e.g. "claude-opus-4.6"
+        self.worker_model = ""        # e.g. "claude-sonnet-4.6"
         self.workspace_retention_days = 30
         self.github_lab_org = "voronoi-lab"
         self.github_visibility = "private"
@@ -57,6 +59,12 @@ class ServerConfig:
                 )
                 self.agent_command = data.get("server", {}).get("agent_command", self.agent_command)
                 self.agent_flags = data.get("server", {}).get("agent_flags", self.agent_flags)
+                self.orchestrator_model = data.get("server", {}).get(
+                    "orchestrator_model", self.orchestrator_model
+                )
+                self.worker_model = data.get("server", {}).get(
+                    "worker_model", self.worker_model
+                )
                 self.workspace_retention_days = data.get("server", {}).get(
                     "workspace_retention_days", self.workspace_retention_days
                 )
@@ -89,6 +97,10 @@ class ServerConfig:
             self.agent_command = env("VORONOI_AGENT_COMMAND")
         if env("VORONOI_AGENT_FLAGS"):
             self.agent_flags = env("VORONOI_AGENT_FLAGS")
+        if env("VORONOI_ORCHESTRATOR_MODEL"):
+            self.orchestrator_model = env("VORONOI_ORCHESTRATOR_MODEL")
+        if env("VORONOI_WORKER_MODEL"):
+            self.worker_model = env("VORONOI_WORKER_MODEL")
         if env("VORONOI_MAX_CONCURRENT"):
             self.max_concurrent = int(env("VORONOI_MAX_CONCURRENT"))
         if env("VORONOI_MAX_AGENTS"):
@@ -127,6 +139,8 @@ class ServerConfig:
                 "max_agents_per_investigation": self.max_agents_per_investigation,
                 "agent_command": self.agent_command,
                 "agent_flags": self.agent_flags,
+                "orchestrator_model": self.orchestrator_model,
+                "worker_model": self.worker_model,
                 "workspace_retention_days": self.workspace_retention_days,
             },
             "github": {

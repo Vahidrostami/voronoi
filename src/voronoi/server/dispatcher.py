@@ -37,6 +37,8 @@ class DispatcherConfig:
     max_agents: int = 4
     agent_command: str = "copilot"
     agent_flags: str = "--allow-all"
+    orchestrator_model: str = ""  # e.g. "claude-opus-4.6", "" = CLI default
+    worker_model: str = ""        # e.g. "claude-sonnet-4.6", "" = CLI default
     progress_interval: int = 30  # seconds between progress updates
     timeout_hours: int = 8       # max hours before marking investigation exhausted
     max_retries: int = 2         # max times to restart a dead agent
@@ -277,6 +279,11 @@ class InvestigationDispatcher:
         if not shutil.which(agent_bin):
             raise RuntimeError(f"Agent CLI not found: {agent_bin}")
 
+        # Orchestrator gets its own model; workers use worker_model via spawn-agent.sh
+        model_flag = ""
+        if self.config.orchestrator_model:
+            model_flag = f" --model {shlex.quote(self.config.orchestrator_model)}"
+
         log_path = workspace_path / ".swarm" / "agent.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -298,7 +305,7 @@ class InvestigationDispatcher:
         safe_flags = shlex.quote(agent_flags)
         subprocess.run(
             ["tmux", "send-keys", "-t", session,
-             f'cd {safe_ws} && {safe_cmd} {safe_flags} '
+             f'cd {safe_ws} && {safe_cmd} {safe_flags}{model_flag} '
              f'-p "$(cat .swarm/orchestrator-prompt.txt)" ; exit',
              "Enter"],
             capture_output=True,

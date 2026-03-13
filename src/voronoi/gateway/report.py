@@ -846,13 +846,13 @@ class ReportGenerator:
     def _find_latex_main(self) -> Path | None:
         """Find the main LaTeX file in the workspace."""
         candidates = [
-            self.ws / "main.tex",
             self.ws / "paper.tex",
+            self.ws / "main.tex",
             self.ws / "manuscript.tex",
         ]
         for d in self.ws.glob("demos/*/"):
-            candidates.append(d / "main.tex")
             candidates.append(d / "paper.tex")
+            candidates.append(d / "main.tex")
         for tex in self.ws.glob("*.tex"):
             if tex not in candidates:
                 candidates.append(tex)

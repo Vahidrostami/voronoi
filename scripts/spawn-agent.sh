@@ -31,6 +31,7 @@ PROJECT_DIR=$(echo "$CONFIG" | jq -r '.project_dir')
 SWARM_DIR=$(echo "$CONFIG" | jq -r '.swarm_dir')
 TMUX_SESSION=$(echo "$CONFIG" | jq -r '.tmux_session')
 AGENT_CMD=$(echo "$CONFIG" | jq -r '.agent_command // "copilot"')
+WORKER_MODEL=$(echo "$CONFIG" | jq -r '.worker_model // ""')
 
 # Select permission mode
 if [[ "$SAFE_MODE" == "true" ]]; then
@@ -209,13 +210,19 @@ SAFE_CMD=$(printf '%q' "$AGENT_CMD")
 SAFE_FLAGS=$(printf '%q' "$AGENT_FLAGS")
 SAFE_WP=$(printf '%q' "$WORKTREE_PATH")
 
+# Build --model flag for workers (if configured)
+MODEL_FLAG=""
+if [[ -n "$WORKER_MODEL" ]]; then
+    MODEL_FLAG=" --model $(printf '%q' "$WORKER_MODEL")"
+fi
+
 if [[ -f "$WORKTREE_PATH/.agent-prompt.txt" ]]; then
     tmux send-keys -t "$TMUX_SESSION:$BRANCH_NAME" \
-        "cd $SAFE_WP && $SAFE_CMD $SAFE_FLAGS -p \"\$(cat .agent-prompt.txt)\"" Enter
+        "cd $SAFE_WP && $SAFE_CMD $SAFE_FLAGS$MODEL_FLAG -p \"\$(cat .agent-prompt.txt)\"" Enter
 else
     echo "⚠ No prompt file found — agent will start in interactive mode"
     tmux send-keys -t "$TMUX_SESSION:$BRANCH_NAME" \
-        "cd $SAFE_WP && $SAFE_CMD $SAFE_FLAGS" Enter
+        "cd $SAFE_WP && $SAFE_CMD $SAFE_FLAGS$MODEL_FLAG" Enter
 fi
 
 echo "✓ Agent spawned: $BRANCH_NAME (tmux: $TMUX_SESSION)"

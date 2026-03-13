@@ -116,6 +116,8 @@ cat > .swarm-config.json << EOF
   "max_agents": 4,
   "agent_command": "$AGENT_CMD",
   "agent_flags": "--allow-all",
+  "orchestrator_model": "${VORONOI_ORCHESTRATOR_MODEL:-}",
+  "worker_model": "${VORONOI_WORKER_MODEL:-}",
   "agent_flags_safe": [
     "--disallow-tool", "mcp__curl",
     "--disallow-tool", "mcp__ssh",

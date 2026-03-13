@@ -14,250 +14,189 @@ Produce a complete academic paper — with synthetic experimental evidence — t
 
 This abstract is the contract. Every claim made above must be substantiated in the paper.
 
-### Abstract Claim Coverage — How Each Claim Is Substantiated
+---
 
-The abstract makes three contribution claims. Each must map to a specific paper section:
+## Three Claims → Three Experiments
 
-1. **Three structural invariants + single-invariant insufficiency.** The paper's Problem Characterization section must formally define lever coupling, knowledge heterogeneity, and the cognitive assembly bottleneck. It must then show — via **one constructive example per invariant** — that addressing any single invariant alone fails. E.g.: "Solving only coupling (ignoring heterogeneity) means a joint optimizer that can't parse constraint conflicts; solving only heterogeneity (ignoring coupling) means well-encoded but independently-optimized levers that miss interaction effects." This is a logical argument with illustrative examples, not an experiment.
+The abstract makes three claims. Each gets **one clean experiment** with a **direct signal chain**. No experiment tests more than one claim.
 
-2. **Multimodal encoding layer.** Substantiated by the L1→L4 ablation experiment (SC1) and cross-source experiment (SC2).
+| # | Abstract claim | Experiment | What varies | What's measured |
+|---|---------------|------------|-------------|-----------------|
+| **E1** | Encoding layer enables cross-type reasoning that reveals effects invisible to siloed analyses | **L1 vs L4 discovery** | Encoding level (raw text vs full structured) | Effect discovery F1 |
+| **E2** | Encoding preserves epistemic differences; conflicts become diagnostic signals | **All-sources vs data-only** at L4 | Knowledge sources included | Effect discovery recall |
+| **E3** | Progressive pipeline compresses a large candidate space | **Pipeline compression** at L4 | — (observational) | Compression ratio per stage |
 
-3. **Progressive space-reduction pipeline.** Substantiated by the pipeline compression experiment (SC3), plus architecture validation (SC7).
+The problem characterization (three structural invariants, single-invariant insufficiency) is a **logical argument** in the paper — no experiment needed.
 
 ---
 
 ## Core Hypothesis
 
-**Structured encoding of heterogeneous knowledge (statistical profiles, typed constraints, temporal belief objects, process graphs) enables an LLM to discover cross-lever effects that it misses when the same information is presented as plain text.**
+**Structured encoding of heterogeneous knowledge enables an LLM to discover cross-lever effects that it misses when the same information is presented as plain text.**
 
-**Scope:** This experiment tests **context encoding quality**, not retrieval. All encoding levels receive the same complete information — retrieval is held constant. The independent variable is how that information is represented in the agent's context window. L1 is "everything retrieved, nothing structured"; L4 is "everything retrieved, fully structured."
+This experiment tests **encoding quality**, not retrieval. All levels receive the same complete information. The independent variable is *representation*. L1 = "everything retrieved, nothing structured"; L4 = "everything retrieved, fully structured."
 
 ---
 
-## Experimental Design (The Only Thing You Cannot Get Wrong)
+## E1: Encoding Layer Matters (Primary Experiment)
 
-### Mandatory Execution Phases (SEQUENTIAL — no skipping)
+### Signal Chain
 
-**Phase 1 MUST complete before Phase 2. Phase 2 MUST complete before Phase 3.**
-
-#### Phase 1: Data Generation + Pilot Calibration
-
-Generate data for **2 pilot scenarios** only. Run L1 and L4 only. Compute recall and F1.
-
-**PRODUCES (artifact contracts — merge blocked without these):**
-- `output/data/pilot_ground_truth.json`
-- `output/pilot_results.json` — must contain `pilot_recall_l1`, `pilot_recall_l4`, `pilot_f1_l1`, `pilot_f1_l4`
-- `output/encoding_hashes.json` — SHA-256 of the full LLM input at each encoding level, all 4 must differ
-
-**Phase 1 HARD GATE — ALL must pass before Phase 2 begins:**
-1. `recall_l4 > recall_l1` by ≥20 percentage points
-2. `recall_l1 ≤ 0.35`
-3. `recall_l4 ≥ 0.55`
-4. All 4 encoding-level input hashes are distinct (no collapsed conditions)
-5. Character count of L4 input is within [0.7×, 1.5×] of L1 input character count — the representations should be comparable in length but different in structure
-6. Precision at L4 > precision at L1 — structured encoding should reduce hallucinated findings, not increase them. If L4 generates MORE findings than L1 with LOWER precision, the encoding is prompting verbosity, not accuracy
-
-If ANY criterion fails: **STOP. Diagnose. Create a REVISE task.** Common fixes:
-- If L1 ≈ L4 recall → planted effects are not encoding-sensitive. Add more Simpson's paradoxes, increase noise, make confounders subtler
-- If L4 recall < 0.55 → effects are too hard. Increase signal magnitude
-- If encoding hashes collide → encoding implementation is broken. Fix the encoder
-- If L1 > L4 → the structured encoding is confusing the LLM or raw text accidentally leaks structure. Verify L1 truly sends raw CSV text with NO pre-computation
-- If L4 character count > 1.5× L1 character count → encoding is bloated. Compress it: remove redundant tables, use compact JSON/YAML notation, reference process graph nodes by ID instead of inlining
-- If L1 recall > 0.35 → effects aren't encoding-sensitive enough. Add more subgroups, increase noise, add distractor policy sentences
-
-Report calibration results:
-```bash
-bd update <id> --notes "CALIBRATION_TARGET:recall_l4=[0.55, 0.75]"
-bd update <id> --notes "CALIBRATION_TARGET:recall_l1=[0.15, 0.35]"
-bd update <id> --notes "CALIBRATION_ACTUAL:recall_l4=<value>"
-bd update <id> --notes "CALIBRATION_ACTUAL:recall_l1=<value>"
+```
+encoding → discovery → evaluation
 ```
 
-#### Phase 2: Full Experiment
+That's it. **No pipeline between encoding and evaluation.** Diagnostic agents, causal synthesis, and quality gate are NOT in this path — they are tested separately in E3.
 
-Generate all scenarios (you decide how many — sized for ≥0.80 power to detect d=1.0). Run all 4 encoding levels across all scenarios.
+### Design
 
-**PRODUCES:**
-- `output/results.json` — per-scenario per-level metrics + aggregate stats + `"model"` key
-- `output/calibration_check.json` — pass/fail for each success criterion with evidence
+```
+For each scenario (N ≥ 12, balanced across effect types):
+    For each level in [L1, L4]:
+        encoded_context = encode(scenario, level)
+        findings = LLM(discovery_prompt + encoded_context)   # single direct call
+        scores = rubric_match(findings, ground_truth)        # 3-vote majority judge
+    repeat k=5 times per (scenario, level)
+```
 
-**Phase 2 HARD GATE:**
-1. L4 F1 > L1 F1 with p < 0.05 (primary success criterion)
-2. If NOT met: flag `DESIGN_INVALID`, file `RESULT_CONTRADICTS_HYPOTHESIS`, do NOT proceed to Phase 3
+### Encoding Levels
 
-**Phase 2 DIAGNOSTIC CHECKS (run after all scenarios, before declaring results):**
-
-1. If L4 F1 < L1 F1, check:
-   a. Is L4 context length > 1.5× L1? → Encoding is bloated, compress and re-run
-   b. Is L4 generating more findings than L1? → Discovery prompt is too open-ended, constrain and re-run
-   c. Is L1 recall > 0.35? → Effects aren't encoding-sensitive, redesign and re-run
-   
-   Only declare a genuine negative result if ALL three checks pass (encoding is compact, output is constrained, effects are hard for L1) and L4 still loses.
-
-If the primary criterion fails after a valid experiment (EVA passes, manipulation verified, diagnostic checks pass), you MAY proceed to Phase 3 but MUST:
-- Report the negative result honestly with full statistics
-- Include detailed diagnosis in the limitations section
-- Mark success criterion SC1 as `met: false`
-
-#### Phase 3: Paper + Webapp (ONLY after Phase 2)
-
-Write paper, generate figures from actual results, compile LaTeX, build webapp.
-
-**PRODUCES:**
-- `output/paper/paper.tex` + `output/paper/paper.pdf`
-- `output/index.html`
-
----
-
-### The Four-Level Encoding Ablation
-
-All levels receive the **same information content** from the **same N=500 row sample** and **all four knowledge sources** (data, policies, expert beliefs, playbook). Only the *representation* varies.
-
-**CRITICAL DESIGN CONSTRAINT: Structured encoding REPLACES raw content, it does not APPEND to it.** L4 must be within 1.5× the character count of L1. If L4 exceeds 1.5× L1, the encoding is bloated — compress the structured representations until the constraint is satisfied. The hypothesis is about *how* information is represented, not about *how much* information is present.
+Only **L1 and L4** are compared. L2/L3 may be included for a gradient plot in the paper but are not required for the primary hypothesis test.
 
 | Level | Data | Knowledge | Playbook |
 |-------|------|-----------|----------|
-| **L1: Raw text** | `str(dataframe)` — raw CSV text dumped verbatim. NO column headers repeated, NO summary stats, NO aggregation. Just raw rows as a text blob. | Policy sentences as plain prose paragraphs. NO structure, NO hierarchy. | Playbook as one flat paragraph. |
-| **L2: +Stats (replaces raw rows)** | Raw rows are REMOVED. Replaced by statistical profiles: means, medians, correlations, distributions by segment, computed via numpy/scipy. The LLM never sees raw rows. | Prose (same as L1) | Prose (same as L1) |
-| **L3: +Typed (replaces prose)** | Statistical profiles (same as L2, NO raw rows) | Constraint vectors with explicit tiers + temporal belief objects with confidence/decay. Raw policy prose is REMOVED. | Prose (same as L1) |
-| **L4: Full (all transformed)** | Statistical profiles (same as L2, NO raw rows) | Typed constraints + beliefs (same as L3, NO raw prose) | Process graph references + rule catalog + technique registry. Raw playbook prose is REMOVED. |
+| **L1: Raw text** | CSV with column headers + raw rows. NO summary statistics, NO aggregations, NO correlations — just the table as a competent analyst would paste it | Policy sentences as flat prose | Playbook as flat prose |
+| **L4: Full structured** | Statistical profiles (raw rows REMOVED) | Tiered constraint vectors + temporal belief objects (prose REMOVED) | Process graph + rule catalog (prose REMOVED) |
 
-**Why this works:** L1 has raw CSV text (long, unprocessed). L4 has compact structured summaries (shorter or similar length, but semantically richer). The experiment now isolates representation quality from context length. The LLM at L1 must mentally parse 500 raw rows to find a Simpson's paradox; at L4 the segment-level statistics are pre-computed and handed to it directly.
+**Why this is the contribution, not a flaw:** LLMs cannot reliably compute subgroup means, detrend time series, or check constraint thresholds by scanning raw numbers. The encoding layer pre-computes these statistics using deterministic code, then delivers the results to the LLM in its context window. The LLM still does all the reasoning — pattern recognition, cross-source conflict detection, causal inference — but over pre-computed statistical summaries instead of raw rows. This is the paper's thesis: offloading numerical computation to code and giving the LLM structured results to reason over outperforms giving it raw data and hoping it does the math. The paper must frame this explicitly.
 
-**Encoding Level Separation Verification (MANDATORY before any experiment run):**
-1. Compute character count of the full LLM input at each level
-2. Compute SHA-256 hash of the full LLM input at each level
-3. All 4 hashes MUST be different
-4. L4 character count is within [0.7×, 1.5×] of L1 character count — if L4 is longer than 1.5× L1, the encoding is bloated and MUST be compressed
-5. Record these in `output/encoding_hashes.json`
-6. If L1 and L4 produce identical or near-identical inputs (>90% overlap by longest-common-subsequence): the encoding is BROKEN — fix it
-7. Verify that L2+ inputs do NOT contain raw CSV rows — search for comma-separated numeric sequences that match the original dataframe
+**L4 character count must be within [0.7×, 1.5×] of L1.** Encoding REPLACES raw content, never appends to it. Same LLM model for both levels.
 
-This is the paper's primary experiment — allocate the most effort here. Run on enough scenarios for ≥0.80 statistical power to detect d=1.0 effects.
+### Planted Effects
 
-### Planted Effects Must Be Encoding-Sensitive
+Each scenario has **3 ground-truth effects**, drawn from these encoding-sensitive categories:
 
-Effects must be designed to **mislead at L1 but resolve at L4**. Categories that achieve this:
-- **Simpson's paradox**: Aggregate tells one story; segment-level tells the opposite. L1 (raw text) sees only aggregates; L2+ computes segment-level stats that reveal the reversal.
-- **Confounded coupling**: Spurious correlation from shared temporal confound; L2+ detrends, L1 cannot.
-- **Constraint-boundary effects**: Data says go, a hard constraint says stop. L1 has constraints as prose (easy to miss); L3+ has typed constraint vectors that explicitly block.
-- **Decayed beliefs**: Expert was right historically, data has shifted. L1 has both as prose (ambiguous); L3+ has temporal belief objects with decay functions that flag the conflict.
-- **Nonlinear segment interactions**: Effect exists only in a sub-population. L1 sees flat averages; L2+ computes segment-level breakdowns.
+- **Simpson's paradox** — Aggregate correlation tells one story; segment-level tells the opposite. At 500 rows, L1 cannot mentally compute subgroup means; L4 hands them to the LLM directly. Use ≥3 subgroups.
+- **Constraint-boundary** — Data says go; a hard constraint says stop. At L1, the constraint is buried in 10+ prose sentences. At L4, it's a typed vector with explicit threshold.
 
-**Why these mislead L1 specifically:** L1 receives raw CSV text and prose. It cannot compute segment-level statistics (Simpson's), cannot detrend temporal confounds (confounded coupling), cannot parse constraint hierarchy from prose (constraint-boundary), cannot detect belief decay from flat prose (decayed beliefs), and cannot segment-aggregate (nonlinear interactions). L4 has all of these pre-computed.
+These two types had the highest detection rates in prior runs. Agents MAY add effect types if they can demonstrate ≥30% detection at L1 and ≥60% detection at L4 in the pilot. Do NOT add effect types that achieve 0% detection — they structurally cap recall.
 
-**Calibration targets:**
-- L4: 55-75% recall (structured encoding should make most effects discoverable)
-- L1: 15-35% recall (raw text should catch only the most obvious effects)
-- L4 − L1 gap: ≥20 percentage points (not just 10)
+**Distractor patterns (MANDATORY):** Each scenario must include ≥2 real-but-non-planted statistical patterns (e.g., genuine correlations, seasonal trends, outlier clusters) that are NOT ground-truth effects. This prevents the LLM from trivially finding "the only 3 interesting things" in clean data and tests whether encoding helps distinguish signal from noise.
 
-These are checked in the Phase 1 pilot gate.
+**Scenario variation (MANDATORY):** Scenarios must vary structurally — different column sets, different numbers of subgroups, different constraint types, different lever combinations. A set of 12 scenarios with identical column structure and different numbers is pseudo-replication, not independent samples.
 
-**If calibration fails (L1 ≥ L4 or L4 < 50%):**
-1. Check encoding separation (are LLM inputs actually different?)
-2. Check if raw text accidentally contains structure (column headers, summaries)
-3. Increase noise magnitude in confounded coupling effects
-4. Add more Simpson's paradox cases (these are strongest L1/L4 discriminators)
-5. Reduce signal-to-noise ratio in aggregate statistics
-6. Create a REVISE task with diagnosis and repeat Phase 1
+### Discovery Prompt (Category-Blind)
 
-### Strengthening Encoding Sensitivity
+The LLM must report **3–5** high-confidence findings as **effect descriptions** (not intervention recommendations). Each finding must include: the specific effect, exact columns involved, direction/magnitude, scope/segment, and mechanism.
 
-The key to making effects encoding-sensitive is that L1 gives the LLM RAW ROWS (no computation), while L2+ gives PRE-COMPUTED STATISTICS (no raw rows). Design effects that require computation the LLM cannot reliably perform in-context:
+**Do NOT name effect categories** (no "look for Simpson's paradox"). Do NOT ask for "all" findings — constrain to the strongest 3–5.
 
-- **Simpson's paradox with N=500 rows**: At 500 rows, an LLM CANNOT reliably compute subgroup means by mentally scanning CSV text. But L2+ hands it the subgroup means directly. Use ≥3 subgroups with different reversal magnitudes to prevent lucky guessing.
+### Rubric Matching
 
-- **Confounded coupling**: Embed the confound in a temporal trend that requires actual detrending (residual computation). L1 sees raw time-stamped rows; L2+ sees detrended correlations.
+For each (finding, GT-effect) pair, the LLM judge scores 4 dimensions (0/1 each):
 
-- **Constraint boundary**: At L1, the constraint is buried in a paragraph of 10+ policy sentences — the LLM must identify which sentence is the binding constraint and mentally check it against 500 rows. At L3+, the hard constraint is tagged with a type and threshold, making the violation obvious.
+| Dimension | 1 if... |
+|-----------|---------|
+| **Variables** | Correct columns identified |
+| **Direction** | Correct direction of effect |
+| **Scope** | Correct subgroup/segment/conditioning variable |
+| **Mechanism** | Describes why the effect arises |
 
-- **Decayed belief**: At L1, the belief and its date are in prose with no computation of staleness. At L3+, the decay function is pre-evaluated with current confidence shown.
+**Pre-registered match threshold: score ≥ 2/4.** This threshold is fixed before any data is generated. Do not adjust after seeing results. Run each judgment **3 times**; for each dimension, accept 1 only if ≥2/3 votes agree. Report Krippendorff's alpha — if α < 0.40 for any dimension, revise the judge prompt.
 
-**Calibration emphasis:** If L1 recall > 0.35 in the pilot, the effects are NOT encoding-sensitive enough. Common fixes:
-  - Increase N to 500+ rows (more rows = harder to mentally aggregate)
-  - Add more subgroups to Simpson's paradox cases
-  - Increase the number of distractor policy sentences around the binding constraint
-  - Add more noise to the temporal trends
+**Vocabulary normalization:** The judge prompt must include: "The finding and ground truth describe the same dataset. Accept any reasonable synonym or business-domain equivalent for dataset column names (e.g., 'pricing' for base_price, 'volume' for units_sold). Focus on whether the same statistical phenomenon is described, not whether identical terms are used."
 
-### Secondary Experiments
+### Metrics
 
-- **Cross-source reasoning**: Run on ALL scenarios (not just 2). At L4, compare data-only vs. all-sources. Report means, CIs, and paired tests. If data-only matches all-sources on recall, the planted effects are too easy — redesign.
-- **Playbook reasoning**: Process selection accuracy across question types. Run on ≥4 scenarios. Target ≥80%.
-- **Pipeline compression**: Run on ALL scenarios (not just 2). Quantify space reduction at each stage.
-- **Generalization**: Brief qualitative discussion of 1-2 other domains. No deep experiments.
+- **Primary: Mean Best Rubric Score (MBRS)** — For each GT effect, take the highest rubric score (0.0–1.0) that any finding achieved. Average across all GT effects in a scenario. This is a continuous metric (much higher resolution than thresholded F1 with only 3 GT effects). Paired t-test on MBRS, L4 vs L1, report Cohen's d and 95% CI.
+- **Secondary**: F1 at pre-registered threshold (≥2/4), effect-type coverage, mean rubric score across matched pairs.
+- **Report F1 at multiple thresholds** (≥2/4 and ≥3/4) as sensitivity analysis.
+
+### Phases
+
+**Phase 1 — Pilot (2 scenarios, L1 vs L4 only):**
+- HARD GATE: `recall_l4 − recall_l1 ≥ 0.20`, `recall_l1 ≤ 0.35`, `recall_l4 ≥ 0.55`, encoding hashes differ, L4 chars within [0.7×, 1.5×] of L1
+- If any gate fails: STOP, diagnose, create REVISE task. Do NOT proceed.
+
+**Phase 2 — Full (N ≥ 12 scenarios, k=5 runs each):**
+- HARD GATE: L4 mean MBRS > L1 mean MBRS with p < 0.05
+- If gate fails: flag `DESIGN_INVALID`, do NOT proceed to paper
+
+**Phase 3 — Paper + Webapp (only after Phase 2 passes)**
 
 ---
 
-## Critical Constraints (These Caused Previous Failures — Do Not Violate)
+## E2: Cross-Source Reasoning
 
-### 1. DO NOT TRUNCATE CONTEXT
+Same scenarios as E1. Run at L4 only, two conditions:
 
-**NEVER truncate or cap the encoded context sent to the LLM.** If you truncate all levels to the same character limit, you destroy the experimental variable. If context is too long, reduce N — but keep N identical across all levels for a given scenario.
+| Condition | Knowledge included |
+|-----------|--------------------|
+| **All-sources** | Data + policies + expert beliefs + playbook |
+| **Data-only** | Data only |
 
-**If violated:** All encoding levels produce identical output → all metrics are identical → experiment is invalid. EVA Check 1 (manipulation varied) will catch this if encoding hashes collide. Fix: remove the truncation, reduce N to fit in context.
+Same discovery prompt, same rubric matching, same finding count (3–5), k=5 runs.
 
-### 2. DO NOT LEAD THE DISCOVERY PROMPT
+**GT effect design for E2:** Each scenario should contain at least 1 GT effect discoverable from data alone (e.g., Simpson's paradox) AND at least 1 GT effect requiring cross-source information (e.g., constraint-boundary). This way data-only can still find the data-only effects (control) while missing the cross-source effects (treatment).
 
-**NEVER list the effect categories you want the LLM to find.** The discovery prompt must be open-ended: "Analyze this context and identify all noteworthy findings about cross-lever effects, anomalies, contradictions, and risks." If you say "look for Simpson's paradox, confounders, constraint violations..." it will list all of them regardless of evidence.
-
-**If violated:** L1 recall jumps to match L4 → no encoding differentiation → experiment is invalid. Fix: rewrite the discovery prompt to be category-blind.
-
-### 3. MATCH FINDINGS TO GROUND TRUTH INDIVIDUALLY
-
-**NEVER evaluate by checking if returned effect-type strings overlap ground-truth type strings.** That metric cannot differentiate encoding levels. Instead:
-- LLM judge call for each (finding, ground-truth-effect) pair → binary match verdict with justification
-- "There might be a Simpson's paradox somewhere" does NOT match the specific planted effect in Scenario 1
-- Precision = (findings matching a GT effect) / (total findings)
-- Recall = (GT effects matched by ≥1 finding) / (total GT effects)
-- Aggregate per-scenario, then report means and CIs across scenarios
-
-### 4. SINGLE EXPERIMENT RUNNER
-
-One entry point: `run_experiments.py`. No duplicates.
-
-### 5. LLM ROUTING
-
-All reasoning through `copilot -p "<prompt>" -s --no-color --allow-all`. Cache by prompt hash in `.llm_cache/`. No heuristic fallbacks — any judgment call without an LLM invocation is a bug. Identify the model at startup and record in `results.json` under `"model"`.
-
-### 6. CONSTRAIN DISCOVERY OUTPUT VOLUME
-
-The discovery prompt must instruct the LLM to report ONLY findings it has HIGH CONFIDENCE in, limited to the TOP 5-8 most important. Do NOT ask for "all noteworthy findings" — this produces 20+ low-precision findings that destroy F1.
-
-Template: "Analyze this context and identify the 5-8 most significant cross-lever effects, anomalies, or contradictions. For each, provide: (1) the specific finding, (2) which levers are involved, (3) the evidence supporting it, (4) your confidence level. Only include findings where you have clear evidence."
-
-This is NOT leading the prompt (it doesn't name effect categories). It's constraining output volume to improve signal-to-noise ratio.
+**Metric**: MBRS computed separately for (a) data-only GT effects and (b) cross-source GT effects. The hypothesis is that cross-source MBRS is significantly higher with all-sources than data-only, while data-only MBRS is comparable across both conditions (control).
 
 ---
 
-## What Agents Decide (Do Not Over-Specify)
+## E3: Pipeline Compresses Space
 
-The orchestrator and worker agents own all implementation decisions. The PROMPT.md specifies **what to prove**, not **how to build it**.
+Run the **full pipeline** (diagnostic agents → causal synthesis → quality gate) on all scenarios at L4. This is **separate from E1/E2** — the pipeline is not in the E1 evaluation path.
 
-### ENCODING DESIGN PRINCIPLE: TRANSFORM, DON'T APPEND
+Report per stage:
+1. Number of candidate signals entering
+2. Number surviving
+3. Compression ratio
 
-The encoding layer's job is to REPLACE raw content with reasoning-ready representations, NOT to add structured annotations on top of raw content.
+Quality gate must score all 5 abstract-claimed dimensions: evidence density, constraint alignment, actionability, testability, novelty. Log scores in `output/pipeline_scores.json`.
 
-Think of it like a compiler: the source code (raw text) is transformed into machine code (structured encoding). You don't ship both — you ship the compiled version because it's what the executor (the LLM) can work with efficiently.
-
-The agents must verify that at each encoding level, the raw content from the previous level is REMOVED and REPLACED, not retained alongside the new encoding.
-
-Specifically, agents decide:
-
-- Number of scenarios, rows per scenario, stores, SKUs, levers, rules, beliefs, queries — sized for adequate statistical power
-- Exact encoding representations (what goes into a "statistical profile" or "constraint vector")
-- Number and specialization of diagnostic agents in the pipeline — but the pipeline MUST have ≥2 parallel diagnostic agents operating on complementary dimensions (as the abstract claims)
-- The causal synthesis mechanism — but it MUST produce structured interventions with fields: lever, direction, scope, mechanism (as the abstract claims)
-- Quality gate scoring — MUST implement all five dimensions named in the abstract: evidence density, constraint alignment, actionability, testability, novelty. Each dimension must produce a numeric score. Log all five scores per candidate in `output/pipeline_scores.json`
-- Paper narrative arc, related work selection, figure design
-- Webapp layout and visualization choices
+**Metric**: Median compression ratio ≥ 10×.
 
 ---
 
-## Technical Stack
+## Hard Rules
 
-- Python 3.11+, numpy, scipy, matplotlib (no ML frameworks, no pip install openai/anthropic)
-- Copilot CLI mandatory for all LLM calls
-- Complete in <60 min first run, <5 min from cache
+1. **Same model for all levels.** If L1 context is too long, reduce row count — never switch models.
+2. **Never truncate context.** Reduce N instead.
+3. **Never name effect categories in discovery prompts.** Category-blind only.
+4. **Encoding replaces, never appends.** L4 chars within [0.7×, 1.5×] of L1.
+5. **Single entry point:** `run_experiments.py`.
+6. **All LLM calls via** `copilot -p "<prompt>" -s --no-color --allow-all`. Cache by prompt hash. Record model in `results.json`.
+7. **Ground truth never loaded by the reasoning system.** Used only for evaluation.
+
+---
+
+## What Agents Decide
+
+Agents own all implementation decisions not specified above:
+
+- Scenario count (≥12), rows per scenario, store/SKU/lever counts
+- Exact encoding representations (statistical profiles, constraint vectors, belief objects)
+- Number and specialization of diagnostic agents for E3 (≥2 parallel, complementary dimensions)
+- Causal synthesis output schema (must include lever, direction, scope, mechanism)
+- Quality gate scoring weights and thresholds
+- Whether to include L2/L3 in the paper (optional gradient plot)
+- Whether to add effect types beyond Simpson's + constraint-boundary (must pass detection pilot first)
+- Paper structure, related work, figure design
+- Webapp layout
+
+---
+
+## Success Criteria
+
+| ID | Criterion | How measured |
+|----|-----------|-------------|
+| **SC1** | L4 > L1 on MBRS | p < 0.05, paired t-test, k=5 × N≥12 |
+| **SC2** | All-sources > data-only on cross-source MBRS at L4 | Paired test, positive difference |
+| **SC3** | Pipeline compression ≥ 10× | Median ratio across scenarios |
+| **SC4** | Three invariants formally defined + single-invariant insufficiency shown | Logical argument in paper |
+| **SC5** | Paper compiles, figures from actual data, all abstract claims substantiated | Compilation + review |
+| **SC6** | All claims backed by effect sizes and CIs | Statistical reporting |
+| **SC7** | Pipeline architecture matches abstract (≥2 agents, synthesis tuples, 5-dim gate) | `pipeline_scores.json` |
 
 ---
 
@@ -266,39 +205,28 @@ Specifically, agents decide:
 ```
 demos/coupled-decisions/
   output/
-    results.json          # "model" key + per-scenario per-level metrics + aggregate stats
-    index.html            # Interactive single-file webapp
-    data/                 # Synthetic data + ground_truth.json (NEVER loaded by reasoning system)
+    results.json            # Per-scenario per-level per-run metrics + aggregate + model key
+    pipeline_scores.json    # Quality gate 5-dimension scores per candidate
+    encoding_hashes.json    # SHA-256 + char counts per level
+    index.html              # Interactive webapp
+    data/                   # Synthetic data + ground_truth.json
     paper/
       paper.tex + paper.pdf + figures/ + references.bib
-  src/                    # Pipeline source
-  run_experiments.py      # Single entry point
-  .llm_cache/             # Prompt-hash cache
+  src/                      # All source code
+  run_experiments.py        # Single entry point
+  .llm_cache/               # Prompt-hash cache
 ```
 
 ---
 
-## Success Criteria (These Are Exit Gates, NOT Aspirations)
+## Technical Stack
 
-Write these to `.swarm/success-criteria.json` at investigation start. Convergence is blocked while any criterion has `met: false`.
-
-1. **SC1: Encoding layer matters** — L4 statistically significantly outperforms L1 on F1 of planted effect discovery (p < 0.05). **If L1 ≥ L4: this is a DESIGN failure, not a finding. Flag DESIGN_INVALID, diagnose, redesign, re-run.**
-2. **SC2: Cross-source reasoning works** — more knowledge sources → more discovered effects; data-only misses planted cross-source effects
-3. **SC3: Pipeline compresses effectively** — combinatorial space reduced by ≥10×
-4. **SC4: Problem characterization is rigorous** — three invariants formally defined; for EACH invariant, one constructive example showing that addressing only the other two invariants (ignoring this one) yields an incomplete solution
-5. **SC5: Paper is complete** — compiles, figures from actual data, all abstract claims substantiated, honest limitations section
-6. **SC6: All claims backed** by effect sizes and confidence intervals
-7. **SC7: Pipeline architecture matches abstract** — implementation has ≥2 parallel diagnostic agents, causal synthesis produces (lever, direction, scope, mechanism) tuples, quality gate scores on all 5 dimensions (evidence density, constraint alignment, actionability, testability, novelty). Verified by `output/pipeline_scores.json` containing all 5 dimension scores per candidate
-
-**On SC1 failure after valid experiment:** If the experiment ran correctly (EVA passes, encoding inputs are verified different, manipulation check passes) and L1 still ≥ L4, you have two options:
-- **Option A (preferred):** Diagnose why, redesign planted effects, re-run. Most likely cause: effects are discoverable from raw text alone.
-- **Option B (last resort):** Report the negative result honestly with full analysis of why structured encoding didn't help. The paper becomes "we tried this, it didn't work, here's why." This is a valid paper but a different paper than the abstract promises. Mark SC1 as `met: false` with detailed rationale.
+- Python 3.11+, numpy, scipy, matplotlib
+- Copilot CLI for all LLM calls
+- Target: <60 min first run, <5 min from cache
 
 ---
 
-## Cleanup Requirements
+## Cleanup
 
-When the demo run completes:
-- Delete ALL agent branches (local and remote), remove all worktrees, prune, kill tmux sessions
-- `.llm_cache/` MAY be preserved for reproducibility
-- Verify: `git branch -a | grep agent` returns nothing, `git worktree list` shows only main worktree
+When complete: delete all agent branches (local + remote), remove worktrees, prune, kill tmux sessions. `.llm_cache/` may be preserved.

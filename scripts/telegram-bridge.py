@@ -244,6 +244,8 @@ def run_bot(config: dict) -> None:
                 max_agents=sc.max_agents_per_investigation,
                 agent_command=sc.agent_command,
                 agent_flags=sc.agent_flags,
+                orchestrator_model=sc.orchestrator_model,
+                worker_model=sc.worker_model,
             )
 
             chat_id_file = Path(project_dir) / ".telegram-chat-id"

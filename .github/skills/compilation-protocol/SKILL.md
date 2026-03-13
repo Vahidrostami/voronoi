@@ -73,22 +73,32 @@ fi
 Try compilers in this order (stop at first success):
 
 ```bash
+# Detect the main LaTeX file (Scribe writes paper.tex by convention)
+TEX_FILE="paper.tex"
+if [ ! -f "$TEX_FILE" ]; then
+    # Fallback: look for main.tex or any .tex with \documentclass
+    for candidate in main.tex manuscript.tex; do
+        if [ -f "$candidate" ]; then TEX_FILE="$candidate"; break; fi
+    done
+fi
+TEX_STEM="${TEX_FILE%.tex}"
+
 # Option A: Tectonic (best — auto-downloads packages, no sudo)
 if command -v tectonic >/dev/null 2>&1; then
-    tectonic main.tex
+    tectonic "$TEX_FILE"
     echo "Compiled with tectonic"
 
 # Option B: latexmk (handles multiple passes automatically)
 elif command -v latexmk >/dev/null 2>&1; then
-    latexmk -pdf -interaction=nonstopmode main.tex
+    latexmk -pdf -interaction=nonstopmode "$TEX_FILE"
     echo "Compiled with latexmk"
 
 # Option C: pdflatex (manual multi-pass)
 elif command -v pdflatex >/dev/null 2>&1; then
-    pdflatex -interaction=nonstopmode main.tex
-    bibtex main 2>/dev/null || true
-    pdflatex -interaction=nonstopmode main.tex
-    pdflatex -interaction=nonstopmode main.tex
+    pdflatex -interaction=nonstopmode "$TEX_FILE"
+    bibtex "$TEX_STEM" 2>/dev/null || true
+    pdflatex -interaction=nonstopmode "$TEX_FILE"
+    pdflatex -interaction=nonstopmode "$TEX_FILE"
     echo "Compiled with pdflatex"
 
 # Option D: Install tectonic (no sudo needed)
@@ -103,7 +113,7 @@ else
         curl -SL https://github.com/tectonic-typesetting/tectonic/releases/latest/download/tectonic-0.15.0-x86_64-unknown-linux-gnu.tar.gz | tar xz -C ~/.local/bin/
         export PATH="$HOME/.local/bin:$PATH"
     fi
-    tectonic main.tex
+    tectonic "$TEX_FILE"
 fi
 ```
 
@@ -121,48 +131,48 @@ fi
 
 ```bash
 # 1. Verify PDF exists and has content
-ls -la main.pdf
+ls -la "${TEX_STEM}.pdf"
 # Should be > 10KB for any real paper
 
 # 2. Check page count
 python3 -c "
-import subprocess
-result = subprocess.run(['pdfinfo', 'main.pdf'], capture_output=True, text=True)
+import subprocess, sys
+pdf = '${TEX_STEM}.pdf'
+result = subprocess.run(['pdfinfo', pdf], capture_output=True, text=True)
 if result.returncode == 0:
     for line in result.stdout.split('\n'):
         if 'Pages:' in line:
             print(line.strip())
 else:
-    # pdfinfo not available — check file size as proxy
     import os
-    size = os.path.getsize('main.pdf')
+    size = os.path.getsize(pdf)
     print(f'PDF size: {size:,} bytes')
     if size < 10000:
         print('WARNING: PDF suspiciously small — may be empty')
 " 2>/dev/null || echo "PDF exists (pdfinfo not available for page count)"
 
 # 3. Check for undefined references (grep the log)
-if [ -f main.log ]; then
-    UNDEF=$(grep -c 'undefined' main.log 2>/dev/null || echo "0")
+if [ -f "${TEX_STEM}.log" ]; then
+    UNDEF=$(grep -c 'undefined' "${TEX_STEM}.log" 2>/dev/null || echo "0")
     if [ "$UNDEF" -gt 0 ]; then
-        echo "WARNING: $UNDEF undefined reference(s) in main.log"
-        grep 'undefined' main.log | head -5
+        echo "WARNING: $UNDEF undefined reference(s) in ${TEX_STEM}.log"
+        grep 'undefined' "${TEX_STEM}.log" | head -5
     fi
 
     # Check for missing figures specifically
-    MISSING_FIG=$(grep -c 'cannot find image file' main.log 2>/dev/null || echo "0")
+    MISSING_FIG=$(grep -c 'cannot find image file' "${TEX_STEM}.log" 2>/dev/null || echo "0")
     if [ "$MISSING_FIG" -gt 0 ]; then
         echo "ERROR: $MISSING_FIG missing figure(s) detected in compilation log"
-        grep 'cannot find image file' main.log
+        grep 'cannot find image file' "${TEX_STEM}.log"
     fi
 fi
 
 # 4. Copy to .swarm for delivery
-cp main.pdf .swarm/report.pdf
+cp "${TEX_STEM}.pdf" .swarm/report.pdf
 echo "✓ PDF copied to .swarm/report.pdf"
 
 # 5. Commit
-git add main.pdf .swarm/report.pdf
+git add "${TEX_STEM}.pdf" .swarm/report.pdf
 git commit -m "Compile final paper PDF"
 git push origin <branch>
 
@@ -176,7 +186,7 @@ When the orchestrator creates a compilation task, it should declare:
 
 ```bash
 bd create "Compile final paper" -t task -p 1
-bd update <id> --notes "REQUIRES:main.tex,figures/"
+bd update <id> --notes "REQUIRES:paper.tex,figures/"
 bd update <id> --notes "PRODUCES:.swarm/report.pdf"
 bd update <id> --notes "GATE:output/validation_report.json"  # if validation exists
 ```

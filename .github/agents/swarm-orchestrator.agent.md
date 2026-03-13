@@ -273,7 +273,7 @@ PHASE 2 — LATEX COMPILATION:
    b. `which latexmk` or `which pdflatex` — system texlive
    c. Install tectonic (no sudo): `curl -SL https://github.com/tectonic-typesetting/tectonic/releases/latest/download/tectonic-0.15.0-x86_64-unknown-linux-gnu.tar.gz | tar xz -C ~/.local/bin/`
    d. Only if sudo available: `sudo apt-get install -y texlive-base texlive-latex-extra texlive-fonts-recommended`
-6. Compile: `tectonic main.tex` or `latexmk -pdf main.tex` or `pdflatex` + `bibtex` + `pdflatex` × 2
+6. Compile: `tectonic paper.tex` or `latexmk -pdf paper.tex` or `pdflatex` + `bibtex` + `pdflatex` × 2
 7. Fix any compilation errors (missing packages, bad references, etc.)
 
 PHASE 3 — VERIFICATION:
