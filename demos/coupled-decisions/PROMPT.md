@@ -76,8 +76,8 @@ Only **L1 and L4** are compared. L2/L3 may be included for a gradient plot in th
 
 Each scenario has **3 ground-truth effects**, drawn from these encoding-sensitive categories:
 
-- **Simpson's paradox** — Aggregate correlation tells one story; segment-level tells the opposite. At 500 rows, L1 cannot mentally compute subgroup means; L4 hands them to the LLM directly. Use ≥3 subgroups.
-- **Constraint-boundary** — Data says go; a hard constraint says stop. At L1, the constraint is buried in 10+ prose sentences. At L4, it's a typed vector with explicit threshold.
+- **Simpson's paradox** — Aggregate correlation tells one story; segment-level tells the opposite. Use ≥3 subgroups. **Construction requirements (MANDATORY):** Groups must overlap heavily in the raw data — inter-group mean separation must be ≤1× within-group standard deviation (i.e., `x_spread ≤ x_std`). Group x-means must be placed non-monotonically (not a visible gradient). Noise must partially mask the within-group slope (`noise_std ≥ 0.6 × |within_slope × x_std|`). At 500+ rows, an LLM scanning raw values cannot reliably compute per-subgroup means; L4 hands them pre-computed. If groups are non-overlapping or arranged on a monotone staircase, the paradox is trivially visible from raw CSV and the experiment stops testing encoding.
+- **Constraint-boundary** — Data says go; a multi-condition constraint says stop. The constraint must be compound — at minimum two conditions joined by AND (e.g., "promotional depth > 30% is prohibited when store_tier = Premium AND quarter ∈ {Q3, Q4} AND base_price < 5.00"). At L1, this is buried in 10+ prose sentences requiring multi-hop parsing. At L4, it is a typed constraint vector with all conditions explicit and each threshold directly comparable against the statistical profile. **Single-condition constraints must not be used** — a simple threshold like "discount ≤ 30%" can be found in prose without structured encoding.
 
 These two types had the highest detection rates in prior runs. Agents MAY add effect types if they can demonstrate ≥30% detection at L1 and ≥60% detection at L4 in the pilot. Do NOT add effect types that achieve 0% detection — they structurally cap recall.
 
@@ -93,7 +93,7 @@ The LLM must report **3–5** high-confidence findings as **effect descriptions*
 
 ### Rubric Matching
 
-For each (finding, GT-effect) pair, the LLM judge scores 4 dimensions (0/1 each):
+For each (finding, GT-effect) pair, the LLM judge scores 5 dimensions (0/1 each):
 
 | Dimension | 1 if... |
 |-----------|---------|
@@ -101,16 +101,19 @@ For each (finding, GT-effect) pair, the LLM judge scores 4 dimensions (0/1 each)
 | **Direction** | Correct direction of effect |
 | **Scope** | Correct subgroup/segment/conditioning variable |
 | **Mechanism** | Describes why the effect arises |
+| **Quantification** | Provides an approximate magnitude, ratio, or threshold value (e.g., within-group vs aggregate direction reversal ratio, constraint threshold value, effect size estimate). Accept any reasonable numeric estimate — exact values not required, but pure qualitative descriptions score 0. |
 
-**Pre-registered match threshold: score ≥ 2/4.** This threshold is fixed before any data is generated. Do not adjust after seeing results. Run each judgment **3 times**; for each dimension, accept 1 only if ≥2/3 votes agree. Report Krippendorff's alpha — if α < 0.40 for any dimension, revise the judge prompt.
+This 5th dimension is the key discriminator: L4 hands the LLM pre-computed statistics and explicit threshold values; L1 leaves all quantification to the LLM's unreliable mental arithmetic over raw rows.
+
+**Pre-registered match threshold: score ≥ 3/5.** This threshold is fixed before any data is generated. Do not adjust after seeing results. Run each judgment **3 times**; for each dimension, accept 1 only if ≥2/3 votes agree. Report Krippendorff's alpha — if α < 0.40 for any dimension, revise the judge prompt.
 
 **Vocabulary normalization:** The judge prompt must include: "The finding and ground truth describe the same dataset. Accept any reasonable synonym or business-domain equivalent for dataset column names (e.g., 'pricing' for base_price, 'volume' for units_sold). Focus on whether the same statistical phenomenon is described, not whether identical terms are used."
 
 ### Metrics
 
-- **Primary: Mean Best Rubric Score (MBRS)** — For each GT effect, take the highest rubric score (0.0–1.0) that any finding achieved. Average across all GT effects in a scenario. This is a continuous metric (much higher resolution than thresholded F1 with only 3 GT effects). Paired t-test on MBRS, L4 vs L1, report Cohen's d and 95% CI.
-- **Secondary**: F1 at pre-registered threshold (≥2/4), effect-type coverage, mean rubric score across matched pairs.
-- **Report F1 at multiple thresholds** (≥2/4 and ≥3/4) as sensitivity analysis.
+- **Primary: Mean Best Rubric Score (MBRS)** — For each GT effect, take the highest rubric score (0.0–1.0) achieved by any of the **top-3 ranked findings** (by LLM confidence order). Do NOT consider findings ranked 4th or 5th — rank-5 lucky guesses should not inflate MBRS and mask encoding differences. Average across all GT effects in a scenario. Paired t-test on MBRS, L4 vs L1, report Cohen's d and 95% CI.
+- **Secondary**: F1 at pre-registered threshold (≥3/5), effect-type coverage, mean rubric score across matched pairs.
+- **Report F1 at multiple thresholds** (≥3/5 and ≥4/5) as sensitivity analysis.
 
 ### Phases
 
@@ -167,6 +170,7 @@ Quality gate must score all 5 abstract-claimed dimensions: evidence density, con
 5. **Single entry point:** `run_experiments.py`.
 6. **All LLM calls via** `copilot -p "<prompt>" -s --no-color --allow-all`. Cache by prompt hash. Record model in `results.json`.
 7. **Ground truth never loaded by the reasoning system.** Used only for evaluation.
+8. **Minimum 500 rows per scenario.** Do NOT drop below 500 rows — this is the floor that creates the numerical computation gap where encoding matters. If L1 context length becomes a problem, reduce *column count* or trim *text knowledge length*, never row count. At 150 rows or fewer, modern LLMs can scan the entire table and the encoding advantage disappears.
 
 ---
 
