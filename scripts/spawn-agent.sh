@@ -140,6 +140,39 @@ except Exception as e:
     echo "✓ Pre-dispatch: GATE $GATE_PATH is passing"
 fi
 
+# =========================================================================
+# DESIGN_INVALID hard gate: block paper/scribe/compile tasks while open
+# =========================================================================
+TASK_TITLE=$(echo "$TASK_JSON" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    print(data.get('title', '').lower())
+except Exception:
+    print('')
+" 2>/dev/null || echo "")
+
+if echo "$TASK_TITLE" | grep -qiE "paper|scribe|write.*paper|compile|latex|deliverable"; then
+    DESIGN_INVALID_IDS=$(bd list --json 2>/dev/null | python3 -c "
+import sys, json
+try:
+    tasks = json.load(sys.stdin)
+    invalid = [str(t.get('id','')) for t in tasks
+               if 'DESIGN_INVALID' in t.get('notes','')
+               and t.get('status') != 'closed']
+    if invalid:
+        print(','.join(invalid))
+except Exception:
+    pass
+" 2>/dev/null || true)
+    if [ -n "$DESIGN_INVALID_IDS" ]; then
+        echo "✗ Pre-dispatch BLOCKED: Cannot start paper/compile task while DESIGN_INVALID experiments remain open: $DESIGN_INVALID_IDS"
+        bd update "$TASK_ID" --notes "BLOCKED: DESIGN_INVALID must be resolved before paper writing" 2>/dev/null || true
+        exit 1
+    fi
+    echo "✓ Pre-dispatch: No open DESIGN_INVALID experiments"
+fi
+
 echo "✓ Pre-dispatch validation complete"
 
 # =========================================================================
@@ -216,13 +249,25 @@ if [[ -n "$WORKER_MODEL" ]]; then
     MODEL_FLAG=" --model $(printf '%q' "$WORKER_MODEL")"
 fi
 
+# 5b. Build env var exports for auth tokens.
+# tmux shells inherit the tmux server's env, not the caller's. If the
+# server was started in a different session, GH_TOKEN etc. won't exist
+# in the new pane even though the dispatcher/caller has them.
+ENV_EXPORTS=""
+for _var in GH_TOKEN GITHUB_TOKEN COPILOT_GITHUB_TOKEN; do
+    _val="${!_var:-}"
+    if [[ -n "$_val" ]]; then
+        ENV_EXPORTS+="export ${_var}=$(printf '%q' "$_val") && "
+    fi
+done
+
 if [[ -f "$WORKTREE_PATH/.agent-prompt.txt" ]]; then
     tmux send-keys -t "$TMUX_SESSION:$BRANCH_NAME" \
-        "cd $SAFE_WP && $SAFE_CMD $SAFE_FLAGS$MODEL_FLAG -p \"\$(cat .agent-prompt.txt)\"" Enter
+        "${ENV_EXPORTS}cd $SAFE_WP && $SAFE_CMD $SAFE_FLAGS$MODEL_FLAG -p \"\$(cat .agent-prompt.txt)\"" Enter
 else
     echo "⚠ No prompt file found — agent will start in interactive mode"
     tmux send-keys -t "$TMUX_SESSION:$BRANCH_NAME" \
-        "cd $SAFE_WP && $SAFE_CMD $SAFE_FLAGS$MODEL_FLAG" Enter
+        "${ENV_EXPORTS}cd $SAFE_WP && $SAFE_CMD $SAFE_FLAGS$MODEL_FLAG" Enter
 fi
 
 echo "✓ Agent spawned: $BRANCH_NAME (tmux: $TMUX_SESSION)"

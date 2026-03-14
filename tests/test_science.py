@@ -48,6 +48,7 @@ from voronoi.science import (
     save_invariants,
     save_success_criteria,
     validate_pre_registration,
+    validate_data_invariants,
     verify_data_hash,
     verify_finding_against_data,
     write_convergence,
@@ -1096,6 +1097,85 @@ class TestInvariants:
                          check_type="custom")]
         result = check_invariants(inv, "anything")
         assert result.passed is True
+
+
+# ---------------------------------------------------------------------------
+# Data Invariants (min_csv_rows)
+# ---------------------------------------------------------------------------
+
+class TestValidateDataInvariants:
+    def test_min_rows_passes(self, tmp_path):
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        # Write a CSV with header + 500 data rows
+        lines = ["col_a,col_b\n"] + [f"{i},{i*2}\n" for i in range(500)]
+        (data_dir / "scenario.csv").write_text("".join(lines))
+
+        inv = [Invariant(id="MIN_ROWS", description="500 rows min",
+                         check_type="min_csv_rows",
+                         params={"min_rows": 500, "glob": "data/*.csv"})]
+        result = validate_data_invariants(tmp_path, inv)
+        assert result.passed is True
+
+    def test_min_rows_fails(self, tmp_path):
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        # Write a CSV with header + only 150 data rows
+        lines = ["col_a,col_b\n"] + [f"{i},{i*2}\n" for i in range(150)]
+        (data_dir / "scenario.csv").write_text("".join(lines))
+
+        inv = [Invariant(id="MIN_ROWS", description="500 rows min",
+                         check_type="min_csv_rows",
+                         params={"min_rows": 500, "glob": "data/*.csv"})]
+        result = validate_data_invariants(tmp_path, inv)
+        assert result.passed is False
+        assert "150" in result.violations[0]
+        assert "500" in result.violations[0]
+
+    def test_min_rows_empty_csv(self, tmp_path):
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        (data_dir / "empty.csv").write_text("col_a,col_b\n")
+
+        inv = [Invariant(id="MIN_ROWS", description="500 rows min",
+                         check_type="min_csv_rows",
+                         params={"min_rows": 500, "glob": "data/*.csv"})]
+        result = validate_data_invariants(tmp_path, inv)
+        assert result.passed is False
+        assert "0" in result.violations[0]
+
+    def test_min_rows_no_matching_files(self, tmp_path):
+        """No CSV files matching the glob — nothing to check, passes."""
+        inv = [Invariant(id="MIN_ROWS", description="500 rows min",
+                         check_type="min_csv_rows",
+                         params={"min_rows": 500, "glob": "data/*.csv"})]
+        result = validate_data_invariants(tmp_path, inv)
+        assert result.passed is True
+
+    def test_min_rows_skips_non_csv_invariants(self, tmp_path):
+        """Non-min_csv_rows invariants are ignored."""
+        inv = [Invariant(id="OTHER", description="text check",
+                         check_type="prompt_contains",
+                         params={"text": "hello"})]
+        result = validate_data_invariants(tmp_path, inv)
+        assert result.passed is True
+
+    def test_min_rows_multiple_files(self, tmp_path):
+        """One good CSV, one bad — should fail."""
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        good = ["col_a\n"] + [f"{i}\n" for i in range(500)]
+        bad = ["col_a\n"] + [f"{i}\n" for i in range(100)]
+        (data_dir / "good.csv").write_text("".join(good))
+        (data_dir / "bad.csv").write_text("".join(bad))
+
+        inv = [Invariant(id="MIN_ROWS", description="500 rows min",
+                         check_type="min_csv_rows",
+                         params={"min_rows": 500, "glob": "data/*.csv"})]
+        result = validate_data_invariants(tmp_path, inv)
+        assert result.passed is False
+        assert len(result.violations) == 1
+        assert "bad.csv" in result.violations[0]
 
 
 # ---------------------------------------------------------------------------

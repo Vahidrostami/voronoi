@@ -198,7 +198,41 @@ except Exception as e:
 fi
 
 # -------------------------------------------------------------------------
-# Check 7: Figure integrity (if LaTeX present)
+# Check 7: Data invariants (min_csv_rows etc.)
+# -------------------------------------------------------------------------
+if [ "$RIGOR" != "standard" ]; then
+    echo "  Checking data invariants..."
+    DATA_INV_CHECK=$(python3 -c "
+import sys
+sys.path.insert(0, '${WORKSPACE}/src' if __import__('os').path.isdir('${WORKSPACE}/src') else '.')
+try:
+    from voronoi.science import load_invariants, validate_data_invariants
+    from pathlib import Path
+    invariants = load_invariants(Path('$WORKSPACE'))
+    data_invs = [i for i in invariants if i.check_type == 'min_csv_rows']
+    if not data_invs:
+        print('OK:no data invariants defined')
+    else:
+        result = validate_data_invariants(Path('$WORKSPACE'), invariants)
+        if result.passed:
+            print('OK:' + str(len(data_invs)) + ' data invariant(s) passed')
+        else:
+            print('FAIL:' + '; '.join(result.violations[:5]))
+except Exception as e:
+    print('WARN:data invariant check unavailable: ' + str(e))
+" 2>/dev/null || echo "WARN:check_unavailable")
+
+    if [[ "$DATA_INV_CHECK" == FAIL:* ]]; then
+        BLOCKERS="${BLOCKERS}\n  ✗ Data invariants: ${DATA_INV_CHECK#FAIL:}"
+    elif [[ "$DATA_INV_CHECK" == WARN:* ]]; then
+        WARNINGS="${WARNINGS}\n  ⚠ Data invariants: ${DATA_INV_CHECK#WARN:}"
+    else
+        echo "  ✓ Data invariants passed (${DATA_INV_CHECK#OK:})"
+    fi
+fi
+
+# -------------------------------------------------------------------------
+# Check 8: Figure integrity (if LaTeX present)
 # -------------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 if find "$WORKSPACE" -name '*.tex' -not -path '*/.git/*' 2>/dev/null | head -1 | grep -q '.'; then

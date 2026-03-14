@@ -390,3 +390,174 @@ class TestDesignInvalidDetection:
         events2 = d._check_design_invalid(run, tasks)
         assert len(events1) == 1
         assert len(events2) == 0  # Already notified
+
+
+# ---------------------------------------------------------------------------
+# DESIGN_INVALID hard gate (structural enforcement)
+# ---------------------------------------------------------------------------
+
+class TestDesignInvalidHardGate:
+    """Test that DESIGN_INVALID structurally blocks completion and success."""
+
+    def test_has_open_design_invalid_true(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="investigate",
+        )
+        run.task_snapshot = {
+            "bd-1": {"status": "open", "title": "Experiment",
+                     "notes": "DESIGN_INVALID: encoding identical"},
+        }
+        assert d._has_open_design_invalid(run) is True
+
+    def test_has_open_design_invalid_false_when_closed(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="investigate",
+        )
+        run.task_snapshot = {
+            "bd-1": {"status": "closed", "title": "Experiment",
+                     "notes": "DESIGN_INVALID: was fixed"},
+        }
+        assert d._has_open_design_invalid(run) is False
+
+    def test_has_open_design_invalid_false_no_flag(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="investigate",
+        )
+        run.task_snapshot = {
+            "bd-1": {"status": "open", "title": "Task", "notes": ""},
+        }
+        assert d._has_open_design_invalid(run) is False
+
+    def test_has_open_design_invalid_handles_missing_notes(self, dispatcher_setup):
+        """Snapshots from before the notes field was added should not crash."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="investigate",
+        )
+        run.task_snapshot = {
+            "bd-1": {"status": "open", "title": "Task"},
+        }
+        assert d._has_open_design_invalid(run) is False
+
+    def test_is_complete_blocked_by_design_invalid(self, dispatcher_setup):
+        """_is_complete must return False when DESIGN_INVALID is open."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="investigate",
+        )
+        (tmp_path / ".swarm").mkdir(parents=True)
+        (tmp_path / ".swarm" / "deliverable.md").write_text("# Results\n")
+        run.task_snapshot = {
+            "bd-1": {"status": "open", "title": "Experiment",
+                     "notes": "DESIGN_INVALID: L1 > L4"},
+        }
+        assert d._is_complete(run) is False
+
+    def test_is_complete_unblocked_when_design_invalid_closed(self, dispatcher_setup):
+        """Closed DESIGN_INVALID tasks should not block completion."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="investigate",
+        )
+        (tmp_path / ".swarm").mkdir(parents=True)
+        (tmp_path / ".swarm" / "deliverable.md").write_text("# Results\n")
+        run.task_snapshot = {
+            "bd-1": {"status": "closed", "title": "Experiment",
+                     "notes": "DESIGN_INVALID: was fixed"},
+        }
+        assert d._is_complete(run) is True
+
+    def test_handle_completion_blocked_by_design_invalid(self, dispatcher_setup):
+        """_handle_completion should refuse success when DESIGN_INVALID is open."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        mock_queue = MagicMock()
+        d._queue = mock_queue
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="investigate",
+        )
+        run.task_snapshot = {
+            "bd-1": {"status": "open", "title": "Experiment",
+                     "notes": "DESIGN_INVALID: encoding broken"},
+        }
+
+        with patch("voronoi.server.dispatcher.subprocess.run"):
+            d._handle_completion(run)
+
+        # Should NOT have called queue.complete
+        mock_queue.complete.assert_not_called()
+        # Should have sent a blocking message
+        assert any("DESIGN_INVALID" in m for m in msgs)
+
+    def test_handle_completion_allows_failed_even_with_design_invalid(self, dispatcher_setup):
+        """Failed completions should still go through (crash reporting)."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        mock_queue = MagicMock()
+        d._queue = mock_queue
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="investigate",
+        )
+        run.task_snapshot = {
+            "bd-1": {"status": "open", "title": "Experiment",
+                     "notes": "DESIGN_INVALID: encoding broken"},
+        }
+
+        with patch("voronoi.server.dispatcher.subprocess.run"):
+            d._handle_completion(run, failed=True, failure_reason="agent crashed")
+
+        mock_queue.fail.assert_called_once()
+
+    def test_diff_tasks_stores_notes_in_snapshot(self, dispatcher_setup):
+        """_diff_tasks should capture notes so _has_open_design_invalid works."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="investigate",
+        )
+        run.task_snapshot = {}
+
+        tasks = [
+            {"id": "bd-1", "status": "open", "title": "Experiment",
+             "notes": "DESIGN_INVALID: broken"},
+        ]
+        d._diff_tasks(run, tasks)
+        assert "DESIGN_INVALID" in run.task_snapshot["bd-1"]["notes"]

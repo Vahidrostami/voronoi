@@ -38,7 +38,7 @@ Agents may add more effect types if they pass a detection pilot (≥30% at L1, �
 
 ### Rubric Matching
 
-4-dimension scoring (variables, direction, scope, mechanism), 0/1 each. Match if ≥2/4. Three-vote majority per judgment. Krippendorff's alpha for reliability.
+5-dimension scoring (variables, direction, scope, mechanism, quantification), 0/1 each. Match if ≥3/5. Three-vote majority per judgment. Krippendorff's alpha for reliability.
 
 ## How to Run
 

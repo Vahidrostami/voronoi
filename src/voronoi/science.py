@@ -828,7 +828,6 @@ def verify_finding_against_data(
             result.passed = False
 
     # 4. Check experiment script exists
-    source_task = _extract_field(finding_notes, "SOURCE_TASK")
     experiment_dir = workspace / "experiments"
     if experiment_dir.exists():
         scripts = list(experiment_dir.glob("*.py")) + list(experiment_dir.glob("*.sh"))
@@ -1154,10 +1153,18 @@ def _find_consistency_conflicts(workspace: Path, tasks: list[dict] | None = None
     for task in tasks:
         notes = task.get("notes", "")
         if "CONSISTENCY_CONFLICT" in notes and task.get("status") != "closed":
+            conflict_val = _extract_field(notes, "CONSISTENCY_CONFLICT")
+            if " vs " in conflict_val:
+                parts = conflict_val.split(" vs ")
+                finding_a = parts[0].strip()
+                finding_b = parts[-1].strip()
+            else:
+                finding_a = ""
+                finding_b = ""
             conflicts.append({
                 "id": task.get("id", ""),
-                "finding_a": _extract_field(notes, "CONSISTENCY_CONFLICT").split(" vs ")[0].strip() if " vs " in notes else "",
-                "finding_b": _extract_field(notes, "CONSISTENCY_CONFLICT").split(" vs ")[-1].strip() if " vs " in notes else "",
+                "finding_a": finding_a,
+                "finding_b": finding_b,
             })
     return conflicts
 
@@ -1757,6 +1764,45 @@ def check_invariants(invariants: list[Invariant], context: str) -> InvariantChec
             forbidden = inv.params.get("text", "")
             if forbidden and forbidden in context:
                 violations.append(f"{inv.id}: forbidden text found")
+    return InvariantCheckResult(passed=len(violations) == 0, violations=violations)
+
+
+def validate_data_invariants(workspace: Path, invariants: list[Invariant]) -> InvariantCheckResult:
+    """Check data-file invariants (e.g. min_csv_rows) against actual files.
+
+    Scans the workspace for CSV files matching the invariant's glob pattern
+    and verifies each meets the minimum row count.
+    """
+    import csv as csv_mod
+    violations: list[str] = []
+    for inv in invariants:
+        if inv.check_type != "min_csv_rows":
+            continue
+        min_rows = int(inv.params.get("min_rows", 0))
+        glob_pattern = inv.params.get("glob", "**/*.csv")
+        if min_rows <= 0:
+            continue
+        csv_files = list(workspace.glob(glob_pattern))
+        for csv_file in csv_files:
+            try:
+                with open(csv_file) as f:
+                    reader = csv_mod.reader(f)
+                    header = next(reader, None)
+                    if header is None:
+                        violations.append(
+                            f"{inv.id}: {csv_file.relative_to(workspace)} has no rows (empty file)"
+                        )
+                        continue
+                    row_count = sum(1 for _ in reader)
+                if row_count < min_rows:
+                    violations.append(
+                        f"{inv.id}: {csv_file.relative_to(workspace)} has {row_count} data rows, "
+                        f"minimum is {min_rows}"
+                    )
+            except (OSError, StopIteration):
+                violations.append(
+                    f"{inv.id}: {csv_file.relative_to(workspace)} could not be read"
+                )
     return InvariantCheckResult(passed=len(violations) == 0, violations=violations)
 
 

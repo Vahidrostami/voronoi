@@ -394,3 +394,38 @@ class TestInvariantsInPrompt:
             question="test", mode="build", rigor="standard",
         )
         assert "Success Criteria Tracking" in prompt
+
+
+# ---------------------------------------------------------------------------
+# Phase gate enforcement in prompts
+# ---------------------------------------------------------------------------
+
+class TestPhaseGateEnforcement:
+    """Verify the phase gate enforcement section appears in prompts."""
+
+    def test_phase_gate_section_present(self):
+        prompt = build_orchestrator_prompt(
+            question="test", mode="investigate", rigor="scientific",
+        )
+        assert "Phase Gate Enforcement" in prompt
+        assert "DESIGN_INVALID" in prompt
+        assert "spawn-agent.sh" in prompt
+
+    def test_phase_gate_in_build_mode_too(self):
+        prompt = build_orchestrator_prompt(
+            question="test", mode="build", rigor="standard",
+        )
+        assert "Phase Gate Enforcement" in prompt
+
+    def test_phase_gate_mentions_structural_enforcement(self):
+        prompt = build_orchestrator_prompt(
+            question="test", mode="investigate", rigor="analytical",
+        )
+        assert "structurally" in prompt.lower() or "BLOCK completion" in prompt
+
+    def test_data_invariants_in_prompt(self):
+        prompt = build_orchestrator_prompt(
+            question="test", mode="investigate", rigor="scientific",
+        )
+        assert "min_csv_rows" in prompt
+        assert "convergence gate" in prompt.lower()

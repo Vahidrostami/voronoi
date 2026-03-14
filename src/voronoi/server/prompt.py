@@ -129,7 +129,17 @@ def build_orchestrator_prompt(
         "worker prompt you write.  Violations are structural failures — "
         "not judgment calls.\n\n"
         "Workers: check invariants during your EVA self-audit.  If you detect "
-        "a violation, flag `INVARIANT_VIOLATED:<id>` in Beads notes and stop.\n"
+        "a violation, flag `INVARIANT_VIOLATED:<id>` in Beads notes and stop.\n\n"
+        "**Data invariants are enforced structurally** by the convergence gate. "
+        "If the project brief specifies a minimum row count for data files, "
+        "write a `min_csv_rows` invariant at session start:\n"
+        "```json\n"
+        '[{"id": "MIN_ROWS", "description": "Minimum 500 rows per scenario CSV", '
+        '"check_type": "min_csv_rows", "params": {"min_rows": 500, "glob": "**/data/**/*.csv"}}]\n'
+        "```\n"
+        "The convergence gate will REJECT completion if any matching CSV has "
+        "fewer rows than declared. This prevents workers from silently reducing "
+        "data size.\n"
     )
 
     # -- REVISE task support -----------------------------------------------
@@ -204,6 +214,25 @@ def build_orchestrator_prompt(
         "bd update <id> --notes \"RESULT_CONTRADICTS_HYPOTHESIS:Expected L4>L1 but observed L1>L4\"\n"
         "```\n"
         "This blocks convergence until resolved (redesign experiment or revise hypothesis).\n"
+    )
+
+    # -- Phase gate enforcement --------------------------------------------
+    sections.append(
+        "\n## Phase Gate Enforcement — HARD GATES\n\n"
+        "Before dispatching any paper/scribe/compilation task, you MUST verify:\n"
+        "1. Read `.swarm/success-criteria.json` — ALL criteria must have `met: true`\n"
+        "2. Run `bd list --json` and confirm NO open tasks have `DESIGN_INVALID` in notes\n"
+        "3. If ANY check fails, create a REVISE task instead of a paper task\n\n"
+        "**These gates are also enforced structurally:**\n"
+        "- `spawn-agent.sh` will REJECT dispatch of paper/scribe/compile tasks "
+        "while any DESIGN_INVALID experiment is unresolved\n"
+        "- The dispatcher will BLOCK completion while DESIGN_INVALID tasks are open\n"
+        "- You CANNOT bypass these gates by writing deliverable.md — the server checks\n\n"
+        "**If an experiment fails its hard gate** (e.g., p ≥ 0.05 when p < 0.05 was required):\n"
+        "1. Flag `DESIGN_INVALID` in the task notes with diagnosis\n"
+        "2. Dispatch Methodologist for post-mortem review\n"
+        "3. Create a REVISE task with the Methodologist's recommendations\n"
+        "4. Only proceed to paper after the revised experiment passes its gate\n"
     )
 
     # -- Workflow ----------------------------------------------------------
