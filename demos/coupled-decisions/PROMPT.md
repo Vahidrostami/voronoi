@@ -85,6 +85,10 @@ These two types had the highest detection rates in prior runs. Agents MAY add ef
 
 **Scenario variation (MANDATORY):** Scenarios must vary structurally — different column sets, different numbers of subgroups, different constraint types, different lever combinations. A set of 12 scenarios with identical column structure and different numbers is pseudo-replication, not independent samples.
 
+**Minimum lever count (MANDATORY):** Each scenario must include **≥ 5 lever columns** covering at least 3 of the 5 RGM domains (pricing, promotion, assortment, distribution, pack-price architecture). At least 4 scenarios must include levers from **all 5 domains**. With 5 levers, there are $C(5,2)=10$ lever pairs; with 8 levers, $C(8,2)=28$ pairs. This creates a combinatorial space large enough that exhaustive enumeration is impractical and the pipeline's compression is genuinely useful.
+
+**Segment depth (MANDATORY):** Each scenario must include **≥ 2 categorical grouping variables** (e.g., store_tier AND region, or channel AND brand_tier). This creates cross-segment interactions (e.g., Simpson's paradox in one grouping but not another) and a combinatorial segment space that scales multiplicatively. With 2 grouping variables of 3 and 4 levels respectively, the segment space is 12 — not 3.
+
 ### Discovery Prompt (Category-Blind)
 
 The LLM must report **3–5** high-confidence findings as **effect descriptions** (not intervention recommendations). Each finding must include: the specific effect, exact columns involved, direction/magnitude, scope/segment, and mechanism.
@@ -150,14 +154,67 @@ Same discovery prompt, same rubric matching, same finding count (3–5), k=5 run
 
 Run the **full pipeline** (diagnostic agents → causal synthesis → quality gate) on all scenarios at L4. This is **separate from E1/E2** — the pipeline is not in the E1 evaluation path.
 
+### Why This Must Be Adaptive
+
+The abstract claims the framework is an **alternative to classical optimization** for navigating unknown coupled decision spaces. In a real use case, you don't know the dimensionality upfront — you don't know how many lever interactions exist, how many constraints bind, or how many segments matter. The pipeline must **discover** the structure of the space, not enumerate a fixed number of pre-allocated slots.
+
+**Why dimensionality matters for E3:** With 3 levers and 1 grouping variable, the naive space is ~150 — trivially enumerable. The pipeline adds no value over brute force. With 5–8 levers and 2+ grouping variables, the naive space is 2,000–10,000+. Now the pipeline's ability to focus on the relevant subspace is the core value proposition. E3 only convincingly demonstrates compression if the input space is large enough that compression matters.
+
+**HARD RULE: No fixed candidate quotas.** Diagnostic agents must NOT be told "generate exactly N signals." Instead, each agent explores the encoded context and reports **all signals it finds above a minimum confidence threshold** (e.g., confidence ≥ 0.3). The number of Stage 1 signals is an **emergent property** of the data complexity, not a design parameter.
+
+### Measuring Real Compression
+
+The input to Stage 1 is not "however many signals the agents produce" — it is the **theoretical combinatorial space** that the pipeline avoids having to enumerate. Compute the naive space size for each scenario:
+
+```
+naive_space = C(n_levers, 2) × n_segments × n_knowledge_sources
+```
+
+where `n_levers` = number of lever columns, `n_segments` = product of unique values across categorical columns (capped at a reasonable bound like 200), and `n_knowledge_sources` = number of distinct knowledge items (policies + beliefs). This is the space a brute-force approach would need to scan.
+
+Report **two compression metrics**:
+1. **Pipeline compression**: Stage 1 output → Stage 3 output (what the pipeline actually does)
+2. **Effective compression**: naive_space → Stage 3 output (what the user avoids by using the framework instead of exhaustive search)
+
+The effective compression is what matters for the "alternative to optimization" claim.
+
+### Protocol
+
+```
+For each scenario at L4:
+    encoded_context = encode(scenario, L4)
+
+    # Stage 1: Adaptive discovery (no fixed quotas)
+    for each diagnostic agent (≥ 2, complementary dimensions):
+        signals = agent(encoded_context)   # returns ALL signals above confidence threshold
+        # Agent decides how many to report based on what it finds
+
+    stage1_count = total unique signals across all agents
+    naive_space  = computed from scenario metadata
+
+    # Stage 2: Causal synthesis
+    interventions = synthesize(all_stage1_signals)  # merge, deduplicate, structure
+    stage2_count = len(interventions)
+
+    # Stage 3: Quality gate (5 dimensions)
+    final = quality_gate(interventions)    # NO hard cap on output count
+    stage3_count = len(final)
+```
+
+**HARD RULE: No MAX_STAGE3 cap.** The quality gate filters by score threshold only. If 15 candidates pass the gate, report 15. If 2 pass, report 2. The output count must be an empirical result, not a design parameter.
+
 Report per stage:
-1. Number of candidate signals entering
-2. Number surviving
-3. Compression ratio
+1. Number of candidate signals entering (emergent, not fixed)
+2. Number surviving each stage
+3. Pipeline compression ratio (stage1 / stage3)
+4. Effective compression ratio (naive_space / stage3)
+5. Naive space size and how it was computed
 
 Quality gate must score all 5 abstract-claimed dimensions: evidence density, constraint alignment, actionability, testability, novelty. Log scores in `output/pipeline_scores.json`.
 
-**Metric**: Median compression ratio ≥ 10×.
+**Metric**: Median effective compression ≥ 100× (naive space to final output). With ≥ 5 levers and ≥ 2 grouping variables, the naive space should be ≥ 2,000 per scenario. Pipeline compression ratio is secondary — it only measures internal efficiency, not the framework's value proposition vs. exhaustive search.
+
+**Diagnostic agent structure for high-dimensional scenarios:** With 5+ levers, diagnostic agents should partition their exploration along the lever-pair space — not just apply different analytical methods to the same small set of variables. One agent might focus on pricing×promotion interactions, another on assortment×distribution. The partition strategy is an agent decision, but the agents must report **which subspaces they explored** (log lever pairs examined) so the paper can show coverage of the combinatorial space.
 
 ---
 
@@ -180,9 +237,9 @@ Agents own all implementation decisions not specified above:
 
 - Scenario count (≥12), rows per scenario, store/SKU/lever counts
 - Exact encoding representations (statistical profiles, constraint vectors, belief objects)
-- Number and specialization of diagnostic agents for E3 (≥2 parallel, complementary dimensions)
+- Number and specialization of diagnostic agents for E3 (≥2 parallel, complementary dimensions). Each agent must use a **confidence threshold** (not a fixed count) to determine how many signals to report
 - Causal synthesis output schema (must include lever, direction, scope, mechanism)
-- Quality gate scoring weights and thresholds
+- Quality gate scoring weights and threshold (but NO hard cap on output count — the gate filters by score only)
 - Whether to include L2/L3 in the paper (optional gradient plot)
 - Whether to add effect types beyond Simpson's + constraint-boundary (must pass detection pilot first)
 - Paper structure, related work, figure design
@@ -196,7 +253,7 @@ Agents own all implementation decisions not specified above:
 |----|-----------|-------------|
 | **SC1** | L4 > L1 on MBRS | p < 0.05, paired t-test, k=5 × N≥12 |
 | **SC2** | All-sources > data-only on cross-source MBRS at L4 | Paired test, positive difference |
-| **SC3** | Pipeline compression ≥ 10× | Median ratio across scenarios |
+| **SC3** | Effective compression ≥ 100× (naive space → final output); pipeline has no fixed candidate quotas | Median ratio across scenarios; verify Stage 1 counts vary across scenarios |
 | **SC4** | Three invariants formally defined + single-invariant insufficiency shown | Logical argument in paper |
 | **SC5** | Paper compiles, figures from actual data, all abstract claims substantiated | Compilation + review |
 | **SC6** | All claims backed by effect sizes and CIs | Statistical reporting |
