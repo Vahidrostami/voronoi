@@ -1366,12 +1366,20 @@ def load_claim_evidence(workspace: Path) -> ClaimEvidenceRegistry:
         return ClaimEvidenceRegistry()
     try:
         data = json.loads(path.read_text())
+        if isinstance(data, list):
+            data = {"claims": data}
+        if not isinstance(data, dict):
+            logger.warning("claim-evidence.json: expected dict, got %s", type(data).__name__)
+            return ClaimEvidenceRegistry()
         reg = ClaimEvidenceRegistry(
             orphan_findings=data.get("orphan_findings", []),
             unsupported_claims=data.get("unsupported_claims", []),
             coverage_score=data.get("coverage_score", 0.0),
         )
         for c in data.get("claims", []):
+            if not isinstance(c, dict):
+                logger.warning("claim-evidence.json: skipping non-dict claim entry: %s", type(c).__name__)
+                continue
             reg.claims.append(ClaimEvidence(
                 claim_id=c.get("claim_id", ""),
                 claim_text=c.get("claim_text", ""),
@@ -1381,7 +1389,7 @@ def load_claim_evidence(workspace: Path) -> ClaimEvidenceRegistry:
                 interpretation=c.get("interpretation", ""),
             ))
         return reg
-    except (json.JSONDecodeError, OSError) as e:
+    except (json.JSONDecodeError, OSError, AttributeError, TypeError) as e:
         logger.warning("Failed to load claim-evidence registry: %s", e)
         return ClaimEvidenceRegistry()
 

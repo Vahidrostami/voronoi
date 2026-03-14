@@ -607,6 +607,19 @@ class TestClaimEvidenceRegistry:
         reg = load_claim_evidence(tmp_path)
         assert reg.claims == []
 
+    def test_load_list_with_non_dict_claims(self, tmp_path):
+        """Regression: LLM may emit a list-of-lists instead of list-of-dicts."""
+        import json
+        from voronoi.science import load_claim_evidence
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "claim-evidence.json").write_text(json.dumps([
+            ["C1", "some claim", ["bd-1"]],
+            {"claim_id": "C2", "claim_text": "valid claim", "finding_ids": ["bd-2"]},
+        ]))
+        reg = load_claim_evidence(tmp_path)
+        assert len(reg.claims) == 1
+        assert reg.claims[0].claim_id == "C2"
+
     def test_all_claims_supported(self):
         from voronoi.science import ClaimEvidence, ClaimEvidenceRegistry
         reg = ClaimEvidenceRegistry()
