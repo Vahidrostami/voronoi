@@ -116,7 +116,7 @@ Copilot auto-discovers these files. They are the **real** role definitions — t
 
 ```
 .github/
-├── agents/                          # Role definitions (11 roles)
+├── agents/                          # Role definitions (12 roles)
 │   ├── swarm-orchestrator.agent.md  # OODA loop, convergence, paradigm checks
 │   ├── worker-agent.agent.md        # Build tasks, artifact contracts
 │   ├── scout.agent.md               # Prior knowledge research
@@ -127,9 +127,9 @@ Copilot auto-discovers these files. They are the **real** role definitions — t
 │   ├── methodologist.agent.md       # Experimental design review
 │   ├── statistician.agent.md        # CI, effect sizes, data integrity
 │   ├── synthesizer.agent.md         # Consistency checks, deliverable
-│   └── evaluator.agent.md           # Final scoring (CCSA formula)
+│   ├── evaluator.agent.md           # Final scoring (CCSA formula)
+│   └── scribe.agent.md              # LaTeX compilation, figures
 ├── prompts/                         # Invocable prompts
-│   ├── swarm.prompt.md              # /swarm — full orchestration
 │   ├── spawn.prompt.md              # /spawn — single agent dispatch
 │   ├── merge.prompt.md              # /merge — branch integration
 │   ├── standup.prompt.md            # /standup — cross-agent status
@@ -194,6 +194,7 @@ When in doubt, classify higher — gates can be skipped but not added retroactiv
 | Evaluator 🎯 | `evaluator.agent.md` | Analytical+ | Scores deliverable: Completeness·Coherence·Strength·Actionability |
 | Theorist 🧬 | `theorist.agent.md` | Scientific+ | Causal models, competing theories, paradigm stress |
 | Methodologist 📐 | `methodologist.agent.md` | Scientific+ | Experimental design review, power analysis |
+| Scribe ✍️ | `scribe.agent.md` | Any | LaTeX compilation, figure generation |
 | Worker | `worker-agent.agent.md` | Standard+ | Generic tasks |
 
 ---
@@ -204,11 +205,17 @@ Pure plumbing — no decision logic. The orchestrator (copilot) makes all decisi
 
 | Script | What it does |
 |--------|-------------|
-| `swarm-init.sh` | `git init` · `bd init` · tmux session · `.swarm-config.json` · Telegram bridge |
 | `spawn-agent.sh` | `git worktree add` → tmux window → `copilot -p prompt` |
 | `merge-agent.sh` | `git merge` → push → clean worktree → `bd close` |
+| `convergence-gate.sh` | Multi-signal convergence validation + figure-lint |
+| `health-check.sh` | Agent health monitoring (tmux + git + process tree) |
+| `swarm-init.sh` | `git init` · `bd init` · tmux session · config |
 | `notify-telegram.sh` | Source this, call `notify_telegram "event" "message"` |
+| `figure-lint.sh` | Verify all `\includegraphics` refs resolve |
 | `teardown.sh` | Kill tmux, prune worktrees/branches |
+| `sync-package-data.sh` | Copy framework files for pip build |
+| `dashboard.py` | Rich terminal dashboard (optional dev tool) |
+| `telegram-bridge.py` | Telegram ↔ Voronoi gateway |
 
 ```mermaid
 sequenceDiagram

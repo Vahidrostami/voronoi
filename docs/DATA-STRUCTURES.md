@@ -2,7 +2,7 @@
 
 > All dataclasses, enums, database schemas, file formats, and JSON schemas used across the project.
 
-**TL;DR**: Key types: `ClassifiedIntent` (intent.py), `Investigation` (queue.py), `PreRegistration`/`Hypothesis`/`ConvergenceResult` (science/), `DispatcherConfig`/`RunningInvestigation` (dispatcher.py). Two SQLite DBs: `queue.db` (investigations) + `memory.db` (chat). `.swarm/` files: belief-map.json, eval-score.json, convergence.json, experiments.tsv, verify-log-*.jsonl.
+**TL;DR**: Key types: `ClassifiedIntent` (intent.py), `Investigation` (queue.py), `PreRegistration`/`Hypothesis`/`ConvergenceResult` (science/gates.py, science/convergence.py), `DispatcherConfig`/`RunningInvestigation` (dispatcher.py). Two SQLite DBs: `queue.db` (investigations) + `memory.db` (chat). `.swarm/` files: belief-map.json, eval-score.json, convergence.json, experiments.tsv, verify-log-*.jsonl.
 
 ## 1. Enums
 
@@ -272,7 +272,7 @@ class SandboxInfo:
 
 ## 5. Science Dataclasses
 
-### PreRegistration (`science/`)
+### PreRegistration (`science/gates.py`)
 
 ```python
 @dataclass
@@ -291,7 +291,7 @@ class PreRegistration:
     deviations: list[str]
 ```
 
-### Hypothesis (`science/`)
+### Hypothesis (`science/convergence.py`)
 
 ```python
 @dataclass
@@ -306,7 +306,7 @@ class Hypothesis:
     impact: float
 ```
 
-### ConvergenceResult (`science/`)
+### ConvergenceResult (`science/convergence.py`)
 
 ```python
 @dataclass
@@ -318,7 +318,7 @@ class ConvergenceResult:
     blockers: list[str]
 ```
 
-### ParadigmStressResult (`science/`)
+### ParadigmStressResult (`science/_helpers.py`)
 
 ```python
 @dataclass
@@ -329,7 +329,7 @@ class ParadigmStressResult:
     message: str
 ```
 
-### ConsistencyConflict (`science/`)
+### ConsistencyConflict (`science/_helpers.py`)
 
 ```python
 @dataclass
@@ -340,21 +340,7 @@ class ConsistencyConflict:
     description: str
 ```
 
-### LabNotebookEntry (`science/`)
-
-```python
-@dataclass
-class LabNotebookEntry:
-    cycle: int
-    phase: str                  # observe | orient | decide | act
-    verdict: str
-    metrics: dict
-    failures: list[str]
-    next_steps: list[str]
-    timestamp: str
-```
-
-### FabricationFlag (`science/`)
+### FabricationFlag (`science/fabrication.py`)
 
 ```python
 @dataclass
@@ -365,7 +351,7 @@ class FabricationFlag:
     finding_id: str
 ```
 
-### AntiFabricationResult (`science/`)
+### AntiFabricationResult (`science/fabrication.py`)
 
 ```python
 @dataclass

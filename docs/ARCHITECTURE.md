@@ -144,7 +144,7 @@ Copilot auto-discovers these files. They are the **real** role definitions.
 
 ```
 .github/
-├── agents/                          # 11 role definitions
+├── agents/                          # 12 role definitions
 │   ├── swarm-orchestrator.agent.md
 │   ├── worker-agent.agent.md
 │   ├── scout.agent.md
@@ -155,9 +155,9 @@ Copilot auto-discovers these files. They are the **real** role definitions.
 │   ├── methodologist.agent.md
 │   ├── statistician.agent.md
 │   ├── synthesizer.agent.md
-│   └── evaluator.agent.md
+│   ├── evaluator.agent.md
+│   └── scribe.agent.md
 ├── prompts/                         # Invocable prompts
-│   ├── swarm.prompt.md              # /swarm — full orchestration
 │   ├── spawn.prompt.md              # /spawn — single agent dispatch
 │   ├── merge.prompt.md              # /merge — branch integration
 │   ├── standup.prompt.md            # /standup — cross-agent status
@@ -182,15 +182,16 @@ Pure plumbing — no decision logic. The orchestrator makes all decisions.
 | Script | Purpose | Invoked by |
 |--------|---------|-----------|
 | `telegram-bridge.py` | Telegram ↔ Voronoi bridge (singleton, PTB + dispatcher jobs) | `voronoi server start` |
-| `swarm-init.sh` | `git init` · `bd init` · tmux session · config | Dispatcher at investigation start |
 | `spawn-agent.sh` | `git worktree add` → tmux window → `copilot -p` | Orchestrator when dispatching workers |
 | `merge-agent.sh` | `git merge` → push → clean worktree → `bd close` | Orchestrator when merging completed work |
-| `notify-telegram.sh` | Source + call `notify_telegram "event" "msg"` | Any script needing Telegram notification |
+| `convergence-gate.sh` | Multi-signal convergence validation + figure-lint | Orchestrator/dispatcher before declaring done |
+| `health-check.sh` | Agent health (tmux, git, process tree) | Monitoring, `/health` command |
+| `swarm-init.sh` | `git init` · `bd init` · tmux session · config | CLI `voronoi init`, dispatcher |
+| `notify-telegram.sh` | Source + call `notify_telegram "event" "msg"` | merge-agent.sh, spawn-agent.sh |
+| `figure-lint.sh` | Verify all `\includegraphics` refs resolve | convergence-gate.sh, merge-agent.sh |
 | `teardown.sh` | Kill tmux, prune worktrees/branches | User or orchestrator at session end |
-| `convergence-gate.sh` | Verify convergence criteria met | Orchestrator before declaring done |
-| `health-check.sh` | System health (tmux, beads, git, disk) | Monitoring, `/health` command |
-| `sandbox-exec.sh` | Execute command in Docker or host | Workers needing isolation |
-| `dashboard.py` | Rich terminal dashboard | User monitoring |
+| `sync-package-data.sh` | Copy framework files for pip build | Developer workflow |
+| `dashboard.py` | Rich terminal dashboard (optional) | Manual monitoring |
 
 ## 7. Deployment Topology
 

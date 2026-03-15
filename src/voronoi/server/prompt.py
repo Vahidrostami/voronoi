@@ -430,13 +430,28 @@ def build_orchestrator_prompt(
     # -- Eval score (for dispatcher convergence tracking) ------------------
     if rigor != "standard":
         sections.append(
-            "\n## Evaluator Score Output\n\n"
+            "\n## Evaluator Score Output — STRUCTURED FEEDBACK\n\n"
             "When the Evaluator scores the deliverable, write the result to "
-            "`.swarm/eval-score.json`:\n"
+            "`.swarm/eval-score.json` with **section-level feedback**:\n"
             "```json\n"
-            '{"score": 0.82, "rounds": 1}\n'
+            '{"score": 0.82, "rounds": 1,\n'
+            ' "dimensions": {\n'
+            '   "completeness": {"score": 0.85, "note": "Missing sensitivity analysis on param K"},\n'
+            '   "coherence": {"score": 0.75, "note": "Section 3 contradicts Section 5 on direction"},\n'
+            '   "strength": {"score": 0.70, "note": "Finding bd-43 has N=12, too small for claimed effect"},\n'
+            '   "actionability": {"score": 0.90, "note": "Good — concrete parameter ranges provided"}\n'
+            ' },\n'
+            ' "remediations": [\n'
+            '   "Run sensitivity analysis varying K from 0.1 to 1.0",\n'
+            '   "Resolve Section 3 vs Section 5 contradiction",\n'
+            '   "Increase sample size for bd-43 or downgrade confidence"\n'
+            ' ]\n'
+            '}\n'
             "```\n"
-            "This file is read by the progress monitor to track convergence.\n"
+            "This file is read by the progress monitor to track convergence.\n\n"
+            "**The remediations list is critical** — when the orchestrator creates "
+            "improvement tasks, it uses these specific remediations as task briefs "
+            "instead of guessing what needs to improve.  Be concrete and actionable.\n"
         )
 
     return "".join(sections)
@@ -594,7 +609,40 @@ def build_worker_prompt(
     if extra_instructions:
         sections.append(f"\n## Additional Instructions\n\n{extra_instructions}\n")
 
-    # 10. Git discipline (always included)
+    # 10. Self-verification protocol (Reflection pass + test loop)
+    sections.append(
+        "\n## Self-Verification — MANDATORY BEFORE CLOSING\n\n"
+        "Before closing your task, run this verification sequence:\n\n"
+        "**Step 1: Test loop (iterate until pass)**\n"
+        "```bash\n"
+        "# Run tests relevant to your work\n"
+        "pytest <your-test-files> -x -q  # or the project's test command\n"
+        "```\n"
+        "If tests FAIL: read the failure output, fix the code, re-run. "
+        "Repeat up to 3 times.\n"
+        "If tests PASS: proceed to Step 2.\n"
+        "If still failing after 3 attempts: update Beads:\n"
+        "```bash\n"
+        f"bd update {task_id} --notes 'VERIFY_EXHAUSTED:3 attempts, last error: <error>'\n"
+        "```\n"
+        "Do NOT close the task — the orchestrator will triage.\n\n"
+        "**Step 2: Self-review checklist**\n"
+        "Before closing, verify:\n"
+        "1. All PRODUCES artifacts exist and are non-empty\n"
+        "2. Reported metrics match the actual data (re-read your output files)\n"
+        "3. No hardcoded test values or simulated data\n"
+        "4. All commits are pushed to your branch\n\n"
+        "If any check fails, fix it now — do NOT close the task.\n\n"
+        "**Step 3: Incremental findings commit**\n"
+        "If you discovered findings during your work, ensure they are recorded "
+        "in Beads notes BEFORE closing. Do not rely on context memory — "
+        "write observations to Beads as you go:\n"
+        "```bash\n"
+        f"bd update {task_id} --notes 'OBSERVATION:<what you found>'\n"
+        "```\n"
+    )
+
+    # 11. Git discipline (always included)
     sections.append(
         "\n## Git Discipline — CRITICAL\n\n"
         "Commit after every meaningful unit of work — a new file, a completed function, "

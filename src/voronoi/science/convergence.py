@@ -129,6 +129,10 @@ class OrchestratorCheckpoint:
     eval_score: float = 0.0
     improvement_rounds: int = 0
     last_updated: str = ""
+    # Token budget tracking — prevents surprise context overflow
+    tokens_this_cycle: int = 0
+    tokens_cumulative: int = 0
+    context_window_remaining_pct: float = 1.0
 
 
 def load_checkpoint(workspace: Path) -> OrchestratorCheckpoint:
@@ -153,6 +157,9 @@ def load_checkpoint(workspace: Path) -> OrchestratorCheckpoint:
             eval_score=d.get("eval_score", 0.0),
             improvement_rounds=d.get("improvement_rounds", 0),
             last_updated=d.get("last_updated", ""),
+            tokens_this_cycle=d.get("tokens_this_cycle", 0),
+            tokens_cumulative=d.get("tokens_cumulative", 0),
+            context_window_remaining_pct=d.get("context_window_remaining_pct", 1.0),
         )
     except (json.JSONDecodeError, OSError) as e:
         logger.warning("Failed to load orchestrator checkpoint: %s", e)
@@ -182,6 +189,10 @@ def format_checkpoint_for_prompt(cp: OrchestratorCheckpoint) -> str:
         lines.append(f"Success criteria: {met}/{len(cp.criteria_status)} met ({details})")
     if cp.eval_score > 0:
         lines.append(f"Quality score: {cp.eval_score:.2f} (round {cp.improvement_rounds})")
+    if cp.tokens_cumulative > 0:
+        lines.append(f"Token budget: {cp.tokens_this_cycle:,} this cycle, "
+                     f"{cp.tokens_cumulative:,} cumulative "
+                     f"({cp.context_window_remaining_pct:.0%} window remaining)")
     if cp.recent_events:
         lines.append("\nRecent events:")
         lines.extend(f"  - {e}" for e in cp.recent_events)

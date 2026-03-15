@@ -75,7 +75,7 @@ Comparison report with recommendations, backed by evidence.
 ## 4. Investigate Workflow (Scientific Rigor)
 
 ### Roles Active
-All 11 roles.
+All 12 roles.
 
 ### OODA Loop
 
@@ -147,7 +147,7 @@ Scientific report or manuscript with:
 ## 5. Experiment Workflow (Experimental Rigor)
 
 ### Roles Active
-All 11 roles + replication.
+All 12 roles + replication.
 
 ### Additional Gates (beyond Scientific)
 

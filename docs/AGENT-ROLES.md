@@ -1,8 +1,8 @@
 # Agent Roles Specification
 
-> 11 agent roles, activation rules, verify loops, role interactions.
+> 12 agent roles, activation rules, verify loops, role interactions.
 
-**TL;DR**: 11 roles: Orchestrator (always), Builder+Critic (Standard+), Scout+Investigator+Explorer+Statistician+Synthesizer+Evaluator (Analytical+), Theorist+Methodologist (Scientific+). Each worker has a verify loop (test→retry→escalate). Roles defined in `.github/agents/*.agent.md`, never in Python.
+**TL;DR**: 12 roles: Orchestrator (always), Builder+Critic (Standard+), Scout+Investigator+Explorer+Statistician+Synthesizer+Evaluator (Analytical+), Theorist+Methodologist (Scientific+), Scribe (LaTeX compilation). Each worker has a verify loop (test→retry→escalate). Roles defined in `.github/agents/*.agent.md`, never in Python.
 
 ## 1. Role Registry
 

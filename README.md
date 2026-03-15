@@ -189,9 +189,9 @@ voronoi demo run emergent-ecosystem --safe
 
 <br/>
 
-**11 Specialized Roles** — auto-selected by task type:
+**12 Specialized Roles** — auto-selected by task type:
 
-Builder 🔨 · Scout 🔍 · Investigator 🔬 · Critic ⚖️ · Synthesizer 🧩 · Evaluator 🎯 · Explorer 🧭 · Theorist 🧬 · Methodologist 📐 · Statistician 📊 · Worker ⚙️
+Builder 🔨 · Scout 🔍 · Investigator 🔬 · Critic ⚖️ · Synthesizer 🧩 · Evaluator 🎯 · Explorer 🧭 · Theorist 🧬 · Methodologist 📐 · Statistician 📊 · Scribe ✍️ · Worker ⚙️
 
 **4 Rigor Levels** — auto-classified from your question:
 
@@ -242,12 +242,16 @@ FINDING bd-42: Sleep Replay + EWC hybrid outperforms all
 ```
 src/voronoi/
   cli.py                  # init, upgrade, demo, server
+  utils.py                # shared field extraction, note parsing
+  beads.py                # Beads subprocess helpers
+  science/                # rigor gates (4 modules)
+    convergence.py  fabrication.py  gates.py  _helpers.py
   gateway/                # Telegram interface
     config.py  router.py  report.py  intent.py
-    memory.py  knowledge.py  handoff.py
+    memory.py  knowledge.py  handoff.py  progress.py
   server/
-    dispatcher.py  queue.py  workspace.py
-    sandbox.py  publisher.py
+    prompt.py  dispatcher.py  queue.py  workspace.py
+    sandbox.py  publisher.py  runner.py
 ```
 
 Each agent is a **full Copilot CLI session** in its own **tmux window** with its own **git worktree**. No custom IPC — agents communicate through git + [Beads](https://github.com/steveyegge/beads).
@@ -309,7 +313,7 @@ pip install voronoi[report]  # optional: PDF generation
 
 ```bash
 git clone https://github.com/Vahidrostami/voronoi && cd voronoi
-pip install -e . && pytest   # 223 tests
+pip install -e . && pytest   # 624 tests
 ```
 
 See [DESIGN.md](DESIGN.md) for the full design philosophy.

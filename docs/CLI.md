@@ -45,7 +45,7 @@ Scaffolds Voronoi framework into the current directory. Makes a project agent-re
 
 ```
 .github/
-├── agents/           # 11 role definitions
+├── agents/           # 12 role definitions
 ├── prompts/          # 6 invocable prompts
 └── skills/           # 9 domain knowledge packages
 
