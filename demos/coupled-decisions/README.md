@@ -1,31 +1,37 @@
 # Demo: Coupled Decision Spaces
 
-**Does structured encoding of heterogeneous knowledge beat raw text for cross-lever effect discovery?**
+**Does structured encoding of heterogeneous knowledge beat raw text for cross-lever effect discovery — and does encoding unlock cross-source reasoning?**
 
 A multi-agent system that encodes heterogeneous knowledge sources (quantitative data, codified policies, expert judgment, decision playbooks) into reasoning-ready representations — then validates whether structured encoding outperforms "just paste everything into the prompt" on a coupled decision space with planted ground truth.
 
 ## What It Does
 
-Generates synthetic RGM (Revenue Growth Management) scenarios with planted effects that are **genuinely misleading in raw form** but correctly interpretable with structured encoding. Three clean experiments — one per abstract claim.
+Generates synthetic RGM (Revenue Growth Management) scenarios with planted effects that are **genuinely misleading in raw form** but correctly interpretable with structured encoding. A single 2×2 factorial tests encoding and source diversity jointly; a separate pipeline observation tests compression.
 
-### Three Experiments
+### 2×2 Factorial Design
 
-| # | Abstract claim | What varies | What's measured |
-|---|---------------|-------------|-----------------|
-| **E1** | Encoding enables effect discovery | L1 (raw text) vs L4 (structured) | Mean Best Rubric Score (MBRS) |
-| **E2** | Cross-source reasoning works | All-sources vs data-only at L4 | Cross-source MBRS difference |
-| **E3** | Pipeline compresses space | — (observational) | Compression ratio |
+|  | **Data-only** | **All-sources** |
+|--|---------------|-----------------|
+| **L1 (raw text)** | L1-data | L1-all |
+| **L4 (structured)** | L4-data | L4-all |
 
-### E1: Direct Discovery (Core Experiment)
+Three hypothesis tests from one dataset:
 
-Signal chain: `encoding → single LLM discovery call → rubric matching`. No pipeline between encoding and evaluation.
+| Claim | Test |
+|-------|------|
+| Encoding enables discovery | Main effect of encoding (L4 vs L1) |
+| Cross-source reasoning works | Main effect of sources at L4 |
+| **Encoding enables cross-source reasoning** | **Interaction: source benefit is larger at L4 than L1** |
 
-| Level | Data | Knowledge | Playbook |
-|-------|------|-----------|----------|
-| **L1: Raw text** | CSV with headers + raw rows, no stats | Flat prose | Flat prose |
-| **L4: Full structured** | Statistical profiles (rows removed) | Typed constraints + belief objects (prose removed) | Process graph + rule catalog (prose removed) |
+The interaction is the headline finding.
 
-L4 replaces raw content — never appends. Character count within [0.7×, 1.5×] of L1. Same model for both levels.
+### E3: Pipeline Compression (Observational)
+
+Full pipeline (diagnostic agents → causal synthesis → quality gate) on all scenarios at L4-all. Measures effective compression from naive combinatorial space.
+
+### Signal Chain
+
+`encoding → single LLM discovery call → evaluation`. No pipeline between encoding and evaluation.
 
 ### Planted Effect Types
 
@@ -34,34 +40,22 @@ L4 replaces raw content — never appends. Character count within [0.7×, 1.5×]
 | Simpson's paradox | Aggregate masks subgroup reversal | Segment-level stats pre-computed |
 | Constraint boundary | Constraint buried in prose | Typed vector with threshold |
 
-Agents may add more effect types if they pass a detection pilot (≥30% at L1, ≥60% at L4).
+### Evaluation
 
-### Rubric Matching
-
-5-dimension scoring (variables, direction, scope, mechanism, quantification), 0/1 each. Match if ≥3/5. Three-vote majority per judgment. Krippendorff's alpha for reliability.
+Two-stage rubric matching: code-based pre-filter (Variables + Direction from structured JSON), then batched LLM judge for all 5 dimensions. Pilot validates whether 1 vote suffices (α ≥ 0.85) or 3-vote majority needed.
 
 ## How to Run
-
-### Option A: CLI (recommended)
 
 ```bash
 voronoi demo run coupled-decisions
 ```
 
-### Option B: Interactive
-
-```bash
-voronoi init
-copilot
-> /swarm Build from demos/coupled-decisions/PROMPT.md
-```
-
 ## Phases
 
 ```
-Phase 1: Pilot — 2 scenarios, L1 vs L4, calibration gates
-Phase 2: Full experiment — ≥12 scenarios × k=5 runs, hypothesis test
-Phase 3: Paper + webapp (gated on Phase 2 passing)
+Phase 1: Pilot — 2 scenarios, all 4 cells, k=3 runs, calibration gates
+Phase 2: Full — ≥12 scenarios × 4 cells × k=3 runs, ANOVA
+Phase 3: Paper + webapp (gated on Phase 2)
 ```
 
 ## Output
@@ -69,7 +63,7 @@ Phase 3: Paper + webapp (gated on Phase 2 passing)
 ```
 demos/coupled-decisions/
   output/
-    results.json            # Per-scenario per-level per-run metrics
+    results.json            # Per-scenario per-cell per-run metrics + ANOVA
     pipeline_scores.json    # Quality gate 5-dimension scores
     encoding_hashes.json    # SHA-256 + char counts
     paper/
@@ -82,13 +76,17 @@ demos/coupled-decisions/
 
 ## Success Criteria
 
-1. L4 > L1 on MBRS, p < 0.05 (k=5 runs × ≥12 scenarios, same model)
-2. All-sources > data-only on cross-source MBRS at L4
-3. Pipeline compression ≥ 10×
+1. Encoding main effect OR interaction p < 0.05
+2. Interaction on cross-source MBRS (encoding × sources)
+3. Pipeline effective compression ≥ 100×
 4. Three invariants formally defined in paper
 5. Paper compiles with figures from actual data
 6. All claims backed by effect sizes and CIs
 7. Pipeline architecture matches abstract (≥2 agents, synthesis tuples, 5-dim gate)
+
+## Call Budget
+
+~336 LLM calls (best case) to ~528 (3-vote fallback). See PROMPT.md for breakdown.
 
 ## Prerequisites
 
