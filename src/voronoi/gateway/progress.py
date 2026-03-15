@@ -309,9 +309,14 @@ def build_digest(
 
     # Progress numbers woven into a sentence
     if total > 0:
-        pct = int(closed / total * 100)
         bar = progress_bar(closed, total)
-        lines.append(f"{bar}  ({closed}/{total} tasks)")
+        status_parts = [f"{closed} done"]
+        if in_progress > 0:
+            status_parts.append(f"{in_progress} active")
+        remaining = total - closed - in_progress
+        if remaining > 0:
+            status_parts.append(f"{remaining} queued")
+        lines.append(f"{bar}  ({' · '.join(status_parts)} of {total})")
         eta = estimate_remaining(elapsed_sec, closed, total)
         if eta:
             lines.append(f"Estimated: {eta}")

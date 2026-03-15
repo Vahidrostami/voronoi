@@ -272,19 +272,40 @@ def handle_howsitgoing(project_dir: str) -> str:
         # Track assessment
         task_snapshot: dict = {}
         eval_score = 0.0
+        total_tasks = 0
+        closed_tasks = 0
+        in_progress_tasks = 0
         try:
             code, output = _run_bd("list", "--json", cwd=ws_path)
             if code == 0 and output.strip():
                 tasks = json.loads(output)
                 if isinstance(tasks, list):
+                    total_tasks = len(tasks)
                     for t in tasks:
                         tid = t.get("id", "")
+                        st = t.get("status", "")
                         task_snapshot[tid] = {
-                            "status": t.get("status", ""),
+                            "status": st,
                             "notes": t.get("notes", ""),
                         }
+                        if st == "closed":
+                            closed_tasks += 1
+                        elif st == "in_progress":
+                            in_progress_tasks += 1
         except Exception:
             pass
+
+        # Progress bar with breakdown
+        if total_tasks > 0:
+            bar = progress_bar(closed_tasks, total_tasks)
+            parts = [f"{closed_tasks} done"]
+            if in_progress_tasks > 0:
+                parts.append(f"{in_progress_tasks} active")
+            remaining = total_tasks - closed_tasks - in_progress_tasks
+            if remaining > 0:
+                parts.append(f"{remaining} queued")
+            lines.append(f"\n{bar}  ({' · '.join(parts)} of {total_tasks})")
+
         eval_path = ws / ".swarm" / "eval-score.json"
         if eval_path.exists():
             try:
