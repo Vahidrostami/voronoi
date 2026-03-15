@@ -22,7 +22,7 @@ GITHUB_SUBDIRS = ["agents", "prompts", "skills"]
 USER_OWNED = {"CLAUDE.md", "AGENTS.md"}
 
 
-def _find_data_dir() -> Path:
+def find_data_dir() -> Path:
     """Locate the framework data files.
 
     Works for both editable installs (repo root) and normal pip installs
@@ -83,7 +83,7 @@ def _build_orchestrator_prompt(
 def cmd_init(args: argparse.Namespace) -> None:
     """Scaffold voronoi into the current directory."""
     target = Path.cwd()
-    data = _find_data_dir()
+    data = find_data_dir()
 
     # Guard: don't init inside the framework repo itself
     if (target / "pyproject.toml").exists() and (target / "src" / "voronoi").is_dir():
@@ -154,7 +154,7 @@ def cmd_init(args: argparse.Namespace) -> None:
 def cmd_upgrade(args: argparse.Namespace) -> None:
     """Upgrade framework files, preserving user-edited files."""
     target = Path.cwd()
-    data = _find_data_dir()
+    data = find_data_dir()
 
     if not (target / "scripts").is_dir():
         print("Error: no voronoi project here. Run 'voronoi init' first.")
@@ -194,7 +194,7 @@ def cmd_upgrade(args: argparse.Namespace) -> None:
     print("\nUpgrade complete.")
 
 
-def _list_demos(data: Path) -> list[dict]:
+def list_demos(data: Path) -> list[dict]:
     """Return list of available demos with metadata."""
     demos_dir = data / "demos"
     if not demos_dir.is_dir():
@@ -220,11 +220,11 @@ def _list_demos(data: Path) -> list[dict]:
 
 def cmd_demo(args: argparse.Namespace) -> None:
     """Handle demo subcommands: list, run, clean."""
-    data = _find_data_dir()
+    data = find_data_dir()
     target = Path.cwd()
 
     if args.demo_action == "list":
-        demos = _list_demos(data)
+        demos = list_demos(data)
         if not demos:
             print("No demos found.")
             return
@@ -237,7 +237,7 @@ def cmd_demo(args: argparse.Namespace) -> None:
 
     elif args.demo_action == "run":
         name = args.name
-        demos = _list_demos(data)
+        demos = list_demos(data)
         demo = next((d for d in demos if d["name"] == name), None)
         if demo is None:
             print(f"Error: demo '{name}' not found.", file=sys.stderr)
@@ -498,7 +498,7 @@ def _server_init(args: argparse.Namespace) -> None:
                 break
 
     # Copy .env.example into ~/.voronoi/ for easy editing
-    env_example_src = _find_data_dir() / ".env.example"
+    env_example_src = find_data_dir() / ".env.example"
     env_example_dst = config.base_dir / ".env.example"
     env_dst = config.base_dir / ".env"
     if env_example_src.is_file() and not env_example_dst.exists():
@@ -556,7 +556,8 @@ def _server_start(args: argparse.Namespace) -> None:
     # Load .env from ~/.voronoi/ if it exists
     env_file = config.base_dir / ".env"
     if env_file.exists():
-        _load_dotenv(env_file)
+        from voronoi.gateway.config import load_dotenv
+        load_dotenv(env_file)
         print(f"  ✓ Loaded {env_file}")
 
     # Verify bot token is available
@@ -629,28 +630,9 @@ def _server_start(args: argparse.Namespace) -> None:
         print("\nTelegram bridge stopped.")
 
 
-def _load_dotenv(env_path: Path) -> None:
-    """Load a .env file into os.environ (only sets vars not already set)."""
-    with open(env_path) as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            if "=" in line:
-                key, _, value = line.partition("=")
-                key = key.strip()
-                value = value.strip()
-                # Strip inline comments
-                for sep in ("  #", "\t#"):
-                    if sep in value:
-                        value = value[:value.index(sep)].strip()
-                if key not in os.environ:
-                    os.environ[key] = value
-
-
 def _find_bridge_script() -> Path | None:
     """Locate telegram-bridge.py in data dir or repo."""
-    data = _find_data_dir()
+    data = find_data_dir()
     candidates = [
         data / "scripts" / "telegram-bridge.py",
         Path(__file__).resolve().parent.parent.parent / "scripts" / "telegram-bridge.py",

@@ -140,54 +140,97 @@ if confirmed / (confirmed + refuted) > 0.8 AND sample > 5:
     flag CONFIRMATION_BIAS_WARNING
 ```
 
-## OODA Workflow
+## OODA Workflow — Checkpoint-Driven
 
-### Observe
-- Read Beads status for all tasks
-- At Analytical+: read knowledge store, journal, belief map
-- Read Strategic Context Document (`.swarm/strategic-context.md`)
-- Read experiment ledger (`.swarm/experiments.tsv`) for chronological experiment overview
-- Check git activity and user input
+Every OODA cycle follows a strict protocol to keep context bounded.
+
+### Before Each Cycle
+```bash
+# 1. Read your checkpoint (your external memory)
+cat .swarm/orchestrator-checkpoint.json
+
+# 2. Read belief map (hypothesis state)
+cat .swarm/belief-map.json
+```
+This tells you where you are, what happened, and what to do next — even if
+your conversation context has degraded.
+
+### Observe (targeted queries only)
+```bash
+# Recently changed tasks (NOT bd list --json!)
+bd query "status!=closed AND updated>30m" --json
+
+# New findings
+bd query "title=FINDING AND status=closed" --json
+
+# Problems
+bd query "notes=DESIGN_INVALID AND status!=closed" --json
+
+# Ready work
+bd ready --json
+
+# Experiment progress (one line)
+tail -5 .swarm/experiments.tsv
+```
+**NEVER run `bd list --json` in a routine cycle.** It dumps all tasks and wastes context.
 
 ### Orient
-- Classify events: completion, finding, negative_result, failure, **design_invalid**, conflict, stall, paradigm_stress, diminishing_returns
-- **On `design_invalid` event** (Investigator reports EVA failure or DESIGN_INVALID):
-  1. Read the Investigator's EVA notes and DESIGN_INVALID diagnosis
-  2. Dispatch Methodologist for post-mortem design review (at Analytical+ rigor)
-  3. Wait for Methodologist's POSTMORTEM_DIAGNOSIS
-  4. Create a new corrected experiment task incorporating the Methodologist's redesign
-  5. The corrected task includes a mandatory validation step: verify the fix resolves the root cause before running the full experiment
-  6. Do NOT rationalize invalid experiments as "findings to discuss" — fix and re-run
-- **Update Strategic Context Document:**
-  - Log decisions made this cycle with rationale and alternatives considered
-  - Update dead ends if any approach was abandoned
-  - Update remaining gaps based on new findings
-  - Update progress velocity with latest eval score
-  - Check if current interpretation of abstract needs revision
-- Run convergence check per rigor level
-- **Check dead ends before new dispatches** — if proposed investigation overlaps with a dead end, skip unless materially different approach
+- Classify events from the query results
+- Update belief map posteriors based on findings
+- Check convergence criteria against checkpoint
+- Check for paradigm stress (3+ contradictions)
 
 ### Decide
-- **Build mode:** dispatch builders → critic review → merge → rebase downstream
-- **Investigate mode:** Statistician review → Critic review → replication → Methodologist → Synthesizer → Theorist → new investigations
-- **Explore mode:** standard explore + Statistician review on quantitative comparisons
-- **Hybrid mode:** detect current phase, apply appropriate logic, transition on phase convergence
-- **Convergence approaching?** Dispatch Synthesizer for final deliverable → Evaluator for scoring
+- Use belief map `information_gain` to pick highest-value next hypothesis
+- Check if review gates are needed for completed findings
+- Check dead_ends in checkpoint — don't re-explore
 
 ### Act
-- Spawn/restart agents, merge completed work
-- **Inject `STRATEGIC_CONTEXT` into every worker prompt at dispatch:**
-  ```bash
-  bd update <task-id> --notes "STRATEGIC_CONTEXT: This task tests whether [X], which matters because [Y]. A strong result here would [Z]. A weak result means we need to [W]. Dead ends to avoid: [list]."
-  ```
-- **Inject `METRIC_CONTRACT` into investigation tasks** (see Metric Contracts section)
-- Accept validated findings, update belief map
-- When a worker reports `VERIFY_EXHAUSTED`, diagnose from their verify iteration log before retrying or reassigning
-- When a worker reports `DESIGN_INVALID`, dispatch Methodologist for post-mortem → create corrected task
-- **NEVER enter a worker's worktree to fix code yourself** — dispatch a new agent or reassign the task
-- Append to investigation journal
-- Commit updated Strategic Context Document
-- Notify user only for: plan approval, strategic pivot, convergence, paradigm stress, diminishing returns
+```bash
+# 1. Dispatch workers via code-assembled prompts (NOT by copying role files)
+echo '{"task_type": "investigation", "task_id": "bd-42", ...}' > /tmp/dispatch-bd-42.json
+python3 -c "
+import json; from voronoi.server.prompt import build_worker_prompt
+spec = json.load(open('/tmp/dispatch-bd-42.json'))
+prompt = build_worker_prompt(**spec)
+open('/tmp/prompt-agent-X.txt', 'w').write(prompt)
+"
+./scripts/spawn-agent.sh bd-42 agent-X /tmp/prompt-agent-X.txt
+
+# 2. Merge completed work
+./scripts/merge-agent.sh <branch> <task-id>
+
+# 3. Update checkpoint
+python3 -c "
+from voronoi.science import OrchestratorCheckpoint, save_checkpoint
+from pathlib import Path
+cp = OrchestratorCheckpoint(
+    cycle=N, phase='...', mode='...', rigor='...',
+    hypotheses_summary='H1:confirmed, H2:testing',
+    total_tasks=50, closed_tasks=25,
+    active_workers=['agent-X', 'agent-Y'],
+    recent_events=['Scenario 5 complete: MBRS=0.71'],
+    recent_decisions=['Dispatched scenarios 6-8'],
+    dead_ends=['L2 encoding redundant with L4'],
+    next_actions=['Wait for scenarios 6-8', 'Then dispatch ANOVA'],
+    criteria_status={'SC1': False, 'SC2': False, 'SC3': False},
+)
+save_checkpoint(Path('.'), cp)
+"
+```
+
+### Context Budget Per Cycle
+| Action | Tokens |
+|--------|--------|
+| Read checkpoint | ~300 |
+| Read belief map | ~200 |
+| Targeted queries | ~500-2K |
+| Reasoning | ~500 |
+| Write briefings | ~200 per worker |
+| Write checkpoint | ~200 |
+| **Total per cycle** | **~2-4K** |
+
+Compare to old approach: ~20K+ per cycle (full task dump + role file copying).
 
 ## Final Evaluation Pass (Analytical+ Rigor)
 

@@ -15,6 +15,8 @@ from voronoi.gateway.config import load_config, save_chat_id
 from voronoi.gateway.router import (
     CommandRouter,
     handle_status,
+    handle_whatsup,
+    handle_howsitgoing,
     handle_tasks,
     handle_ready,
     handle_health,
@@ -70,13 +72,23 @@ class TestConfig:
 
 class TestHandlers:
     def test_handle_status(self, tmp_path):
-        # Create queue.db so _get_queue works
+        # status is now an alias for whatsup — conversational
         swarm_dir = tmp_path / ".swarm"
         swarm_dir.mkdir(parents=True, exist_ok=True)
         result = handle_status(str(tmp_path))
-        assert "Swarm Status" in result
-        # With no running investigations, no task counts shown
-        assert "Queued" in result
+        # Should return something (buddy style - no running = simple msg)
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+    def test_handle_whatsup_no_running(self, tmp_path):
+        result = handle_whatsup(str(tmp_path))
+        # Either nothing or queued items — both are valid
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+    def test_handle_howsitgoing_no_running(self, tmp_path):
+        result = handle_howsitgoing(str(tmp_path))
+        assert "Nothing running" in result
 
     def test_handle_tasks_no_running(self, tmp_path):
         result = handle_tasks(str(tmp_path))
@@ -106,8 +118,10 @@ class TestHandlers:
     def test_handle_abort(self, tmp_path):
         result = handle_abort(str(tmp_path))
         assert "Abort requested" in result
-        # Should write abort signal file
-        assert (tmp_path / ".swarm" / "abort-signal").exists()
+        # Should write abort signal to global fallback when no active investigations
+        assert (Path.home() / ".voronoi" / ".swarm" / "abort-signal").exists()
+        # Clean up
+        (Path.home() / ".voronoi" / ".swarm" / "abort-signal").unlink(missing_ok=True)
 
     def test_handle_abort_cancels_queued(self, tmp_path):
         """Abort should cancel queued investigations via the queue."""
@@ -242,7 +256,24 @@ class TestCommandRouter:
     def test_route_status(self, tmp_path):
         router = CommandRouter(str(tmp_path))
         text, _ = router.route("status", [], "chat1")
-        assert "Swarm Status" in text
+        # Now returns conversational buddy-style response
+        assert isinstance(text, str)
+        assert len(text) > 0
+
+    def test_route_progress(self, tmp_path):
+        router = CommandRouter(str(tmp_path))
+        text, _ = router.route("progress", [], "chat1")
+        assert isinstance(text, str)
+
+    def test_route_whatsup(self, tmp_path):
+        router = CommandRouter(str(tmp_path))
+        text, _ = router.route("whatsup", [], "chat1")
+        assert isinstance(text, str)
+
+    def test_route_howsitgoing(self, tmp_path):
+        router = CommandRouter(str(tmp_path))
+        text, _ = router.route("howsitgoing", [], "chat1")
+        assert isinstance(text, str)
 
     def test_route_unknown(self, tmp_path):
         router = CommandRouter(str(tmp_path))

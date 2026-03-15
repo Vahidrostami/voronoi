@@ -158,8 +158,9 @@ graph TD
 | `/voronoi investigate <question>` | Parallel investigation with findings |
 | `/voronoi explore <question>` | Options, benchmark, comparison matrix |
 | `/voronoi build <description>` | Decompose, parallel build, merge |
+| `/voronoi status` | Conversational status — what's happening? |
+| `/voronoi progress` | Are we on track? Metrics, criteria, belief map |
 | `/voronoi results [id]` | View past investigation results |
-| `/voronoi status` | Open tasks, ready tasks |
 | `/voronoi recall <query>` | Search past findings |
 | Free text in groups | Auto-detect intent and dispatch |
 

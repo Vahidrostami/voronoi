@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Optional
 
 from voronoi.beads import run_bd as _run_bd
+from voronoi.utils import parse_finding_notes as _parse_finding_notes
 
 
 @dataclass
@@ -56,21 +57,6 @@ class Finding:
 def _escape_md(text: str) -> str:
     """Minimal Markdown escaping for Telegram."""
     return text.replace("_", "\\_").replace("*", "\\*").replace("`", "\\`")
-
-
-def _parse_finding_notes(notes_str: str) -> dict:
-    """Extract structured fields from Beads notes strings."""
-    fields: dict = {}
-    # Pattern: KEY:value or KEY: value
-    for line in notes_str.split("\n"):
-        line = line.strip()
-        for key in ("EFFECT_SIZE", "CI_95", "N", "STAT_TEST", "VALENCE",
-                     "CONFIDENCE", "DATA_FILE", "ROBUST", "TYPE", "SAMPLE_SIZE"):
-            pattern = rf"\b{key}\s*[:=]\s*(.+?)(?:\s*\||\s*$)"
-            m = re.search(pattern, line, re.I)
-            if m:
-                fields[key.lower()] = m.group(1).strip()
-    return fields
 
 
 class KnowledgeStore:

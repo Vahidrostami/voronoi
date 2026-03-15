@@ -55,6 +55,10 @@ from voronoi.science import (
     verify_finding_against_data,
     write_convergence,
     write_heartbeat,
+    OrchestratorCheckpoint,
+    load_checkpoint,
+    save_checkpoint,
+    format_checkpoint_for_prompt,
 )
 
 
@@ -735,7 +739,7 @@ class TestEnhancedConsistency:
         assert conflicts[0].conflict_type == "magnitude"
 
     def test_tokenize_removes_stopwords(self):
-        from voronoi.science import _tokenize_title
+        from voronoi.science.evidence import _tokenize_title
         tokens = _tokenize_title("FINDING: this is a test with some very basic words")
         assert "this" not in tokens
         assert "with" not in tokens
@@ -968,7 +972,7 @@ class TestVerifyFindingAgainstData:
 class TestAuditAllFindings:
     def test_no_findings(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
-            "voronoi.science._fetch_tasks",
+            "voronoi.science._helpers._fetch_tasks",
             lambda ws: [{"id": 1, "title": "Build feature X", "notes": ""}],
         )
         results = audit_all_findings(tmp_path)
@@ -1451,7 +1455,7 @@ class TestConvergenceDesignInvalid:
     def test_design_invalid_blocks_convergence(self, tmp_path, monkeypatch):
         (tmp_path / ".swarm").mkdir()
         monkeypatch.setattr(
-            "voronoi.science._fetch_tasks",
+            "voronoi.science._helpers._fetch_tasks",
             lambda ws: [
                 {"id": "bd-1", "title": "Test H1", "status": "open",
                  "notes": "DESIGN_INVALID: L1 beats L4, encoding broken"},
@@ -1464,7 +1468,7 @@ class TestConvergenceDesignInvalid:
     def test_closed_design_invalid_does_not_block(self, tmp_path, monkeypatch):
         (tmp_path / ".swarm").mkdir()
         monkeypatch.setattr(
-            "voronoi.science._fetch_tasks",
+            "voronoi.science._helpers._fetch_tasks",
             lambda ws: [
                 {"id": "bd-1", "title": "Test H1", "status": "closed",
                  "notes": "DESIGN_INVALID: was broken, now fixed"},
@@ -1484,7 +1488,7 @@ class TestConvergenceSuccessCriteria:
         save_success_criteria(tmp_path, [
             {"id": "SC1", "description": "L4 > L1", "met": False},
         ])
-        monkeypatch.setattr("voronoi.science._fetch_tasks", lambda ws: [])
+        monkeypatch.setattr("voronoi.science._helpers._fetch_tasks", lambda ws: [])
         result = check_convergence(tmp_path, "analytical", eval_score=0.80)
         assert result.converged is False
         assert any("SC1" in b for b in result.blockers)
@@ -1495,13 +1499,13 @@ class TestConvergenceSuccessCriteria:
             {"id": "SC1", "description": "L4 > L1", "met": True},
             {"id": "SC2", "description": "Pipeline 10x", "met": True},
         ])
-        monkeypatch.setattr("voronoi.science._fetch_tasks", lambda ws: [])
+        monkeypatch.setattr("voronoi.science._helpers._fetch_tasks", lambda ws: [])
         result = check_convergence(tmp_path, "analytical", eval_score=0.80)
         assert not any("Success criterion" in b for b in result.blockers)
 
     def test_no_criteria_file_does_not_block(self, tmp_path, monkeypatch):
         (tmp_path / ".swarm").mkdir()
-        monkeypatch.setattr("voronoi.science._fetch_tasks", lambda ws: [])
+        monkeypatch.setattr("voronoi.science._helpers._fetch_tasks", lambda ws: [])
         result = check_convergence(tmp_path, "analytical", eval_score=0.80)
         assert not any("Success criterion" in b for b in result.blockers)
 
@@ -1514,7 +1518,7 @@ class TestConvergenceHypothesisAlignment:
     def test_contradicting_hypothesis_blocks(self, tmp_path, monkeypatch):
         (tmp_path / ".swarm").mkdir()
         monkeypatch.setattr(
-            "voronoi.science._fetch_tasks",
+            "voronoi.science._helpers._fetch_tasks",
             lambda ws: [
                 {"id": "bd-5", "title": "Primary experiment", "status": "open",
                  "notes": "RESULT_CONTRADICTS_HYPOTHESIS:Expected L4>L1 but observed L1>L4"},
@@ -1527,7 +1531,7 @@ class TestConvergenceHypothesisAlignment:
     def test_closed_contradiction_does_not_block(self, tmp_path, monkeypatch):
         (tmp_path / ".swarm").mkdir()
         monkeypatch.setattr(
-            "voronoi.science._fetch_tasks",
+            "voronoi.science._helpers._fetch_tasks",
             lambda ws: [
                 {"id": "bd-5", "title": "Primary experiment", "status": "closed",
                  "notes": "RESULT_CONTRADICTS_HYPOTHESIS:Was broken, redesigned"},
@@ -1686,3 +1690,84 @@ class TestSimulationBypassDetection:
         result = detect_simulation_bypass(tmp_path, expected_min_llm_calls=100)
         assert result.passed is True
         assert result.cache_entries == 120
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator Checkpoint
+# ---------------------------------------------------------------------------
+
+class TestOrchestratorCheckpoint:
+    def test_save_and_load(self, tmp_path):
+        cp = OrchestratorCheckpoint(
+            cycle=5,
+            phase="investigating",
+            mode="investigate",
+            rigor="experimental",
+            hypotheses_summary="H1:confirmed, H2:testing",
+            total_tasks=30,
+            closed_tasks=12,
+            active_workers=["agent-pilot", "agent-scenario-3"],
+            recent_events=["Pilot passed", "Scenario 3 complete"],
+            recent_decisions=["Moved to full experiment"],
+            dead_ends=["L2 encoding redundant"],
+            next_actions=["Wait for scenarios 4-6"],
+            criteria_status={"SC1": False, "SC2": False},
+            eval_score=0.0,
+        )
+        save_checkpoint(tmp_path, cp)
+        assert (tmp_path / ".swarm" / "orchestrator-checkpoint.json").exists()
+
+        loaded = load_checkpoint(tmp_path)
+        assert loaded.cycle == 5
+        assert loaded.phase == "investigating"
+        assert loaded.hypotheses_summary == "H1:confirmed, H2:testing"
+        assert loaded.total_tasks == 30
+        assert loaded.closed_tasks == 12
+        assert len(loaded.active_workers) == 2
+        assert loaded.dead_ends == ["L2 encoding redundant"]
+        assert loaded.criteria_status == {"SC1": False, "SC2": False}
+
+    def test_load_missing_file(self, tmp_path):
+        cp = load_checkpoint(tmp_path)
+        assert cp.cycle == 0
+        assert cp.phase == "starting"
+
+    def test_load_corrupt_file(self, tmp_path):
+        (tmp_path / ".swarm").mkdir(parents=True)
+        (tmp_path / ".swarm" / "orchestrator-checkpoint.json").write_text("not json")
+        cp = load_checkpoint(tmp_path)
+        assert cp.cycle == 0
+
+    def test_rolling_window_bounded(self, tmp_path):
+        cp = OrchestratorCheckpoint(
+            recent_events=[f"event-{i}" for i in range(20)],
+            recent_decisions=[f"decision-{i}" for i in range(20)],
+        )
+        save_checkpoint(tmp_path, cp)
+        loaded = load_checkpoint(tmp_path)
+        assert len(loaded.recent_events) == 5
+        assert len(loaded.recent_decisions) == 5
+
+    def test_format_for_prompt(self):
+        cp = OrchestratorCheckpoint(
+            cycle=10, phase="reviewing", mode="investigate", rigor="scientific",
+            hypotheses_summary="H1:confirmed, H2:refuted",
+            total_tasks=40, closed_tasks=30,
+            active_workers=["agent-stats"],
+            recent_events=["ANOVA complete"],
+            next_actions=["Dispatch critic review"],
+            dead_ends=["L2 gradient approach"],
+            criteria_status={"SC1": True, "SC2": False},
+            eval_score=0.68,
+            improvement_rounds=1,
+        )
+        text = format_checkpoint_for_prompt(cp)
+        assert "cycle 10" in text
+        assert "reviewing" in text
+        assert "30/40" in text
+        assert "H1:confirmed" in text
+        assert "SC1:met" in text
+        assert "0.68" in text
+        assert "ANOVA complete" in text
+        assert "L2 gradient" in text
+        assert "Dispatch critic" in text

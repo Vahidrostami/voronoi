@@ -16,7 +16,13 @@ from typing import Optional
 
 from voronoi.beads import run_bd, has_beads_dir
 from voronoi.gateway.intent import ClassifiedIntent, WorkflowMode, classify
-from voronoi.gateway.progress import MODE_EMOJI, RIGOR_DESCRIPTIONS, MODE_VERB
+
+logger = logging.getLogger("voronoi.router")
+from voronoi.gateway.progress import (
+    MODE_EMOJI, RIGOR_DESCRIPTIONS, MODE_VERB,
+    build_digest_whatsup, phase_description, format_duration,
+    assess_track_status, _criteria_summary, _experiment_summary,
+)
 from voronoi.server.queue import Investigation, InvestigationQueue
 from voronoi.server.runner import make_slug
 from voronoi.gateway.codename import codename_for_id
@@ -26,7 +32,8 @@ logger = logging.getLogger("voronoi.router")
 # Re-export for tests
 __all__ = [
     "CommandRouter",
-    "handle_status", "handle_tasks", "handle_ready", "handle_health",
+    "handle_status", "handle_whatsup", "handle_howsitgoing",
+    "handle_tasks", "handle_ready", "handle_health",
     "handle_reprioritize", "handle_pause", "handle_resume", "handle_add",
     "handle_abort", "handle_pivot", "handle_guide",
     "handle_investigate", "handle_explore", "handle_build", "handle_experiment",
@@ -50,35 +57,27 @@ def _run_bd(*args: str, cwd: str | None = None) -> tuple[int, str]:
 # ---------------------------------------------------------------------------
 
 def _get_memory(project_dir: str):
-    try:
-        from voronoi.gateway.memory import ConversationMemory
-        db = Path(project_dir) / ".swarm" / "conversations.db"
-        return ConversationMemory(db)
-    except ImportError:
-        return None
+    from voronoi.gateway.memory import ConversationMemory
+    db = Path(project_dir) / ".swarm" / "conversations.db"
+    return ConversationMemory(db)
 
 
 def _get_knowledge(project_dir: str):
-    try:
-        from voronoi.gateway.knowledge import KnowledgeStore
-        return KnowledgeStore(project_dir)
-    except ImportError:
-        return None
+    from voronoi.gateway.knowledge import KnowledgeStore
+    return KnowledgeStore(project_dir)
 
 
 def _save_msg(project_dir: str, chat_id: str, role: str,
               text: str, metadata: dict | None = None):
-    mem = _get_memory(project_dir)
-    if mem is None:
-        return
     try:
+        mem = _get_memory(project_dir)
         from voronoi.gateway.memory import Message
         mem.save_message(Message(
             chat_id=str(chat_id), role=role,
             content=text, metadata=metadata or {},
         ))
     except Exception:
-        pass
+        logger.debug("Failed to save message for chat %s", chat_id, exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +90,29 @@ def _get_queue(project_dir: str) -> InvestigationQueue:
     # dispatcher never sees, leading to orphaned or duplicate investigations.
     base = Path.home() / ".voronoi"
     return InvestigationQueue(base / "queue.db")
+
+
+def _get_active_workspaces(project_dir: str) -> list[tuple[str, str]]:
+    """Return (workspace_path, label) for all running investigations.
+
+    Many commands (belief, journal, finding, guide, task mutations) need to
+    operate on the *investigation workspace*, not the server's project_dir.
+    Investigations are provisioned under ~/.voronoi/active/ and their paths
+    are stored in the queue DB.
+    """
+    q = _get_queue(project_dir)
+    results = []
+    for inv in q.get_running():
+        if inv.workspace_path:
+            label = inv.codename or f"#{inv.id}"
+            results.append((inv.workspace_path, label))
+    return results
+
+
+def _get_first_active_workspace(project_dir: str) -> Optional[str]:
+    """Return the workspace path of the first running investigation, or None."""
+    ws_list = _get_active_workspaces(project_dir)
+    return ws_list[0][0] if ws_list else None
 
 
 def _enqueue(project_dir: str, question: str, mode: str,
@@ -121,41 +143,164 @@ def _enqueue(project_dir: str, question: str, mode: str,
 # ---------------------------------------------------------------------------
 
 def handle_status(project_dir: str) -> str:
+    """Conversational status — buddy style."""
+    return handle_whatsup(project_dir)
+
+
+def handle_whatsup(project_dir: str) -> str:
+    """Unified 'what's happening' response — replaces status+tasks+health."""
     q = _get_queue(project_dir)
     queued = len(q.get_queued())
     running_invs = q.get_running()
-    running_count = len(running_invs)
-    recent = q.get_recent(5)
-    completed = sum(1 for inv in recent if inv.status == "complete")
 
-    lines = ["📊 *Swarm Status*\n"]
-    lines.append(f"Queued: {queued} · Running: {running_count} · Recent completed: {completed}")
+    inv_data: list[dict] = []
+    for inv in running_invs:
+        ws_path = inv.workspace_path
+        if not ws_path:
+            continue
+        label = inv.codename or f"#{inv.id}"
+        elapsed_sec = (time.time() - inv.started_at) if inv.started_at else 0
+        question = inv.question or ""
+        mode = inv.mode or "investigate"
 
-    # Show tasks from active investigation workspaces
-    if running_invs:
-        for inv in running_invs:
-            ws_path = inv.workspace_path
-            if ws_path:
-                _, ready = _run_bd("ready", "--json", cwd=ws_path)
-                _, open_tasks = _run_bd("list", "--status", "open", "--json", cwd=ws_path)
-                try:
-                    ready_count = len(json.loads(ready))
-                except Exception:
-                    ready_count = "?"
-                try:
-                    open_count = len(json.loads(open_tasks))
-                except Exception:
-                    open_count = "?"
-                q_str = inv.question[:50] if inv.question else "?"
-                label = inv.codename or f"#{inv.id}"
-                lines.append(f"\n⚡ *{label}* _{q_str}_")
-                lines.append(f"   Tasks: {open_count} open · {ready_count} ready")
-    else:
-        # No running investigations — task counts aren't meaningful
-        # since tasks live in investigation workspaces, not the server dir.
-        pass
+        # Get task counts
+        total_tasks = 0
+        closed_tasks = 0
+        in_progress_tasks = 0
+        ready_tasks = 0
+        phase = ""
+        try:
+            code, output = _run_bd("list", "--json", cwd=ws_path)
+            if code == 0 and output.strip():
+                tasks = json.loads(output)
+                if isinstance(tasks, list):
+                    total_tasks = len(tasks)
+                    closed_tasks = sum(1 for t in tasks if t.get("status") == "closed")
+                    in_progress_tasks = sum(1 for t in tasks if t.get("status") == "in_progress")
+            code2, ready_out = _run_bd("ready", "--json", cwd=ws_path)
+            if code2 == 0 and ready_out.strip():
+                ready_list = json.loads(ready_out)
+                if isinstance(ready_list, list):
+                    ready_tasks = len(ready_list)
+        except Exception:
+            pass
 
-    return "\n".join(lines)
+        # Detect phase from workspace files
+        ws = Path(ws_path)
+        if (ws / ".swarm" / "deliverable.md").exists():
+            phase = "complete"
+        elif (ws / ".swarm" / "convergence.json").exists():
+            phase = "converging"
+        elif (ws / ".swarm" / "belief-map.json").exists() and total_tasks > 5:
+            phase = "investigating"
+        elif (ws / ".swarm" / "scout-brief.md").exists():
+            phase = "planning"
+        elif total_tasks > 0:
+            if in_progress_tasks > 0:
+                phase = "investigating"
+            else:
+                phase = "planning"
+        else:
+            phase = "starting"
+
+        inv_data.append({
+            "label": label,
+            "mode": mode,
+            "elapsed_sec": elapsed_sec,
+            "total_tasks": total_tasks,
+            "closed_tasks": closed_tasks,
+            "in_progress_tasks": in_progress_tasks,
+            "ready_tasks": ready_tasks,
+            "agents_healthy": in_progress_tasks,
+            "agents_stuck": 0,
+            "phase": phase,
+            "question": question,
+        })
+
+    return build_digest_whatsup(
+        running_investigations=inv_data,
+        queued=queued,
+    )
+
+
+def handle_howsitgoing(project_dir: str) -> str:
+    """Experiment-level progress — success criteria, belief map, experiments."""
+    ws_list = _get_active_workspaces(project_dir)
+    if not ws_list:
+        return "Nothing running right now."
+
+    all_lines: list[str] = []
+    for ws_path, label in ws_list:
+        ws = Path(ws_path)
+        lines: list[str] = [f"*{label}*\n"]
+
+        # Success criteria
+        criteria = _criteria_summary(ws)
+        if criteria:
+            lines.append(criteria)
+        else:
+            lines.append("No success criteria defined yet.")
+
+        # Experiments
+        experiments = _experiment_summary(ws)
+        if experiments:
+            lines.append("\n" + experiments)
+
+        # Belief map snippet
+        for name in ("belief-map.md", "belief-map.json"):
+            p = ws / ".swarm" / name
+            if p.exists():
+                content = p.read_text().strip()
+                if name.endswith(".json"):
+                    try:
+                        data = json.loads(content)
+                        hyps = data.get("hypotheses", [])
+                        if hyps:
+                            lines.append("\nHypotheses:")
+                            for h in hyps[:5]:
+                                status = h.get('status', '?')
+                                lines.append(f"  {h.get('name', '?')}: P={h.get('prior', '?')} [{status}]")
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+                else:
+                    lines.append(f"\n{content[:300]}")
+                break
+
+        # Track assessment
+        task_snapshot: dict = {}
+        eval_score = 0.0
+        try:
+            code, output = _run_bd("list", "--json", cwd=ws_path)
+            if code == 0 and output.strip():
+                tasks = json.loads(output)
+                if isinstance(tasks, list):
+                    for t in tasks:
+                        tid = t.get("id", "")
+                        task_snapshot[tid] = {
+                            "status": t.get("status", ""),
+                            "notes": t.get("notes", ""),
+                        }
+        except Exception:
+            pass
+        eval_path = ws / ".swarm" / "eval-score.json"
+        if eval_path.exists():
+            try:
+                ed = json.loads(eval_path.read_text())
+                eval_score = float(ed.get("score", 0))
+            except Exception:
+                pass
+
+        status, reason = assess_track_status(ws, task_snapshot, eval_score)
+        if status == "on_track":
+            lines.append(f"\nLooking good: {reason}")
+        elif status == "watch":
+            lines.append(f"\nHeads up: {reason}")
+        else:
+            lines.append(f"\n⚠️ {reason}")
+
+        all_lines.append("\n".join(lines))
+
+    return "\n\n".join(all_lines)
 
 
 def handle_tasks(project_dir: str) -> str:
@@ -355,6 +500,11 @@ def handle_ready(project_dir: str) -> str:
 # ---------------------------------------------------------------------------
 
 def handle_reprioritize(project_dir: str, task_id: str, priority: str) -> str:
+    # Try running investigation workspaces first
+    for ws_path, _ in _get_active_workspaces(project_dir):
+        code, output = _run_bd("update", task_id, "--priority", priority, cwd=ws_path)
+        if code == 0:
+            return f"✅ Task `{task_id}` priority set to {priority}"
     code, output = _run_bd("update", task_id, "--priority", priority, cwd=project_dir)
     if code != 0:
         return f"❌ Failed: {output}"
@@ -362,20 +512,34 @@ def handle_reprioritize(project_dir: str, task_id: str, priority: str) -> str:
 
 
 def handle_pause(project_dir: str, task_id: str) -> str:
+    # Try running investigation workspaces first
+    for ws_path, _ in _get_active_workspaces(project_dir):
+        code, _ = _run_bd("show", task_id, "--json", cwd=ws_path)
+        if code == 0:
+            _run_bd("update", task_id, "--notes",
+                    "BLOCKED: Paused by operator via Telegram", cwd=ws_path)
+            return f"⏸ Task `{task_id}` paused"
     _run_bd("update", task_id, "--notes",
             "BLOCKED: Paused by operator via Telegram", cwd=project_dir)
     return f"⏸ Task `{task_id}` paused"
 
 
 def handle_resume(project_dir: str, task_id: str) -> str:
+    for ws_path, _ in _get_active_workspaces(project_dir):
+        code, _ = _run_bd("show", task_id, "--json", cwd=ws_path)
+        if code == 0:
+            _run_bd("update", task_id, "--status", "open", cwd=ws_path)
+            return f"▶️ Task `{task_id}` resumed"
     _run_bd("update", task_id, "--status", "open", cwd=project_dir)
     return f"▶️ Task `{task_id}` resumed"
 
 
 def handle_add(project_dir: str, title: str) -> str:
+    # Create task in the first running investigation workspace
+    ws_path = _get_first_active_workspace(project_dir) or project_dir
     code, output = _run_bd(
         "create", title, "-t", "task", "-p", "1", "--json",
-        cwd=project_dir,
+        cwd=ws_path,
     )
     if code != 0:
         return f"❌ Failed to create task: {output}"
@@ -394,11 +558,17 @@ def handle_abort(project_dir: str) -> str:
         if q.cancel(inv.id):
             cancelled += 1
 
-    # Write abort signal file for the dispatcher to pick up.
-    # The dispatcher's poll_progress reads this and kills running tmux sessions.
-    signal_dir = Path(project_dir) / ".swarm"
-    signal_dir.mkdir(parents=True, exist_ok=True)
-    (signal_dir / "abort-signal").write_text("abort\n")
+    # Write abort signal to ALL running investigation workspaces AND the
+    # global base dir so the dispatcher picks it up regardless of which
+    # path it checks.
+    for ws_path, _ in _get_active_workspaces(project_dir):
+        signal_dir = Path(ws_path) / ".swarm"
+        signal_dir.mkdir(parents=True, exist_ok=True)
+        (signal_dir / "abort-signal").write_text("abort\n")
+    # Also write to global fallback location
+    global_signal = Path.home() / ".voronoi" / ".swarm"
+    global_signal.mkdir(parents=True, exist_ok=True)
+    (global_signal / "abort-signal").write_text("abort\n")
 
     parts = ["🛑 *Abort requested*"]
     if cancelled:
@@ -408,21 +578,44 @@ def handle_abort(project_dir: str) -> str:
 
 
 def handle_pivot(project_dir: str, message: str) -> str:
-    guidance_dir = Path(project_dir) / ".swarm"
-    guidance_dir.mkdir(parents=True, exist_ok=True)
+    # Write guidance to ALL running investigation workspaces so agents see it
+    ws_list = _get_active_workspaces(project_dir)
     ts = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
-    with open(guidance_dir / "operator-guidance.md", "a") as f:
-        f.write(f"\n## Pivot — {ts}\n\n{message}\n")
-    return f"🔀 *Pivot recorded*\n\nGuidance written to `.swarm/operator-guidance.md`\nAgents will read this on next dispatch."
+    written_to = []
+    for ws_path, label in ws_list:
+        guidance_dir = Path(ws_path) / ".swarm"
+        guidance_dir.mkdir(parents=True, exist_ok=True)
+        with open(guidance_dir / "operator-guidance.md", "a") as f:
+            f.write(f"\n## Pivot — {ts}\n\n{message}\n")
+        written_to.append(label)
+    if not written_to:
+        # Fallback to project_dir if no running investigations
+        guidance_dir = Path(project_dir) / ".swarm"
+        guidance_dir.mkdir(parents=True, exist_ok=True)
+        with open(guidance_dir / "operator-guidance.md", "a") as f:
+            f.write(f"\n## Pivot — {ts}\n\n{message}\n")
+    dest = ", ".join(written_to) if written_to else "project"
+    return f"🔀 *Pivot recorded* ({dest})\n\n_{message}_\nAgents will read this on next dispatch."
 
 
 def handle_guide(project_dir: str, message: str) -> str:
-    guidance_dir = Path(project_dir) / ".swarm"
-    guidance_dir.mkdir(parents=True, exist_ok=True)
+    # Write guidance to ALL running investigation workspaces so agents see it
+    ws_list = _get_active_workspaces(project_dir)
     ts = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
-    with open(guidance_dir / "operator-guidance.md", "a") as f:
-        f.write(f"\n## Guidance — {ts}\n\n{message}\n")
-    return f"📝 *Guidance noted*\n\n_{message}_"
+    written_to = []
+    for ws_path, label in ws_list:
+        guidance_dir = Path(ws_path) / ".swarm"
+        guidance_dir.mkdir(parents=True, exist_ok=True)
+        with open(guidance_dir / "operator-guidance.md", "a") as f:
+            f.write(f"\n## Guidance — {ts}\n\n{message}\n")
+        written_to.append(label)
+    if not written_to:
+        guidance_dir = Path(project_dir) / ".swarm"
+        guidance_dir.mkdir(parents=True, exist_ok=True)
+        with open(guidance_dir / "operator-guidance.md", "a") as f:
+            f.write(f"\n## Guidance — {ts}\n\n{message}\n")
+    dest = ", ".join(written_to) if written_to else "project"
+    return f"📝 *Guidance noted* ({dest})\n\n_{message}_"
 
 
 # ---------------------------------------------------------------------------
@@ -478,52 +671,64 @@ def handle_recall(project_dir: str, query: str) -> str:
 
 
 def handle_belief(project_dir: str) -> str:
-    swarm = Path(project_dir) / ".swarm"
-    for name in ("belief-map.md", "belief-map.json"):
-        p = swarm / name
-        if p.exists():
-            content = p.read_text().strip()
-            if name.endswith(".json"):
-                try:
-                    data = json.loads(content)
-                    lines = []
-                    for h in data.get("hypotheses", []):
-                        lines.append(f"- {h.get('name', '?')}: P={h.get('prior', '?')} [{h.get('status', '?')}]")
-                    content = "\n".join(lines) if lines else content
-                except (json.JSONDecodeError, ValueError):
-                    pass
-            return f"📊 *Belief Map*\n\n{content}"
+    # Search running investigation workspaces, then fall back to project_dir
+    search_dirs = [ws for ws, _ in _get_active_workspaces(project_dir)]
+    search_dirs.append(project_dir)
+    for base in search_dirs:
+        swarm = Path(base) / ".swarm"
+        for name in ("belief-map.md", "belief-map.json"):
+            p = swarm / name
+            if p.exists():
+                content = p.read_text().strip()
+                if name.endswith(".json"):
+                    try:
+                        data = json.loads(content)
+                        lines = []
+                        for h in data.get("hypotheses", []):
+                            lines.append(f"- {h.get('name', '?')}: P={h.get('prior', '?')} [{h.get('status', '?')}]")
+                        content = "\n".join(lines) if lines else content
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+                return f"📊 *Belief Map*\n\n{content}"
     return "📊 No belief map found. Start an investigation to generate one."
 
 
 def handle_journal(project_dir: str, max_lines: int = 30) -> str:
-    journal_path = Path(project_dir) / ".swarm" / "journal.md"
-    if not journal_path.exists():
-        return "📓 No journal found. Start a workflow to begin recording."
-    lines = journal_path.read_text().strip().split("\n")
-    content = "\n".join(lines[-max_lines:])
-    return f"📓 *Journal* (last {max_lines} lines)\n\n{content}"
+    # Search running investigation workspaces, then fall back to project_dir
+    search_dirs = [ws for ws, _ in _get_active_workspaces(project_dir)]
+    search_dirs.append(project_dir)
+    for base in search_dirs:
+        journal_path = Path(base) / ".swarm" / "journal.md"
+        if journal_path.exists():
+            lines = journal_path.read_text().strip().split("\n")
+            content = "\n".join(lines[-max_lines:])
+            return f"📓 *Journal* (last {max_lines} lines)\n\n{content}"
+    return "📓 No journal found. Start a workflow to begin recording."
 
 
 def handle_finding(project_dir: str, finding_id: str) -> str:
-    code, output = _run_bd("show", finding_id, "--json", cwd=project_dir)
-    if code != 0:
-        return f"❌ Finding `{finding_id}` not found: {output}"
-    try:
-        task = json.loads(output)
-    except json.JSONDecodeError:
-        return f"❌ Invalid data for `{finding_id}`"
-    title = task.get("title", "?")
-    status = task.get("status", "?")
-    notes = task.get("notes", "")
-    priority = task.get("priority", "?")
-    lines = [
-        f"🔍 *{finding_id}*: {title}",
-        f"Status: {status} | Priority: {priority}",
-    ]
-    if notes:
-        lines.append(f"\nNotes:\n```\n{notes[:500]}\n```")
-    return "\n".join(lines)
+    # Try running investigation workspaces first (tasks live there)
+    search_dirs = [ws for ws, _ in _get_active_workspaces(project_dir)]
+    search_dirs.append(project_dir)
+    for base in search_dirs:
+        code, output = _run_bd("show", finding_id, "--json", cwd=base)
+        if code == 0 and output.strip():
+            try:
+                task = json.loads(output)
+            except json.JSONDecodeError:
+                continue
+            title = task.get("title", "?")
+            status = task.get("status", "?")
+            notes = task.get("notes", "")
+            priority = task.get("priority", "?")
+            lines = [
+                f"🔍 *{finding_id}*: {title}",
+                f"Status: {status} | Priority: {priority}",
+            ]
+            if notes:
+                lines.append(f"\nNotes:\n```\n{notes[:500]}\n```")
+            return "\n".join(lines)
+    return f"❌ Finding `{finding_id}` not found"
 
 
 def handle_demo(project_dir: str, demo_name: str, chat_id: str = "") -> str:
@@ -534,10 +739,10 @@ def handle_demo(project_dir: str, demo_name: str, chat_id: str = "") -> str:
     2. Enqueue a build investigation whose question is the full PROMPT.md content
     3. Tag the investigation so the dispatcher copies demo files into the workspace
     """
-    from voronoi.cli import _find_data_dir, _list_demos
+    from voronoi.cli import find_data_dir, list_demos
 
-    data = _find_data_dir()
-    demos = _list_demos(data)
+    data = find_data_dir()
+    demos = list_demos(data)
     demo = next((d for d in demos if d["name"] == demo_name), None)
     if demo is None:
         available = ", ".join(d["name"] for d in demos)
@@ -628,14 +833,11 @@ def handle_results(project_dir: str, inv_id_str: str = "") -> str:
 # ---------------------------------------------------------------------------
 
 _INTRO_MESSAGE = (
-    "� *Voronoi — Ask a question. Get evidence.*\n\n"
+    "*Voronoi* — ask a question, get evidence.\n\n"
     "Drop me a question — anything from _\"why is our model degrading?\"_ "
     "to _\"does EWC beat replay for catastrophic forgetting?\"_ — and I'll "
-    "dispatch a swarm of AI agents to investigate, explore, or build it.\n\n"
-    "Hypotheses · experiments · statistical validation · belief maps · "
-    "findings with effect sizes and confidence intervals — "
-    "on autopilot. 🧪\n\n"
-    "_Send_ `/voronoi` _for commands, or just ask me something._"
+    "dispatch a swarm of AI agents to investigate it.\n\n"
+    "Or send `/voronoi` for commands."
 )
 
 def _LOW_CONFIDENCE_MESSAGE(text: str, intent) -> str:
@@ -643,43 +845,39 @@ def _LOW_CONFIDENCE_MESSAGE(text: str, intent) -> str:
     mode_label = intent.mode.value if intent.mode else "unknown"
     confidence_pct = int(intent.confidence * 100)
     return (
-        f"🤔 I'm not sure what you'd like me to do ({confidence_pct}% confident → _{mode_label}_).\n\n"
+        f"I'm not quite sure what you'd like ({confidence_pct}% → _{mode_label}_).\n\n"
         f"Your message: _{text[:120]}_\n\n"
-        "Try one of these:\n"
-        "  🔬 _Why is our model accuracy dropping?_ → investigate\n"
-        "  🧭 _Compare Redis vs Memcached_ → explore\n"
-        "  🔨 _Build a REST API with auth_ → build\n\n"
+        "Try something like:\n"
+        "  _Why is our model accuracy dropping?_ → investigate\n"
+        "  _Compare Redis vs Memcached_ → explore\n"
+        "  _Build a REST API with auth_ → build\n\n"
         "Or use a command directly:\n"
         "`/voronoi investigate <question>`\n"
         "`/voronoi explore <question>`\n"
-        "`/voronoi build <description>`\n\n"
-        "_Send_ `/voronoi` _for all commands._"
+        "`/voronoi build <description>`"
     )
 
 
 _HELP_MESSAGE = (
-    "� *Voronoi* — your AI research lab\n\n"
-    "I orchestrate AI agent swarms to investigate, explore, "
-    "and build — all from this chat.\n\n"
-    "*Just ask me anything:*\n"
+    "*Voronoi* — your AI research lab\n\n"
+    "Just ask me anything:\n"
     "  → _Why is our model accuracy dropping?_\n"
-    "  → _Compare Redis vs Memcached for our workload_\n"
-    "  → _Build a REST API with auth and billing_\n\n"
+    "  → _Compare Redis vs Memcached_\n"
+    "  → _Build a REST API with auth_\n\n"
     "I'll figure out what to do — classify intent, pick the right "
-    "rigor level, spawn parallel agents, and deliver findings with "
-    "effect sizes and confidence intervals.\n\n"
+    "rigor level, spawn parallel agents, and deliver findings.\n\n"
     "━━━━━━━━━━━━━━━━━━━━━━\n"
-    "*Or use commands:*\n\n"
-    "🧪 *Workflows*\n"
+    "*Quick check-ins*\n"
+    "`/voronoi status` — what's happening right now\n"
+    "`/voronoi progress` — are we on track? metrics + criteria\n\n"
+    "*Workflows*\n"
     "`/voronoi investigate <question>`\n"
     "`/voronoi explore <question>`\n"
     "`/voronoi build <description>`\n"
     "`/voronoi experiment <hypothesis>`\n\n"
-    "📚 *Knowledge*\n"
-    "`/voronoi recall <query>` · `belief` · `journal` · `finding <id>`\n\n"
-    "📋 *Tasks*\n"
-    "`/voronoi status` · `tasks` · `ready` · `health` · `results [id]`\n\n"
-    "🎛 *Control*\n"
+    "*Knowledge*\n"
+    "`/voronoi belief` · `journal` · `finding <id>` · `recall <query>`\n\n"
+    "*Control*\n"
     "`/voronoi guide <msg>` · `pivot <msg>` · `abort`\n\n"
     "_In groups, @mention me or reply to my messages._"
 )
@@ -716,9 +914,9 @@ class CommandRouter:
     def _list_demos(self) -> str:
         """List available demos."""
         try:
-            from voronoi.cli import _find_data_dir, _list_demos
-            data = _find_data_dir()
-            demos = _list_demos(data)
+            from voronoi.cli import find_data_dir, list_demos
+            data = find_data_dir()
+            demos = list_demos(data)
         except Exception:
             return "\u274c Could not list demos."
         if not demos:
@@ -742,8 +940,10 @@ class CommandRouter:
         try:
             if sub in ("help", "hi", "hello", "hey"):
                 return _HELP_MESSAGE, None
-            elif sub == "status":
-                return handle_status(self.project_dir), None
+            elif sub in ("status", "whatsup"):
+                return handle_whatsup(self.project_dir), None
+            elif sub in ("progress", "howsitgoing"):
+                return handle_howsitgoing(self.project_dir), None
             elif sub == "tasks":
                 return handle_tasks(self.project_dir), None
             elif sub == "ready":

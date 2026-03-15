@@ -1,0 +1,598 @@
+# Server Layer Specification
+
+> Investigation queue, dispatcher, workspace provisioning, sandbox isolation, prompt building, publishing.
+
+**TL;DR**: `queue.py` = SQLite lifecycle (queued→running→complete). `dispatcher.py` polls queue, provisions workspaces, launches tmux+copilot, monitors progress. `prompt.py` = single source of truth for all orchestrator prompts. `workspace.py` provisions with git clone/worktree. `sandbox.py` = optional Docker. All in `src/voronoi/server/`.
+
+## 1. Module Map
+
+```
+src/voronoi/server/
+├── __init__.py       # Re-exports extract_repo_url
+├── queue.py          # SQLite investigation queue (lifecycle management)
+├── dispatcher.py     # Provisions workspaces, launches agents, monitors progress
+├── prompt.py         # Unified orchestrator prompt builder
+├── workspace.py      # Workspace provisioning (clone, worktree, init)
+├── sandbox.py        # Docker sandbox isolation
+├── runner.py         # Server config, queue runner, slug generation
+├── publisher.py      # GitHub publishing of investigation results
+└── repo_url.py       # GitHub URL parsing from free text
+```
+
+## 2. Investigation Queue (`queue.py`)
+
+### Purpose
+
+SQLite-backed investigation lifecycle management. Global queue (`~/.voronoi/queue.db`) shared across all investigations.
+
+### Investigation Data Structure
+
+```python
+@dataclass
+class Investigation:
+    id: int              # Auto-assigned on enqueue
+    chat_id: str         # Telegram chat or CLI session
+    status: str          # queued | running | complete | failed | cancelled
+    investigation_type: str  # "repo" | "lab"
+    repo: str | None     # GitHub repo URL (repo-type only)
+    question: str        # The user's question/task
+    slug: str            # Filesystem-safe identifier
+    mode: str            # investigate | explore | build
+    rigor: str           # standard | analytical | scientific | experimental
+    codename: str        # Brain-themed codename
+    workspace_path: str | None
+    sandbox_id: str | None
+    github_url: str | None
+    parent_id: int | None    # For follow-up investigations
+    demo_source: str | None  # Demo name if from demo
+    created_at: float
+    started_at: float | None
+    completed_at: float | None
+    error: str | None
+```
+
+### State Machine
+
+```
+         enqueue()
+           │
+           ▼
+       ┌───────┐
+       │queued  │
+       └───┬───┘
+           │ next_ready()  [atomic: SELECT + UPDATE in one transaction]
+           ▼
+       ┌───────┐
+       │running │──────────────────────┐
+       └───┬───┘                       │
+           │                           │
+     ┌─────┼─────┐              cancel()
+     │     │     │                     │
+  complete() fail()                    │
+     │     │     │                     │
+     ▼     ▼     ▼                     ▼
+ ┌────────┐ ┌──────┐            ┌──────────┐
+ │complete│ │failed│            │cancelled │
+ └────────┘ └──────┘            └──────────┘
+```
+
+### InvestigationQueue API
+
+```python
+class InvestigationQueue:
+    def __init__(self, db_path: str | Path): ...
+
+    # Mutation
+    def enqueue(self, inv: Investigation) -> int: ...       # Returns investigation ID
+    def next_ready(self, max_concurrent: int = 2) -> Investigation | None: ...  # Atomic claim
+    def start(self, investigation_id: int, workspace_path: str,
+              sandbox_id: str | None = None) -> None: ...
+    def complete(self, investigation_id: int, github_url: str | None = None) -> None: ...
+    def fail(self, investigation_id: int, error: str) -> None: ...
+    def cancel(self, investigation_id: int) -> bool: ...
+
+    # Queries
+    def get(self, investigation_id: int) -> Investigation | None: ...
+    def get_by_chat(self, chat_id: str, limit: int = 10) -> list[Investigation]: ...
+    def get_recent(self, limit: int = 10) -> list[Investigation]: ...
+    def get_running(self) -> list[Investigation]: ...
+    def get_queued(self) -> list[Investigation]: ...
+    def queue_position(self, investigation_id: int) -> int: ...  # 0-based, -1 if not queued
+    def find_by_repo(self, repo: str, status: str | None = None) -> list[Investigation]: ...
+
+    # Display
+    def format_status(self) -> str: ...  # Telegram-formatted
+
+    # Demo
+    def set_demo_source(self, investigation_id: int, demo_name: str, demo_path: str) -> None: ...
+    def get_demo_source(self, investigation_id: int) -> tuple[str, str] | None: ...
+```
+
+### Database Schema
+
+```sql
+CREATE TABLE investigations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'queued',
+    investigation_type TEXT NOT NULL DEFAULT 'lab',
+    repo TEXT,
+    question TEXT NOT NULL,
+    slug TEXT NOT NULL,
+    mode TEXT NOT NULL DEFAULT 'investigate',
+    rigor TEXT NOT NULL DEFAULT 'scientific',
+    codename TEXT NOT NULL DEFAULT '',
+    workspace_path TEXT,
+    sandbox_id TEXT,
+    github_url TEXT,
+    parent_id INTEGER,
+    demo_source TEXT,
+    created_at REAL NOT NULL,
+    started_at REAL,
+    completed_at REAL,
+    error TEXT
+);
+
+-- Indexes
+CREATE INDEX idx_inv_status ON investigations(status);
+CREATE INDEX idx_inv_chat ON investigations(chat_id);
+```
+
+**Concurrency**: WAL mode, `BEGIN IMMEDIATE` for `next_ready()` to prevent double-dispatch.
+
+---
+
+## 3. Dispatcher (`dispatcher.py`)
+
+### Purpose
+
+The dispatcher is the server's main loop. It polls the queue, provisions workspaces, launches agents in tmux, monitors progress, sends Telegram updates, and detects completion/timeout.
+
+### DispatcherConfig
+
+```python
+@dataclass
+class DispatcherConfig:
+    base_dir: Path           # ~/.voronoi (default)
+    max_concurrent: int      # 2 — max simultaneous investigations
+    max_agents: int          # 4 — max agents per investigation
+    agent_command: str       # "copilot" (default)
+    agent_flags: str         # "--allow-all" (default)
+    orchestrator_model: str  # "" — use default
+    worker_model: str        # "" — use default
+    progress_interval: int   # 30 seconds between progress checks
+    timeout_hours: int       # 8 — max investigation runtime
+    max_retries: int         # 2 — retry failed launches
+    stall_minutes: int       # 45 — minutes without progress before warning
+```
+
+### RunningInvestigation
+
+Tracks state for a running investigation:
+
+```python
+@dataclass
+class RunningInvestigation:
+    investigation_id: int
+    workspace_path: str
+    tmux_session: str
+    question: str
+    mode: str
+    codename: str
+    chat_id: str
+    rigor: str
+    started_at: float
+    last_update_at: float
+    task_snapshot: dict       # Last known bd task state
+    notified_findings: set    # Finding IDs already sent to user
+    notified_paradigm_stress: bool
+    phase: str                # Current phase (scouting, investigating, etc.)
+    improvement_rounds: int   # Evaluator improvement cycles
+    eval_score: float         # Latest evaluator score
+    retry_count: int
+    stall_warned: bool
+```
+
+### InvestigationDispatcher API
+
+```python
+class InvestigationDispatcher:
+    def __init__(self, config: DispatcherConfig,
+                 send_message: Callable,
+                 send_document: Callable | None = None): ...
+
+    @property
+    def queue(self) -> InvestigationQueue: ...       # Lazy init
+    @property
+    def workspace_mgr(self) -> WorkspaceManager: ... # Lazy init
+
+    # Core loop
+    def dispatch_next(self) -> None: ...    # Launch queued, recover running
+    def poll_progress(self) -> None: ...    # Monitor, send updates, detect completion
+```
+
+### Dispatch Lifecycle
+
+1. `dispatch_next()` calls `queue.next_ready(max_concurrent)`
+2. If investigation claimed → provision workspace via `workspace_mgr`
+3. Copy demo files if `demo_source` set
+4. Build orchestrator prompt via `prompt.py`
+5. Verify Copilot auth (`_ensure_copilot_auth()`)
+6. Launch in tmux: `tmux new-session -d -s {session} "cd {workspace} && {agent_command} {flags} -p prompt.txt ; exit"`
+7. Add to `_running` dict
+
+### Progress Polling
+
+1. `poll_progress()` runs every `progress_interval` seconds (default 30s)
+2. Checks for abort signals (`_check_abort_signal()` reads `.swarm/abort-signal`)
+3. For each running investigation:
+   - Skip if not due for update (< progress_interval since last)
+   - Refresh eval score from `.swarm/eval-score.json`
+   - Check if tmux session still alive
+   - Get events via `_check_progress()`:
+     - `_diff_tasks()` — compares task snapshot for new/started/completed tasks
+     - `_check_findings()` — detects new FINDING tasks (deduplicates via notified set)
+     - `_check_design_invalid()` — detects DESIGN_INVALID flags in open tasks
+     - `_detect_phase()` — classifies phase from workspace file artifacts
+     - `_check_paradigm_stress()` — detects contradictions (Scientific+ only)
+     - `_check_heartbeat_stalls()` — detects agent inactivity via heartbeat files
+   - Send digest via `build_digest()` (single narrative message, not per-event)
+   - Check for timeout, stall, completion
+   - Handle dead agents: try restart or mark failed
+
+### Event-Driven Digests
+
+The dispatcher batches events since last update into a single `build_digest()` call rather than sending per-event messages. This produces a narrative update every ~30s with sections: what happened, where we are, track assessment, what's next.
+
+### Phase Detection
+
+Phase inferred from workspace artifacts:
+
+| Phase | Detection |
+|-------|-----------|
+| `complete` | `deliverable.md` exists |
+| `converging` | `convergence.json` exists |
+| `synthesizing` | `belief-map.json` exists |
+| `reviewing` | Review tasks in progress |
+| `investigating` | Experiment tasks in progress |
+| `planning` | Tasks created but none started |
+| `scouting` | Scout tasks detected |
+| `starting` | No tasks yet |
+
+### Completion Detection
+
+| Signal | Meaning |
+|--------|---------|
+| tmux session dies | Agent finished (or crashed) — try restart if retries remain |
+| `deliverable.md` exists | Standard-rigor completion |
+| `deliverable.md` + `convergence.json` exist | Analytical+ completion |
+| DESIGN_INVALID open | **Hard gate** — blocks completion even if deliverable exists |
+| Timeout reached | Forced completion with exhaustion marker |
+
+### Completion Handling
+
+1. **Hard gate**: If any DESIGN_INVALID tasks are open, completion is blocked
+2. Clean up tmux sessions (orchestrator + swarm)
+3. On success: generate teaser via `ReportGenerator.build_teaser()`, generate PDF via `build_pdf()`, send teaser + document to Telegram
+4. On failure: extract log tail, send failure message via `format_failure()`
+5. Try GitHub publish if `gh` CLI available
+
+### Agent Restart
+
+When tmux session dies unexpectedly:
+1. Check retry limit (`max_retries`, default 2)
+2. Send restart notification via `format_restart()`
+3. Validate orchestrator prompt still exists
+4. Rotate log file (preserve previous attempt's logs)
+5. Re-launch in tmux
+6. On auth failure: stop retrying (no point wasting retries)
+
+### Abort Handling
+
+`_handle_abort()` kills all running investigations:
+- Reads `.swarm/abort-signal` file written by `handle_abort()` in router
+- Kills tmux sessions
+- Marks investigations as cancelled in queue
+- Clears internal tracking
+
+### Recovery
+
+On dispatcher restart, `_recover_running()` scans for investigations in `running` status:
+- If tmux session alive → re-adopt for monitoring
+- If tmux dead + deliverable exists → mark complete
+- If tmux dead + no deliverable → try restart OR mark failed
+
+---
+
+## 4. Prompt Builder (`prompt.py`)
+
+### Purpose
+
+Single source of truth for all orchestrator prompts. Both CLI and Telegram paths produce identical prompts through this module.
+
+### Core Function
+
+```python
+def build_orchestrator_prompt(
+    question: str,
+    mode: str,              # investigate | explore | build
+    rigor: str,             # standard | analytical | scientific | experimental
+    workspace_path: str = "",
+    codename: str = "",
+    prompt_path: str = "PROMPT.md",
+    output_dir: str = "",
+    max_agents: int = 4,
+    safe: bool = False,
+) -> str
+```
+
+### Prompt Structure (Section Order Matters)
+
+| # | Section | Content |
+|---|---------|---------|
+| 1 | Identity | Role protocol → `.github/agents/swarm-orchestrator.agent.md` |
+| 2 | Mission | Mode/rigor, workspace, project brief path |
+| 3 | Personality | Excitement, brain metaphors, factual focus |
+| 4 | Science | Mode + rigor-aware sections |
+| 5 | Investigation invariants | Structural constraints |
+| 6 | REVISE task support | Iterative experiment redesign workflow |
+| 7 | Verify loop | Self-healing agents, EVA guidance |
+| 8 | Success criteria | `.swarm/success-criteria.json` format |
+| 9 | Phase gates | Hard gates (no paper while DESIGN_INVALID exists) |
+| 10 | Anti-simulation | Hard gate to detect fake LLM calls |
+| 11 | Workflow steps | Mode-specific OODA/iteration cycles |
+| 12 | Tools | bd commands, spawn-agent.sh, merge-agent.sh, figures |
+| 13 | Worker prompts | Role file inclusion, artifact contracts |
+| 14 | Rules | Concurrency limits, proofs, never edit worker code |
+| 15 | Rigor rules | Analytical/scientific/experimental enforcement |
+| 16 | Eval score | `.swarm/eval-score.json` output format |
+
+### Key Design Principle
+
+The prompt **references** `.github/agents/*.agent.md` files. It tells the orchestrator: "Read this file NOW — it contains your complete role definition." Role definitions are NEVER duplicated in Python code.
+
+---
+
+## 5. Workspace Manager (`workspace.py`)
+
+### Purpose
+
+Provisions investigation workspaces with auto-cloning, git worktrees, and framework scaffolding.
+
+### Directory Layout
+
+```
+~/.voronoi/
+├── objects/                    # Bare git repos (shared object store)
+│   └── owner--repo.git        # --reference for deduplication
+└── active/                    # Active investigation workspaces
+    └── inv-{id}-{slug}/       # One per investigation
+        ├── .github/           # Agent roles + skills
+        ├── .swarm/            # Orchestrator state
+        ├── scripts/           # Infrastructure scripts
+        ├── data/raw/          # Experimental data
+        └── PROMPT.md          # Investigation brief
+```
+
+### WorkspaceInfo
+
+```python
+@dataclass
+class WorkspaceInfo:
+    investigation_id: int
+    path: str
+    workspace_type: str    # "repo" | "lab"
+    repo: str | None       # GitHub URL for repo-type
+    slug: str
+    created_at: float
+    sandbox_id: str | None
+```
+
+### WorkspaceManager API
+
+```python
+class WorkspaceManager:
+    def __init__(self, base_dir: str | Path): ...
+
+    def provision_repo(self, investigation_id: int, repo: RepoRef,
+                       slug: str) -> WorkspaceInfo: ...
+    def provision_lab(self, investigation_id: int, slug: str,
+                      question: str) -> WorkspaceInfo: ...
+    def get_workspace_path(self, investigation_id: int, slug: str) -> Path | None: ...
+    def cleanup(self, investigation_id: int, slug: str) -> bool: ...
+    def list_active(self) -> list[str]: ...  # Excludes -swarm directories
+```
+
+### Provisioning Steps
+
+**Repo-type** (`provision_repo`):
+1. Clone with `--reference` to bare repo in `objects/` (deduplication)
+2. Run `voronoi init` to scaffold `.github/`
+3. Fallback: copy `.github/` files even if `voronoi init` fails
+
+**Lab-type** (`provision_lab`):
+1. Create fresh directory
+2. Initialize git repo
+3. Write `PROMPT.md` with user question
+4. Run `voronoi init`
+5. Initialize Beads
+
+### Workspace Naming Convention
+
+- Lab: `inv-{investigation_id}-{slug}/`
+- Repo: `inv-{investigation_id}-{slug}/`
+- Swarm worktree dir: `inv-{investigation_id}-{slug}-swarm/`
+
+---
+
+## 6. Sandbox Manager (`sandbox.py`)
+
+### Purpose
+
+Docker-based execution isolation per investigation. Optional — falls back to host if Docker unavailable.
+
+### SandboxConfig
+
+```python
+@dataclass
+class SandboxConfig:
+    enabled: bool           # Whether to attempt Docker isolation
+    image: str              # Docker image name
+    cpus: float             # CPU limit
+    memory: str             # Memory limit (e.g., "4g")
+    timeout_hours: int      # Container timeout
+    network: str            # Network mode (e.g., "none" for isolation)
+    fallback_to_host: bool  # Fall back if Docker unavailable
+```
+
+### SandboxInfo
+
+```python
+@dataclass
+class SandboxInfo:
+    container_id: str
+    container_name: str
+    workspace_path: str
+    status: str
+```
+
+### SandboxManager API
+
+```python
+class SandboxManager:
+    def __init__(self, config: SandboxConfig | None = None): ...
+    def is_docker_available(self) -> bool: ...
+    def start(self, investigation_id: int, workspace_path: str) -> SandboxInfo | None: ...
+    def exec(self, container_name: str, command: list[str],
+             timeout: int = 120) -> tuple[int, str]: ...
+    def stop(self, investigation_id: int) -> bool: ...
+    def is_running(self, investigation_id: int) -> bool: ...
+```
+
+### Standalone Function
+
+```python
+def exec_in_sandbox_or_host(workspace_path: str, command: list[str],
+                            timeout: int = 120) -> tuple[int, str]
+```
+
+Reads `.sandbox-id` file in workspace; if present, executes in container; otherwise executes on host.
+
+### Docker Container Contract
+
+- One container per investigation
+- Workspace mounted read-write at `/workspace`
+- Resource limits: cpus, memory, timeout
+- Optional network isolation
+- Container named: `voronoi-inv-{investigation_id}`
+
+---
+
+## 7. Server Configuration (`runner.py`)
+
+### ServerConfig
+
+```python
+class ServerConfig:
+    def __init__(self, base_dir: str | None = None): ...
+
+    # Server settings
+    base_dir: Path                        # ~/.voronoi
+    max_concurrent: int                   # 2
+    max_agents_per_investigation: int     # 4
+    agent_command: str                    # "copilot"
+    agent_flags: str                      # "--allow-all"
+    orchestrator_model: str               # ""
+    worker_model: str                     # ""
+    workspace_retention_days: int         # Cleanup threshold
+
+    # GitHub settings
+    github_lab_org: str                   # "voronoi-lab"
+    github_visibility: str                # "private"
+    github_auto_publish: bool             # False
+
+    # Sandbox settings
+    sandbox: SandboxConfig
+
+    def save(self) -> None: ...  # Persist to config.json
+```
+
+### Config File Location
+
+`~/.voronoi/config.json` — JSON with sections: `server`, `github`, `sandbox`.
+
+### Environment Variable Overrides
+
+| Env Var | Config Key |
+|---------|-----------|
+| `VORONOI_AGENT_COMMAND` | `agent_command` |
+| `VORONOI_ORCHESTRATOR_MODEL` | `orchestrator_model` |
+| `VORONOI_WORKER_MODEL` | `worker_model` |
+| `VORONOI_MAX_CONCURRENT` | `max_concurrent` |
+
+### Helper Functions
+
+```python
+def make_slug(text: str, max_len: int = 40) -> str
+def create_investigation_from_text(text: str, chat_id: str,
+                                   mode: str = "investigate",
+                                   rigor: str = "scientific") -> Investigation
+```
+
+---
+
+## 8. GitHub Publisher (`publisher.py`)
+
+### Purpose
+
+Publishes investigation results (workspace + findings) to GitHub repositories.
+
+### GitHubPublisher API
+
+```python
+class GitHubPublisher:
+    def __init__(self, lab_org: str = "voronoi-lab",
+                 visibility: str = "private"): ...
+    def is_gh_available(self) -> bool: ...
+    def publish(self, workspace_path: str, repo_name: str,
+                description: str = "") -> tuple[bool, str]: ...  # (success, url_or_error)
+    def create_finding_issues(self, repo_name: str,
+                              findings: list[dict]) -> list[str]: ...  # Issue URLs
+```
+
+Requires `gh` CLI installed and authenticated.
+
+---
+
+## 9. Repo URL Parser (`repo_url.py`)
+
+### Purpose
+
+Extracts GitHub repository references from free-text user messages.
+
+### RepoRef
+
+```python
+@dataclass
+class RepoRef:
+    owner: str
+    name: str
+
+    @property
+    def full_name(self) -> str: ...    # "owner/name"
+    @property
+    def clone_url(self) -> str: ...    # "https://github.com/owner/name.git"
+    @property
+    def slug(self) -> str: ...         # "owner--name"
+```
+
+### Functions
+
+```python
+def extract_repo_url(text: str) -> RepoRef | None
+def strip_repo_url(text: str) -> str  # Returns question without repo URL
+```
+
+**Pattern priority**: explicit github.com URLs → `owner/repo` patterns → None.
+
+**False positive filtering**: Skips patterns matching common words (and/or, w/o, etc.).

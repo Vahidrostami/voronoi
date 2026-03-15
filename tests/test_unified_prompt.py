@@ -293,7 +293,7 @@ class TestWorkspaceGitHubProvisioning:
             d.mkdir(parents=True)
             (d / f"test.{subdir[:-1]}.md").write_text(f"# {subdir}")
 
-        with patch("voronoi.cli._find_data_dir", return_value=data_dir):
+        with patch("voronoi.cli.find_data_dir", return_value=data_dir):
             wm._ensure_github_files(workspace)
 
         assert (workspace / ".github" / "agents" / "test.agent.md").exists()
@@ -308,9 +308,9 @@ class TestWorkspaceGitHubProvisioning:
         (workspace / ".github" / "agents").mkdir(parents=True)
         (workspace / ".github" / "agents" / "existing.md").write_text("keep me")
 
-        with patch("voronoi.cli._find_data_dir") as mock_find:
+        with patch("voronoi.cli.find_data_dir") as mock_find:
             wm._ensure_github_files(workspace)
-            # Should not even call _find_data_dir since agents/ already exists
+            # Should not even call find_data_dir since agents/ already exists
             mock_find.assert_not_called()
 
         assert (workspace / ".github" / "agents" / "existing.md").read_text() == "keep me"

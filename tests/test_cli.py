@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from voronoi import __version__
-from voronoi.cli import _find_data_dir
+from voronoi.cli import find_data_dir
 
 
 def test_version():
@@ -39,9 +39,9 @@ def test_cli_help():
     assert "voronoi" in result.stdout.lower()
 
 
-def test_find_data_dir():
-    """_find_data_dir locates repo root in editable install."""
-    data_dir = _find_data_dir()
+def testfind_data_dir():
+    """find_data_dir locates repo root in editable install."""
+    data_dir = find_data_dir()
     # In editable mode, should return the repo root
     assert (data_dir / "scripts").is_dir()
     assert (data_dir / ".github" / "agents").is_dir()

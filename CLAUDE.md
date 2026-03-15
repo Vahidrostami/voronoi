@@ -29,6 +29,14 @@ This project uses Beads (bd) for ALL planning and task tracking.
 - Run the test suite before closing a task.
 - Leave the codebase cleaner than you found it.
 
+## Specs — READ BEFORE CODING
+Detailed specs live in `docs/`. **Do not read them all** — read only what you need:
+1. Start with `docs/SPEC-INDEX.md` (~70 lines) — it maps your task to the right spec + section
+2. Read ONLY the section relevant to your current work
+3. Each spec has a **TL;DR** at the top — scan that first to decide if you need the full section
+4. For dataclass signatures → `docs/DATA-STRUCTURES.md`
+5. For rules that must not be violated → `docs/INVARIANTS.md`
+
 ## Anti-Fabrication — MANDATORY
 LLMs can unintentionally fabricate plausible-looking results. These rules prevent that:
 - NEVER report numbers you didn't compute from actual data using actual code.

@@ -7,12 +7,15 @@ creating fresh lab workspaces for pure science, and voronoi init.
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 import subprocess
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger("voronoi.workspace")
 
 from voronoi.server.repo_url import RepoRef
 
@@ -195,7 +198,7 @@ class WorkspaceManager:
                 input="Y\n",
             )
         except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass
+            logger.debug("voronoi init failed in %s", workspace_path, exc_info=True)
 
     def _ensure_github_files(self, workspace_path: Path) -> None:
         """Copy .github/{agents,prompts,skills} if missing in workspace."""
@@ -204,8 +207,8 @@ class WorkspaceManager:
         if (github_dst / "agents").is_dir():
             return
         try:
-            from voronoi.cli import _find_data_dir
-            data = _find_data_dir()
+            from voronoi.cli import find_data_dir
+            data = find_data_dir()
             github_src = data / ".github"
             if not github_src.is_dir():
                 return
@@ -216,7 +219,7 @@ class WorkspaceManager:
                 if src.is_dir() and not dst.is_dir():
                     shutil.copytree(src, dst)
         except Exception:
-            pass  # best-effort
+            logger.debug("Failed to copy .github/ files to %s", workspace_path, exc_info=True)
 
     def _run_git(self, cmd: list[str], cwd: str) -> subprocess.CompletedProcess:
         """Run a git command."""
