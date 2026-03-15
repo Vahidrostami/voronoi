@@ -56,9 +56,7 @@ The system is organized into four layers, each with clear responsibilities and b
 ┌──────────────────────▼──────────────────────────────┐
 │                   Science Layer                      │
 │   science/ subpackage:                               │
-│   pre_registration · belief_map · convergence        │
-│   fabrication · evidence · gates · checkpoint        │
-│   heartbeat · _helpers                               │
+│   _helpers · convergence · fabrication · gates        │
 └─────────────────────────────────────────────────────┘
 ```
 

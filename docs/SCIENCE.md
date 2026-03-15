@@ -10,15 +10,10 @@ The science layer (`src/voronoi/science/`) enforces the scientific rigor framewo
 
 | Submodule | Responsibility |
 |-----------|---------------|
-| `pre_registration.py` | Pre-registration validation and parsing |
-| `belief_map.py` | Hypothesis tracking and information-gain prioritization |
-| `convergence.py` | Convergence detection with rigor-appropriate criteria |
-| `fabrication.py` | Anti-fabrication verification and simulation bypass detection |
-| `evidence.py` | Consistency gate, claim-evidence registry, finding interpretation, paradigm stress |
-| `gates.py` | Dispatch/merge gates, invariants, calibration, replication |
-| `checkpoint.py` | Orchestrator state checkpoint for context management |
-| `heartbeat.py` | Lab notebook, structured heartbeats, LLM-as-Judge primitive |
-| `_helpers.py` | Shared internal helpers (task fetching, conflict detection) |
+| `_helpers.py` | Beads queries, consistency gate, paradigm stress, heartbeat stall, finding interpretation, claim-evidence I/O, success criteria I/O |
+| `convergence.py` | Belief map, orchestrator checkpoint, convergence detection |
+| `fabrication.py` | Anti-fabrication verification, simulation bypass detection |
+| `gates.py` | Dispatch/merge gates, pre-registration, invariants, calibration, replication |
 
 All public symbols are re-exported from `science/__init__.py`, so `from voronoi.science import X` works as before.
 

@@ -1,41 +1,31 @@
 """Science gate enforcement — the backbone of Voronoi's rigor system.
 
-This package implements programmatic enforcement of scientific rigor gates.
-It provides pre-registration validation, belief map management, convergence
-detection, anti-fabrication checks, and more.
+4 modules:
+  - _helpers.py: Beads queries, consistency checks, finding interpretation
+  - convergence.py: Belief map, checkpoint, convergence detection
+  - fabrication.py: Anti-fabrication verification, simulation bypass
+  - gates.py: Dispatch/merge gates, pre-registration, invariants, calibration
 
-All public symbols are re-exported here so that ``from voronoi.science import X``
-continues to work after the split into submodules.
+All public symbols re-exported here for ``from voronoi.science import X``.
 """
 
-# --- Pre-registration ---
-from voronoi.science.pre_registration import (
-    PRE_REG_FIELDS,
-    PRE_REG_SCIENTIFIC_FIELDS,
-    PreRegComplianceResult,
-    PreRegistration,
-    audit_pre_registration_compliance,
-    parse_pre_registration,
-    validate_pre_registration,
-)
-
-# --- Belief map ---
-from voronoi.science.belief_map import (
-    BeliefMap,
-    Hypothesis,
-    load_belief_map,
-    save_belief_map,
-)
-
-# --- Convergence ---
+# --- Convergence (+ belief map + checkpoint) ---
 from voronoi.science.convergence import (
+    BeliefMap,
     ConvergenceResult,
+    Hypothesis,
+    OrchestratorCheckpoint,
     check_convergence,
+    format_checkpoint_for_prompt,
+    load_belief_map,
+    load_checkpoint,
+    save_belief_map,
+    save_checkpoint,
     write_convergence,
 )
 
-# --- Evidence (consistency, claim-evidence, interpretation, paradigm stress) ---
-from voronoi.science.evidence import (
+# --- Helpers (consistency, paradigm stress, interpretation, claim-evidence) ---
+from voronoi.science._helpers import (
     ClaimEvidence,
     ClaimEvidenceRegistry,
     ConsistencyConflict,
@@ -43,14 +33,17 @@ from voronoi.science.evidence import (
     assess_ci_quality,
     check_consistency,
     check_consistency_enhanced,
+    check_heartbeat_stall,
     check_paradigm_stress,
     classify_effect_size,
     interpret_finding,
     load_claim_evidence,
+    load_success_criteria,
     save_claim_evidence,
+    save_success_criteria,
 )
 
-# --- Fabrication detection ---
+# --- Fabrication ---
 from voronoi.science.fabrication import (
     AntiFabricationResult,
     FabricationFlag,
@@ -63,12 +56,17 @@ from voronoi.science.fabrication import (
     verify_finding_against_data,
 )
 
-# --- Gates (dispatch, merge, invariants, calibration, replication) ---
+# --- Gates (+ pre-registration + invariants + calibration + replication) ---
 from voronoi.science.gates import (
     CalibrationResult,
     Invariant,
     InvariantCheckResult,
+    PRE_REG_FIELDS,
+    PRE_REG_SCIENTIFIC_FIELDS,
+    PreRegComplianceResult,
+    PreRegistration,
     ReplicationNeed,
+    audit_pre_registration_compliance,
     check_calibration,
     check_dispatch_gates,
     check_invariants,
@@ -76,73 +74,38 @@ from voronoi.science.gates import (
     find_replication_needs,
     format_invariants_for_prompt,
     load_invariants,
-    load_success_criteria,
+    parse_pre_registration,
     parse_revise_context,
     save_invariants,
-    save_success_criteria,
     validate_data_invariants,
-)
-
-# --- Checkpoint ---
-from voronoi.science.checkpoint import (
-    OrchestratorCheckpoint,
-    format_checkpoint_for_prompt,
-    load_checkpoint,
-    save_checkpoint,
-)
-
-# --- Heartbeat, lab notebook, judge ---
-from voronoi.science.heartbeat import (
-    Heartbeat,
-    JudgeRubric,
-    JudgeVerdict,
-    LabNotebookEntry,
-    append_lab_notebook,
-    check_heartbeat_stall,
-    format_judge_prompt,
-    load_lab_notebook,
-    log_judge_call,
-    parse_judge_verdict,
-    read_heartbeats,
-    write_heartbeat,
+    validate_pre_registration,
 )
 
 __all__ = [
-    # Pre-registration
-    "PRE_REG_FIELDS", "PRE_REG_SCIENTIFIC_FIELDS",
-    "PreRegistration", "PreRegComplianceResult",
-    "parse_pre_registration", "validate_pre_registration",
-    "audit_pre_registration_compliance",
-    # Belief map
+    # Convergence + belief map + checkpoint
     "Hypothesis", "BeliefMap", "load_belief_map", "save_belief_map",
-    # Convergence
+    "OrchestratorCheckpoint", "load_checkpoint", "save_checkpoint", "format_checkpoint_for_prompt",
     "ConvergenceResult", "check_convergence", "write_convergence",
-    # Evidence
+    # Helpers
     "ConsistencyConflict", "check_consistency", "check_consistency_enhanced",
-    "ClaimEvidence", "ClaimEvidenceRegistry",
-    "load_claim_evidence", "save_claim_evidence",
+    "ClaimEvidence", "ClaimEvidenceRegistry", "load_claim_evidence", "save_claim_evidence",
     "classify_effect_size", "assess_ci_quality", "interpret_finding",
     "ParadigmStressResult", "check_paradigm_stress",
-    "ReplicationNeed", "find_replication_needs",
+    "check_heartbeat_stall",
     "load_success_criteria", "save_success_criteria",
     # Fabrication
     "FabricationFlag", "AntiFabricationResult", "SimulationBypassResult",
     "verify_data_hash", "compute_data_hash",
     "verify_finding_against_data", "audit_all_findings",
     "detect_simulation_bypass", "format_fabrication_report",
-    # Gates
+    # Gates + pre-reg + invariants + calibration + replication
+    "PRE_REG_FIELDS", "PRE_REG_SCIENTIFIC_FIELDS",
+    "PreRegistration", "PreRegComplianceResult",
+    "parse_pre_registration", "validate_pre_registration", "audit_pre_registration_compliance",
     "check_dispatch_gates", "check_merge_gates",
     "Invariant", "InvariantCheckResult",
-    "load_invariants", "save_invariants",
-    "format_invariants_for_prompt", "check_invariants",
-    "validate_data_invariants",
+    "load_invariants", "save_invariants", "format_invariants_for_prompt",
+    "check_invariants", "validate_data_invariants",
     "CalibrationResult", "check_calibration", "parse_revise_context",
-    # Checkpoint
-    "OrchestratorCheckpoint",
-    "load_checkpoint", "save_checkpoint", "format_checkpoint_for_prompt",
-    # Heartbeat / notebook / judge
-    "LabNotebookEntry", "load_lab_notebook", "append_lab_notebook",
-    "Heartbeat", "write_heartbeat", "read_heartbeats", "check_heartbeat_stall",
-    "JudgeVerdict", "JudgeRubric",
-    "format_judge_prompt", "parse_judge_verdict", "log_judge_call",
+    "ReplicationNeed", "find_replication_needs",
 ]

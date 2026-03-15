@@ -1,4 +1,4 @@
-"""Dispatch/merge gates, invariants, and calibration checks."""
+"""Dispatch/merge gates, pre-registration, invariants, calibration, replication."""
 
 from __future__ import annotations
 
@@ -10,29 +10,131 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from voronoi.utils import extract_field
-
-from voronoi.science.pre_registration import validate_pre_registration
 from voronoi.science.fabrication import verify_finding_against_data
 
 logger = logging.getLogger("voronoi.science")
 
 
-# ---------------------------------------------------------------------------
-# Gate checks (used by dispatcher)
-# ---------------------------------------------------------------------------
+# ===================================================================
+# Pre-registration (merged from pre_registration.py)
+# ===================================================================
+
+PRE_REG_FIELDS = {
+    "HYPOTHESIS", "METHOD", "CONTROLS", "EXPECTED_RESULT",
+    "CONFOUNDS", "STAT_TEST", "SAMPLE_SIZE",
+}
+PRE_REG_SCIENTIFIC_FIELDS = PRE_REG_FIELDS | {"POWER_ANALYSIS", "SENSITIVITY_PLAN"}
+
+
+@dataclass
+class PreRegistration:
+    task_id: str
+    hypothesis: str = ""
+    method: str = ""
+    controls: str = ""
+    expected_result: str = ""
+    confounds: str = ""
+    stat_test: str = ""
+    sample_size: str = ""
+    power_analysis: str = ""
+    sensitivity_plan: str = ""
+    approved_by: str = ""
+    deviations: list[str] = field(default_factory=list)
+
+    @property
+    def is_complete(self) -> bool:
+        return all([self.hypothesis, self.method, self.controls,
+                    self.expected_result, self.stat_test, self.sample_size])
+
+    @property
+    def is_scientific_complete(self) -> bool:
+        return self.is_complete and bool(self.power_analysis) and bool(self.sensitivity_plan)
+
+
+def parse_pre_registration(notes: str) -> PreRegistration:
+    pre_reg = PreRegistration(task_id="")
+    for line in notes.split("\n"):
+        line = line.strip()
+        if not line.startswith("PRE_REG"):
+            continue
+        for fld in ["HYPOTHESIS", "METHOD", "CONTROLS", "EXPECTED_RESULT",
+                     "CONFOUNDS", "STAT_TEST", "SAMPLE_SIZE"]:
+            m = re.search(rf"{fld}\s*=\s*\[([^\]]+)\]", line)
+            if m:
+                setattr(pre_reg, fld.lower(), m.group(1).strip())
+        if "POWER" in line:
+            m = re.search(r"EFFECT_SIZE=\[([^\]]+)\]", line)
+            if m:
+                pre_reg.power_analysis = m.group(1).strip()
+        if "SENSITIVITY" in line and "PRE_REG_SENSITIVITY" in line:
+            pre_reg.sensitivity_plan = line.split("PRE_REG_SENSITIVITY:")[-1].strip()
+        if "PRE_REG_DEVIATION" in line:
+            pre_reg.deviations.append(line.split("PRE_REG_DEVIATION:")[-1].strip())
+    return pre_reg
+
+
+def validate_pre_registration(task_notes: str, rigor: str) -> tuple[bool, list[str]]:
+    pre_reg = parse_pre_registration(task_notes)
+    missing = [fld.upper() for fld in ["hypothesis", "method", "controls",
+               "expected_result", "stat_test", "sample_size"]
+               if not getattr(pre_reg, fld)]
+    if rigor in ("scientific", "experimental"):
+        if not pre_reg.power_analysis:
+            missing.append("POWER_ANALYSIS")
+        if not pre_reg.sensitivity_plan:
+            missing.append("SENSITIVITY_PLAN")
+    return len(missing) == 0, missing
+
+
+@dataclass
+class PreRegComplianceResult:
+    compliant: bool
+    deviations: list[str] = field(default_factory=list)
+    undocumented_deviations: list[str] = field(default_factory=list)
+    message: str = ""
+
+
+def audit_pre_registration_compliance(task_notes: str) -> PreRegComplianceResult:
+    pre_reg = parse_pre_registration(task_notes)
+    deviations = pre_reg.deviations
+    issues: list[str] = []
+    actual_valence = extract_field(task_notes, "VALENCE")
+    if pre_reg.expected_result and actual_valence:
+        expected_positive = any(w in pre_reg.expected_result.lower()
+                                for w in ("higher", "better", "increase", "outperform",
+                                          "improve", "greater", "more"))
+        if expected_positive and actual_valence.lower() in ("negative", "inconclusive") and not deviations:
+            issues.append("Result contradicts expected outcome but no PRE_REG_DEVIATION documented")
+    planned_n, actual_n = pre_reg.sample_size, extract_field(task_notes, "N")
+    if planned_n and actual_n:
+        try:
+            p = int(re.sub(r'[^\d]', '', planned_n))
+            a = int(re.sub(r'[^\d]', '', actual_n))
+            if p > 0 and abs(a - p) / p > 0.2:
+                if not any("sample" in d.lower() or "N " in d for d in deviations):
+                    issues.append(f"Sample size changed from {p} to {a} without PRE_REG_DEVIATION")
+        except (ValueError, ZeroDivisionError):
+            pass
+    return PreRegComplianceResult(
+        compliant=len(issues) == 0, deviations=deviations,
+        undocumented_deviations=issues,
+        message="; ".join(issues) if issues else "Pre-registration compliance OK",
+    )
+
+
+# ===================================================================
+# Gate checks
+# ===================================================================
 
 def check_dispatch_gates(task: dict, workspace: Path, rigor: str) -> tuple[bool, list[str]]:
-    """Check if a task is ready to be dispatched based on artifact contracts and rigor gates."""
     blockers: list[str] = []
     notes = task.get("notes", "")
-
     requires = extract_field(notes, "REQUIRES")
     if requires:
         for req in requires.split(","):
             req = req.strip()
             if req and not (workspace / req).exists():
                 blockers.append(f"REQUIRES missing: {req}")
-
     gate = extract_field(notes, "GATE")
     if gate:
         gate_path = workspace / gate.strip()
@@ -43,90 +145,75 @@ def check_dispatch_gates(task: dict, workspace: Path, rigor: str) -> tuple[bool,
                 gate_data = json.loads(gate_path.read_text())
                 if isinstance(gate_data, dict):
                     status = gate_data.get("status", "")
-                    converged = gate_data.get("converged", False)
-                    if status not in ("converged", "pass", "passed") and not converged:
+                    if status not in ("converged", "pass", "passed") and not gate_data.get("converged", False):
                         blockers.append(f"GATE not passing: {gate} (status={status})")
             except (json.JSONDecodeError, OSError):
                 blockers.append(f"GATE file unreadable: {gate}")
-
     task_type = extract_field(notes, "TASK_TYPE")
     if task_type == "investigation" and rigor in ("scientific", "experimental"):
-        methodologist_review = extract_field(notes, "METHODOLOGIST_REVIEW")
-        if not methodologist_review:
+        mr = extract_field(notes, "METHODOLOGIST_REVIEW")
+        if not mr:
             blockers.append("Methodologist review required (Scientific+ investigation)")
-        elif methodologist_review == "REJECTED":
+        elif mr == "REJECTED":
             blockers.append("Methodologist REJECTED this design")
-        elif methodologist_review == "CONDITIONAL":
+        elif mr == "CONDITIONAL":
             blockers.append("Methodologist review CONDITIONAL — conditions not yet met")
-
     if task_type == "investigation" and rigor in ("analytical", "scientific", "experimental"):
         valid, missing = validate_pre_registration(notes, rigor)
         if not valid:
             blockers.append(f"Pre-registration incomplete: {', '.join(missing)}")
-
     return len(blockers) == 0, blockers
 
 
 def check_merge_gates(task: dict, workspace: Path, rigor: str) -> tuple[bool, list[str]]:
-    """Check if a task's output is ready to be merged based on quality gates."""
     blockers: list[str] = []
     notes = task.get("notes", "")
-
     produces = extract_field(notes, "PRODUCES")
     if produces:
         for prod in produces.split(","):
             prod = prod.strip()
             if prod and not (workspace / prod).exists():
                 blockers.append(f"PRODUCES missing: {prod}")
-
     title = task.get("title", "")
     if "FINDING" in title.upper() and rigor in ("analytical", "scientific", "experimental"):
-        stat_review = extract_field(notes, "STAT_REVIEW")
-        if not stat_review:
+        sr = extract_field(notes, "STAT_REVIEW")
+        if not sr:
             blockers.append("Finding needs Statistician review")
-        elif stat_review == "REJECTED":
+        elif sr == "REJECTED":
             blockers.append("Statistician REJECTED this finding")
-
     if "FINDING" in title.upper() and rigor in ("scientific", "experimental"):
-        critic_review = extract_field(notes, "CRITIC_REVIEW")
-        if not critic_review:
+        cr = extract_field(notes, "CRITIC_REVIEW")
+        if not cr:
             blockers.append("Finding needs Critic review")
-        elif critic_review == "REJECTED":
+        elif cr == "REJECTED":
             blockers.append("Critic REJECTED this finding")
-
     if "FINDING" in title.upper() and rigor in ("analytical", "scientific", "experimental"):
-        fab_result = verify_finding_against_data(
-            workspace, notes, str(task.get("id", ""))
-        )
-        for flag in fab_result.critical_flags:
+        fab = verify_finding_against_data(workspace, notes, str(task.get("id", "")))
+        for flag in fab.critical_flags:
             blockers.append(f"FABRICATION_CHECK: {flag.message}")
-
     task_type = extract_field(notes, "TASK_TYPE")
     if task_type == "investigation" and rigor in ("analytical", "scientific", "experimental"):
-        eva_status = extract_field(notes, "EVA")
-        if not eva_status:
+        eva = extract_field(notes, "EVA")
+        if not eva:
             blockers.append("EVA not recorded — run Experimental Validity Audit before merge")
-        elif eva_status.upper().startswith("FAIL"):
+        elif eva.upper().startswith("FAIL"):
             blockers.append("EVA FAILED — experiment design invalid, fix before merge")
-
     return len(blockers) == 0, blockers
 
 
-# ---------------------------------------------------------------------------
-# Investigation-Level Invariants
-# ---------------------------------------------------------------------------
+# ===================================================================
+# Invariants
+# ===================================================================
 
 @dataclass
 class Invariant:
-    """A cross-cutting constraint that must hold for all agents."""
     id: str
     description: str
-    check_type: str  # prompt_contains, output_excludes, metric_equals, custom
+    check_type: str
     params: dict = field(default_factory=dict)
 
 
 def load_invariants(workspace: Path) -> list[Invariant]:
-    """Load invariants from .swarm/invariants.json."""
     path = workspace / ".swarm" / "invariants.json"
     if not path.exists():
         return []
@@ -134,48 +221,36 @@ def load_invariants(workspace: Path) -> list[Invariant]:
         data = json.loads(path.read_text())
         if not isinstance(data, list):
             return []
-        return [
-            Invariant(
-                id=item.get("id", ""),
-                description=item.get("description", ""),
-                check_type=item.get("check_type", "custom"),
-                params=item.get("params", {}),
-            )
-            for item in data
-            if isinstance(item, dict) and item.get("id")
-        ]
+        return [Invariant(id=i.get("id", ""), description=i.get("description", ""),
+                          check_type=i.get("check_type", "custom"), params=i.get("params", {}))
+                for i in data if isinstance(i, dict) and i.get("id")]
     except (json.JSONDecodeError, OSError) as e:
         logger.warning("Failed to load invariants: %s", e)
         return []
 
 
 def save_invariants(workspace: Path, invariants: list[Invariant]) -> None:
-    """Save invariants to .swarm/invariants.json."""
     path = workspace / ".swarm" / "invariants.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps([asdict(inv) for inv in invariants], indent=2))
 
 
 def format_invariants_for_prompt(invariants: list[Invariant]) -> str:
-    """Format invariants for injection into agent prompts."""
     if not invariants:
         return ""
-    lines = ["## Investigation Invariants — MANDATORY\n"]
-    lines.append("These constraints apply to ALL agents. Violations are structural failures.\n")
-    for inv in invariants:
-        lines.append(f"- **{inv.id}**: {inv.description}")
+    lines = ["## Investigation Invariants — MANDATORY\n",
+             "These constraints apply to ALL agents. Violations are structural failures.\n"]
+    lines.extend(f"- **{inv.id}**: {inv.description}" for inv in invariants)
     return "\n".join(lines)
 
 
 @dataclass
 class InvariantCheckResult:
-    """Result of checking invariants against agent output."""
     passed: bool
     violations: list[str] = field(default_factory=list)
 
 
 def check_invariants(invariants: list[Invariant], context: str) -> InvariantCheckResult:
-    """Check invariants against a context string (agent output, prompt, etc.)."""
     violations: list[str] = []
     for inv in invariants:
         if inv.check_type == "prompt_contains":
@@ -190,7 +265,6 @@ def check_invariants(invariants: list[Invariant], context: str) -> InvariantChec
 
 
 def validate_data_invariants(workspace: Path, invariants: list[Invariant]) -> InvariantCheckResult:
-    """Check data-file invariants (e.g. min_csv_rows) against actual files."""
     violations: list[str] = []
     for inv in invariants:
         if inv.check_type != "min_csv_rows":
@@ -199,37 +273,27 @@ def validate_data_invariants(workspace: Path, invariants: list[Invariant]) -> In
         glob_pattern = inv.params.get("glob", "**/*.csv")
         if min_rows <= 0:
             continue
-        csv_files = list(workspace.glob(glob_pattern))
-        for csv_file in csv_files:
+        for csv_file in workspace.glob(glob_pattern):
             try:
                 with open(csv_file) as f:
                     reader = csv_mod.reader(f)
-                    header = next(reader, None)
-                    if header is None:
-                        violations.append(
-                            f"{inv.id}: {csv_file.relative_to(workspace)} has no rows (empty file)"
-                        )
+                    if next(reader, None) is None:
+                        violations.append(f"{inv.id}: {csv_file.relative_to(workspace)} has no rows")
                         continue
                     row_count = sum(1 for _ in reader)
                 if row_count < min_rows:
-                    violations.append(
-                        f"{inv.id}: {csv_file.relative_to(workspace)} has {row_count} data rows, "
-                        f"minimum is {min_rows}"
-                    )
+                    violations.append(f"{inv.id}: {csv_file.relative_to(workspace)} has {row_count} data rows, minimum is {min_rows}")
             except (OSError, StopIteration):
-                violations.append(
-                    f"{inv.id}: {csv_file.relative_to(workspace)} could not be read"
-                )
+                violations.append(f"{inv.id}: {csv_file.relative_to(workspace)} could not be read")
     return InvariantCheckResult(passed=len(violations) == 0, violations=violations)
 
 
-# ---------------------------------------------------------------------------
-# REVISE Task & Calibration Check
-# ---------------------------------------------------------------------------
+# ===================================================================
+# Calibration & REVISE
+# ===================================================================
 
 @dataclass
 class CalibrationResult:
-    """Result of checking pilot experiment calibration."""
     passed: bool
     metric_name: str
     actual_value: float
@@ -239,85 +303,58 @@ class CalibrationResult:
 
 
 def check_calibration(task_notes: str) -> list[CalibrationResult]:
-    """Check whether pilot experiment results meet calibration targets."""
     results: list[CalibrationResult] = []
     targets: dict[str, tuple[float, float]] = {}
     actuals: dict[str, float] = {}
-
     for line in task_notes.split("\n"):
         line = line.strip()
-        t_match = re.search(
-            r"CALIBRATION_TARGET\s*:\s*(\w+)\s*=\s*\[([\d.]+)\s*,\s*([\d.]+)\]",
-            line, re.I,
-        )
-        if t_match:
-            targets[t_match.group(1)] = (float(t_match.group(2)), float(t_match.group(3)))
-        a_match = re.search(
-            r"CALIBRATION_ACTUAL\s*:\s*(\w+)\s*=\s*([\d.]+)",
-            line, re.I,
-        )
-        if a_match:
-            actuals[a_match.group(1)] = float(a_match.group(2))
-
+        t = re.search(r"CALIBRATION_TARGET\s*:\s*(\w+)\s*=\s*\[([\d.]+)\s*,\s*([\d.]+)\]", line, re.I)
+        if t:
+            targets[t.group(1)] = (float(t.group(2)), float(t.group(3)))
+        a = re.search(r"CALIBRATION_ACTUAL\s*:\s*(\w+)\s*=\s*([\d.]+)", line, re.I)
+        if a:
+            actuals[a.group(1)] = float(a.group(2))
     for metric, (lo, hi) in targets.items():
         actual = actuals.get(metric)
         if actual is None:
-            results.append(CalibrationResult(
-                passed=False, metric_name=metric,
-                actual_value=0.0, target_lo=lo, target_hi=hi,
-                message=f"{metric}: no actual value reported",
-            ))
+            results.append(CalibrationResult(False, metric, 0.0, lo, hi, f"{metric}: no actual value reported"))
         elif lo <= actual <= hi:
-            results.append(CalibrationResult(
-                passed=True, metric_name=metric,
-                actual_value=actual, target_lo=lo, target_hi=hi,
-                message=f"{metric}: {actual:.2f} within [{lo}, {hi}]",
-            ))
+            results.append(CalibrationResult(True, metric, actual, lo, hi, f"{metric}: {actual:.2f} within [{lo}, {hi}]"))
         else:
-            results.append(CalibrationResult(
-                passed=False, metric_name=metric,
-                actual_value=actual, target_lo=lo, target_hi=hi,
-                message=f"{metric}: {actual:.2f} outside [{lo}, {hi}]",
-            ))
-
+            results.append(CalibrationResult(False, metric, actual, lo, hi, f"{metric}: {actual:.2f} outside [{lo}, {hi}]"))
     return results
 
 
 def parse_revise_context(task_notes: str) -> dict:
-    """Extract REVISE metadata from Beads notes."""
     ctx: dict = {}
-    ctx["revise_of"] = extract_field(task_notes, "REVISE_OF")
-    ctx["prior_result"] = extract_field(task_notes, "PRIOR_RESULT")
-    ctx["failure_diagnosis"] = extract_field(task_notes, "FAILURE_DIAGNOSIS")
-    ctx["revised_params"] = extract_field(task_notes, "REVISED_PARAMS")
-    return {k: v for k, v in ctx.items() if v}
+    for key in ("REVISE_OF", "PRIOR_RESULT", "FAILURE_DIAGNOSIS", "REVISED_PARAMS"):
+        val = extract_field(task_notes, key)
+        if val:
+            ctx[key.lower()] = val
+    return ctx
 
 
-# ---------------------------------------------------------------------------
+# ===================================================================
 # Replication
-# ---------------------------------------------------------------------------
+# ===================================================================
 
 @dataclass
 class ReplicationNeed:
-    """A finding that needs replication."""
     finding_id: str
     title: str
     reason: str
 
 
 def find_replication_needs(workspace: Path) -> list[ReplicationNeed]:
-    """Identify findings that should be replicated."""
     from voronoi.beads import run_bd as _run_bd
     needs: list[ReplicationNeed] = []
     code, output = _run_bd("list", "--json", cwd=str(workspace))
     if code != 0:
         return needs
-
     try:
         tasks = json.loads(output)
     except (json.JSONDecodeError, ValueError):
         return needs
-
     for task in tasks:
         title = task.get("title", "")
         notes = task.get("notes", "")
@@ -325,26 +362,19 @@ def find_replication_needs(workspace: Path) -> list[ReplicationNeed]:
             continue
         if "REPLICATED" in notes and "REPLICATED:no" not in notes.lower():
             continue
-
-        tid = task.get("id", "")
         reasons = []
-
         ci = extract_field(notes, "CI_95")
         if ci:
             try:
                 nums = re.findall(r'[-+]?\d*\.?\d+', ci)
                 if len(nums) >= 2:
-                    lo, hi = float(nums[0]), float(nums[1])
                     effect = extract_field(notes, "EFFECT_SIZE")
                     if effect:
-                        eff_nums = re.findall(r'[-+]?\d*\.?\d+', effect)
-                        if eff_nums:
-                            eff_val = abs(float(eff_nums[0]))
-                            if eff_val > 0 and (hi - lo) / eff_val > 0.6:
-                                reasons.append("wide_ci")
+                        eff_val = abs(float(re.findall(r'[-+]?\d*\.?\d+', effect)[0]))
+                        if eff_val > 0 and (float(nums[1]) - float(nums[0])) / eff_val > 0.6:
+                            reasons.append("wide_ci")
             except (ValueError, IndexError):
                 pass
-
         quality = extract_field(notes, "QUALITY")
         if quality:
             try:
@@ -352,35 +382,6 @@ def find_replication_needs(workspace: Path) -> list[ReplicationNeed]:
                     reasons.append("low_quality")
             except ValueError:
                 pass
-
         if reasons:
-            needs.append(ReplicationNeed(
-                finding_id=tid, title=title, reason=reasons[0],
-            ))
-
+            needs.append(ReplicationNeed(finding_id=task.get("id", ""), title=title, reason=reasons[0]))
     return needs
-
-
-# ---------------------------------------------------------------------------
-# Success Criteria helpers
-# ---------------------------------------------------------------------------
-
-def load_success_criteria(workspace: Path) -> list[dict]:
-    """Load success criteria from .swarm/success-criteria.json."""
-    path = workspace / ".swarm" / "success-criteria.json"
-    if not path.exists():
-        return []
-    try:
-        data = json.loads(path.read_text())
-        if not isinstance(data, list):
-            return []
-        return [c for c in data if isinstance(c, dict)]
-    except (json.JSONDecodeError, OSError):
-        return []
-
-
-def save_success_criteria(workspace: Path, criteria: list[dict]) -> None:
-    """Save success criteria to .swarm/success-criteria.json."""
-    path = workspace / ".swarm" / "success-criteria.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(criteria, indent=2))

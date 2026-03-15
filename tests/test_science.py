@@ -12,17 +12,12 @@ from voronoi.science import (
     ConsistencyConflict,
     ConvergenceResult,
     FabricationFlag,
-    Heartbeat,
     Hypothesis,
     Invariant,
     InvariantCheckResult,
-    JudgeRubric,
-    JudgeVerdict,
-    LabNotebookEntry,
     PreRegistration,
     ReplicationNeed,
     SimulationBypassResult,
-    append_lab_notebook,
     audit_all_findings,
     check_calibration,
     check_consistency,
@@ -36,16 +31,11 @@ from voronoi.science import (
     detect_simulation_bypass,
     format_fabrication_report,
     format_invariants_for_prompt,
-    format_judge_prompt,
     load_belief_map,
     load_invariants,
-    load_lab_notebook,
     load_success_criteria,
-    log_judge_call,
-    parse_judge_verdict,
     parse_pre_registration,
     parse_revise_context,
-    read_heartbeats,
     save_belief_map,
     save_invariants,
     save_success_criteria,
@@ -54,7 +44,6 @@ from voronoi.science import (
     verify_data_hash,
     verify_finding_against_data,
     write_convergence,
-    write_heartbeat,
     OrchestratorCheckpoint,
     load_checkpoint,
     save_checkpoint,
@@ -353,41 +342,6 @@ class TestConsistencyGate:
         ]
         conflicts = check_consistency(findings)
         assert len(conflicts) == 0
-
-
-# ---------------------------------------------------------------------------
-# Lab Notebook
-# ---------------------------------------------------------------------------
-
-class TestLabNotebook:
-    def test_append_and_load(self, tmp_path):
-        entry = LabNotebookEntry(
-            cycle=1, phase="investigating", verdict="iterate",
-            metrics={"score": 0.65}, failures=["hypothesis H2 refuted"],
-            next_steps=["test H3"],
-        )
-        append_lab_notebook(tmp_path, entry)
-        entries = load_lab_notebook(tmp_path)
-        assert len(entries) == 1
-        assert entries[0].cycle == 1
-        assert entries[0].verdict == "iterate"
-        assert entries[0].timestamp != ""
-
-    def test_append_multiple(self, tmp_path):
-        for i in range(3):
-            append_lab_notebook(tmp_path, LabNotebookEntry(
-                cycle=i, phase="test", verdict="pass",
-            ))
-        entries = load_lab_notebook(tmp_path)
-        assert len(entries) == 3
-
-    def test_load_empty(self, tmp_path):
-        assert load_lab_notebook(tmp_path) == []
-
-    def test_load_corrupt(self, tmp_path):
-        (tmp_path / ".swarm").mkdir()
-        (tmp_path / ".swarm" / "lab-notebook.json").write_text("{bad")
-        assert load_lab_notebook(tmp_path) == []
 
 
 # ---------------------------------------------------------------------------
@@ -739,7 +693,7 @@ class TestEnhancedConsistency:
         assert conflicts[0].conflict_type == "magnitude"
 
     def test_tokenize_removes_stopwords(self):
-        from voronoi.science.evidence import _tokenize_title
+        from voronoi.science._helpers import _tokenize_title
         tokens = _tokenize_title("FINDING: this is a test with some very basic words")
         assert "this" not in tokens
         assert "with" not in tokens
@@ -1279,41 +1233,10 @@ class TestReviseContext:
 
 
 # ---------------------------------------------------------------------------
-# Structured Heartbeats
+# Heartbeat Stall Detection
 # ---------------------------------------------------------------------------
 
-class TestHeartbeats:
-    def test_write_and_read(self, tmp_path):
-        hb = Heartbeat(branch="test-branch", phase="investigating",
-                       iteration=5, last_action="running experiment",
-                       status="active")
-        write_heartbeat(tmp_path, hb)
-        beats = read_heartbeats(tmp_path, "test-branch")
-        assert len(beats) == 1
-        assert beats[0].phase == "investigating"
-        assert beats[0].iteration == 5
-        assert beats[0].timestamp != ""
-
-    def test_write_multiple(self, tmp_path):
-        for i in range(5):
-            hb = Heartbeat(branch="worker", phase="building",
-                           iteration=i, last_action=f"step {i}",
-                           status="active")
-            write_heartbeat(tmp_path, hb)
-        beats = read_heartbeats(tmp_path, "worker")
-        assert len(beats) == 5
-
-    def test_read_last_n(self, tmp_path):
-        for i in range(10):
-            write_heartbeat(tmp_path, Heartbeat(
-                branch="worker", phase="x", iteration=i,
-                last_action="y", status="z"))
-        beats = read_heartbeats(tmp_path, "worker", last_n=3)
-        assert len(beats) == 3
-
-    def test_read_missing(self, tmp_path):
-        assert read_heartbeats(tmp_path, "nonexistent") == []
-
+class TestHeartbeatStall:
     def test_stall_detected(self, tmp_path):
         from datetime import datetime, timezone, timedelta
         base = datetime.now(timezone.utc) - timedelta(minutes=15)
@@ -1344,82 +1267,18 @@ class TestHeartbeats:
         path.write_text("\n".join(lines) + "\n")
         assert check_heartbeat_stall(tmp_path, "active") is False
 
+    def test_no_stall_missing_file(self, tmp_path):
+        assert check_heartbeat_stall(tmp_path, "nonexistent") is False
+
     def test_no_stall_too_few_beats(self, tmp_path):
-        write_heartbeat(tmp_path, Heartbeat(
-            branch="new", phase="start", iteration=0,
-            last_action="init", status="active"))
+        path = tmp_path / ".swarm" / "heartbeat-new.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "branch": "new", "phase": "start", "iteration": 0,
+            "last_action": "init", "status": "active",
+            "timestamp": "2025-01-01T00:00:00+00:00",
+        }) + "\n")
         assert check_heartbeat_stall(tmp_path, "new") is False
-
-
-# ---------------------------------------------------------------------------
-# LLM-as-Judge Primitive
-# ---------------------------------------------------------------------------
-
-class TestJudgePrimitive:
-    def test_format_judge_prompt(self):
-        rubric = JudgeRubric(
-            rubric_id="finding-match",
-            criteria="Does the candidate finding match the reference ground truth?",
-            scale="binary",
-        )
-        prompt = format_judge_prompt(rubric, "Found Simpson's paradox in segment A",
-                                     "Planted Simpson's paradox: aggregate vs segment A")
-        assert "Rubric" in prompt
-        assert "candidate finding match" in prompt
-        assert "Reference" in prompt
-        assert "Candidate" in prompt
-        assert "binary" in prompt
-
-    def test_format_judge_prompt_with_examples(self):
-        rubric = JudgeRubric(
-            rubric_id="test", criteria="Match?", scale="binary",
-            examples="YES: 'found X' matches 'planted X'\nNO: vague != specific",
-        )
-        prompt = format_judge_prompt(rubric, "a", "b")
-        assert "Examples" in prompt
-
-    def test_parse_verdict_json(self):
-        raw = '{"match": true, "confidence": 0.92, "justification": "Exact match on segment A"}'
-        v = parse_judge_verdict(raw, rubric_id="r1", model="gpt-4")
-        assert v.match is True
-        assert v.confidence == pytest.approx(0.92)
-        assert "Exact match" in v.justification
-        assert v.rubric_id == "r1"
-        assert v.model == "gpt-4"
-
-    def test_parse_verdict_false(self):
-        raw = '{"match": false, "confidence": 0.3, "justification": "No overlap"}'
-        v = parse_judge_verdict(raw)
-        assert v.match is False
-
-    def test_parse_verdict_json_embedded(self):
-        raw = 'Here is my verdict:\n{"match": true, "confidence": 0.8, "justification": "ok"}\nEnd.'
-        v = parse_judge_verdict(raw)
-        assert v.match is True
-        assert v.confidence == pytest.approx(0.8)
-
-    def test_parse_verdict_fallback_yes(self):
-        raw = "Yes, the candidate matches the reference."
-        v = parse_judge_verdict(raw)
-        assert v.match is True
-        assert v.confidence == pytest.approx(0.5)
-
-    def test_parse_verdict_fallback_no(self):
-        raw = "No match whatsoever."
-        v = parse_judge_verdict(raw)
-        assert v.match is False
-
-    def test_log_judge_call(self, tmp_path):
-        rubric = JudgeRubric(rubric_id="r1", criteria="Does it match?")
-        verdict = JudgeVerdict(match=True, confidence=0.9,
-                               justification="yes", model="gpt-4")
-        log_judge_call(tmp_path, rubric, verdict)
-        log_path = tmp_path / ".swarm" / "judge-log.jsonl"
-        assert log_path.exists()
-        entry = json.loads(log_path.read_text().strip())
-        assert entry["rubric_id"] == "r1"
-        assert entry["match"] is True
-        assert entry["model"] == "gpt-4"
 
 
 # ---------------------------------------------------------------------------

@@ -641,15 +641,10 @@ voronoi/
 ├── utils.py                # Shared field extraction, note parsing, title cleaning
 ├── science/                # Science gate enforcement (subpackage)
 │   ├── __init__.py         # Re-exports all public symbols
-│   ├── pre_registration.py # Pre-registration validation and parsing
-│   ├── belief_map.py       # Hypothesis tracking and information-gain prioritization
-│   ├── convergence.py      # Convergence detection with rigor-appropriate criteria
-│   ├── fabrication.py      # Anti-fabrication verification, simulation bypass
-│   ├── evidence.py         # Consistency, claim-evidence, finding interpretation
-│   ├── gates.py            # Dispatch/merge gates, invariants, calibration
-│   ├── checkpoint.py       # Orchestrator state checkpoint
-│   ├── heartbeat.py        # Lab notebook, heartbeats, LLM-as-Judge
-│   └── _helpers.py         # Shared internal helpers
+│   ├── _helpers.py         # Beads queries, consistency, interpretation, I/O
+│   ├── convergence.py      # Belief map, checkpoint, convergence detection
+│   ├── fabrication.py      # Anti-fabrication, simulation bypass
+│   └── gates.py            # Dispatch/merge gates, pre-reg, invariants, calibration
 ├── gateway/
 │   ├── intent.py           # Free-text → mode + rigor classification
 │   ├── router.py           # Command dispatch (investigate · demo · status · guide)

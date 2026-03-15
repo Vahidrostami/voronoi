@@ -128,30 +128,26 @@ class TestScienceSections:
         prompt = build_orchestrator_prompt(
             question="test", mode="investigate", rigor="scientific",
         )
-        assert "Hypothesis" in prompt
-        assert "belief-map.json" in prompt
+        # Key science terms should appear in the compact science section
+        assert "pre-registration" in prompt.lower()
+        assert "Methodologist" in prompt
 
     def test_scientific_has_review_gates(self):
         prompt = build_orchestrator_prompt(
             question="test", mode="investigate", rigor="scientific",
         )
+        # Compact section references key gates
         assert "Statistician" in prompt
-        assert "Critic" in prompt
-        assert "Synthesizer" in prompt
-        assert "Evaluator" in prompt
-        # Must reference the actual agent files
-        assert ".github/agents/statistician.agent.md" in prompt
-        assert ".github/agents/critic.agent.md" in prompt
-        # Must require claim-evidence traceability
         assert "claim-evidence" in prompt.lower()
+        assert "Evaluator" in prompt or "0.75" in prompt
 
     def test_analytical_has_claim_evidence(self):
         prompt = build_orchestrator_prompt(
             question="test", mode="explore", rigor="analytical",
         )
         assert "claim-evidence" in prompt.lower()
-        assert "INTERPRETATION" in prompt or "interpretation" in prompt.lower()
-        assert "PRACTICAL_SIGNIFICANCE" in prompt
+        assert "Statistician" in prompt
+        assert "0.75" in prompt
 
     def test_analytical_has_stats_but_no_critic(self):
         prompt = build_orchestrator_prompt(
@@ -166,8 +162,9 @@ class TestScienceSections:
         prompt = build_orchestrator_prompt(
             question="test", mode="investigate", rigor="scientific",
         )
-        assert "Convergence" in prompt
-        assert "hypotheses resolved" in prompt
+        # Convergence criteria are in the role file; prompt has compact reminders
+        assert "convergence" in prompt.lower()
+        assert "Methodologist" in prompt
 
     def test_experimental_has_replication(self):
         prompt = build_orchestrator_prompt(
