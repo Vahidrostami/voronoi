@@ -81,6 +81,14 @@ def load_config(config_path: str = ".swarm-config.json") -> dict:
             "VORONOI_AGENT_COMMAND",
             config.get("agent_command", "copilot"),
         ),
+        "orchestrator_model": os.environ.get(
+            "VORONOI_ORCHESTRATOR_MODEL",
+            config.get("orchestrator_model", ""),
+        ),
+        "worker_model": os.environ.get(
+            "VORONOI_WORKER_MODEL",
+            config.get("worker_model", ""),
+        ),
         "gh_token": os.environ.get("GH_TOKEN", ""),
     }
 

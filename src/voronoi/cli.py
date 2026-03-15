@@ -285,6 +285,7 @@ def cmd_demo(args: argparse.Namespace) -> None:
 
         agent_cmd = config.get("agent_command", "copilot")
         max_agents = config.get("max_agents", 4)
+        orchestrator_model = config.get("orchestrator_model", "")
 
         # Verify agent CLI exists
         agent_bin = agent_cmd.split()[0]
@@ -308,11 +309,16 @@ def cmd_demo(args: argparse.Namespace) -> None:
 
         # Launch orchestrator — Copilot IS the autopilot now
         agent_flags = "--allow-all"
-        cmd = [agent_cmd] + agent_flags.split() + ["-p", prompt]
+        cmd = [agent_cmd] + agent_flags.split()
+        if orchestrator_model:
+            cmd += ["--model", orchestrator_model]
+        cmd += ["-p", prompt]
 
         project_name = target.name
         print(f"\nLaunching orchestrator...\n")
         print(f"  Agent:  {agent_cmd}")
+        if orchestrator_model:
+            print(f"  Model:  {orchestrator_model}")
         print(f"  Prompt: .swarm/orchestrator-prompt.txt")
         print(f"  Agents: tmux attach -t {project_name}-swarm")
         print()

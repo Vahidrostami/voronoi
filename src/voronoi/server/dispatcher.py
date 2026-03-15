@@ -37,6 +37,8 @@ class DispatcherConfig:
     max_agents: int = 4
     agent_command: str = "copilot"
     agent_flags: str = "--allow-all"
+    orchestrator_model: str = ""  # e.g. "claude-opus-4.6", "" = CLI default
+    worker_model: str = ""        # e.g. "claude-sonnet-4.6", "" = CLI default
     progress_interval: int = 30  # seconds between progress updates
     timeout_hours: int = 8       # max hours before marking investigation exhausted
     max_retries: int = 2         # max times to restart a dead agent
@@ -270,12 +272,54 @@ class InvestigationDispatcher:
             max_agents=self.config.max_agents,
         )
 
+    def _ensure_copilot_auth(self) -> None:
+        """Verify Copilot/GitHub auth is valid before launching an agent.
+
+        Copilot CLI authenticates via an interactive OAuth device flow
+        (/login command) which produces tokens that expire.  On a
+        long-running server we cannot re-authenticate interactively, so
+        this method detects expiry early and raises immediately instead
+        of wasting retry attempts on the same expired token.
+
+        Raises RuntimeError if authentication is missing or expired.
+        """
+        # If an explicit token env var is set, trust it (PATs don't expire mid-session)
+        for var in ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"):
+            if os.environ.get(var):
+                logger.debug("Auth: using %s environment variable", var)
+                return
+
+        # Check gh CLI auth status (Copilot CLI can piggyback on gh's stored token)
+        if shutil.which("gh"):
+            result = subprocess.run(
+                ["gh", "auth", "status"],
+                capture_output=True, text=True, timeout=15,
+            )
+            if result.returncode == 0:
+                return
+
+        raise RuntimeError(
+            "GitHub/Copilot authentication expired. "
+            "Re-authenticate on the server with 'copilot' → /login or 'gh auth login', "
+            "or set GITHUB_TOKEN / COPILOT_GITHUB_TOKEN env var with a PAT for unattended use."
+        )
+
     def _launch_in_tmux(self, session: str, workspace_path: Path) -> None:
+        self._ensure_copilot_auth()
+
         agent_cmd = self.config.agent_command
         agent_flags = self.config.agent_flags
-        agent_bin = agent_cmd.split()[0]
+        parts = agent_cmd.split()
+        if not parts:
+            raise RuntimeError(f"agent_command is empty: '{agent_cmd}'")
+        agent_bin = parts[0]
         if not shutil.which(agent_bin):
             raise RuntimeError(f"Agent CLI not found: {agent_bin}")
+
+        # Orchestrator gets its own model; workers use worker_model via spawn-agent.sh
+        model_flag = ""
+        if self.config.orchestrator_model:
+            model_flag = f" --model {shlex.quote(self.config.orchestrator_model)}"
 
         log_path = workspace_path / ".swarm" / "agent.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -294,11 +338,23 @@ class InvestigationDispatcher:
         # redirection to avoid ARG_MAX / tmux send-keys buffer issues
         # with large prompts.  shlex.quote prevents command injection.
         safe_ws = shlex.quote(str(workspace_path))
-        safe_cmd = shlex.quote(agent_cmd)
-        safe_flags = shlex.quote(agent_flags)
+        safe_cmd = agent_cmd
+        safe_flags = agent_flags
+
+        # Inject auth-related env vars into the tmux shell.
+        # tmux new-session starts a shell that inherits the tmux *server's*
+        # environment, not the dispatcher's.  If the server was started in
+        # a previous session (or by systemd), GH_TOKEN / GITHUB_TOKEN won't
+        # be present even though the dispatcher loaded .env.
+        env_exports = ""
+        for var in ("GH_TOKEN", "GITHUB_TOKEN", "COPILOT_GITHUB_TOKEN"):
+            val = os.environ.get(var)
+            if val:
+                env_exports += f"export {var}={shlex.quote(val)} && "
+
         subprocess.run(
             ["tmux", "send-keys", "-t", session,
-             f'cd {safe_ws} && {safe_cmd} {safe_flags} '
+             f'{env_exports}cd {safe_ws} && {safe_cmd} {safe_flags}{model_flag} '
              f'-p "$(cat .swarm/orchestrator-prompt.txt)" ; exit',
              "Enter"],
             capture_output=True,
@@ -366,6 +422,10 @@ class InvestigationDispatcher:
                     f"The orchestrator may be stuck. "
                     f"Will auto-restart if the agent exits."
                 )
+
+            # Heartbeat-based stall detection for active agents
+            if session_alive and run.task_snapshot:
+                events.extend(self._check_heartbeat_stalls(run))
 
             if not session_alive or self._is_complete(run) or timed_out:
                 if timed_out and not self._is_complete(run):
@@ -473,6 +533,7 @@ class InvestigationDispatcher:
             logger.warning("bd list --json returned invalid JSON for #%d: %s",
                            run.investigation_id, e)
         events.extend(self._check_findings(run, tasks))
+        events.extend(self._check_design_invalid(run, tasks))
         events.extend(self._detect_phase(run))
         return events
 
@@ -483,7 +544,8 @@ class InvestigationDispatcher:
             tid = t.get("id", "")
             status = t.get("status", "")
             title = t.get("title", "")
-            current[tid] = {"status": status, "title": title}
+            notes = t.get("notes", "")
+            current[tid] = {"status": status, "title": title, "notes": notes}
 
             old = run.task_snapshot.get(tid)
             if old is None and run.task_snapshot:
@@ -535,10 +597,37 @@ class InvestigationDispatcher:
                 for line in notes.split("\n"):
                     if any(k in line.upper() for k in ("EFFECT_SIZE", "CI_95", "VALENCE")):
                         effect += f"\n  {line.strip()}"
-                msg = f"� *NEW FINDING*\n{title}"
+                msg = f"🔬 *NEW FINDING*\n{title}"
                 if effect:
                     msg += f"\n{effect}"
                 events.append({"type": "finding", "msg": msg})
+        return events
+
+    def _check_design_invalid(self, run: RunningInvestigation,
+                               tasks: list[dict] | None = None) -> list[dict]:
+        """Detect DESIGN_INVALID flags in task notes and alert."""
+        events: list[dict] = []
+        if tasks is None:
+            return events
+        for task in tasks:
+            tid = task.get("id", "")
+            notes = task.get("notes", "")
+            title = task.get("title", "")
+            if ("DESIGN_INVALID" in notes
+                    and task.get("status") != "closed"
+                    and tid not in getattr(run, "_notified_design_invalid", set())):
+                if not hasattr(run, "_notified_design_invalid"):
+                    run._notified_design_invalid = set()
+                run._notified_design_invalid.add(tid)
+                diagnosis = ""
+                for line in notes.split("\n"):
+                    if "DESIGN_INVALID" in line:
+                        diagnosis = line.strip()[:200]
+                        break
+                events.append({
+                    "type": "design_invalid",
+                    "msg": f"🚨 *DESIGN INVALID* — {title}\n  {diagnosis}",
+                })
         return events
 
     def _detect_phase(self, run: RunningInvestigation) -> list[dict]:
@@ -600,6 +689,26 @@ class InvestigationDispatcher:
             logger.debug("Paradigm stress check failed: %s", e)
         return events
 
+    def _check_heartbeat_stalls(self, run: RunningInvestigation) -> list[dict]:
+        """Check agent heartbeats for stalled workers."""
+        events: list[dict] = []
+        try:
+            from voronoi.science import check_heartbeat_stall
+            swarm_dir = run.workspace_path / ".swarm"
+            if not swarm_dir.exists():
+                return events
+            for hb_file in swarm_dir.glob("heartbeat-*.jsonl"):
+                branch = hb_file.stem.replace("heartbeat-", "")
+                if check_heartbeat_stall(run.workspace_path, branch):
+                    events.append({
+                        "type": "heartbeat_stall",
+                        "msg": f"⚠️ Agent `{branch}` may be stuck "
+                               f"(same status for 10+ min)",
+                    })
+        except Exception as e:
+            logger.debug("Heartbeat stall check failed: %s", e)
+        return events
+
     def _send_progress_batch(self, run: RunningInvestigation, events: list[dict]) -> None:
         elapsed = (time.time() - run.started_at) / 60
         findings = [e for e in events if e["type"] == "finding"]
@@ -648,7 +757,22 @@ class InvestigationDispatcher:
 
         self.send_message("\n".join(lines))
 
+    def _has_open_design_invalid(self, run: RunningInvestigation) -> bool:
+        """Check if any open tasks have DESIGN_INVALID flag.
+
+        Uses the cached task_snapshot from the last progress poll to avoid
+        extra subprocess calls.
+        """
+        for t in run.task_snapshot.values():
+            if t["status"] != "closed" and "DESIGN_INVALID" in t.get("notes", ""):
+                return True
+        return False
+
     def _is_complete(self, run: RunningInvestigation) -> bool:
+        # HARD GATE: never complete while DESIGN_INVALID tasks are open
+        if self._has_open_design_invalid(run):
+            return False
+
         if (run.workspace_path / ".swarm" / "deliverable.md").exists():
             # For standard rigor, deliverable is sufficient
             if run.rigor == "standard":
@@ -721,6 +845,16 @@ class InvestigationDispatcher:
     def _handle_completion(self, run: RunningInvestigation, *,
                            failed: bool = False,
                            failure_reason: str = "") -> None:
+        # HARD GATE: refuse to declare success while DESIGN_INVALID is open
+        if not failed and self._has_open_design_invalid(run):
+            logger.warning("Completion blocked for %s: DESIGN_INVALID tasks still open",
+                           run.label)
+            self.send_message(
+                f"🚨 *Voronoi · {run.label}* — completion blocked\n\n"
+                f"DESIGN_INVALID experiments still open. Fix the design and re-run."
+            )
+            return
+
         elapsed = (time.time() - run.started_at) / 60
         total_tasks = len(run.task_snapshot)
         closed = sum(1 for t in run.task_snapshot.values() if t["status"] == "closed")
@@ -831,6 +965,22 @@ class InvestigationDispatcher:
             self._launch_in_tmux(run.tmux_session, run.workspace_path)
             run.stall_warned = False
             return True
+        except RuntimeError as e:
+            if "authentication" in str(e).lower():
+                # Auth failure — don't waste remaining retries on the same problem
+                logger.error("Auth expired for #%d — skipping remaining retries: %s",
+                             run.investigation_id, e)
+                run.retry_count = self.config.max_retries  # exhaust retries
+                self.send_message(
+                    f"🔑 *Voronoi · {run.label}* — Copilot auth expired.\n\n"
+                    f"SSH into the server and run one of:\n"
+                    f"• `copilot` → `/login`\n"
+                    f"• `gh auth login`\n\n"
+                    f"Then retry with /spawn"
+                )
+            else:
+                logger.error("Failed to restart #%d: %s", run.investigation_id, e)
+            return False
         except Exception as e:
             logger.error("Failed to restart #%d: %s", run.investigation_id, e)
             return False

@@ -271,6 +271,19 @@ def check_convergence(workspace: Path, rigor: str,
     # Fetch tasks once for all convergence checks
     tasks = _fetch_tasks(workspace)
 
+    # Block on DESIGN_INVALID tasks (broken experiments must be fixed)
+    design_invalid = _find_design_invalid(workspace, tasks)
+    if design_invalid:
+        blockers.append(f"{len(design_invalid)} DESIGN_INVALID experiment(s) — fix before converging")
+
+    # Check success criteria if defined
+    criteria_blockers = _check_success_criteria(workspace)
+    blockers.extend(criteria_blockers)
+
+    # Check hypothesis-result alignment
+    alignment_blockers = _check_hypothesis_alignment(workspace)
+    blockers.extend(alignment_blockers)
+
     # Check for consistency conflicts
     conflicts = _find_consistency_conflicts(workspace, tasks)
     if conflicts:
@@ -815,7 +828,6 @@ def verify_finding_against_data(
             result.passed = False
 
     # 4. Check experiment script exists
-    source_task = _extract_field(finding_notes, "SOURCE_TASK")
     experiment_dir = workspace / "experiments"
     if experiment_dir.exists():
         scripts = list(experiment_dir.glob("*.py")) + list(experiment_dir.glob("*.sh"))
@@ -882,6 +894,182 @@ def audit_all_findings(
         result = verify_finding_against_data(workspace, notes, finding_id)
         results.append(result)
 
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Simulation / LLM-Bypass Detection
+# ---------------------------------------------------------------------------
+
+_SIMULATION_BYPASS_PATTERNS = [
+    # Patterns that indicate an agent substituted simulation for real LLM calls
+    r"np\.random\.seed\(",
+    r"random\.seed\(",
+    r"simulate.*what.*(?:LLM|model|agent).*would",
+    r"avoids?\s+(?:the\s+)?(?:infeasibility|running)\s+.*(?:copilot|LLM|CLI)\s+calls?",
+    r"hardcoded.*(?:detection|probability|score)",
+    r"Beta\s*\(\s*\d",  # Beta distribution sampling (fake rubric scores)
+]
+
+_SIMULATED_MODEL_MARKERS = [
+    "simulated",
+    "mock",
+    "fake",
+    "synthetic-model",
+    "placeholder",
+]
+
+
+@dataclass
+class SimulationBypassResult:
+    """Result of simulation/LLM-bypass detection."""
+    passed: bool
+    flags: list[FabricationFlag] = field(default_factory=list)
+    results_model: str = ""
+    cache_entries: int = 0
+    expected_min_cache: int = 0
+    bypass_files: list[str] = field(default_factory=list)
+
+    @property
+    def critical_flags(self) -> list[FabricationFlag]:
+        return [f for f in self.flags if f.severity == "critical"]
+
+
+def detect_simulation_bypass(
+    workspace: Path,
+    expected_min_llm_calls: int = 0,
+) -> SimulationBypassResult:
+    """Detect if an agent substituted simulation for real LLM calls.
+
+    Checks:
+    1. results.json model field for "simulated" markers
+    2. .llm_cache/ entry count vs expected minimum
+    3. Source files for simulation-bypass code patterns
+    4. Presence of alternative runner scripts that bypass the mandated entry point
+    """
+    result = SimulationBypassResult(passed=True)
+
+    # 1. Check results.json model field
+    for results_path in _find_results_files(workspace):
+        try:
+            data = json.loads(results_path.read_text())
+            model = ""
+            if isinstance(data, dict):
+                model = str(data.get("model", data.get("metadata", {}).get("model", "")))
+            if model:
+                result.results_model = model
+                model_lower = model.lower()
+                for marker in _SIMULATED_MODEL_MARKERS:
+                    if marker in model_lower:
+                        result.flags.append(FabricationFlag(
+                            severity="critical",
+                            category="simulated_model",
+                            message=(
+                                f"results.json model='{model}' contains '{marker}' — "
+                                f"results appear to come from simulation, not real LLM calls"
+                            ),
+                        ))
+                        result.passed = False
+                        break
+        except (json.JSONDecodeError, OSError):
+            continue
+
+    # 2. Check .llm_cache/ entry count
+    cache_dirs = list(workspace.rglob(".llm_cache"))
+    total_cache = 0
+    for cache_dir in cache_dirs:
+        if cache_dir.is_dir():
+            total_cache += sum(1 for f in cache_dir.iterdir() if f.is_file())
+    result.cache_entries = total_cache
+    result.expected_min_cache = expected_min_llm_calls
+
+    if expected_min_llm_calls > 0 and total_cache < expected_min_llm_calls:
+        severity = "critical" if total_cache < expected_min_llm_calls // 4 else "warning"
+        result.flags.append(FabricationFlag(
+            severity=severity,
+            category="insufficient_cache",
+            message=(
+                f"LLM cache has {total_cache} entries but experiment design "
+                f"requires ≥{expected_min_llm_calls} real LLM calls. "
+                f"Results may not come from real LLM execution."
+            ),
+        ))
+        if severity == "critical":
+            result.passed = False
+
+    # 3. Scan source files for simulation-bypass patterns
+    src_dirs = [workspace / "src", workspace / "demos"]
+    # Also check top-level Python files
+    src_files: list[Path] = list(workspace.glob("*.py"))
+    for src_dir in src_dirs:
+        if src_dir.is_dir():
+            src_files.extend(src_dir.rglob("*.py"))
+
+    compiled_patterns = [re.compile(p, re.IGNORECASE) for p in _SIMULATION_BYPASS_PATTERNS]
+
+    for py_file in src_files:
+        try:
+            content = py_file.read_text(errors="replace")
+        except OSError:
+            continue
+
+        for pattern in compiled_patterns:
+            matches = pattern.findall(content)
+            if matches:
+                # Check if this is in a file that looks like a simulation substitute
+                rel_path = str(py_file.relative_to(workspace))
+                # Heuristic: files named *sim*, *mock*, *fake* are suspect
+                fname_lower = py_file.stem.lower()
+                is_suspect_file = any(
+                    kw in fname_lower
+                    for kw in ("sim", "mock", "fake", "stub", "synthetic")
+                )
+                if is_suspect_file:
+                    result.bypass_files.append(rel_path)
+                    result.flags.append(FabricationFlag(
+                        severity="critical",
+                        category="simulation_bypass",
+                        message=(
+                            f"File '{rel_path}' appears to be a simulation substitute "
+                            f"for real LLM calls (matched: {pattern.pattern!r})"
+                        ),
+                    ))
+                    result.passed = False
+                    break  # one flag per file is enough
+
+    # 4. Check for alternative runner scripts that bypass mandated entry point
+    run_files = list(workspace.glob("run_*.py")) + list(workspace.glob("run*.py"))
+    for demo_dir in workspace.glob("demos/*/"):
+        run_files.extend(demo_dir.glob("run_*.py"))
+        run_files.extend(demo_dir.glob("run*.py"))
+
+    for rf in run_files:
+        fname_lower = rf.stem.lower()
+        if any(kw in fname_lower for kw in ("sim", "mock", "fake")):
+            rel_path = str(rf.relative_to(workspace))
+            result.bypass_files.append(rel_path)
+            result.flags.append(FabricationFlag(
+                severity="warning",
+                category="alternative_runner",
+                message=(
+                    f"Alternative runner '{rel_path}' exists alongside the mandated "
+                    f"entry point. Verify results were produced by the correct runner."
+                ),
+            ))
+
+    return result
+
+
+def _find_results_files(workspace: Path) -> list[Path]:
+    """Find results.json files in the workspace."""
+    results: list[Path] = []
+    for p in workspace.rglob("results.json"):
+        # Skip .git, node_modules, etc.
+        parts = p.parts
+        if any(part.startswith(".") and part != "." for part in parts):
+            if ".swarm" not in str(p):
+                continue
+        results.append(p)
     return results
 
 
@@ -1017,6 +1205,15 @@ def check_merge_gates(task: dict, workspace: Path, rigor: str) -> tuple[bool, li
         for flag in fab_result.critical_flags:
             blockers.append(f"FABRICATION_CHECK: {flag.message}")
 
+    # EVA enforcement: investigation tasks at Analytical+ must have EVA recorded
+    task_type = _extract_field(notes, "TASK_TYPE")
+    if task_type == "investigation" and rigor in ("analytical", "scientific", "experimental"):
+        eva_status = _extract_field(notes, "EVA")
+        if not eva_status:
+            blockers.append("EVA not recorded — run Experimental Validity Audit before merge")
+        elif eva_status.upper().startswith("FAIL"):
+            blockers.append("EVA FAILED — experiment design invalid, fix before merge")
+
     return len(blockers) == 0, blockers
 
 
@@ -1132,10 +1329,18 @@ def _find_consistency_conflicts(workspace: Path, tasks: list[dict] | None = None
     for task in tasks:
         notes = task.get("notes", "")
         if "CONSISTENCY_CONFLICT" in notes and task.get("status") != "closed":
+            conflict_val = _extract_field(notes, "CONSISTENCY_CONFLICT")
+            if " vs " in conflict_val:
+                parts = conflict_val.split(" vs ")
+                finding_a = parts[0].strip()
+                finding_b = parts[-1].strip()
+            else:
+                finding_a = ""
+                finding_b = ""
             conflicts.append({
                 "id": task.get("id", ""),
-                "finding_a": _extract_field(notes, "CONSISTENCY_CONFLICT").split(" vs ")[0].strip() if " vs " in notes else "",
-                "finding_b": _extract_field(notes, "CONSISTENCY_CONFLICT").split(" vs ")[-1].strip() if " vs " in notes else "",
+                "finding_a": finding_a,
+                "finding_b": finding_b,
             })
     return conflicts
 
@@ -1209,6 +1414,88 @@ def _find_unreplicated_high_impact(workspace: Path, tasks: list[dict] | None = N
     return unreplicated
 
 
+def _find_design_invalid(workspace: Path, tasks: list[dict] | None = None) -> list[str]:
+    """Find open tasks flagged DESIGN_INVALID."""
+    if tasks is None:
+        tasks = _fetch_tasks(workspace)
+    if not tasks:
+        return []
+    return [t.get("id", "") for t in tasks
+            if "DESIGN_INVALID" in t.get("notes", "")
+            and t.get("status") != "closed"]
+
+
+def _check_success_criteria(workspace: Path) -> list[str]:
+    """Check .swarm/success-criteria.json and return blockers for unmet criteria."""
+    path = workspace / ".swarm" / "success-criteria.json"
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text())
+        if not isinstance(data, list):
+            return []
+    except (json.JSONDecodeError, OSError):
+        return []
+    blockers: list[str] = []
+    for criterion in data:
+        if not isinstance(criterion, dict):
+            continue
+        cid = criterion.get("id", "?")
+        met = criterion.get("met", False)
+        desc = criterion.get("description", "")
+        if not met:
+            blockers.append(f"Success criterion {cid} not met: {desc}")
+    return blockers
+
+
+def _check_hypothesis_alignment(workspace: Path) -> list[str]:
+    """Check if confirmed hypotheses align with actual result direction."""
+    bm = load_belief_map(workspace)
+    blockers: list[str] = []
+    for h in bm.hypotheses:
+        if h.status != "confirmed":
+            continue
+        # Check if there's a contradicting finding in the evidence chain
+        # by looking for VALENCE:negative on a finding that supports this hypothesis
+        if not h.evidence:
+            continue
+        # We can only detect misalignment if the workspace has tasks
+        # The orchestrator should mark hypotheses with RESULT_DIRECTION
+        # For now, flag any confirmed hypothesis with explicit contradiction note
+    # Check tasks for explicit RESULT_CONTRADICTS_HYPOTHESIS flags
+    tasks = _fetch_tasks(workspace)
+    if tasks:
+        for t in tasks:
+            notes = t.get("notes", "")
+            if "RESULT_CONTRADICTS_HYPOTHESIS" in notes and t.get("status") != "closed":
+                blockers.append(
+                    f"Result contradicts hypothesis in task {t.get('id', '?')}: "
+                    f"{_extract_field(notes, 'RESULT_CONTRADICTS_HYPOTHESIS')}"
+                )
+    return blockers
+
+
+def load_success_criteria(workspace: Path) -> list[dict]:
+    """Load success criteria from .swarm/success-criteria.json."""
+    path = workspace / ".swarm" / "success-criteria.json"
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text())
+        if not isinstance(data, list):
+            return []
+        return [c for c in data if isinstance(c, dict)]
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
+def save_success_criteria(workspace: Path, criteria: list[dict]) -> None:
+    """Save success criteria to .swarm/success-criteria.json."""
+    path = workspace / ".swarm" / "success-criteria.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(criteria, indent=2))
+
+
 # ---------------------------------------------------------------------------
 # Claim-Evidence Registry
 # ---------------------------------------------------------------------------
@@ -1255,12 +1542,20 @@ def load_claim_evidence(workspace: Path) -> ClaimEvidenceRegistry:
         return ClaimEvidenceRegistry()
     try:
         data = json.loads(path.read_text())
+        if isinstance(data, list):
+            data = {"claims": data}
+        if not isinstance(data, dict):
+            logger.warning("claim-evidence.json: expected dict, got %s", type(data).__name__)
+            return ClaimEvidenceRegistry()
         reg = ClaimEvidenceRegistry(
             orphan_findings=data.get("orphan_findings", []),
             unsupported_claims=data.get("unsupported_claims", []),
             coverage_score=data.get("coverage_score", 0.0),
         )
         for c in data.get("claims", []):
+            if not isinstance(c, dict):
+                logger.warning("claim-evidence.json: skipping non-dict claim entry: %s", type(c).__name__)
+                continue
             reg.claims.append(ClaimEvidence(
                 claim_id=c.get("claim_id", ""),
                 claim_text=c.get("claim_text", ""),
@@ -1270,7 +1565,7 @@ def load_claim_evidence(workspace: Path) -> ClaimEvidenceRegistry:
                 interpretation=c.get("interpretation", ""),
             ))
         return reg
-    except (json.JSONDecodeError, OSError) as e:
+    except (json.JSONDecodeError, OSError, AttributeError, TypeError) as e:
         logger.warning("Failed to load claim-evidence registry: %s", e)
         return ClaimEvidenceRegistry()
 
@@ -1577,3 +1872,363 @@ def _clean_finding_title(title: str) -> str:
             title = title[len(prefix):]
             break
     return title.strip()
+
+
+# ---------------------------------------------------------------------------
+# Investigation-Level Invariants
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Invariant:
+    """A cross-cutting constraint that must hold for all agents."""
+    id: str
+    description: str
+    check_type: str  # prompt_contains, output_excludes, metric_equals, custom
+    params: dict = field(default_factory=dict)
+
+
+def load_invariants(workspace: Path) -> list[Invariant]:
+    """Load invariants from .swarm/invariants.json."""
+    path = workspace / ".swarm" / "invariants.json"
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text())
+        if not isinstance(data, list):
+            return []
+        return [
+            Invariant(
+                id=item.get("id", ""),
+                description=item.get("description", ""),
+                check_type=item.get("check_type", "custom"),
+                params=item.get("params", {}),
+            )
+            for item in data
+            if isinstance(item, dict) and item.get("id")
+        ]
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning("Failed to load invariants: %s", e)
+        return []
+
+
+def save_invariants(workspace: Path, invariants: list[Invariant]) -> None:
+    """Save invariants to .swarm/invariants.json."""
+    path = workspace / ".swarm" / "invariants.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps([asdict(inv) for inv in invariants], indent=2))
+
+
+def format_invariants_for_prompt(invariants: list[Invariant]) -> str:
+    """Format invariants for injection into agent prompts."""
+    if not invariants:
+        return ""
+    lines = ["## Investigation Invariants — MANDATORY\n"]
+    lines.append("These constraints apply to ALL agents. Violations are structural failures.\n")
+    for inv in invariants:
+        lines.append(f"- **{inv.id}**: {inv.description}")
+    return "\n".join(lines)
+
+
+@dataclass
+class InvariantCheckResult:
+    """Result of checking invariants against agent output."""
+    passed: bool
+    violations: list[str] = field(default_factory=list)
+
+
+def check_invariants(invariants: list[Invariant], context: str) -> InvariantCheckResult:
+    """Check invariants against a context string (agent output, prompt, etc.)."""
+    violations: list[str] = []
+    for inv in invariants:
+        if inv.check_type == "prompt_contains":
+            required = inv.params.get("text", "")
+            if required and required not in context:
+                violations.append(f"{inv.id}: required text not found")
+        elif inv.check_type == "output_excludes":
+            forbidden = inv.params.get("text", "")
+            if forbidden and forbidden in context:
+                violations.append(f"{inv.id}: forbidden text found")
+    return InvariantCheckResult(passed=len(violations) == 0, violations=violations)
+
+
+def validate_data_invariants(workspace: Path, invariants: list[Invariant]) -> InvariantCheckResult:
+    """Check data-file invariants (e.g. min_csv_rows) against actual files.
+
+    Scans the workspace for CSV files matching the invariant's glob pattern
+    and verifies each meets the minimum row count.
+    """
+    import csv as csv_mod
+    violations: list[str] = []
+    for inv in invariants:
+        if inv.check_type != "min_csv_rows":
+            continue
+        min_rows = int(inv.params.get("min_rows", 0))
+        glob_pattern = inv.params.get("glob", "**/*.csv")
+        if min_rows <= 0:
+            continue
+        csv_files = list(workspace.glob(glob_pattern))
+        for csv_file in csv_files:
+            try:
+                with open(csv_file) as f:
+                    reader = csv_mod.reader(f)
+                    header = next(reader, None)
+                    if header is None:
+                        violations.append(
+                            f"{inv.id}: {csv_file.relative_to(workspace)} has no rows (empty file)"
+                        )
+                        continue
+                    row_count = sum(1 for _ in reader)
+                if row_count < min_rows:
+                    violations.append(
+                        f"{inv.id}: {csv_file.relative_to(workspace)} has {row_count} data rows, "
+                        f"minimum is {min_rows}"
+                    )
+            except (OSError, StopIteration):
+                violations.append(
+                    f"{inv.id}: {csv_file.relative_to(workspace)} could not be read"
+                )
+    return InvariantCheckResult(passed=len(violations) == 0, violations=violations)
+
+
+# ---------------------------------------------------------------------------
+# REVISE Task & Calibration Check
+# ---------------------------------------------------------------------------
+
+@dataclass
+class CalibrationResult:
+    """Result of checking pilot experiment calibration."""
+    passed: bool
+    metric_name: str
+    actual_value: float
+    target_lo: float
+    target_hi: float
+    message: str
+
+
+def check_calibration(task_notes: str) -> list[CalibrationResult]:
+    """Check whether pilot experiment results meet calibration targets.
+
+    Reads CALIBRATION_TARGET and CALIBRATION_ACTUAL from Beads notes.
+    Format: CALIBRATION_TARGET:metric_name=[lo, hi]
+            CALIBRATION_ACTUAL:metric_name=value
+    """
+    results: list[CalibrationResult] = []
+    targets: dict[str, tuple[float, float]] = {}
+    actuals: dict[str, float] = {}
+
+    for line in task_notes.split("\n"):
+        line = line.strip()
+        # Parse targets: CALIBRATION_TARGET:recall_l4=[0.5, 0.7]
+        t_match = re.search(
+            r"CALIBRATION_TARGET\s*:\s*(\w+)\s*=\s*\[([\d.]+)\s*,\s*([\d.]+)\]",
+            line, re.I,
+        )
+        if t_match:
+            targets[t_match.group(1)] = (float(t_match.group(2)), float(t_match.group(3)))
+        # Parse actuals: CALIBRATION_ACTUAL:recall_l4=0.65
+        a_match = re.search(
+            r"CALIBRATION_ACTUAL\s*:\s*(\w+)\s*=\s*([\d.]+)",
+            line, re.I,
+        )
+        if a_match:
+            actuals[a_match.group(1)] = float(a_match.group(2))
+
+    for metric, (lo, hi) in targets.items():
+        actual = actuals.get(metric)
+        if actual is None:
+            results.append(CalibrationResult(
+                passed=False, metric_name=metric,
+                actual_value=0.0, target_lo=lo, target_hi=hi,
+                message=f"{metric}: no actual value reported",
+            ))
+        elif lo <= actual <= hi:
+            results.append(CalibrationResult(
+                passed=True, metric_name=metric,
+                actual_value=actual, target_lo=lo, target_hi=hi,
+                message=f"{metric}: {actual:.2f} within [{lo}, {hi}]",
+            ))
+        else:
+            results.append(CalibrationResult(
+                passed=False, metric_name=metric,
+                actual_value=actual, target_lo=lo, target_hi=hi,
+                message=f"{metric}: {actual:.2f} outside [{lo}, {hi}]",
+            ))
+
+    return results
+
+
+def parse_revise_context(task_notes: str) -> dict:
+    """Extract REVISE metadata from Beads notes."""
+    ctx: dict = {}
+    ctx["revise_of"] = _extract_field(task_notes, "REVISE_OF")
+    ctx["prior_result"] = _extract_field(task_notes, "PRIOR_RESULT")
+    ctx["failure_diagnosis"] = _extract_field(task_notes, "FAILURE_DIAGNOSIS")
+    ctx["revised_params"] = _extract_field(task_notes, "REVISED_PARAMS")
+    return {k: v for k, v in ctx.items() if v}
+
+
+# ---------------------------------------------------------------------------
+# Structured Heartbeats
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Heartbeat:
+    """A single heartbeat from a running agent."""
+    branch: str
+    phase: str
+    iteration: int
+    last_action: str
+    status: str
+    timestamp: str = ""
+
+
+def write_heartbeat(workspace: Path, heartbeat: Heartbeat) -> None:
+    """Append a heartbeat entry to .swarm/heartbeat-<branch>.jsonl."""
+    heartbeat.timestamp = datetime.now(timezone.utc).isoformat()
+    path = workspace / ".swarm" / f"heartbeat-{heartbeat.branch}.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a") as f:
+        f.write(json.dumps(asdict(heartbeat)) + "\n")
+
+
+def read_heartbeats(workspace: Path, branch: str,
+                    last_n: int = 10) -> list[Heartbeat]:
+    """Read last N heartbeats for a branch."""
+    path = workspace / ".swarm" / f"heartbeat-{branch}.jsonl"
+    if not path.exists():
+        return []
+    heartbeats: list[Heartbeat] = []
+    try:
+        lines = path.read_text().strip().split("\n")
+        for line in lines[-last_n:]:
+            if not line.strip():
+                continue
+            data = json.loads(line)
+            heartbeats.append(Heartbeat(
+                branch=data.get("branch", branch),
+                phase=data.get("phase", ""),
+                iteration=data.get("iteration", 0),
+                last_action=data.get("last_action", ""),
+                status=data.get("status", ""),
+                timestamp=data.get("timestamp", ""),
+            ))
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning("Failed to read heartbeats for %s: %s", branch, e)
+    return heartbeats
+
+
+def check_heartbeat_stall(workspace: Path, branch: str,
+                          stall_minutes: int = 10) -> bool:
+    """Return True if the agent appears stalled (same status for stall_minutes)."""
+    beats = read_heartbeats(workspace, branch, last_n=5)
+    if len(beats) < 2:
+        return False
+    # Check if all recent heartbeats have the same status + phase
+    signatures = {(b.phase, b.status) for b in beats}
+    if len(signatures) > 1:
+        return False
+    # Check time span
+    try:
+        first_ts = datetime.fromisoformat(beats[0].timestamp)
+        last_ts = datetime.fromisoformat(beats[-1].timestamp)
+        span = (last_ts - first_ts).total_seconds() / 60
+        return span >= stall_minutes
+    except (ValueError, TypeError):
+        return False
+
+
+# ---------------------------------------------------------------------------
+# LLM-as-Judge Primitive
+# ---------------------------------------------------------------------------
+
+@dataclass
+class JudgeVerdict:
+    """Structured verdict from an LLM judge call."""
+    match: bool
+    confidence: float  # 0.0–1.0
+    justification: str
+    rubric_id: str = ""
+    model: str = ""
+
+
+@dataclass
+class JudgeRubric:
+    """Structured evaluation rubric for LLM judge calls."""
+    rubric_id: str
+    criteria: str
+    scale: str = "binary"  # binary, likert5, score100
+    examples: str = ""
+
+
+def format_judge_prompt(rubric: JudgeRubric, candidate: str,
+                       reference: str) -> str:
+    """Format a structured judge prompt from rubric + candidate + reference."""
+    parts = [
+        "You are an evaluation judge. Assess whether the candidate matches "
+        "the reference according to the rubric below.\n",
+        f"## Rubric\n{rubric.criteria}\n",
+        f"## Scale\n{rubric.scale}\n",
+    ]
+    if rubric.examples:
+        parts.append(f"## Examples\n{rubric.examples}\n")
+    parts.append(f"## Reference\n{reference}\n")
+    parts.append(f"## Candidate\n{candidate}\n")
+    parts.append(
+        "## Your Verdict\n"
+        "Respond with EXACTLY this JSON (no other text):\n"
+        '{"match": true/false, "confidence": 0.0-1.0, "justification": "..."}\n'
+    )
+    return "\n".join(parts)
+
+
+def parse_judge_verdict(raw_output: str, rubric_id: str = "",
+                       model: str = "") -> JudgeVerdict:
+    """Parse a judge verdict from raw LLM output."""
+    # Try to extract JSON from the output
+    json_match = re.search(r'\{[^{}]*"match"[^{}]*\}', raw_output, re.S)
+    if json_match:
+        try:
+            data = json.loads(json_match.group())
+            return JudgeVerdict(
+                match=bool(data.get("match", False)),
+                confidence=float(data.get("confidence", 0.0)),
+                justification=str(data.get("justification", "")),
+                rubric_id=rubric_id,
+                model=model,
+            )
+        except (json.JSONDecodeError, ValueError, TypeError):
+            pass
+    # Fallback: look for simple match determination
+    lower = raw_output.lower()
+    if '"match": true' in lower:
+        match_val = True
+    elif '"match": false' in lower:
+        match_val = False
+    else:
+        match_val = "yes" in lower.split("\n")[0]
+    return JudgeVerdict(
+        match=match_val,
+        confidence=0.5,
+        justification=raw_output[:200],
+        rubric_id=rubric_id,
+        model=model,
+    )
+
+
+def log_judge_call(workspace: Path, rubric: JudgeRubric,
+                   verdict: JudgeVerdict) -> None:
+    """Append a judge call to the experiment ledger."""
+    path = workspace / ".swarm" / "judge-log.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "rubric_id": rubric.rubric_id,
+        "rubric_criteria": rubric.criteria[:200],
+        "scale": rubric.scale,
+        "match": verdict.match,
+        "confidence": verdict.confidence,
+        "justification": verdict.justification[:500],
+        "model": verdict.model,
+    }
+    with open(path, "a") as f:
+        f.write(json.dumps(entry) + "\n")

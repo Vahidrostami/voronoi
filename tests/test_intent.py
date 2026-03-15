@@ -4,9 +4,11 @@ import pytest
 
 from voronoi.gateway.intent import (
     ClassifiedIntent,
+    ClassifiedPhase,
     RigorLevel,
     WorkflowMode,
     classify,
+    classify_compound,
 )
 
 
@@ -188,3 +190,70 @@ class TestEdgeCases:
     def test_paper_about_classified_as_hybrid(self):
         r = classify("paper on the effects of replay buffer size")
         assert r.mode == WorkflowMode.HYBRID
+
+
+# ---------------------------------------------------------------------------
+# Compound intent detection
+# ---------------------------------------------------------------------------
+
+class TestCompoundIntent:
+    """Test multi-phase prompt detection."""
+
+    def test_single_phase_returns_one(self):
+        phases = classify_compound("Build a REST API")
+        assert len(phases) == 1
+        assert phases[0].mode == WorkflowMode.BUILD
+
+    def test_empty_returns_empty(self):
+        assert classify_compound("") == []
+
+    def test_two_phases_with_then(self):
+        text = (
+            "Build the data generation pipeline with synthetic scenarios. "
+            "Then investigate whether encoding level affects discovery recall."
+        )
+        phases = classify_compound(text)
+        assert len(phases) >= 2
+        modes = [p.mode for p in phases]
+        assert WorkflowMode.BUILD in modes
+        assert WorkflowMode.INVESTIGATE in modes
+
+    def test_numbered_steps(self):
+        text = (
+            "1. Create synthetic data with planted effects.\n"
+            "2. Investigate whether encoding level affects discovery recall.\n"
+            "3. Build an interactive webapp showing results."
+        )
+        phases = classify_compound(text)
+        assert len(phases) >= 2
+
+    def test_section_headers(self):
+        text = (
+            "## Data Generation\nBuild synthetic datasets with planted effects.\n"
+            "## Experiment\nInvestigate encoding ablation across four levels.\n"
+            "## Deliverables\nWrite a paper and deploy a webapp."
+        )
+        phases = classify_compound(text)
+        assert len(phases) >= 2
+
+    def test_phases_are_ordered(self):
+        text = (
+            "Build the infrastructure first. "
+            "Then investigate the hypothesis. "
+            "Finally, create the paper and webapp."
+        )
+        phases = classify_compound(text)
+        for i in range(1, len(phases)):
+            assert phases[i].order > phases[i - 1].order
+
+    def test_deduplicates_consecutive_same_mode(self):
+        text = (
+            "Build module A. Then build module B. "
+            "Then investigate the root cause."
+        )
+        phases = classify_compound(text)
+        # Consecutive BUILD phases should be merged
+        modes = [p.mode for p in phases]
+        for i in range(1, len(modes)):
+            assert not (modes[i] == modes[i - 1] and
+                        phases[i].rigor == phases[i - 1].rigor)

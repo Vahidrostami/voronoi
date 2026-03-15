@@ -1,80 +1,61 @@
 # Demo: Coupled Decision Spaces
 
-**Does structured encoding of heterogeneous knowledge beat naive RAG for coupled decision reasoning?**
+**Does structured encoding of heterogeneous knowledge beat raw text for cross-lever effect discovery — and does encoding unlock cross-source reasoning?**
 
-A multi-agent system that encodes heterogeneous knowledge sources (quantitative data, codified policies, expert judgment, decision playbooks) into reasoning-ready representations — then validates whether structured encoding outperforms "just paste everything into the prompt" on a combinatorial decision space with planted ground truth.
+A multi-agent system that encodes heterogeneous knowledge sources (quantitative data, codified policies, expert judgment, decision playbooks) into reasoning-ready representations — then validates whether structured encoding outperforms "just paste everything into the prompt" on a coupled decision space with planted ground truth.
 
 ## What It Does
 
-Generates a synthetic beverage company dataset ("BevCo") with planted effects that are **genuinely misleading in raw form** but correctly interpretable with structured encoding. An agent system must discover these effects, validate them experimentally, and write an academic paper with the results.
+Generates synthetic RGM (Revenue Growth Management) scenarios with planted effects that are **genuinely misleading in raw form** but correctly interpretable with structured encoding. A single 2×2 factorial tests encoding and source diversity jointly; a separate pipeline observation tests compression.
 
-### Encoding Ablation Ladder (the core experiment)
+### 2×2 Factorial Design
 
-| Level | Data | Knowledge | Playbook | What it tests |
-|-------|------|-----------|----------|--------------|
-| **1. Naive RAG** | N rows as markdown table | Policies as bullets, beliefs as prose | Prose description | The "just paste it" baseline |
-| **2. + Statistical pre-computation** | Statistical profiles (distributions, correlations, segments, trends) | Still unstructured text | Still prose | Value of Python-computed analytics |
-| **3. + Type-aware encoding** | Statistical profiles | Tiered constraint vectors, temporal belief objects with decay | Still prose | Value of epistemic typing |
-| **4. Full structured** | Statistical profiles | Typed constraints, temporal beliefs | Process graphs, typed rule catalog, technique registry | Value of playbook structuring |
+|  | **Data-only** | **All-sources** |
+|--|---------------|-----------------|
+| **L1 (raw text)** | L1-data | L1-all |
+| **L4 (structured)** | L4-data | L4-all |
 
-All levels receive the **same data sample** (same N rows) and **all four knowledge sources** — only encoding quality varies.
+Three hypothesis tests from one dataset:
 
-### Planted Effect Categories (designed to break naive RAG)
+| Claim | Test |
+|-------|------|
+| Encoding enables discovery | Main effect of encoding (L4 vs L1) |
+| Cross-source reasoning works | Main effect of sources at L4 |
+| **Encoding enables cross-source reasoning** | **Interaction: source benefit is larger at L4 than L1** |
 
-| Category | Why Raw Rows Mislead | What Encoding Fixes It |
-|----------|---------------------|----------------------|
-| Simpson's paradox (≥2) | Aggregate correlation tells the wrong story | Segment-aware statistical profiles resolve it |
-| Confounded coupling (≥1) | Shared temporal confound creates spurious correlation | Temporal detrending removes it |
-| Constraint-boundary effect (≥2) | Data says "go" but a hard constraint says "stop" | Typed constraint vectors with scope flag it |
-| Decayed belief trap (≥1) | Expert belief was true historically, data has shifted | Temporal belief metadata + trend break detection |
-| Nonlinear segment interaction (≥1) | Linear correlation across all rows shows nothing | Segment-aware sub-population splits surface it |
+The interaction is the headline finding.
 
-### Playbook Complexity (30–50 queries across 6+ question types)
+### E3: Pipeline Compression (Observational)
 
-| Trap | What It Tests |
-|------|---------------|
-| Wrong-process trap | Question looks like one type but is actually another — wrong process, wrong answer |
-| Missing shared-rule trap | Rule from another question type's context is required but not loaded |
-| Technique-reuse trap | Shared technique needs scoping adaptation, not blind reuse |
-| Cross-chain trap | Answer depends on output from a prior question of a different type |
-| Context-dependent strictness trap | Same rule is hard vs. soft depending on question type |
+Full pipeline (diagnostic agents → causal synthesis → quality gate) on all scenarios at L4-all. Measures effective compression from naive combinatorial space.
 
-### Knowledge Sources
+### Signal Chain
 
-- **Quantitative**: ~1M transaction rows, price elasticities, market share data
-- **Policy**: 15+ codified business rules (hard/soft constraints with scope and strictness per question type)
-- **Expert**: 15–20 qualitative beliefs with confidence scores, temporal validity, and decay (mix of correct, outdated, conditional)
-- **Playbook**: 6+ question types with processes, 20+ overlapping rules, 10+ shared techniques, cross-question dependencies
+`encoding → single LLM discovery call → evaluation`. No pipeline between encoding and evaluation.
+
+### Planted Effect Types
+
+| Category | Why Raw Rows Mislead | What Encoding Fixes |
+|----------|---------------------|---------------------|
+| Simpson's paradox | Aggregate masks subgroup reversal | Segment-level stats pre-computed |
+| Constraint boundary | Constraint buried in prose | Typed vector with threshold |
+
+### Evaluation
+
+Two-stage rubric matching: code-based pre-filter (Variables + Direction from structured JSON), then batched LLM judge for all 5 dimensions. Pilot validates whether 1 vote suffices (α ≥ 0.85) or 3-vote majority needed.
 
 ## How to Run
-
-### Option A: CLI (recommended)
 
 ```bash
 voronoi demo run coupled-decisions
 ```
 
-Watch agents:
-```bash
-tmux attach -t $(basename $(pwd))-swarm
-```
-
-### Option B: Interactive
-
-```bash
-voronoi init
-copilot
-> /swarm Build from demos/coupled-decisions/PROMPT.md
-```
-
-## Wave Structure
+## Phases
 
 ```
-Wave 1: Data generator (synthetic BevCo with encoding-sensitive planted effects)
-Wave 2: Knowledge encoding + multi-agent reasoning system (parallel)
-Wave 3: Experiments (encoding ablation ladder, cross-source, pipeline compression, playbook reasoning)
-Wave 4: Validation gate (statistical audit, methodology critique, reproducibility, adversarial)
-Wave 5: Paper + webapp (parallel — gated on validation passing)
+Phase 1: Pilot — 2 scenarios, all 4 cells, k=3 runs, calibration gates
+Phase 2: Full — ≥12 scenarios × 4 cells × k=3 runs, ANOVA
+Phase 3: Paper + webapp (gated on Phase 2)
 ```
 
 ## Output
@@ -82,36 +63,33 @@ Wave 5: Paper + webapp (parallel — gated on validation passing)
 ```
 demos/coupled-decisions/
   output/
-    results.json            # All experiment results
-    validation_report.json  # Validation gate verdicts (must all PASS)
+    results.json            # Per-scenario per-cell per-run metrics + ANOVA
+    pipeline_scores.json    # Quality gate 5-dimension scores
+    encoding_hashes.json    # SHA-256 + char counts
     paper/
-      paper.tex             # LaTeX source
-      paper.pdf             # Compiled PDF
-      figures/              # Generated figures
+      paper.tex + paper.pdf + figures/
     index.html              # Interactive webapp
-    data/                   # Generated synthetic data files
+    data/                   # Synthetic data + ground_truth.json
   src/                      # All source code
+  run_experiments.py        # Single entry point
 ```
 
 ## Success Criteria
 
-1. Full system discovers ≥4/5 planted effects; best ablation discovers ≤3/5
-2. Knowledge encoding yields ≥80% cross-type query accuracy (vs ≤50% without)
-3. Decision space reduced from 10^18 → ≤15 recommendations with zero hard-constraint violations
-4. Process selection accuracy ≥80% on 30–50 diverse queries; flat baseline ≤60%
-5. All 4 validation stages produce PASS verdicts
-6. Paper compiles with figures/tables from validated data
-7. Webapp opens in browser with interactive results
+1. Encoding main effect OR interaction p < 0.05
+2. Interaction on cross-source MBRS (encoding × sources)
+3. Pipeline effective compression ≥ 100×
+4. Three invariants formally defined in paper
+5. Paper compiles with figures from actual data
+6. All claims backed by effect sizes and CIs
+7. Pipeline architecture matches abstract (≥2 agents, synthesis tuples, 5-dim gate)
+
+## Call Budget
+
+~336 LLM calls (best case) to ~528 (3-vote fallback). See PROMPT.md for breakdown.
 
 ## Prerequisites
 
 - Python 3.11+, numpy, scipy, matplotlib
-- `copilot` CLI in PATH (falls back to heuristic reasoning if unavailable)
+- `copilot` CLI in PATH
 - beads, tmux, gh
-
-## Why This Demo
-
-- **Validation rigor**: 4-stage validation gate before paper can be written
-- **Ground truth**: planted effects allow objective measurement of system quality
-- **Cross-source reasoning**: tests whether agents can synthesize fundamentally different knowledge types
-- **Real-world pattern**: coupled decision spaces appear in pricing, medicine, supply chain, and more

@@ -39,6 +39,8 @@ class ServerConfig:
         self.max_agents_per_investigation = 4
         self.agent_command = "copilot"
         self.agent_flags = "--allow-all"
+        self.orchestrator_model = ""  # e.g. "claude-opus-4.6"
+        self.worker_model = ""        # e.g. "claude-sonnet-4.6"
         self.workspace_retention_days = 30
         self.github_lab_org = "voronoi-lab"
         self.github_visibility = "private"
@@ -57,6 +59,12 @@ class ServerConfig:
                 )
                 self.agent_command = data.get("server", {}).get("agent_command", self.agent_command)
                 self.agent_flags = data.get("server", {}).get("agent_flags", self.agent_flags)
+                self.orchestrator_model = data.get("server", {}).get(
+                    "orchestrator_model", self.orchestrator_model
+                )
+                self.worker_model = data.get("server", {}).get(
+                    "worker_model", self.worker_model
+                )
                 self.workspace_retention_days = data.get("server", {}).get(
                     "workspace_retention_days", self.workspace_retention_days
                 )
@@ -89,12 +97,21 @@ class ServerConfig:
             self.agent_command = env("VORONOI_AGENT_COMMAND")
         if env("VORONOI_AGENT_FLAGS"):
             self.agent_flags = env("VORONOI_AGENT_FLAGS")
-        if env("VORONOI_MAX_CONCURRENT"):
-            self.max_concurrent = int(env("VORONOI_MAX_CONCURRENT"))
-        if env("VORONOI_MAX_AGENTS"):
-            self.max_agents_per_investigation = int(env("VORONOI_MAX_AGENTS"))
-        if env("VORONOI_WORKSPACE_RETENTION_DAYS"):
-            self.workspace_retention_days = int(env("VORONOI_WORKSPACE_RETENTION_DAYS"))
+        if env("VORONOI_ORCHESTRATOR_MODEL"):
+            self.orchestrator_model = env("VORONOI_ORCHESTRATOR_MODEL")
+        if env("VORONOI_WORKER_MODEL"):
+            self.worker_model = env("VORONOI_WORKER_MODEL")
+        for attr, var in [
+            ("max_concurrent", "VORONOI_MAX_CONCURRENT"),
+            ("max_agents_per_investigation", "VORONOI_MAX_AGENTS"),
+            ("workspace_retention_days", "VORONOI_WORKSPACE_RETENTION_DAYS"),
+        ]:
+            val = env(var)
+            if val:
+                try:
+                    setattr(self, attr, int(val))
+                except ValueError:
+                    pass  # ignore non-integer env values
 
         if env("VORONOI_GITHUB_LAB_ORG"):
             self.github_lab_org = env("VORONOI_GITHUB_LAB_ORG")
@@ -107,12 +124,18 @@ class ServerConfig:
             self.sandbox.enabled = env("VORONOI_SANDBOX_ENABLED").lower() in ("true", "1", "yes")
         if env("VORONOI_SANDBOX_IMAGE"):
             self.sandbox.image = env("VORONOI_SANDBOX_IMAGE")
-        if env("VORONOI_SANDBOX_CPUS"):
-            self.sandbox.cpus = int(env("VORONOI_SANDBOX_CPUS"))
+        for sb_attr, sb_var in [
+            ("cpus", "VORONOI_SANDBOX_CPUS"),
+            ("timeout_hours", "VORONOI_SANDBOX_TIMEOUT_HOURS"),
+        ]:
+            val = env(sb_var)
+            if val:
+                try:
+                    setattr(self.sandbox, sb_attr, int(val))
+                except ValueError:
+                    pass
         if env("VORONOI_SANDBOX_MEMORY"):
             self.sandbox.memory = env("VORONOI_SANDBOX_MEMORY")
-        if env("VORONOI_SANDBOX_TIMEOUT_HOURS"):
-            self.sandbox.timeout_hours = int(env("VORONOI_SANDBOX_TIMEOUT_HOURS"))
         if env("VORONOI_SANDBOX_NETWORK") is not None:
             self.sandbox.network = env("VORONOI_SANDBOX_NETWORK").lower() in ("true", "1", "yes")
         if env("VORONOI_SANDBOX_FALLBACK_TO_HOST") is not None:
@@ -127,6 +150,8 @@ class ServerConfig:
                 "max_agents_per_investigation": self.max_agents_per_investigation,
                 "agent_command": self.agent_command,
                 "agent_flags": self.agent_flags,
+                "orchestrator_model": self.orchestrator_model,
+                "worker_model": self.worker_model,
                 "workspace_retention_days": self.workspace_retention_days,
             },
             "github": {

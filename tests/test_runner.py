@@ -94,3 +94,26 @@ class TestServerConfig:
         config = ServerConfig(base_dir=str(base))
         config.save()
         assert config.config_path.exists()
+
+    def test_model_defaults_empty(self, tmp_path):
+        config = ServerConfig(base_dir=str(tmp_path / "voronoi"))
+        assert config.orchestrator_model == ""
+        assert config.worker_model == ""
+
+    def test_model_save_and_load(self, tmp_path):
+        base = tmp_path / "voronoi"
+        config = ServerConfig(base_dir=str(base))
+        config.orchestrator_model = "claude-opus-4.6"
+        config.worker_model = "claude-sonnet-4.6"
+        config.save()
+
+        config2 = ServerConfig(base_dir=str(base))
+        assert config2.orchestrator_model == "claude-opus-4.6"
+        assert config2.worker_model == "claude-sonnet-4.6"
+
+    def test_model_env_override(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("VORONOI_ORCHESTRATOR_MODEL", "gpt-5.4")
+        monkeypatch.setenv("VORONOI_WORKER_MODEL", "claude-haiku-4.5")
+        config = ServerConfig(base_dir=str(tmp_path / "voronoi"))
+        assert config.orchestrator_model == "gpt-5.4"
+        assert config.worker_model == "claude-haiku-4.5"
