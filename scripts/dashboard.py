@@ -177,39 +177,66 @@ PRIORITY_COLORS = {
 }
 
 
-def build_task_table(tasks):
-    """Build a rich table of all tasks."""
+def _partition_tasks(tasks):
+    """Split tasks into (todo, doing, done, blocked) lists."""
+    todo = [t for t in tasks if t.get("status") == "open"]
+    doing = [t for t in tasks if t.get("status") == "in_progress"]
+    done = [t for t in tasks if t.get("status") == "closed"]
+    blocked = [t for t in tasks if t.get("status") == "blocked"]
+    return todo, doing, done, blocked
+
+
+def _kanban_column(title, items, color, icon, max_items=25):
+    """Build one Kanban column as a rich Table."""
     table = Table(
-        title="📋 Task Graph",
-        show_header=True,
-        header_style="bold cyan",
+        title=f"{icon} {title} [{len(items)}]",
+        show_header=False,
         expand=True,
-        padding=(0, 1),
+        padding=(0, 0),
+        border_style=color,
+        title_style=f"bold {color}",
     )
-    table.add_column("Status", width=3, justify="center")
-    table.add_column("ID", style="dim", max_width=30)
-    table.add_column("P", width=2, justify="center")
-    table.add_column("Title", ratio=2)
-    table.add_column("Type", width=6)
-    table.add_column("Assignee", width=12)
+    table.add_column("P", width=2, justify="center", no_wrap=True)
+    table.add_column("ID", style="dim", max_width=10, no_wrap=True)
+    table.add_column("Title", ratio=1, no_wrap=True)
 
-    for t in tasks:
-        status = t.get("status", "open")
+    for t in sorted(items, key=lambda x: x.get("priority", 2))[:max_items]:
         priority = t.get("priority", 2)
-        icon = STATUS_ICONS.get(status, "?")
-        color = STATUS_COLORS.get(status, "white")
         p_color = PRIORITY_COLORS.get(priority, "white")
-
         table.add_row(
-            Text(icon, style=color),
-            t.get("id", "?"),
-            Text(f"P{priority}", style=p_color),
-            Text(t.get("title", "?"), style=color),
-            t.get("issue_type", "task"),
-            t.get("assignee", "—"),
+            Text(str(priority), style=p_color),
+            t.get("id", ""),
+            Text(t.get("title", ""), style=color, overflow="ellipsis"),
         )
-
+    if len(items) > max_items:
+        table.add_row("", "", Text(f"… +{len(items) - max_items} more", style="dim"))
+    if not items:
+        table.add_row("", "", Text("— empty —", style="dim"))
     return table
+
+
+def export_board_markdown(tasks, config):
+    """Render the Kanban board as a plain Markdown string."""
+    todo, doing, done, blocked = _partition_tasks(tasks)
+    project = config.get("project_name", "Swarm")
+    lines = [f"# {project} — Board\n"]
+
+    def _section(icon, name, items):
+        lines.append(f"## {icon} {name} ({len(items)})\n")
+        if not items:
+            lines.append("_empty_\n")
+            return
+        for t in sorted(items, key=lambda x: x.get("priority", 2)):
+            tid = t.get("id", "?")
+            title = t.get("title", "?")
+            pri = t.get("priority", 2)
+            lines.append(f"- `{tid}` P{pri} — {title}")
+        lines.append("")
+
+    _section("○", "To Do", todo + blocked)
+    _section("◐", "In Progress", doing)
+    _section("✓", "Done", done)
+    return "\n".join(lines)
 
 
 def build_agent_table(agents):
@@ -299,12 +326,23 @@ def build_dashboard(config, start_time):
         build_status_bar(config, tasks, agents, ready_count, start_time)
     )
 
-    # Body: tasks on left, agents on right
+    # Body: Kanban board (left 3/5) + agents (right 2/5)
     layout["body"].split_row(
-        Layout(name="tasks", ratio=1),
-        Layout(name="agents", ratio=1),
+        Layout(name="kanban", ratio=3),
+        Layout(name="agents", ratio=2),
     )
-    layout["tasks"].update(build_task_table(tasks))
+
+    # Kanban: 3 equal columns
+    layout["kanban"].split_row(
+        Layout(name="todo"),
+        Layout(name="doing"),
+        Layout(name="done"),
+    )
+
+    todo, doing, done, blocked = _partition_tasks(tasks)
+    layout["todo"].update(_kanban_column("To Do", todo + blocked, "white", "○"))
+    layout["doing"].update(_kanban_column("In Progress", doing, "yellow", "◐"))
+    layout["done"].update(_kanban_column("Done", done, "green", "✓", max_items=15))
     layout["agents"].update(build_agent_table(agents))
 
     layout["footer"].update(build_help_bar())
@@ -319,7 +357,17 @@ def main():
     parser.add_argument(
         "--refresh", type=int, default=5, help="Refresh interval in seconds"
     )
+    parser.add_argument(
+        "--export", action="store_true",
+        help="Print a Markdown board snapshot and exit (no live mode)",
+    )
     args = parser.parse_args()
+
+    if args.export:
+        config = load_config()
+        tasks = get_beads_tasks()
+        print(export_board_markdown(tasks, config))
+        return
 
     config = load_config()
     start_time = time.time()

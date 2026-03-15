@@ -118,6 +118,8 @@ def progress_bar(done: int, total: int, width: int = 20) -> str:
 
 def format_duration(seconds: float) -> str:
     """Format seconds as a human-friendly duration string."""
+    if seconds < 60:
+        return "< 1min"
     minutes = seconds / 60
     if minutes < 60:
         return f"{int(minutes)}min"
@@ -379,7 +381,8 @@ def build_digest_whatsup(
 
         lines.append(f"*{label}* is running — started {elapsed} ago.")
         if question:
-            lines.append(f"_{question}_\n")
+            preview = _clean_question_preview(question, 80)
+            lines.append(f"_{preview}_\n")
 
         if total > 0:
             lines.append(f"{closed}/{total} tasks done, {in_prog} in progress, {ready} ready to go.")
@@ -395,7 +398,8 @@ def build_digest_whatsup(
         if agent_parts:
             lines.append(f"Agents: {', '.join(agent_parts)}.")
 
-        if phase:
+        # Skip "Setting things up..." when we already said no tasks created yet
+        if phase and not (phase == "starting" and total == 0):
             lines.append(f"\n{phase_description(mode, phase)}")
 
         lines.append("")  # blank line between investigations
@@ -465,15 +469,33 @@ def _criteria_summary(workspace: Path) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Internal preview helper
+# ---------------------------------------------------------------------------
+
+def _clean_question_preview(question: str, max_len: int = 120) -> str:
+    """Return a clean single-line preview from a question or PROMPT.md blob.
+
+    Strips markdown heading markers (``#``) and returns the first meaningful
+    line, truncated with an ellipsis if needed.
+    """
+    for line in question.strip().splitlines():
+        clean = line.strip().lstrip('#').strip()
+        if clean:
+            return clean[:max_len] + ("…" if len(clean) > max_len else "")
+    return question[:max_len]
+
+
+# ---------------------------------------------------------------------------
 # High-level message formatters (buddy-style)
 # ---------------------------------------------------------------------------
 
 def format_launch(codename: str, mode: str, rigor: str, question: str) -> str:
     """Format a launch notification — conversational, not a status log."""
     rigor_desc = RIGOR_DESCRIPTIONS.get(rigor, rigor)
+    preview = _clean_question_preview(question)
     return (
         f"*{codename}* is live.\n\n"
-        f"_{question[:200]}_\n\n"
+        f"_{preview}_\n\n"
         f"Mode: {mode} · Rigor: {rigor_desc}\n"
         f"I'll send you updates as things progress."
     )

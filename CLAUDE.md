@@ -51,14 +51,28 @@ Detailed specs live in `docs/`. Read only what you need:
 2. For dataclass signatures → `docs/DATA-STRUCTURES.md`
 3. For rules that must not be violated → `docs/INVARIANTS.md`
 
-## Task Tracking — MANDATORY
+## Task Tracking
 
-This project uses Beads (bd) for ALL planning and task tracking.
-- Run `bd prime` at session start to get context
-- Check `bd ready` for available work
-- Claim work: `bd update <id> --claim`
-- Close work: `bd close <id> --reason "summary"`
-- NEVER use `bd edit` (opens interactive editor). Use `bd update` with flags.
+For **dev work on this repo**, use the VS Code todo list / Copilot task tracking — not `bd`.
+
+Beads (`bd`) is a **runtime tool only** — it tracks tasks inside investigation workspaces that Voronoi spawns at runtime. Do not run `bd` commands in this repo root for dev planning.
+
+## Docs Freshness — MANDATORY
+
+After any change that affects the public surface, behaviour, or architecture, you MUST update the relevant files **in the same commit**:
+
+| Changed area | Files to update |
+|---|---|
+| CLI commands, server flags, Telegram commands | `README.md` (Commands table), `docs/CLI.md` |
+| Architecture, module layout, data flow | `README.md` (Architecture section), `docs/ARCHITECTURE.md`, `DESIGN.md` |
+| Dataclass fields / signatures | `docs/DATA-STRUCTURES.md` |
+| Invariants or critical rules | `docs/INVARIANTS.md` |
+| Gateway / routing / prompts | `docs/GATEWAY.md` |
+| Science gates, rigor levels | `docs/SCIENCE.md` |
+| Server loop, dispatcher, workspace | `docs/SERVER.md` |
+| Workflows, OODA, agent lifecycle | `docs/WORKFLOWS.md` |
+
+If a change does **not** affect any documented surface, no doc update is needed — but when in doubt, update.
 
 ## Git Discipline — MANDATORY
 

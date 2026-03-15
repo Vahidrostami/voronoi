@@ -20,6 +20,7 @@ from voronoi.gateway.progress import (
     MODE_EMOJI, RIGOR_DESCRIPTIONS, MODE_VERB,
     build_digest_whatsup, phase_description, format_duration,
     assess_track_status, _criteria_summary, _experiment_summary,
+    progress_bar,
 )
 from voronoi.server.queue import Investigation, InvestigationQueue
 from voronoi.server.runner import make_slug
@@ -31,7 +32,7 @@ logger = logging.getLogger("voronoi.router")
 __all__ = [
     "CommandRouter",
     "handle_status", "handle_whatsup", "handle_howsitgoing",
-    "handle_tasks", "handle_ready", "handle_health",
+    "handle_tasks", "handle_ready", "handle_health", "handle_board",
     "handle_reprioritize", "handle_pause", "handle_resume", "handle_add",
     "handle_abort", "handle_pivot", "handle_guide",
     "handle_investigate", "handle_explore", "handle_build", "handle_experiment",
@@ -299,6 +300,68 @@ def handle_howsitgoing(project_dir: str) -> str:
         all_lines.append("\n".join(lines))
 
     return "\n\n".join(all_lines)
+
+
+def handle_board(project_dir: str) -> str:
+    """Kanban-style board snapshot for Telegram.
+
+    Renders one board per running investigation with three columns:
+    To Do · In Progress · Done.
+    """
+    q = _get_queue(project_dir)
+    running_invs = q.get_running()
+    if not running_invs:
+        return "\U0001f4ed No running investigations. Start one with `/voronoi investigate <question>`."
+
+    sections: list[str] = []
+    for inv in running_invs:
+        ws_path = inv.workspace_path
+        if not ws_path:
+            continue
+        label = inv.codename or f"#{inv.id}"
+        elapsed_sec = (time.time() - inv.started_at) if inv.started_at else 0
+        elapsed = format_duration(elapsed_sec)
+
+        code, output = _run_bd("list", "--json", cwd=ws_path)
+        tasks: list[dict] = []
+        if code == 0 and output.strip():
+            try:
+                tasks = json.loads(output)
+            except json.JSONDecodeError:
+                pass
+
+        todo = [t for t in tasks if t.get("status") == "open"]
+        blocked = [t for t in tasks if t.get("status") == "blocked"]
+        doing = [t for t in tasks if t.get("status") == "in_progress"]
+        done = [t for t in tasks if t.get("status") == "closed"]
+
+        total = len(tasks)
+        bar = progress_bar(len(done), total, width=16)
+        pct = int(len(done) / total * 100) if total > 0 else 0
+
+        lines: list[str] = []
+        lines.append(f"\U0001f4cb *{label}* \u00b7 {elapsed}")
+        lines.append(f"{bar} {pct}%\n")
+
+        def _col(icon: str, name: str, items: list, max_show: int = 5) -> list[str]:
+            if not items:
+                return []
+            col: list[str] = [f"{icon} *{name}* ({len(items)})"]
+            for t in sorted(items, key=lambda x: x.get("priority", 2))[:max_show]:
+                pri = t.get("priority", 2)
+                title = t.get("title", "")[:45]
+                col.append(f"  `P{pri}` {title}")
+            if len(items) > max_show:
+                col.append(f"  _\u2026+{len(items) - max_show} more_")
+            col.append("")
+            return col
+
+        lines.extend(_col("\u25cb", "To Do", todo + blocked))
+        lines.extend(_col("\u25d0", "In Progress", doing))
+        lines.extend(_col("\u2713", "Done", done, max_show=3))
+        sections.append("\n".join(lines))
+
+    return "\n".join(sections).strip() or "\U0001f4ed No tasks yet."
 
 
 def handle_tasks(project_dir: str) -> str:
@@ -867,6 +930,7 @@ _HELP_MESSAGE = (
     "━━━━━━━━━━━━━━━━━━━━━━\n"
     "*Quick check-ins*\n"
     "`/voronoi status` — what's happening right now\n"
+    "`/voronoi board` — Kanban snapshot (To Do / In Progress / Done)\n"
     "`/voronoi progress` — are we on track? metrics + criteria\n\n"
     "*Workflows*\n"
     "`/voronoi investigate <question>`\n"
@@ -942,6 +1006,8 @@ class CommandRouter:
                 return handle_whatsup(self.project_dir), None
             elif sub in ("progress", "howsitgoing"):
                 return handle_howsitgoing(self.project_dir), None
+            elif sub == "board":
+                return handle_board(self.project_dir), None
             elif sub == "tasks":
                 return handle_tasks(self.project_dir), None
             elif sub == "ready":
