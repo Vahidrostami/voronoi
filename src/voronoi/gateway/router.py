@@ -20,7 +20,7 @@ from voronoi.gateway.progress import (
     MODE_EMOJI, RIGOR_DESCRIPTIONS, MODE_VERB,
     build_digest_whatsup, phase_description, format_duration,
     assess_track_status, _criteria_summary, _experiment_summary,
-    progress_bar,
+    progress_bar, _clean_question_preview,
 )
 from voronoi.server.queue import Investigation, InvestigationQueue
 from voronoi.server.runner import make_slug
@@ -253,13 +253,17 @@ def handle_howsitgoing(project_dir: str) -> str:
                 if name.endswith(".json"):
                     try:
                         data = json.loads(content)
-                        hyps = data.get("hypotheses", [])
-                        if hyps:
-                            lines.append("\nHypotheses:")
-                            for h in hyps[:5]:
-                                status = h.get('status', '?')
-                                lines.append(f"  {h.get('name', '?')}: P={h.get('prior', '?')} [{status}]")
-                    except (json.JSONDecodeError, ValueError):
+                        if isinstance(data, dict):
+                            hyps = data.get("hypotheses", [])
+                            if isinstance(hyps, dict):
+                                hyps = list(hyps.values())
+                            if isinstance(hyps, list) and hyps:
+                                lines.append("\nHypotheses:")
+                                for h in hyps[:5]:
+                                    if isinstance(h, dict):
+                                        status = h.get('status', '?')
+                                        lines.append(f"  {h.get('name', '?')}: P={h.get('prior', '?')} [{status}]")
+                    except (json.JSONDecodeError, ValueError, TypeError):
                         pass
                 else:
                     lines.append(f"\n{content[:300]}")
@@ -303,15 +307,19 @@ def handle_howsitgoing(project_dir: str) -> str:
 
 
 def handle_board(project_dir: str) -> str:
-    """Kanban-style board snapshot for Telegram.
-
-    Renders one board per running investigation with three columns:
-    To Do · In Progress · Done.
-    """
+    """Kanban-style board snapshot for Telegram."""
     q = _get_queue(project_dir)
     running_invs = q.get_running()
     if not running_invs:
         return "\U0001f4ed No running investigations. Start one with `/voronoi investigate <question>`."
+
+    # Priority → icon (P0/P1 urgent, P2 normal, P3/P4 low)
+    def _pri_icon(pri: int) -> str:
+        if pri <= 1:
+            return "\U0001f534"  # red circle
+        if pri == 2:
+            return "\U0001f7e1"  # yellow circle
+        return "\u26aa"          # grey circle
 
     sections: list[str] = []
     for inv in running_invs:
@@ -321,6 +329,7 @@ def handle_board(project_dir: str) -> str:
         label = inv.codename or f"#{inv.id}"
         elapsed_sec = (time.time() - inv.started_at) if inv.started_at else 0
         elapsed = format_duration(elapsed_sec)
+        preview = _clean_question_preview(inv.question or "", 80)
 
         code, output = _run_bd("list", "--json", cwd=ws_path)
         tasks: list[dict] = []
@@ -330,35 +339,61 @@ def handle_board(project_dir: str) -> str:
             except json.JSONDecodeError:
                 pass
 
-        todo = [t for t in tasks if t.get("status") == "open"]
-        blocked = [t for t in tasks if t.get("status") == "blocked"]
-        doing = [t for t in tasks if t.get("status") == "in_progress"]
-        done = [t for t in tasks if t.get("status") == "closed"]
+        todo    = sorted([t for t in tasks if t.get("status") == "open"],     key=lambda x: x.get("priority", 2))
+        blocked = sorted([t for t in tasks if t.get("status") == "blocked"],  key=lambda x: x.get("priority", 2))
+        doing   = sorted([t for t in tasks if t.get("status") == "in_progress"], key=lambda x: x.get("priority", 2))
+        done    =        [t for t in tasks if t.get("status") == "closed"]
 
         total = len(tasks)
         bar = progress_bar(len(done), total, width=16)
-        pct = int(len(done) / total * 100) if total > 0 else 0
+        sep = "\u2500" * 22
 
         lines: list[str] = []
         lines.append(f"\U0001f4cb *{label}* \u00b7 {elapsed}")
-        lines.append(f"{bar} {pct}%\n")
+        if preview:
+            lines.append(f"_{preview}_")
+        lines.append(f"\n{bar}  {len(done)}/{total} tasks")
 
-        def _col(icon: str, name: str, items: list, max_show: int = 5) -> list[str]:
-            if not items:
-                return []
-            col: list[str] = [f"{icon} *{name}* ({len(items)})"]
-            for t in sorted(items, key=lambda x: x.get("priority", 2))[:max_show]:
+        # --- In Progress (most urgent, first) ---
+        if doing:
+            lines.append(f"\n{sep}")
+            lines.append(f"\u25d0 *In Progress* ({len(doing)})")
+            for t in doing:
                 pri = t.get("priority", 2)
-                title = t.get("title", "")[:45]
-                col.append(f"  `P{pri}` {title}")
-            if len(items) > max_show:
-                col.append(f"  _\u2026+{len(items) - max_show} more_")
-            col.append("")
-            return col
+                title = t.get("title", "")[:50]
+                lines.append(f"  {_pri_icon(pri)} {title}")
 
-        lines.extend(_col("\u25cb", "To Do", todo + blocked))
-        lines.extend(_col("\u25d0", "In Progress", doing))
-        lines.extend(_col("\u2713", "Done", done, max_show=3))
+        # --- Blocked (if any) ---
+        if blocked:
+            lines.append(f"\n{sep}")
+            lines.append(f"\U0001f6a7 *Blocked* ({len(blocked)})")
+            for t in blocked:
+                pri = t.get("priority", 2)
+                title = t.get("title", "")[:50]
+                lines.append(f"  {_pri_icon(pri)} {title}")
+
+        # --- To Do (all items, no truncation) ---
+        if todo:
+            lines.append(f"\n{sep}")
+            lines.append(f"\u25cb *To Do* ({len(todo)})")
+            for t in todo:
+                pri = t.get("priority", 2)
+                title = t.get("title", "")[:50]
+                lines.append(f"  {_pri_icon(pri)} {title}")
+
+        # --- Done (compact, last) ---
+        if done:
+            lines.append(f"\n{sep}")
+            if len(done) <= 4:
+                lines.append(f"\u2713 *Done* ({len(done)})")
+                for t in done[-4:]:
+                    lines.append(f"  \u2713 {t.get('title', '')[:50]}")
+            else:
+                # Show just the count + last 2 completed
+                lines.append(f"\u2713 *Done* ({len(done)}) \u2014 last completed:")
+                for t in done[-2:]:
+                    lines.append(f"  \u2713 {t.get('title', '')[:50]}")
+
         sections.append("\n".join(lines))
 
     return "\n".join(sections).strip() or "\U0001f4ed No tasks yet."
