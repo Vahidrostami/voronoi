@@ -5,6 +5,7 @@ logic.  The bridge script is a thin Telegram I/O layer that delegates
 to these modules — it is not tested directly here.
 """
 
+import importlib.util
 import json
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -31,6 +32,15 @@ from voronoi.gateway.router import (
     handle_journal,
     handle_finding,
 )
+
+
+def _load_bridge_module():
+    bridge_path = Path(__file__).resolve().parent.parent / "scripts" / "telegram-bridge.py"
+    spec = importlib.util.spec_from_file_location("voronoi_telegram_bridge", bridge_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 # ---------------------------------------------------------------------------
@@ -279,6 +289,55 @@ class TestCommandRouter:
         router = CommandRouter(str(tmp_path))
         text, _ = router.route("xyzzy", [], "chat1")
         assert "Unknown command" in text
+
+
+class TestHumanGateBridgeCommands:
+    def test_approve_command_calls_dispatcher(self):
+        bridge = _load_bridge_module()
+        dispatcher = MagicMock()
+        dispatcher.approve_human_gate.return_value = True
+
+        text = bridge.format_human_gate_command_reply("approve", ["42"], dispatcher)
+
+        dispatcher.approve_human_gate.assert_called_once_with(42, "")
+        assert "Approved human gate" in text
+
+    def test_revise_requires_feedback(self):
+        bridge = _load_bridge_module()
+        dispatcher = MagicMock()
+
+        text = bridge.format_human_gate_command_reply("revise", ["42"], dispatcher)
+
+        dispatcher.revise_human_gate.assert_not_called()
+        assert text == "Usage: /revise <investigation-id> <feedback>"
+
+    def test_revise_command_calls_dispatcher(self):
+        bridge = _load_bridge_module()
+        dispatcher = MagicMock()
+        dispatcher.revise_human_gate.return_value = True
+
+        text = bridge.format_human_gate_command_reply(
+            "revise", ["42", "needs", "more", "controls"], dispatcher
+        )
+
+        dispatcher.revise_human_gate.assert_called_once_with(42, "needs more controls")
+        assert "Requested revision" in text
+
+    def test_invalid_human_gate_id(self):
+        bridge = _load_bridge_module()
+        dispatcher = MagicMock()
+
+        text = bridge.format_human_gate_command_reply("approve", ["abc"], dispatcher)
+
+        dispatcher.approve_human_gate.assert_not_called()
+        assert "Invalid investigation ID" in text
+
+    def test_dispatcher_unavailable(self):
+        bridge = _load_bridge_module()
+
+        text = bridge.format_human_gate_command_reply("approve", ["42"], None)
+
+        assert "Dispatcher unavailable" in text
 
 
 # ---------------------------------------------------------------------------
