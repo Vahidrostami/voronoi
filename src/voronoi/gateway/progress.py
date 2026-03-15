@@ -165,13 +165,13 @@ def phase_label(mode: str, phase: str) -> str:
 # Digest builder — the core of the new notification system
 # ---------------------------------------------------------------------------
 
-def _read_json(path: Path) -> Optional[dict]:
+def _read_json(path: Path) -> Optional[dict | list]:
     """Safely read a JSON file, returning None on failure."""
     if not path.exists():
         return None
     try:
         data = json.loads(path.read_text())
-        return data if isinstance(data, dict) else None
+        return data if isinstance(data, (dict, list)) else None
     except (json.JSONDecodeError, OSError):
         return None
 

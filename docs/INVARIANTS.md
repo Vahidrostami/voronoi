@@ -98,6 +98,12 @@ Every verify iteration MUST be logged to `.swarm/verify-log-<task-id>.jsonl`. Th
 ### INV-24: Context Management
 Error output MUST be summarized before re-injection into the verify loop (last 50 lines, not full output). Previous attempt logs referenced by file path, not pasted inline.
 
+### INV-24b: Worker Self-Verification Before Close
+A worker MUST run the self-verification protocol (test loop + produces check + metric consistency check) before closing any task. Workers that skip verification MUST NOT have their tasks accepted. The protocol is injected into every worker prompt by `build_worker_prompt()`.
+
+### INV-24c: Incremental Findings Commit
+Workers MUST write observations to Beads notes as they occur, not only at task completion. This prevents loss of intermediate observations if the agent's context fills up or the agent crashes.
+
 ---
 
 ## 7. Git Invariants

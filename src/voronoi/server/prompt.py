@@ -136,6 +136,26 @@ def build_orchestrator_prompt(
                 "- Every investigation task MUST have pre-registration\n"
                 "- Methodologist approval required before dispatch\n"
             )
+            # Human gate instructions for high-rigor investigations
+            sections.append(
+                "\n**Human Review Gates (Scientific+ rigor):**\n"
+                "At two key decision points, pause for human approval by writing "
+                "`.swarm/human-gate.json`:\n\n"
+                "**Gate 1: After pre-registration** (before running experiments):\n"
+                "```json\n"
+                '{\"gate\": \"pre-registration\", \"status\": \"pending\",\n'
+                ' \"summary\": \"Hypothesis: [X]. Method: [Y]. N=[Z]. Ready to run experiments.\"}\n'
+                "```\n"
+                "Then poll `.swarm/human-gate.json` every 30s until `status` changes to "
+                "`approved` or `revision_requested`.  If revision is requested, read `feedback` "
+                "field and adjust the pre-registration accordingly.\n\n"
+                "**Gate 2: Before convergence** (before finalizing deliverable):\n"
+                "```json\n"
+                '{\"gate\": \"convergence\", \"status\": \"pending\",\n'
+                ' \"summary\": \"[summary of findings]. Score: [X]. Ready to converge.\"}\n'
+                "```\n"
+                "Same polling protocol.  Do NOT write deliverable.md until approved.\n"
+            )
         if rigor in ("analytical", "scientific", "experimental"):
             sections.append(
                 "- Findings MUST pass Statistician review\n"

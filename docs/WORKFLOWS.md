@@ -98,11 +98,13 @@ OBSERVE → ORIENT → DECIDE → ACT → (repeat until converged)
 9. **Inner Loop** — Each investigator:
    - Execute experiment
    - Verify: runs without crash, metric extracted
+   - **Self-verification**: test loop (up to 3 retries), produces check, metric consistency
    - EVA: manipulation check, artifact check, sanity check
    - If DESIGN_INVALID → escalate to Methodologist
    - Commit raw data with SHA-256
    - Sensitivity analysis (2+ parameter variations)
    - Create FINDING in Beads
+   - **Incremental findings commit**: write observations to Beads as they occur
 10. **OODA Observe** — Orchestrator reads findings, belief map, experiment ledger
 11. **OODA Orient** — Update strategic context, check paradigm stress, convergence
 12. **OODA Decide** — Information-gain priority, review gates, replication needs
@@ -110,8 +112,21 @@ OBSERVE → ORIENT → DECIDE → ACT → (repeat until converged)
 14. **Statistician Review** — Independent recomputation, interpretation metadata
 15. **Critic Review** — Partially blinded adversarial review
 16. **Synthesis** — Claim-evidence registry → deliverable (report or manuscript)
-17. **Evaluation** — CCSA scoring
+17. **Evaluation** — CCSA scoring with **structured feedback**: per-dimension scores, specific notes, and concrete remediations list
 18. **Convergence** — All hypotheses resolved, no paradigm stress, eval ≥ 0.75
+
+### Human Review Gates (Scientific+ Rigor)
+
+At Scientific and Experimental rigor, the investigation pauses for human approval at two decision points:
+
+| Gate | When | What the Human Sees |
+|------|------|--------------------|
+| **Pre-registration** | After pre-reg complete, before running experiments | Hypothesis, method, N, design summary |
+| **Convergence** | After findings collected, before finalizing deliverable | Findings summary, eval score, convergence status |
+
+The orchestrator writes `.swarm/human-gate.json` with `status: "pending"`. The dispatcher detects this and sends a Telegram message. The human replies `/approve <id>` or `/revise <id> <feedback>`. The orchestrator polls the file and resumes when approved.
+
+This prevents costly methodology errors and ensures human oversight at high-stakes decision points.
 
 ### Convergence
 All hypotheses resolved + competing theory ruled out + novel prediction tested + no PARADIGM_STRESS + eval score ≥ 0.75.
@@ -296,8 +311,10 @@ Every workflow runs two nested loops:
 ### Inner Loop (per agent, fast)
 
 ```
-Execute → Verify → [FAIL: retry with error context] → [PASS: done]
+Execute → Test Loop (up to 3 retries) → Self-Review Checklist → [FAIL: VERIFY_EXHAUSTED] → [PASS: done]
 ```
+
+The self-verification protocol (test loop + checklist + incremental Beads commit) runs before every task close. Workers log each step to `.swarm/events.jsonl` for observability.
 
 - Handles execution errors autonomously
 - Max retries vary by role (2-5)

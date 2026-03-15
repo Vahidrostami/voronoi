@@ -92,6 +92,9 @@ Written after every OODA cycle. Read at the start of the next cycle.
 | `next_actions` | The orchestrator's TODO list |
 | `criteria_status` | Map of success criterion → met/unmet |
 | `eval_score` | Latest evaluator quality score |
+| `tokens_this_cycle` | Tokens consumed in the current OODA cycle |
+| `tokens_cumulative` | Total tokens consumed across all cycles |
+| `context_window_remaining_pct` | Estimated remaining context window (0.0–1.0) |
 
 ### 4.2 API
 
@@ -198,6 +201,65 @@ The orchestrator reads PROMPT.md once at startup. After that, it works from:
 - Targeted queries (what changed)
 
 If a specific detail is needed, `grep` for it instead of re-reading the whole file.
+
+## 8. Worker Self-Verification Protocol
+
+Every worker runs a mandatory self-verification sequence before closing a task. This is injected into every worker prompt by `build_worker_prompt()`.
+
+### Step 1: Test Loop (iterate until pass)
+
+Run tests → if FAIL, fix and retry → repeat up to 3 times. If still failing after 3 attempts, report `VERIFY_EXHAUSTED` in Beads notes. Do NOT close the task.
+
+### Step 2: Self-Review Checklist
+
+1. All PRODUCES artifacts exist and are non-empty
+2. Reported metrics match the actual data
+3. No hardcoded test values or simulated data
+4. All commits pushed to branch
+
+### Step 3: Incremental Findings Commit
+
+Write observations to Beads notes as they occur — don't rely on context memory. This prevents loss of intermediate observations if the agent's context fills up.
+
+### Impact
+
+The self-verification protocol catches errors at the source, reducing wasted Critic dispatch cycles. Workers that would previously declare "done" on broken code now self-correct or escalate explicitly.
+
+## 9. Token Budget Tracking
+
+The orchestrator checkpoint includes token budget fields:
+
+| Field | Purpose |
+|-------|---------|
+| `tokens_this_cycle` | Tokens consumed in the current OODA cycle |
+| `tokens_cumulative` | Total tokens consumed across all cycles |
+| `context_window_remaining_pct` | Estimated remaining context window (0.0–1.0) |
+
+When `context_window_remaining_pct` drops below 20%, the orchestrator should:
+1. Force checkpoint write
+2. Switch to more aggressive targeted Beads queries
+3. Avoid re-reading large files
+
+This prevents surprise context overflow in long-running investigations.
+
+## 10. Structured Event Log
+
+**File**: `.swarm/events.jsonl`
+**Code**: `src/voronoi/server/events.py`
+
+Workers and the orchestrator append structured events for real-time observability:
+
+```jsonl
+{"ts":1710500000,"agent":"investigator","task_id":"bd-42","event":"tool_call","status":"pass","detail":"pytest: 12 passed","tokens_used":1240}
+{"ts":1710500010,"agent":"investigator","task_id":"bd-42","event":"finding_committed","status":"ok","detail":"bd-43: effect d=0.82","tokens_used":0}
+```
+
+The dispatcher reads these events during progress polling for:
+- **Stall detection**: No events for 5+ min = potentially stuck agent
+- **Token tracking**: Cumulative token spend across the investigation
+- **Failure monitoring**: Count failures for alerting
+
+Convenience functions: `log_tool_call()`, `log_finding()`, `log_test_result()`, `log_verify_step()`.
 
 ## 8. Context Pressure Estimation
 

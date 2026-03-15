@@ -13,7 +13,9 @@ from voronoi import __version__
 
 # Framework files to copy into user projects
 FRAMEWORK_DIRS = ["scripts"]
-FRAMEWORK_FILES = ["CLAUDE.md", "AGENTS.md", ".env.example"]
+
+# Top-level template files (written from data/templates/)
+TEMPLATE_FILES = ["CLAUDE.md", "AGENTS.md"]
 
 # .github/ subdirectories to copy (agent definitions, prompts, skills)
 GITHUB_SUBDIRS = ["agents", "prompts", "skills"]
@@ -27,20 +29,56 @@ def find_data_dir() -> Path:
 
     Works for both editable installs (repo root) and normal pip installs
     (bundled in package data).
+
+    For editable installs, .github/ and scripts/ live at the repo root.
+    For packaged installs, they live under src/voronoi/data/.
     """
+    # Normal install: data bundled inside the package
+    bundled = Path(__file__).resolve().parent / "data"
+    if bundled.is_dir() and (bundled / "agents").is_dir():
+        return bundled
+
     # Editable install: data lives at repo root
     repo_root = Path(__file__).resolve().parent.parent.parent
     if (repo_root / "scripts").is_dir() and (repo_root / "pyproject.toml").is_file():
         return repo_root
 
-    # Normal install: data bundled inside the package
-    bundled = Path(__file__).resolve().parent / "data"
-    if bundled.is_dir():
-        return bundled
-
     print("Error: cannot find voronoi framework files.", file=sys.stderr)
     print("  If you installed with pip, rebuild with: ./scripts/sync-package-data.sh && pip install .", file=sys.stderr)
     sys.exit(1)
+
+
+def _resolve_github_src(data: Path) -> Path:
+    """Resolve the .github/ source directory.
+
+    For editable installs: repo_root/.github/
+    For packaged installs: data/ contains agents/, prompts/, skills/ directly.
+    """
+    # Packaged install: agents/ lives directly under data/
+    if (data / "agents").is_dir():
+        return data
+    # Editable install: .github/ at repo root
+    github = data / ".github"
+    if github.is_dir():
+        return github
+    return data
+
+
+def _resolve_templates_dir(data: Path) -> Path:
+    """Resolve the templates directory for CLAUDE.md and AGENTS.md.
+
+    For editable installs: src/voronoi/data/templates/
+    For packaged installs: data/templates/
+    """
+    # Packaged install
+    templates = data / "templates"
+    if templates.is_dir():
+        return templates
+    # Editable install: look inside the package
+    pkg_templates = Path(__file__).resolve().parent / "data" / "templates"
+    if pkg_templates.is_dir():
+        return pkg_templates
+    return data  # fallback
 
 
 def _copy_dir(src: Path, dst: Path) -> None:
@@ -121,23 +159,29 @@ def cmd_init(args: argparse.Namespace) -> None:
             print(f"  ✓ {dirname}/")
 
     # Copy .github/ subdirectories (agents, prompts, skills)
-    github_src = data / ".github"
-    if github_src.is_dir():
-        github_dst = target / ".github"
-        github_dst.mkdir(exist_ok=True)
-        for subdir in GITHUB_SUBDIRS:
-            src = github_src / subdir
-            if src.is_dir():
-                _copy_dir(src, github_dst / subdir)
-        print("  ✓ .github/ (agents, prompts, skills)")
+    github_src = _resolve_github_src(data)
+    github_dst = target / ".github"
+    github_dst.mkdir(exist_ok=True)
+    for subdir in GITHUB_SUBDIRS:
+        src = github_src / subdir
+        if src.is_dir():
+            _copy_dir(src, github_dst / subdir)
+    print("  ✓ .github/ (agents, prompts, skills)")
 
-    # Copy top-level framework files
-    for filename in FRAMEWORK_FILES:
-        src = data / filename
+    # Copy runtime constitution templates
+    templates_dir = _resolve_templates_dir(data)
+    for filename in TEMPLATE_FILES:
+        src = templates_dir / filename
         dst = target / filename
         if src.is_file():
             shutil.copy2(src, dst)
-            print(f"  ✓ {filename}")
+            print(f"  ✓ {filename} (runtime constitution)")
+
+    # Copy .env.example if available
+    env_src = data / ".env.example"
+    if env_src.is_file():
+        shutil.copy2(env_src, target / ".env.example")
+        print("  ✓ .env.example")
 
     # Run swarm-init.sh if present
     init_script = target / "scripts" / "swarm-init.sh"
@@ -171,19 +215,20 @@ def cmd_upgrade(args: argparse.Namespace) -> None:
             print(f"  ✓ {dirname}/ (replaced)")
 
     # Overwrite .github/ subdirectories (agents, prompts, skills)
-    github_src = data / ".github"
-    if github_src.is_dir():
-        github_dst = target / ".github"
-        github_dst.mkdir(exist_ok=True)
-        for subdir in GITHUB_SUBDIRS:
-            src = github_src / subdir
-            if src.is_dir():
-                _copy_dir(src, github_dst / subdir)
-        print("  ✓ .github/ (agents, prompts, skills replaced)")
+    github_src = _resolve_github_src(data)
+    github_dst = target / ".github"
+    github_dst.mkdir(exist_ok=True)
+    for subdir in GITHUB_SUBDIRS:
+        src = github_src / subdir
+        dst = github_dst / subdir
+        if src.is_dir():
+            _copy_dir(src, dst)
+    print("  ✓ .github/ (agents, prompts, skills replaced)")
 
     # User-owned files: only copy if missing
-    for filename in FRAMEWORK_FILES:
-        src = data / filename
+    templates_dir = _resolve_templates_dir(data)
+    for filename in TEMPLATE_FILES:
+        src = templates_dir / filename
         dst = target / filename
         if not dst.exists() and src.is_file():
             shutil.copy2(src, dst)

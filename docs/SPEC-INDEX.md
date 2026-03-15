@@ -43,6 +43,12 @@
 | Code-assembled worker prompts | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §6 |
 | Per-agent context budget | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §3 |
 | System rules, code review | [INVARIANTS.md](INVARIANTS.md) | All (30 rules) |
+| Worker self-verification protocol | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §8 |
+| Token budget tracking | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §9 |
+| Structured event log | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §10 |
+| Human review gates (Scientific+) | [SCIENCE.md](SCIENCE.md) | §5 (Convergence) |
+| Structured evaluator feedback | [SCIENCE.md](SCIENCE.md) | §5 (Convergence) |
+| Hybrid BM25+keyword search | [GATEWAY.md](GATEWAY.md) | §6 (Knowledge) |
 | Term definitions | [GLOSSARY.md](GLOSSARY.md) | — |
 
 ## How to Use Specs
@@ -78,5 +84,6 @@
 | `src/voronoi/server/workspace.py` | SERVER.md §5 |
 | `src/voronoi/server/sandbox.py` | SERVER.md §6 |
 | `src/voronoi/server/runner.py` | SERVER.md §7 |
+| `src/voronoi/server/events.py` | CONTEXT-MANAGEMENT.md §10 |
 | `src/voronoi/server/publisher.py` | SERVER.md §8 |
 | `src/voronoi/server/repo_url.py` | SERVER.md §9 |

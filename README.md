@@ -251,8 +251,16 @@ src/voronoi/
     memory.py  knowledge.py  handoff.py  progress.py
   server/
     prompt.py  dispatcher.py  queue.py  workspace.py
-    sandbox.py  publisher.py  runner.py
+    sandbox.py  publisher.py  runner.py  events.py
+  data/                   # Runtime files (shipped with pip install)
+    agents/               # Role definitions (from .github/agents/)
+    skills/               # Skill definitions (from .github/skills/)
+    prompts/              # Invocable prompts (from .github/prompts/)
+    scripts/              # Runtime scripts (spawn, merge, etc.)
+    templates/            # CLAUDE.md + AGENTS.md for investigation workspaces
 ```
+
+**File audience separation**: The repo-root `CLAUDE.md` contains developer instructions. Investigation workspaces get `src/voronoi/data/templates/CLAUDE.md` — a separate runtime constitution with science-specific rules. They are never mixed.
 
 Each agent is a **full Copilot CLI session** in its own **tmux window** with its own **git worktree**. No custom IPC — agents communicate through git + [Beads](https://github.com/steveyegge/beads).
 

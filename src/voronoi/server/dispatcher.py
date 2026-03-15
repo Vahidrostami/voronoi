@@ -42,7 +42,7 @@ class DispatcherConfig:
     orchestrator_model: str = ""  # e.g. "claude-opus-4.6", "" = CLI default
     worker_model: str = ""        # e.g. "claude-sonnet-4.6", "" = CLI default
     progress_interval: int = 30  # seconds between progress updates
-    timeout_hours: int = 8       # max hours before marking investigation exhausted
+    timeout_hours: int = 24      # max hours before marking investigation exhausted
     max_retries: int = 2         # max times to restart a dead agent
     stall_minutes: int = 45      # warn/restart if 0 tasks after this long
 
@@ -69,6 +69,7 @@ class RunningInvestigation:
     retry_count: int = 0
     stall_warned: bool = False
     notified_design_invalid: set = field(default_factory=set)
+    last_event_ts: float = 0  # For event log polling
 
     @property
     def label(self) -> str:
@@ -384,6 +385,9 @@ class InvestigationDispatcher:
         # Check for abort signal from the router
         self._check_abort_signal()
 
+        # Check for pending human gates (Scientific+ rigor)
+        self.check_human_gates()
+
         completed_ids = []
 
         for inv_id, run in self.running.items():
@@ -423,6 +427,9 @@ class InvestigationDispatcher:
                     f"No tasks created after {int(elapsed_hours * 60)}min. "
                     f"The orchestrator may be stuck. Will auto-restart if the agent exits."
                 ))
+
+            # Event-log-based activity detection
+            events.extend(self._check_event_log(run))
 
             # Heartbeat-based stall detection for active agents
             if session_alive and run.task_snapshot:
@@ -706,6 +713,35 @@ class InvestigationDispatcher:
                     })
         except Exception as e:
             logger.debug("Heartbeat stall check failed: %s", e)
+        return events
+
+    def _check_event_log(self, run: RunningInvestigation) -> list[dict]:
+        """Check the structured event log for notable activity."""
+        events: list[dict] = []
+        try:
+            from voronoi.server.events import summarize_events
+            summary = summarize_events(run.workspace_path, since=run.last_event_ts)
+            if summary["count"] == 0:
+                return events
+            run.last_event_ts = summary["last_event_ts"]
+
+            # Report failures
+            if summary["failures"] > 0:
+                events.append({
+                    "type": "event_log",
+                    "msg": f"📝 {summary['count']} events since last poll "
+                           f"({summary['failures']} failures, "
+                           f"{summary['total_tokens']:,} tokens)",
+                })
+            # Log token accumulation periodically (every 50K tokens)
+            elif summary["total_tokens"] > 50000:
+                events.append({
+                    "type": "event_log",
+                    "msg": f"📝 {summary['count']} events, "
+                           f"{summary['total_tokens']:,} tokens since last poll",
+                })
+        except Exception as e:
+            logger.debug("Event log check failed: %s", e)
         return events
 
     def _send_progress_batch(self, run: RunningInvestigation, events: list[dict]) -> None:
@@ -1014,3 +1050,104 @@ class InvestigationDispatcher:
             except OSError:
                 pass
             self._handle_abort()
+
+    # ------------------------------------------------------------------
+    # Human gate — pause for human approval at key decision points
+    # ------------------------------------------------------------------
+
+    def check_human_gates(self) -> None:
+        """Check for pending human gates across running investigations.
+
+        For Scientific+ rigor, the orchestrator writes a
+        ``.swarm/human-gate.json`` file at key decision points:
+        - After pre-registration (before running experiments)
+        - Before convergence (before finalizing deliverable)
+
+        The dispatcher detects these files, pauses the investigation
+        (kills the tmux session), and sends a Telegram message asking
+        the human to ``/approve <id>`` or ``/revise <id> <feedback>``.
+        """
+        for run in self.running.values():
+            if run.rigor not in ("scientific", "experimental"):
+                continue
+            gate_path = run.workspace_path / ".swarm" / "human-gate.json"
+            if not gate_path.exists():
+                continue
+            try:
+                data = json.loads(gate_path.read_text())
+                if not isinstance(data, dict):
+                    continue
+                if data.get("status") == "approved":
+                    continue  # Already approved, orchestrator should resume
+                if data.get("status") == "pending":
+                    gate_type = data.get("gate", "unknown")
+                    summary = data.get("summary", "")
+                    logger.info("Human gate '%s' pending for %s",
+                                gate_type, run.label)
+                    self.send_message(
+                        f"⏸️ *{run.label} — Human Review Required*\n\n"
+                        f"Gate: *{gate_type}*\n"
+                        f"{summary}\n\n"
+                        f"Reply `/approve {run.investigation_id}` to proceed\n"
+                        f"Reply `/revise {run.investigation_id} <feedback>` to request changes"
+                    )
+                    # Mark as notified so we don't spam
+                    data["status"] = "notified"
+                    gate_path.write_text(json.dumps(data, indent=2))
+            except (json.JSONDecodeError, OSError) as e:
+                logger.debug("Human gate read failed for %s: %s", run.label, e)
+
+    def approve_human_gate(self, investigation_id: int, feedback: str = "") -> bool:
+        """Approve a pending human gate, allowing the investigation to resume.
+
+        Parameters
+        ----------
+        investigation_id : int
+            The investigation to approve.
+        feedback : str
+            Optional feedback that will be written for the orchestrator to read.
+
+        Returns True if the gate was found and approved, False otherwise.
+        """
+        run = self.running.get(investigation_id)
+        if not run:
+            return False
+        gate_path = run.workspace_path / ".swarm" / "human-gate.json"
+        if not gate_path.exists():
+            return False
+        try:
+            data = json.loads(gate_path.read_text())
+            data["status"] = "approved"
+            if feedback:
+                data["feedback"] = feedback
+            gate_path.write_text(json.dumps(data, indent=2))
+            self.send_message(f"✅ *{run.label}* — gate approved. Investigation resuming.")
+            return True
+        except (json.JSONDecodeError, OSError) as e:
+            logger.error("Failed to approve gate for %s: %s", run.label, e)
+            return False
+
+    def revise_human_gate(self, investigation_id: int, feedback: str) -> bool:
+        """Reject a pending human gate with revision feedback.
+
+        The orchestrator reads the feedback and creates revision tasks.
+        """
+        run = self.running.get(investigation_id)
+        if not run:
+            return False
+        gate_path = run.workspace_path / ".swarm" / "human-gate.json"
+        if not gate_path.exists():
+            return False
+        try:
+            data = json.loads(gate_path.read_text())
+            data["status"] = "revision_requested"
+            data["feedback"] = feedback
+            gate_path.write_text(json.dumps(data, indent=2))
+            self.send_message(
+                f"🔄 *{run.label}* — revision requested.\n"
+                f"Feedback: _{feedback}_"
+            )
+            return True
+        except (json.JSONDecodeError, OSError) as e:
+            logger.error("Failed to write revision for %s: %s", run.label, e)
+            return False

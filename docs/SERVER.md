@@ -225,7 +225,8 @@ class InvestigationDispatcher:
 
 1. `poll_progress()` runs every `progress_interval` seconds (default 30s)
 2. Checks for abort signals (`_check_abort_signal()` reads `.swarm/abort-signal`)
-3. For each running investigation:
+3. Checks for pending human gates (`check_human_gates()` — Scientific+ only)
+4. For each running investigation:
    - Skip if not due for update (< progress_interval since last)
    - Refresh eval score from `.swarm/eval-score.json`
    - Check if tmux session still alive
@@ -236,9 +237,26 @@ class InvestigationDispatcher:
      - `_detect_phase()` — classifies phase from workspace file artifacts
      - `_check_paradigm_stress()` — detects contradictions (Scientific+ only)
      - `_check_heartbeat_stalls()` — detects agent inactivity via heartbeat files
+     - `_check_event_log()` — reads `.swarm/events.jsonl` for failures and token spend
    - Send digest via `build_digest()` (single narrative message, not per-event)
    - Check for timeout, stall, completion
    - Handle dead agents: try restart or mark failed
+
+### Human Review Gates (Scientific+ Rigor)
+
+At Scientific and Experimental rigor, the orchestrator can pause for human approval by writing `.swarm/human-gate.json` with `status: "pending"`. The dispatcher detects this via `check_human_gates()` and sends a Telegram message with `/approve <id>` or `/revise <id> <feedback>` options. Methods:
+
+- `approve_human_gate(investigation_id, feedback)` — approves the gate
+- `revise_human_gate(investigation_id, feedback)` — requests revision with feedback
+
+### Structured Event Log
+
+The dispatcher reads `.swarm/events.jsonl` (written by workers and orchestrator) via `_check_event_log()` for:
+- **Failure counts**: Alerts when multiple tool calls or tests are failing
+- **Token accumulation**: Logs when token spend exceeds 50K since last poll
+- **Stall detection**: Combined with heartbeat checks for comprehensive activity monitoring
+
+See `src/voronoi/server/events.py` for the `SwarmEvent` dataclass and convenience loggers.
 
 ### Event-Driven Digests
 

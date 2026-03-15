@@ -110,7 +110,25 @@ flowchart LR
 
 ---
 
-## 3. `.github/` — Agent Roles, Prompts, and Skills
+## 3. File Audience Separation
+
+Voronoi strictly separates files by audience:
+
+| Files | Audience | Shipped with pip? |
+|-------|----------|:-:|
+| `CLAUDE.md` (repo root) | Developers working ON Voronoi | No |
+| `docs/*.md` | Developers working ON Voronoi | No |
+| `src/voronoi/data/templates/CLAUDE.md` | Investigation agents working WITH Voronoi | Yes |
+| `src/voronoi/data/agents/` | Investigation agents (also Copilot during dev via `.github/` symlink) | Yes |
+| `src/voronoi/data/scripts/` | Runtime scripts (spawn, merge, convergence) | Yes |
+| `scripts/` (repo root) | Dev-only scripts (sync, dashboard, health-check) | No |
+
+`sync-package-data.sh` copies `.github/{agents,skills,prompts}` → `src/voronoi/data/` before `pip install .`.
+Editable installs (`pip install -e .`) read from the repo root directly.
+
+---
+
+## 4. `.github/` — Agent Roles, Prompts, and Skills
 
 Copilot auto-discovers these files. They are the **real** role definitions — the prompt builder *references* them, never duplicates.
 

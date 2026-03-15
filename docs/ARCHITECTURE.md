@@ -43,7 +43,13 @@ The system is organized into four layers, each with clear responsibilities and b
 │                   Server Layer                       │
 │   queue.py · dispatcher.py · prompt.py              │
 │   workspace.py · sandbox.py · runner.py             │
-│   publisher.py · repo_url.py                        │
+│   publisher.py · repo_url.py · events.py            │
+└──────────────────────┬──────────────────────────────┘
+                       │
+┌──────────────────────▼──────────────────────────────┐
+│              Package Data (shipped with pip)          │
+│   data/agents/ · data/skills/ · data/prompts/        │
+│   data/scripts/ · data/templates/                    │
 └──────────────────────┬──────────────────────────────┘
                        │
 ┌──────────────────────▼──────────────────────────────┐
@@ -117,6 +123,7 @@ Agents do NOT communicate through custom IPC. All inter-agent communication flow
 | **Git** | Code, data, artifacts | Branches + worktrees, merge via `merge-agent.sh` |
 | **Beads (bd)** | Tasks, dependencies, findings | Dolt-backed DB, `bd create/update/close` |
 | **`.swarm/` files** | Orchestrator state | JSON/Markdown files in workspace root |
+| **`.swarm/events.jsonl`** | Structured observability | Append-only event log (tool calls, tests, findings, tokens) |
 | **tmux** | Process lifecycle | Session/window management, `; exit` for completion |
 
 ### `.swarm/` Directory Structure
@@ -134,11 +141,34 @@ Agents do NOT communicate through custom IPC. All inter-agent communication flow
 ├── convergence.json         # Convergence result (written at end)
 ├── lab-notebook.json        # Lab notebook entries per OODA cycle
 ├── verify-log-<id>.jsonl    # Per-task verify loop iterations
+├── events.jsonl             # Structured event log (tool calls, tests, findings)
+├── human-gate.json          # Human approval gate (Scientific+ rigor)
 ├── abort-signal             # Written by /voronoi abort
 └── orchestrator-prompt.txt  # Saved prompt for restart recovery
 ```
 
-## 5. `.github/` Structure
+## 5. File Audience Separation
+
+Voronoi strictly separates dev files from runtime files:
+
+| Files | Audience | Shipped with pip? |
+|-------|----------|:-:|
+| `CLAUDE.md` (repo root) | Developers working ON Voronoi | No |
+| `docs/*.md` | Developers working ON Voronoi | No |
+| `src/voronoi/data/templates/CLAUDE.md` | Investigation agents (runtime constitution) | Yes |
+| `src/voronoi/data/agents/` | Agent role definitions | Yes |
+| `src/voronoi/data/skills/` | Skill definitions | Yes |
+| `src/voronoi/data/scripts/` | Runtime scripts (spawn, merge, etc.) | Yes |
+| `scripts/` (repo root) | Dev scripts (sync, dashboard) — NOT shipped | No |
+
+### How files are sourced
+
+- **Editable install** (`pip install -e .`): `find_data_dir()` returns repo root. Agent roles read from `.github/agents/`, templates from `src/voronoi/data/templates/`.
+- **Packaged install** (`pip install voronoi`): `find_data_dir()` returns `src/voronoi/data/`. Agent roles read from `data/agents/`. Templates from `data/templates/`.
+- **`voronoi init`**: Copies runtime `CLAUDE.md` from templates (NOT the dev CLAUDE.md). Copies agents/skills/prompts from package data.
+- **`sync-package-data.sh`**: Run before `pip install .` to copy `.github/` → `src/voronoi/data/`.
+
+## 6. `.github/` Structure
 
 Copilot auto-discovers these files. They are the **real** role definitions.
 

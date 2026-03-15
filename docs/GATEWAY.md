@@ -283,7 +283,11 @@ class KnowledgeStore:
     def format_recall_response(self, query: str, max_results: int = 5) -> str: ...
 ```
 
-**Search algorithm**: Keyword matching on title + notes, boosted score for completed findings.
+**Search algorithm**: Hybrid BM25 keyword + weighted scoring. Combines:
+- **BM25** (via in-memory SQLite FTS5): Exact token matching for IDs (`bd-42`), data hashes (`sha256:...`), stat values (`d=0.82`), method names (`ANOVA`).
+- **Keyword scoring**: Weighted word overlap on title + notes, boosted for completed findings and investigations.
+
+Weighted combination: 60% keyword + 40% BM25. Falls back to keyword-only if FTS5 is unavailable.
 
 ---
 

@@ -304,13 +304,22 @@ class TestWorkspaceGitHubProvisioning:
         workspace = tmp_path / "workspace"
         (workspace / ".github" / "agents").mkdir(parents=True)
         (workspace / ".github" / "agents" / "existing.md").write_text("keep me")
+        # Pre-create CLAUDE.md so templates copy is also skipped
+        (workspace / "CLAUDE.md").write_text("existing")
+        (workspace / "AGENTS.md").write_text("existing")
+        # Pre-create scripts/ so scripts copy is also skipped
+        (workspace / "scripts").mkdir()
 
         with patch("voronoi.cli.find_data_dir") as mock_find:
+            mock_find.return_value = tmp_path / "fake-data"
+            (tmp_path / "fake-data" / "scripts").mkdir(parents=True)
+            (tmp_path / "fake-data" / "templates").mkdir(parents=True)
             wm._ensure_github_files(workspace)
-            # Should not even call find_data_dir since agents/ already exists
-            mock_find.assert_not_called()
 
+        # Existing agent file should not be overwritten
         assert (workspace / ".github" / "agents" / "existing.md").read_text() == "keep me"
+        # Pre-existing CLAUDE.md should not be overwritten
+        assert (workspace / "CLAUDE.md").read_text() == "existing"
 
     def test_provision_lab_copies_github(self, tmp_path):
         from voronoi.server.workspace import WorkspaceManager

@@ -227,6 +227,8 @@ class RunningInvestigation:
     eval_score: float
     retry_count: int
     stall_warned: bool
+    notified_design_invalid: set
+    last_event_ts: float          # For event log polling
 ```
 
 ### WorkspaceInfo (`server/workspace.py`)
@@ -452,12 +454,18 @@ CREATE TABLE conversation_state (
 
 ```json
 {
-  "completeness": 0.85,
-  "coherence": 0.90,
-  "strength": 0.78,
-  "actionability": 0.82,
-  "overall": 0.84,
-  "notes": "Strong evidence chain, minor gaps in Discussion"
+  "score": 0.84,
+  "rounds": 1,
+  "dimensions": {
+    "completeness": {"score": 0.85, "note": "Minor gap in sensitivity analysis"},
+    "coherence": {"score": 0.90, "note": "Good internal consistency"},
+    "strength": {"score": 0.78, "note": "Finding bd-43 sample size marginal"},
+    "actionability": {"score": 0.82, "note": "Concrete parameter ranges provided"}
+  },
+  "remediations": [
+    "Run sensitivity analysis varying K from 0.1 to 1.0",
+    "Increase sample size for finding bd-43"
+  ]
 }
 ```
 
@@ -531,6 +539,34 @@ timestamp	task_id	branch	metric_name	metric_value	status	description
 {"iteration": 1, "status": "fail", "error_type": "test_failure", "summary": "3/12 failed", "timestamp": "..."}
 {"iteration": 2, "status": "pass", "summary": "all pass", "timestamp": "..."}
 ```
+
+### `.swarm/events.jsonl`
+
+Structured event log for investigation observability. Append-only JSONL.
+
+```jsonl
+{"ts":1710500000,"agent":"investigator","task_id":"bd-42","event":"tool_call","status":"pass","detail":"pytest: 12 passed","tokens_used":1240}
+{"ts":1710500010,"agent":"investigator","task_id":"bd-42","event":"finding_committed","status":"ok","detail":"bd-43: effect d=0.82","tokens_used":0}
+{"ts":1710500020,"agent":"worker","task_id":"bd-10","event":"test_run","status":"fail","detail":"attempt 2: AssertionError","tokens_used":890}
+{"ts":1710500030,"agent":"worker","task_id":"bd-10","event":"verify_step","status":"pass","detail":"produces_check","tokens_used":0}
+```
+
+Event types: `tool_call`, `finding_committed`, `test_run`, `verify_step`, `cycle_start`, `cycle_end`.
+
+### `.swarm/human-gate.json`
+
+Human approval gate for Scientific+ rigor investigations.
+
+```json
+{
+  "gate": "pre-registration",
+  "status": "pending",
+  "summary": "Hypothesis: Encoding enables cross-lever discovery. Method: 2x2 factorial. N=100/cell. Ready to run experiments."
+}
+```
+
+Status values: `pending` → `notified` (dispatcher sent Telegram) → `approved` | `revision_requested`.
+When `revision_requested`, includes a `feedback` field with human-written feedback.
 
 ---
 

@@ -201,25 +201,42 @@ class WorkspaceManager:
             logger.debug("voronoi init failed in %s", workspace_path, exc_info=True)
 
     def _ensure_github_files(self, workspace_path: Path) -> None:
-        """Copy .github/{agents,prompts,skills} if missing in workspace."""
-        github_dst = workspace_path / ".github"
-        # If agents/ already exists, voronoi init succeeded — skip
-        if (github_dst / "agents").is_dir():
-            return
+        """Copy .github/{agents,prompts,skills}, scripts/, and runtime CLAUDE.md if missing."""
         try:
-            from voronoi.cli import find_data_dir
+            from voronoi.cli import find_data_dir, _resolve_github_src, _resolve_templates_dir
+
             data = find_data_dir()
-            github_src = data / ".github"
-            if not github_src.is_dir():
-                return
-            github_dst.mkdir(exist_ok=True)
-            for subdir in ("agents", "prompts", "skills"):
-                src = github_src / subdir
-                dst = github_dst / subdir
-                if src.is_dir() and not dst.is_dir():
-                    shutil.copytree(src, dst)
+
+            # Copy .github/ subdirectories if missing
+            github_dst = workspace_path / ".github"
+            if not (github_dst / "agents").is_dir():
+                github_src = _resolve_github_src(data)
+                github_dst.mkdir(exist_ok=True)
+                for subdir in ("agents", "prompts", "skills"):
+                    src = github_src / subdir
+                    dst = github_dst / subdir
+                    if src.is_dir() and not dst.is_dir():
+                        shutil.copytree(src, dst)
+
+            # Copy runtime scripts if missing
+            scripts_dst = workspace_path / "scripts"
+            if not scripts_dst.is_dir():
+                scripts_src = data / "scripts"
+                if scripts_src.is_dir():
+                    shutil.copytree(scripts_src, scripts_dst)
+                    # Make .sh files executable
+                    for sh in scripts_dst.rglob("*.sh"):
+                        sh.chmod(sh.stat().st_mode | 0o755)
+
+            # Always ensure runtime CLAUDE.md + AGENTS.md exist
+            templates = _resolve_templates_dir(data)
+            for fname in ("CLAUDE.md", "AGENTS.md"):
+                src = templates / fname
+                dst = workspace_path / fname
+                if src.is_file() and not dst.exists():
+                    shutil.copy2(src, dst)
         except Exception:
-            logger.debug("Failed to copy .github/ files to %s", workspace_path, exc_info=True)
+            logger.debug("Failed to copy framework files to %s", workspace_path, exc_info=True)
 
     def _run_git(self, cmd: list[str], cwd: str) -> subprocess.CompletedProcess:
         """Run a git command."""

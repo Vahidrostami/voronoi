@@ -16,8 +16,6 @@ from typing import Optional
 
 from voronoi.beads import run_bd, has_beads_dir
 from voronoi.gateway.intent import ClassifiedIntent, WorkflowMode, classify
-
-logger = logging.getLogger("voronoi.router")
 from voronoi.gateway.progress import (
     MODE_EMOJI, RIGOR_DESCRIPTIONS, MODE_VERB,
     build_digest_whatsup, phase_description, format_duration,
@@ -286,7 +284,7 @@ def handle_howsitgoing(project_dir: str) -> str:
         if eval_path.exists():
             try:
                 ed = json.loads(eval_path.read_text())
-                eval_score = float(ed.get("score", 0))
+                eval_score = float(ed.get("score") or 0)
             except Exception:
                 pass
 

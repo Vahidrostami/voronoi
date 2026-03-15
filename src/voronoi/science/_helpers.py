@@ -103,7 +103,7 @@ def _find_unreplicated_high_impact(workspace: Path, tasks: list[dict] | None = N
         return []
     return [t.get("id", "") for t in tasks
             if "FINDING" in t.get("title", "").upper() and t.get("priority", 9) <= 1
-            and ("REPLICATED:no" in t.get("notes", "").lower() or "REPLICATED" not in t.get("notes", ""))]
+            and ("replicated:no" in t.get("notes", "").lower() or "replicated" not in t.get("notes", "").lower())]
 
 
 def _find_design_invalid(workspace: Path, tasks: list[dict] | None = None) -> list[str]:

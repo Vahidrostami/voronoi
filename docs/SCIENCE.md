@@ -183,6 +183,41 @@ def write_convergence(workspace: Path, result: ConvergenceResult) -> Path
 | 0.50 – 0.74 | Improvement round (max 2) |
 | < 0.50 | Deliver with quality disclosure |
 
+### Structured Evaluator Feedback
+
+The evaluator produces section-level scores and concrete remediations:
+
+```json
+{
+  "score": 0.82, "rounds": 1,
+  "dimensions": {
+    "completeness": {"score": 0.85, "note": "Missing sensitivity analysis"},
+    "coherence": {"score": 0.75, "note": "Section 3 contradicts Section 5"},
+    "strength": {"score": 0.70, "note": "Finding bd-43 N=12, too small"},
+    "actionability": {"score": 0.90, "note": "Good parameter ranges"}
+  },
+  "remediations": [
+    "Run sensitivity analysis varying K from 0.1 to 1.0",
+    "Resolve Section 3 vs Section 5 contradiction"
+  ]
+}
+```
+
+The `remediations` list drives improvement rounds — the orchestrator creates targeted tasks from these instead of guessing what needs to improve.
+
+### Human Review Gates (Scientific+ Rigor)
+
+At Scientific and Experimental rigor, the investigation pauses for human approval:
+
+| Gate | When | Mechanism |
+|------|------|-----------|
+| Pre-registration | After pre-reg, before experiments | Write `.swarm/human-gate.json` with `status: "pending"` |
+| Convergence | Before finalizing deliverable | Same file, new gate entry |
+
+The dispatcher detects pending gates and sends a Telegram message. The human replies `/approve <id>` or `/revise <id> <feedback>`. The orchestrator polls the gate file and resumes when approved or revises when feedback is given.
+
+This prevents the system from spending hours on a flawed methodology that a human would catch in minutes.
+
 ### Diminishing Returns Rule
 
 If the last 2 improvement rounds improved by < 5% each → `DIMINISHING_RETURNS` — deliver as-is with disclosure.
