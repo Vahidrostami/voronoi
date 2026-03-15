@@ -897,6 +897,182 @@ def audit_all_findings(
     return results
 
 
+# ---------------------------------------------------------------------------
+# Simulation / LLM-Bypass Detection
+# ---------------------------------------------------------------------------
+
+_SIMULATION_BYPASS_PATTERNS = [
+    # Patterns that indicate an agent substituted simulation for real LLM calls
+    r"np\.random\.seed\(",
+    r"random\.seed\(",
+    r"simulate.*what.*(?:LLM|model|agent).*would",
+    r"avoids?\s+(?:the\s+)?(?:infeasibility|running)\s+.*(?:copilot|LLM|CLI)\s+calls?",
+    r"hardcoded.*(?:detection|probability|score)",
+    r"Beta\s*\(\s*\d",  # Beta distribution sampling (fake rubric scores)
+]
+
+_SIMULATED_MODEL_MARKERS = [
+    "simulated",
+    "mock",
+    "fake",
+    "synthetic-model",
+    "placeholder",
+]
+
+
+@dataclass
+class SimulationBypassResult:
+    """Result of simulation/LLM-bypass detection."""
+    passed: bool
+    flags: list[FabricationFlag] = field(default_factory=list)
+    results_model: str = ""
+    cache_entries: int = 0
+    expected_min_cache: int = 0
+    bypass_files: list[str] = field(default_factory=list)
+
+    @property
+    def critical_flags(self) -> list[FabricationFlag]:
+        return [f for f in self.flags if f.severity == "critical"]
+
+
+def detect_simulation_bypass(
+    workspace: Path,
+    expected_min_llm_calls: int = 0,
+) -> SimulationBypassResult:
+    """Detect if an agent substituted simulation for real LLM calls.
+
+    Checks:
+    1. results.json model field for "simulated" markers
+    2. .llm_cache/ entry count vs expected minimum
+    3. Source files for simulation-bypass code patterns
+    4. Presence of alternative runner scripts that bypass the mandated entry point
+    """
+    result = SimulationBypassResult(passed=True)
+
+    # 1. Check results.json model field
+    for results_path in _find_results_files(workspace):
+        try:
+            data = json.loads(results_path.read_text())
+            model = ""
+            if isinstance(data, dict):
+                model = str(data.get("model", data.get("metadata", {}).get("model", "")))
+            if model:
+                result.results_model = model
+                model_lower = model.lower()
+                for marker in _SIMULATED_MODEL_MARKERS:
+                    if marker in model_lower:
+                        result.flags.append(FabricationFlag(
+                            severity="critical",
+                            category="simulated_model",
+                            message=(
+                                f"results.json model='{model}' contains '{marker}' — "
+                                f"results appear to come from simulation, not real LLM calls"
+                            ),
+                        ))
+                        result.passed = False
+                        break
+        except (json.JSONDecodeError, OSError):
+            continue
+
+    # 2. Check .llm_cache/ entry count
+    cache_dirs = list(workspace.rglob(".llm_cache"))
+    total_cache = 0
+    for cache_dir in cache_dirs:
+        if cache_dir.is_dir():
+            total_cache += sum(1 for f in cache_dir.iterdir() if f.is_file())
+    result.cache_entries = total_cache
+    result.expected_min_cache = expected_min_llm_calls
+
+    if expected_min_llm_calls > 0 and total_cache < expected_min_llm_calls:
+        severity = "critical" if total_cache < expected_min_llm_calls // 4 else "warning"
+        result.flags.append(FabricationFlag(
+            severity=severity,
+            category="insufficient_cache",
+            message=(
+                f"LLM cache has {total_cache} entries but experiment design "
+                f"requires ≥{expected_min_llm_calls} real LLM calls. "
+                f"Results may not come from real LLM execution."
+            ),
+        ))
+        if severity == "critical":
+            result.passed = False
+
+    # 3. Scan source files for simulation-bypass patterns
+    src_dirs = [workspace / "src", workspace / "demos"]
+    # Also check top-level Python files
+    src_files: list[Path] = list(workspace.glob("*.py"))
+    for src_dir in src_dirs:
+        if src_dir.is_dir():
+            src_files.extend(src_dir.rglob("*.py"))
+
+    compiled_patterns = [re.compile(p, re.IGNORECASE) for p in _SIMULATION_BYPASS_PATTERNS]
+
+    for py_file in src_files:
+        try:
+            content = py_file.read_text(errors="replace")
+        except OSError:
+            continue
+
+        for pattern in compiled_patterns:
+            matches = pattern.findall(content)
+            if matches:
+                # Check if this is in a file that looks like a simulation substitute
+                rel_path = str(py_file.relative_to(workspace))
+                # Heuristic: files named *sim*, *mock*, *fake* are suspect
+                fname_lower = py_file.stem.lower()
+                is_suspect_file = any(
+                    kw in fname_lower
+                    for kw in ("sim", "mock", "fake", "stub", "synthetic")
+                )
+                if is_suspect_file:
+                    result.bypass_files.append(rel_path)
+                    result.flags.append(FabricationFlag(
+                        severity="critical",
+                        category="simulation_bypass",
+                        message=(
+                            f"File '{rel_path}' appears to be a simulation substitute "
+                            f"for real LLM calls (matched: {pattern.pattern!r})"
+                        ),
+                    ))
+                    result.passed = False
+                    break  # one flag per file is enough
+
+    # 4. Check for alternative runner scripts that bypass mandated entry point
+    run_files = list(workspace.glob("run_*.py")) + list(workspace.glob("run*.py"))
+    for demo_dir in workspace.glob("demos/*/"):
+        run_files.extend(demo_dir.glob("run_*.py"))
+        run_files.extend(demo_dir.glob("run*.py"))
+
+    for rf in run_files:
+        fname_lower = rf.stem.lower()
+        if any(kw in fname_lower for kw in ("sim", "mock", "fake")):
+            rel_path = str(rf.relative_to(workspace))
+            result.bypass_files.append(rel_path)
+            result.flags.append(FabricationFlag(
+                severity="warning",
+                category="alternative_runner",
+                message=(
+                    f"Alternative runner '{rel_path}' exists alongside the mandated "
+                    f"entry point. Verify results were produced by the correct runner."
+                ),
+            ))
+
+    return result
+
+
+def _find_results_files(workspace: Path) -> list[Path]:
+    """Find results.json files in the workspace."""
+    results: list[Path] = []
+    for p in workspace.rglob("results.json"):
+        # Skip .git, node_modules, etc.
+        parts = p.parts
+        if any(part.startswith(".") and part != "." for part in parts):
+            if ".swarm" not in str(p):
+                continue
+        results.append(p)
+    return results
+
+
 def format_fabrication_report(results: list[AntiFabricationResult]) -> str:
     """Format anti-fabrication audit results into a human-readable report."""
     if not results:

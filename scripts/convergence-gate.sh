@@ -198,7 +198,42 @@ except Exception as e:
 fi
 
 # -------------------------------------------------------------------------
-# Check 7: Data invariants (min_csv_rows etc.)
+# Check 7: Simulation / LLM-bypass detection (Analytical+)
+# -------------------------------------------------------------------------
+if [ "$RIGOR" != "standard" ]; then
+    echo "  Running simulation-bypass detection..."
+    SIM_CHECK=$(python3 -c "
+import sys
+sys.path.insert(0, '${WORKSPACE}/src' if __import__('os').path.isdir('${WORKSPACE}/src') else '.')
+try:
+    from voronoi.science import detect_simulation_bypass
+    from pathlib import Path
+    result = detect_simulation_bypass(Path('$WORKSPACE'))
+    if not result.flags:
+        print('OK:no simulation bypass detected')
+    else:
+        critical = len(result.critical_flags)
+        if critical > 0:
+            msgs = [f.message for f in result.critical_flags]
+            print('FAIL:' + str(critical) + ' critical: ' + '; '.join(msgs[:3]))
+        else:
+            msgs = [f.message for f in result.flags]
+            print('WARN:' + '; '.join(msgs[:3]))
+except Exception as e:
+    print('WARN:simulation check unavailable: ' + str(e))
+" 2>/dev/null || echo "WARN:sim_check_unavailable")
+
+    if [[ "$SIM_CHECK" == FAIL:* ]]; then
+        BLOCKERS="${BLOCKERS}\n  ✗ Simulation bypass: ${SIM_CHECK#FAIL:}"
+    elif [[ "$SIM_CHECK" == WARN:* ]]; then
+        WARNINGS="${WARNINGS}\n  ⚠ Simulation bypass: ${SIM_CHECK#WARN:}"
+    else
+        echo "  ✓ Simulation-bypass check passed (${SIM_CHECK#OK:})"
+    fi
+fi
+
+# -------------------------------------------------------------------------
+# Check 8: Data invariants (min_csv_rows etc.)  [was 7]
 # -------------------------------------------------------------------------
 if [ "$RIGOR" != "standard" ]; then
     echo "  Checking data invariants..."
@@ -232,7 +267,7 @@ except Exception as e:
 fi
 
 # -------------------------------------------------------------------------
-# Check 8: Figure integrity (if LaTeX present)
+# Check 9: Figure integrity (if LaTeX present)  [was 8]
 # -------------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 if find "$WORKSPACE" -name '*.tex' -not -path '*/.git/*' 2>/dev/null | head -1 | grep -q '.'; then

@@ -21,6 +21,7 @@ from voronoi.science import (
     LabNotebookEntry,
     PreRegistration,
     ReplicationNeed,
+    SimulationBypassResult,
     append_lab_notebook,
     audit_all_findings,
     check_calibration,
@@ -32,6 +33,7 @@ from voronoi.science import (
     check_merge_gates,
     check_paradigm_stress,
     compute_data_hash,
+    detect_simulation_bypass,
     format_fabrication_report,
     format_invariants_for_prompt,
     format_judge_prompt,
@@ -1583,3 +1585,104 @@ class TestMergeGateEVA:
         task = {"title": "Build encoder", "notes": "TASK_TYPE:build"}
         ok, blockers = check_merge_gates(task, tmp_path, "analytical")
         assert ok is True
+
+
+# ---------------------------------------------------------------------------
+# Simulation / LLM-Bypass Detection
+# ---------------------------------------------------------------------------
+
+class TestSimulationBypassDetection:
+    def test_clean_workspace_passes(self, tmp_path):
+        """Workspace with no simulation markers should pass."""
+        result = detect_simulation_bypass(tmp_path)
+        assert result.passed is True
+        assert len(result.critical_flags) == 0
+
+    def test_simulated_model_in_results_json(self, tmp_path):
+        """results.json with 'simulated' in model field should fail."""
+        out_dir = tmp_path / "output"
+        out_dir.mkdir()
+        (out_dir / "results.json").write_text(
+            json.dumps({"model": "copilot-cli-simulated", "data": []})
+        )
+        result = detect_simulation_bypass(tmp_path)
+        assert result.passed is False
+        assert any(f.category == "simulated_model" for f in result.flags)
+
+    def test_mock_model_in_results_json(self, tmp_path):
+        """results.json with 'mock' in model field should fail."""
+        out_dir = tmp_path / "output"
+        out_dir.mkdir()
+        (out_dir / "results.json").write_text(
+            json.dumps({"model": "mock-gpt-4"})
+        )
+        result = detect_simulation_bypass(tmp_path)
+        assert result.passed is False
+        assert any("mock" in f.message for f in result.critical_flags)
+
+    def test_real_model_passes(self, tmp_path):
+        """results.json with real model name should pass."""
+        out_dir = tmp_path / "output"
+        out_dir.mkdir()
+        (out_dir / "results.json").write_text(
+            json.dumps({"model": "copilot-cli"})
+        )
+        result = detect_simulation_bypass(tmp_path)
+        assert result.passed is True
+
+    def test_simulation_file_detected(self, tmp_path):
+        """Source files named *sim* with np.random patterns should be flagged."""
+        src_dir = tmp_path / "src"
+        src_dir.mkdir()
+        (src_dir / "experiment_sim.py").write_text(
+            "import numpy as np\n"
+            "np.random.seed(42)\n"
+            "# This avoids the infeasibility of running 1000+ copilot CLI calls\n"
+        )
+        result = detect_simulation_bypass(tmp_path)
+        assert result.passed is False
+        assert any(f.category == "simulation_bypass" for f in result.flags)
+        assert "experiment_sim.py" in str(result.bypass_files)
+
+    def test_legitimate_random_in_non_sim_file(self, tmp_path):
+        """np.random.seed in a legitimately-named file should not trigger critical."""
+        src_dir = tmp_path / "src"
+        src_dir.mkdir()
+        (src_dir / "data_generator.py").write_text(
+            "import numpy as np\n"
+            "np.random.seed(42)\n"
+            "# Generate synthetic scenarios\n"
+        )
+        result = detect_simulation_bypass(tmp_path)
+        # The file is not named *sim*/*mock*/*fake*, so no critical flag
+        assert result.passed is True
+
+    def test_alternative_runner_detected(self, tmp_path):
+        """run_sim.py alongside run_experiments.py should be flagged."""
+        (tmp_path / "run_experiments.py").write_text("# real runner\n")
+        (tmp_path / "run_sim.py").write_text("# simulation bypass\n")
+        result = detect_simulation_bypass(tmp_path)
+        assert any(f.category == "alternative_runner" for f in result.flags)
+        assert "run_sim.py" in str(result.bypass_files)
+
+    def test_insufficient_cache_critical(self, tmp_path):
+        """Too-few cache entries vs expected should fail."""
+        cache_dir = tmp_path / ".llm_cache"
+        cache_dir.mkdir()
+        # Only 3 cache entries when 100 are expected
+        for i in range(3):
+            (cache_dir / f"hash_{i}.json").write_text("{}")
+        result = detect_simulation_bypass(tmp_path, expected_min_llm_calls=100)
+        assert result.passed is False
+        assert result.cache_entries == 3
+        assert any(f.category == "insufficient_cache" for f in result.flags)
+
+    def test_sufficient_cache_passes(self, tmp_path):
+        """Enough cache entries should pass."""
+        cache_dir = tmp_path / ".llm_cache"
+        cache_dir.mkdir()
+        for i in range(120):
+            (cache_dir / f"hash_{i}.json").write_text("{}")
+        result = detect_simulation_bypass(tmp_path, expected_min_llm_calls=100)
+        assert result.passed is True
+        assert result.cache_entries == 120

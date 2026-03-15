@@ -228,6 +228,14 @@ Quality gate must score all 5 abstract-claimed dimensions: evidence density, con
 6. **All LLM calls via** `copilot -p "<prompt>" -s --no-color --allow-all`. Cache by prompt hash. Record model in `results.json`.
 7. **Ground truth never loaded by the reasoning system.** Used only for evaluation.
 8. **Minimum 500 rows per scenario.** Do NOT drop below 500 rows — this is the floor that creates the numerical computation gap where encoding matters. If L1 context length becomes a problem, reduce *column count* or trim *text knowledge length*, never row count. At 150 rows or fewer, modern LLMs can scan the entire table and the encoding advantage disappears.
+9. **NO SIMULATION MODE.** Do NOT create scripts that substitute real LLM calls with `np.random` sampling, Beta distributions, or hardcoded detection probabilities. The experiment's purpose is to *measure* LLM performance — simulating it is circular and produces fabricated results. Specifically:
+   - Do NOT create files named `*sim*`, `*mock*`, or `*fake*` that bypass real copilot calls.
+   - Do NOT create alternative runners (e.g. `run_sim.py`) — `run_experiments.py` is the ONLY entry point.
+   - Do NOT hardcode values the experiment is designed to measure (e.g. "Simpson's detection at L1: 20%").
+   - `results.json` model field MUST be `"copilot-cli"` — any value containing "simulated" will be rejected by the convergence gate.
+   - If the full experiment requires too many LLM calls, reduce `k` (runs per condition) or `N` (scenarios) — never replace real calls with simulation. 5 real runs × 4 scenarios beats 100 simulated runs × 14 scenarios.
+   - A `--dry-run` flag for debugging is permitted ONLY if it prints to stdout and writes NOTHING to `output/`.
+10. **LLM cache validation.** The `.llm_cache/` directory must contain ≥ `N × 2 × k` entries for E1 (scenarios × levels × runs). The convergence gate checks this. If cache is nearly empty, the experiment was not run.
 
 ---
 

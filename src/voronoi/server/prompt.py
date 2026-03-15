@@ -235,6 +235,28 @@ def build_orchestrator_prompt(
         "4. Only proceed to paper after the revised experiment passes its gate\n"
     )
 
+    # -- Anti-simulation enforcement ----------------------------------------
+    sections.append(
+        "\n## Anti-Simulation Enforcement — HARD GATE\n\n"
+        "The convergence gate runs **simulation-bypass detection** that will BLOCK "
+        "completion if it detects:\n"
+        "- `results.json` with model field containing 'simulated', 'mock', 'fake'\n"
+        "- `.llm_cache/` with fewer entries than expected from the experiment design\n"
+        "- Source files named `*sim*`, `*mock*`, `*fake*` that substitute real LLM "
+        "calls with random number generators or hardcoded probabilities\n"
+        "- Alternative runner scripts (e.g. `run_sim.py`) alongside the mandated entry point\n\n"
+        "**Rules:**\n"
+        "- NEVER create a 'simulation mode' that replaces real LLM calls with "
+        "`np.random`/`random` sampling from assumed distributions\n"
+        "- NEVER create alternative entry points that bypass the mandated runner\n"
+        "- If the experiment requires too many LLM calls, reduce N or batch size — "
+        "do NOT simulate. Fewer real data points beat many fake ones.\n"
+        "- If you need a dry-run mode for debugging, name it explicitly (e.g. "
+        "`--dry-run`) and ensure it writes NO results to output/\n"
+        "- The convergence gate will REJECT any results.json where model contains "
+        "'simulated' or similar markers\n"
+    )
+
     # -- Workflow ----------------------------------------------------------
     sections.append("\n## Workflow\n\n")
     sections.append(_build_workflow_steps(mode, rigor, prompt_path))

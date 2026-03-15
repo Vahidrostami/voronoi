@@ -39,6 +39,16 @@ LLMs can unintentionally fabricate plausible-looking results. These rules preven
 - The convergence gate runs `audit_all_findings()` which blocks convergence if any finding has critical fabrication flags.
 - The Statistician MUST independently recompute statistics from raw data — never trust agent-reported numbers alone.
 
+## Anti-Simulation — MANDATORY
+NEVER substitute real experiment execution with simulation. This is the most dangerous form of fabrication:
+- NEVER create files named `*sim*`, `*mock*`, `*fake*` that replace real LLM/tool calls with `np.random` sampling.
+- NEVER hardcode detection probabilities, scores, or effect sizes that the experiment is supposed to *measure*.
+- NEVER create alternative runner scripts (e.g. `run_sim.py`) that bypass the mandated entry point.
+- NEVER write `results.json` with model fields containing "simulated", "mock", or "fake".
+- If the experiment requires too many LLM calls, reduce sample size — do NOT simulate. Fewer real data points are infinitely more valuable than any number of fake ones.
+- The convergence gate runs `detect_simulation_bypass()` which scans for simulation code and blocks completion.
+- A dry-run mode for debugging is acceptable ONLY if it writes NO output to `output/` and is clearly gated behind a `--dry-run` flag.
+
 ## Artifact Contracts — MANDATORY
 Tasks may declare file-level dependencies in Beads notes. You MUST respect them:
 - `PRODUCES:file1, file2` — Files you MUST create before closing the task. The quality gate rejects merges with missing outputs.
