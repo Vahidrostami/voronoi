@@ -1,18 +1,22 @@
 """Knowledge recall — search past findings and evidence.
 
 Queries the Beads database and evidence store to answer questions like
-"what did we learn about caching?" using keyword matching and metadata search.
+"what did we learn about caching?" using hybrid BM25 keyword + weighted
+scoring for better recall on exact tokens (task IDs, data hashes,
+statistical values) alongside semantic relevance.
 """
 
 from __future__ import annotations
 
 import json
 import re
+import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
 from voronoi.beads import run_bd as _run_bd
+from voronoi.utils import parse_finding_notes as _parse_finding_notes
 
 
 @dataclass
@@ -58,21 +62,6 @@ def _escape_md(text: str) -> str:
     return text.replace("_", "\\_").replace("*", "\\*").replace("`", "\\`")
 
 
-def _parse_finding_notes(notes_str: str) -> dict:
-    """Extract structured fields from Beads notes strings."""
-    fields: dict = {}
-    # Pattern: KEY:value or KEY: value
-    for line in notes_str.split("\n"):
-        line = line.strip()
-        for key in ("EFFECT_SIZE", "CI_95", "N", "STAT_TEST", "VALENCE",
-                     "CONFIDENCE", "DATA_FILE", "ROBUST", "TYPE", "SAMPLE_SIZE"):
-            pattern = rf"\b{key}\s*[:=]\s*(.+?)(?:\s*\||\s*$)"
-            m = re.search(pattern, line, re.I)
-            if m:
-                fields[key.lower()] = m.group(1).strip()
-    return fields
-
-
 class KnowledgeStore:
     """Query interface for the evidence knowledge store.
 
@@ -83,7 +72,11 @@ class KnowledgeStore:
         self.project_dir = str(project_dir)
 
     def search_findings(self, query: str, max_results: int = 10) -> list[Finding]:
-        """Search findings by keyword matching against titles and notes."""
+        """Search findings with hybrid BM25 keyword + weighted scoring.
+
+        Combines exact-token BM25 matching (good for IDs, hashes, stats)
+        with the existing keyword relevance scoring (good for topics).
+        """
         code, output = _run_bd("list", "--json", cwd=self.project_dir)
         if code != 0:
             return []
@@ -93,35 +86,44 @@ class KnowledgeStore:
         except (json.JSONDecodeError, ValueError):
             return []
 
-        # Filter to finding-like tasks
+        if not tasks:
+            return []
+
+        # Build BM25 scores via in-memory FTS5
+        bm25_scores = self._bm25_score(tasks, query)
+
+        # Keyword relevance scoring (existing approach)
         query_words = set(query.lower().split())
         scored: list[tuple[float, dict]] = []
 
         for task in tasks:
+            tid = task.get("id", "")
             title = task.get("title", "")
             notes_raw = task.get("notes", "")
-            task_type = task.get("type", "")
 
-            # Score relevance — must have at least one keyword match
             text_blob = f"{title} {notes_raw}".lower()
             keyword_score = sum(1 for w in query_words if w in text_blob)
 
-            if keyword_score == 0:
-                continue  # No keyword match, skip entirely
+            # BM25 score for this task (0.0 if not matched)
+            bm25 = bm25_scores.get(tid, 0.0)
 
-            score = float(keyword_score)
+            # Must match on at least one signal
+            if keyword_score == 0 and bm25 == 0.0:
+                continue
+
+            # Weighted combination: BM25 handles exact tokens, keyword handles topics
+            score = float(keyword_score) * 0.6 + bm25 * 0.4
 
             # Boost findings and completed tasks
             if "FINDING" in title.upper() or "finding" in notes_raw.lower():
                 score += 2
             if task.get("status") == "closed":
                 score += 0.5
-            if task_type == "investigation":
+            if task.get("type") == "investigation":
                 score += 1
 
             scored.append((score, task))
 
-        # Sort by score descending
         scored.sort(key=lambda x: x[0], reverse=True)
 
         findings = []
@@ -147,6 +149,63 @@ class KnowledgeStore:
             findings.append(f)
 
         return findings
+
+    @staticmethod
+    def _bm25_score(tasks: list[dict], query: str) -> dict[str, float]:
+        """Compute BM25 relevance scores using SQLite FTS5.
+
+        Returns a dict mapping task ID → normalized BM25 score (0.0–1.0).
+        Uses an in-memory SQLite database so there's no disk footprint.
+        """
+        if not tasks or not query.strip():
+            return {}
+
+        try:
+            conn = sqlite3.connect(":memory:")
+            try:
+                conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS findings USING fts5(tid, content)")
+
+                # Insert all tasks
+                rows = []
+                for task in tasks:
+                    tid = task.get("id", "")
+                    title = task.get("title", "")
+                    notes = task.get("notes", "")
+                    content = f"{tid} {title} {notes}"
+                    rows.append((tid, content))
+                conn.executemany("INSERT INTO findings(tid, content) VALUES (?, ?)", rows)
+
+                # Escape query for FTS5 — wrap each word in double quotes
+                escaped_query = " ".join(f'"{w}"' for w in query.split() if w)
+                if not escaped_query:
+                    return {}
+
+                # Query with BM25 ranking — FTS5 bm25() returns negative values
+                # where more negative = more relevant
+                cursor = conn.execute(
+                    "SELECT tid, bm25(findings) FROM findings WHERE findings MATCH ? "
+                    "ORDER BY bm25(findings) LIMIT ?",
+                    (escaped_query, len(tasks)),
+                )
+                raw_scores: dict[str, float] = {}
+                for row in cursor:
+                    # bm25 returns negative — negate so higher = better
+                    raw_scores[row[0]] = -float(row[1])
+            finally:
+                conn.close()
+
+            if not raw_scores:
+                return {}
+
+            # Normalize to 0.0–1.0
+            max_score = max(raw_scores.values()) if raw_scores else 1.0
+            if max_score <= 0:
+                return {}
+            return {tid: score / max_score for tid, score in raw_scores.items()}
+
+        except Exception:
+            # FTS5 not available or query syntax error — degrade gracefully
+            return {}
 
     def get_journal(self, max_lines: int = 30) -> Optional[str]:
         """Read the latest journal entries."""

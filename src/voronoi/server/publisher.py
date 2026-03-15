@@ -7,21 +7,10 @@ pushes all code/data/deliverables, and creates Issues for findings.
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 from typing import Optional
 
-
-def _run_cmd(cmd: list[str], cwd: Optional[str] = None, timeout: int = 60) -> tuple[int, str]:
-    try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout, cwd=cwd,
-        )
-        return result.returncode, (result.stdout + result.stderr).strip()
-    except FileNotFoundError:
-        return 1, f"Command not found: {cmd[0]}"
-    except subprocess.TimeoutExpired:
-        return 1, "Command timed out"
+from voronoi.beads import run_cmd as _run_cmd
 
 
 class GitHubPublisher:

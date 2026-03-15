@@ -213,7 +213,7 @@ class TestProgressMonitoring:
         mock_queue.fail.assert_called_once_with(1, "Agent exited unexpectedly")
         mock_queue.complete.assert_not_called()
         assert len(msgs) >= 1
-        assert "FAILED" in msgs[0]
+        assert "failed" in msgs[0].lower()
 
     def test_handle_completion_uses_chat_id(self, dispatcher_setup):
         """Document send should use per-investigation chat_id, not global file."""

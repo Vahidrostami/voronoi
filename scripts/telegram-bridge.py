@@ -36,6 +36,42 @@ from voronoi.gateway.config import load_config, save_chat_id  # noqa: E402
 from voronoi.gateway.router import CommandRouter  # noqa: E402
 
 
+def format_human_gate_command_reply(action: str, args: list[str], dispatcher) -> str:
+    """Validate and route /approve and /revise commands."""
+    verb = action.lower()
+    if verb not in {"approve", "revise"}:
+        return f"Unknown human-gate action: {action}"
+    if not args:
+        usage = "/approve <investigation-id>" if verb == "approve" else "/revise <investigation-id> <feedback>"
+        return f"Usage: {usage}"
+    try:
+        investigation_id = int(args[0])
+    except (TypeError, ValueError):
+        return f"❌ Invalid investigation ID: {args[0]}"
+
+    if dispatcher is None:
+        return "❌ Dispatcher unavailable. Human-gate actions need the server dispatcher running."
+
+    feedback = " ".join(args[1:]).strip()
+    if verb == "revise" and not feedback:
+        return "Usage: /revise <investigation-id> <feedback>"
+
+    if verb == "approve":
+        ok = dispatcher.approve_human_gate(investigation_id, feedback)
+        return (
+            f"✅ Approved human gate for investigation #{investigation_id}."
+            if ok else
+            f"❌ No pending human gate found for investigation #{investigation_id}."
+        )
+
+    ok = dispatcher.revise_human_gate(investigation_id, feedback)
+    return (
+        f"🔄 Requested revision for investigation #{investigation_id}."
+        if ok else
+        f"❌ No pending human gate found for investigation #{investigation_id}."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Bot
 # ---------------------------------------------------------------------------
@@ -137,6 +173,34 @@ def run_bot(config: dict) -> None:
 
         await _reply(update, reply_text, reply_file, buttons=buttons)
 
+    async def cmd_approve(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not _is_allowed(update):
+            user = update.effective_user
+            logger.warning("Unauthorized /approve from user=%s", user.id if user else "?")
+            if update.message:
+                await update.message.reply_text("You are not authorized to use this bot.")
+            return
+        if update.message and update.message.chat_id:
+            save_chat_id(project_dir, update.message.chat_id)
+        reply_text = format_human_gate_command_reply(
+            "approve", context.args or [], _get_dispatcher()
+        )
+        await _reply(update, reply_text)
+
+    async def cmd_revise(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not _is_allowed(update):
+            user = update.effective_user
+            logger.warning("Unauthorized /revise from user=%s", user.id if user else "?")
+            if update.message:
+                await update.message.reply_text("You are not authorized to use this bot.")
+            return
+        if update.message and update.message.chat_id:
+            save_chat_id(project_dir, update.message.chat_id)
+        reply_text = format_human_gate_command_reply(
+            "revise", context.args or [], _get_dispatcher()
+        )
+        await _reply(update, reply_text)
+
     async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not _is_allowed(update) or update.message is None:
             return
@@ -176,6 +240,8 @@ def run_bot(config: dict) -> None:
 
     app.post_init = _post_init
     app.add_handler(CommandHandler("voronoi", cmd_voronoi))
+    app.add_handler(CommandHandler("approve", cmd_approve))
+    app.add_handler(CommandHandler("revise", cmd_revise))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     # -- inline button callback handler ------------------------------------
@@ -199,6 +265,8 @@ def run_bot(config: dict) -> None:
             reply_text, _ = router.route("health", [], chat_id)
         elif data == "tasks":
             reply_text, _ = router.route("tasks", [], chat_id)
+        elif data == "progress":
+            reply_text, _ = router.route("progress", [], chat_id)
         elif data == "abort":
             reply_text, _ = router.route("abort", [], chat_id)
         elif data == "belief":
@@ -270,21 +338,22 @@ def run_bot(config: dict) -> None:
                 # Add contextual inline buttons based on message content
                 reply_markup = None
                 try:
-                    if "is LIVE" in text:
+                    if "is live" in text.lower():
                         reply_markup = InlineKeyboardMarkup([
-                            [InlineKeyboardButton("📊 Status", callback_data="status"),
-                             InlineKeyboardButton("🛑 Abort", callback_data="abort")],
+                            [InlineKeyboardButton("Status", callback_data="status"),
+                             InlineKeyboardButton("Abort", callback_data="abort")],
                         ])
-                    elif "📡" in text:  # progress update
+                    elif any(k in text for k in ("tasks)", "Estimated:", "working right now")):
+                        # Digest update
                         reply_markup = InlineKeyboardMarkup([
-                            [InlineKeyboardButton("📋 Tasks", callback_data="tasks"),
-                             InlineKeyboardButton("📝 Guide", callback_data="guide_prompt"),
-                             InlineKeyboardButton("🛑 Abort", callback_data="abort")],
+                            [InlineKeyboardButton("Progress", callback_data="progress"),
+                             InlineKeyboardButton("Guide", callback_data="guide_prompt"),
+                             InlineKeyboardButton("Abort", callback_data="abort")],
                         ])
-                    elif "COMPLETE" in text:
+                    elif "is done" in text.lower():
                         reply_markup = InlineKeyboardMarkup([
-                            [InlineKeyboardButton("📊 Findings", callback_data="status"),
-                             InlineKeyboardButton("🧠 Belief Map", callback_data="belief")],
+                            [InlineKeyboardButton("Details", callback_data="progress"),
+                             InlineKeyboardButton("Belief Map", callback_data="belief")],
                         ])
                 except Exception:
                     pass  # buttons are best-effort

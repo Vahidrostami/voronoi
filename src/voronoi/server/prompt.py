@@ -119,7 +119,54 @@ def build_orchestrator_prompt(
     )
 
     # -- Science sections (mode + rigor aware) -----------------------------
-    sections.append(_build_science_sections(mode, rigor))
+    # The orchestrator's role file (.github/agents/swarm-orchestrator.agent.md)
+    # contains the full OODA workflow, role selection tables, convergence
+    # criteria, and review gate definitions.  We only add mode/rigor context.
+    if mode in ("investigate", "explore", "hybrid") and rigor != "standard":
+        sections.append(
+            "\n## Science Mode Active\n\n"
+            f"Mode: **{mode}** | Rigor: **{rigor}**\n\n"
+            "Your role file has the complete protocol for this rigor level. "
+            "Key reminders:\n"
+        )
+        if rigor in ("scientific", "experimental"):
+            sections.append(
+                "- Dispatch Scout first → wait for `.swarm/scout-brief.md`\n"
+                "- Dispatch Theorist + Methodologist before investigators\n"
+                "- Every investigation task MUST have pre-registration\n"
+                "- Methodologist approval required before dispatch\n"
+            )
+            # Human gate instructions for high-rigor investigations
+            sections.append(
+                "\n**Human Review Gates (Scientific+ rigor):**\n"
+                "At two key decision points, pause for human approval by writing "
+                "`.swarm/human-gate.json`:\n\n"
+                "**Gate 1: After pre-registration** (before running experiments):\n"
+                "```json\n"
+                '{\"gate\": \"pre-registration\", \"status\": \"pending\",\n'
+                ' \"summary\": \"Hypothesis: [X]. Method: [Y]. N=[Z]. Ready to run experiments.\"}\n'
+                "```\n"
+                "Then poll `.swarm/human-gate.json` every 30s until `status` changes to "
+                "`approved` or `revision_requested`.  If revision is requested, read `feedback` "
+                "field and adjust the pre-registration accordingly.\n\n"
+                "**Gate 2: Before convergence** (before finalizing deliverable):\n"
+                "```json\n"
+                '{\"gate\": \"convergence\", \"status\": \"pending\",\n'
+                ' \"summary\": \"[summary of findings]. Score: [X]. Ready to converge.\"}\n'
+                "```\n"
+                "Same polling protocol.  Do NOT write deliverable.md until approved.\n"
+            )
+        if rigor in ("analytical", "scientific", "experimental"):
+            sections.append(
+                "- Findings MUST pass Statistician review\n"
+                "- Synthesizer MUST produce `.swarm/claim-evidence.json`\n"
+                "- Evaluator score ≥ 0.75 required for convergence\n"
+            )
+        if rigor == "experimental":
+            sections.append(
+                "- High-impact findings MUST be replicated\n"
+                "- Power analysis MANDATORY for every experiment\n"
+            )
 
     # -- Investigation invariants (injected into every prompt) -------------
     sections.append(
@@ -164,32 +211,64 @@ def build_orchestrator_prompt(
         "4. Only dispatch the full experiment after calibration passes\n"
     )
 
-    # -- Verify loop guidance ----------------------------------------------
+    # -- Verify loop guidance (compact — details are in worker role files) ---
     sections.append(
-        "\n## Self-Healing Agents (Verify Loop + EVA)\n\n"
-        "Every worker agent runs an internal **verify loop** before declaring "
-        "success or failure to you.  Workers retry against their own errors "
-        "(test failures, lint, crashes) up to a role-specific limit before "
-        "escalating.  This means:\n"
-        "- Most execution errors are fixed autonomously by the worker\n"
-        "- When a worker reports `VERIFY_EXHAUSTED`, check their verify "
-        "iteration log in Beads notes before retrying or reassigning\n"
-        "- Do NOT immediately re-dispatch a failed task \u2014 diagnose first\n"
-        "- Workers also log verify iterations to Beads (VERIFY_ITER notes)\n\n"
-        "**Experimental Validity Audit (EVA) \u2014 Investigation tasks only:**\n"
-        "After the verify loop passes (experiment ran, metric extracted), "
-        "Investigators run a mandatory EVA that checks:\n"
-        "1. Was the independent variable actually varied across conditions?\n"
-        "2. Did practical constraints (truncation, caching, resource limits) collapse the conditions?\n"
-        "3. Is the effect size plausible, or does a ~0 delta indicate a broken manipulation?\n\n"
-        "If EVA fails, the Investigator flags `DESIGN_INVALID` and escalates to you "
-        "with a diagnosis and proposed fix. Your response:\n"
-        "1. Dispatch Methodologist for post-mortem design review\n"
-        "2. Wait for Methodologist's POSTMORTEM_DIAGNOSIS\n"
-        "3. Create a corrected experiment task incorporating the redesign\n"
-        "4. The corrected task must validate the fix before running the full experiment\n"
-        "5. NEVER rationalize an invalid experiment as 'a finding to discuss' \u2014 fix and re-run\n"
-        "6. NEVER enter a worker's worktree to fix code yourself \u2014 dispatch a new agent\n"
+        "\n## Worker Self-Healing\n\n"
+        "Workers retry against their own errors before escalating. "
+        "When a worker reports `VERIFY_EXHAUSTED`, check their notes before retrying. "
+        "When a worker reports `DESIGN_INVALID`, dispatch Methodologist for post-mortem.\n"
+    )
+
+    # -- Checkpoint-based OODA (the core context management protocol) ------
+    sections.append(
+        "\n## Context Management — CRITICAL FOR LONG RUNS\n\n"
+        "You have a finite context window. In 10+ hour runs, you WILL lose early "
+        "instructions if you're not disciplined. These rules prevent that:\n\n"
+        "**1. Write a checkpoint after EVERY OODA cycle:**\n"
+        "```bash\n"
+        "python3 -c \"\n"
+        "import json\n"
+        "from voronoi.science import OrchestratorCheckpoint, save_checkpoint\n"
+        "from pathlib import Path\n"
+        "cp = OrchestratorCheckpoint(\n"
+        "    cycle=N, phase='investigating', mode='investigate', rigor='experimental',\n"
+        "    hypotheses_summary='H1:confirmed, H2:testing',\n"
+        "    total_tasks=50, closed_tasks=20,\n"
+        "    active_workers=['agent-pilot', 'agent-scenario-3'],\n"
+        "    recent_events=['Pilot passed MBRS gap 0.32', 'Scenario 3 complete'],\n"
+        "    recent_decisions=['Moved to full experiment after pilot passed'],\n"
+        "    dead_ends=['L2/L3 encoding too similar, skipped'],\n"
+        "    next_actions=['Wait for scenarios 4-6', 'Then dispatch ANOVA'],\n"
+        "    criteria_status={'SC1': False, 'SC2': False, 'SC3': False},\n"
+        "    eval_score=0.0, improvement_rounds=0,\n"
+        ")\n"
+        "save_checkpoint(Path('.'), cp)\n"
+        "\"\n"
+        "```\n\n"
+        "**2. Read checkpoint at the START of each OODA cycle** (before reading anything else):\n"
+        "```bash\n"
+        "cat .swarm/orchestrator-checkpoint.json\n"
+        "```\n"
+        "This reminds you of your own state if context has degraded.\n\n"
+        "**3. Use targeted Beads queries, NOT `bd list --json`:**\n"
+        "```bash\n"
+        '# Only tasks that changed recently\n'
+        'bd query "status!=closed AND updated>30m" --json\n\n'
+        '# Only findings\n'
+        'bd query "title=FINDING" --json\n\n'
+        '# Only open tasks with problems\n'
+        'bd query "notes=DESIGN_INVALID AND status!=closed" --json\n\n'
+        '# Ready work\n'
+        'bd ready --json\n'
+        "```\n"
+        "NEVER run `bd list --json` in a routine OODA cycle — it returns ALL tasks "
+        "and floods your context.\n\n"
+        "**4. Worker prompts are code-assembled.** You write a ~200 word briefing; "
+        "`build_worker_prompt()` adds the role file, git discipline, and skills. "
+        "This saves ~15K tokens per dispatch from your context.\n\n"
+        "**5. Read the project brief ONCE at startup.** After that, work from your "
+        "checkpoint + belief map. If you need to re-check a specific detail, "
+        "`grep` for it instead of re-reading the whole file.\n"
     )
 
     # -- Success criteria ---------------------------------------------------
@@ -235,31 +314,25 @@ def build_orchestrator_prompt(
         "4. Only proceed to paper after the revised experiment passes its gate\n"
     )
 
-    # -- Anti-simulation enforcement ----------------------------------------
+    # -- Anti-simulation enforcement (compact) --------------------------------
     sections.append(
-        "\n## Anti-Simulation Enforcement — HARD GATE\n\n"
-        "The convergence gate runs **simulation-bypass detection** that will BLOCK "
-        "completion if it detects:\n"
-        "- `results.json` with model field containing 'simulated', 'mock', 'fake'\n"
-        "- `.llm_cache/` with fewer entries than expected from the experiment design\n"
-        "- Source files named `*sim*`, `*mock*`, `*fake*` that substitute real LLM "
-        "calls with random number generators or hardcoded probabilities\n"
-        "- Alternative runner scripts (e.g. `run_sim.py`) alongside the mandated entry point\n\n"
-        "**Rules:**\n"
-        "- NEVER create a 'simulation mode' that replaces real LLM calls with "
-        "`np.random`/`random` sampling from assumed distributions\n"
-        "- NEVER create alternative entry points that bypass the mandated runner\n"
-        "- If the experiment requires too many LLM calls, reduce N or batch size — "
-        "do NOT simulate. Fewer real data points beat many fake ones.\n"
-        "- If you need a dry-run mode for debugging, name it explicitly (e.g. "
-        "`--dry-run`) and ensure it writes NO results to output/\n"
-        "- The convergence gate will REJECT any results.json where model contains "
-        "'simulated' or similar markers\n"
+        "\n## Anti-Simulation — HARD GATE\n\n"
+        "NEVER create simulation/mock/fake files that replace real LLM calls. "
+        "The convergence gate will BLOCK completion if it detects simulated data. "
+        "Reduce N if budget is tight — never simulate.\n"
     )
 
     # -- Workflow ----------------------------------------------------------
-    sections.append("\n## Workflow\n\n")
-    sections.append(_build_workflow_steps(mode, rigor, prompt_path))
+    sections.append(
+        "\n## Workflow\n\n"
+        f"1. Read `{prompt_path}` completely\n"
+        "2. Read `.github/agents/swarm-orchestrator.agent.md` for your full protocol\n"
+        "3. Follow the OODA loop defined in your role file\n"
+        "4. Write `.swarm/orchestrator-checkpoint.json` after every cycle\n"
+        "5. Synthesizer produces `.swarm/claim-evidence.json`\n"
+        "6. Write `.swarm/deliverable.md` and push\n"
+        "7. If LaTeX: dispatch compilation agent per `.github/skills/compilation-protocol/SKILL.md`\n"
+    )
 
     # -- Tools -------------------------------------------------------------
     sections.append(
@@ -296,306 +369,324 @@ def build_orchestrator_prompt(
         '  notify_telegram "event_type" "your message"\n'
     )
 
-    # -- Worker prompt instructions (the key to using .github/agents) ------
+    # -- Worker prompt instructions (code-assembled, not LLM-assembled) ------
     sections.append(
-        "\n## Writing Worker Prompts — CRITICAL\n\n"
-        "Each worker agent is autonomous — it only knows what you tell it.\n\n"
-        "**You MUST include the appropriate role definition** in every worker prompt.  "
-        "The role files live in `.github/agents/` in the workspace.  "
-        "Before writing each worker prompt, read the role file and prepend its "
-        "content to the worker's task-specific instructions.\n\n"
-        "Role mapping:\n"
-        "| Task type | Role file |\n"
-        "|-----------|----------|\n"
-        "| Build / implementation | `.github/agents/worker-agent.agent.md` |\n"
-        "| Scout / prior research | `.github/agents/scout.agent.md` |\n"
-        "| Investigation / experiment | `.github/agents/investigator.agent.md` |\n"
-        "| Exploration / comparison | `.github/agents/explorer.agent.md` |\n"
-        "| Statistical review | `.github/agents/statistician.agent.md` |\n"
-        "| Adversarial critique | `.github/agents/critic.agent.md` |\n"
-        "| Theory development | `.github/agents/theorist.agent.md` |\n"
-        "| Methodology review | `.github/agents/methodologist.agent.md` |\n"
-        "| Synthesis | `.github/agents/synthesizer.agent.md` |\n"
-        "| Paper writing | `.github/agents/scribe.agent.md` |\n"
-        "| Final evaluation | `.github/agents/evaluator.agent.md` |\n\n"
-        "For each worker prompt, include:\n"
-        "1. The FULL content of the matching `.github/agents/<role>.agent.md` file\n"
-        "2. The task-specific instructions: WHAT to build/investigate, file scope, "
-        "acceptance criteria\n"
-        "3. FULL relevant context from the project brief (copy sections verbatim)\n"
-        "4. STRATEGIC_CONTEXT: how this task fits the whole\n"
-        "5. ARTIFACT CONTRACTS: list PRODUCES and REQUIRES files explicitly in the prompt\n"
-        "6. METRIC_CONTRACT: for investigation tasks, include the metric shape, baseline reference, and acceptance criteria\n"
-        "7. COMMIT CHECKPOINTS: after each milestone, run "
-        "`git add -A && git commit -m '[msg]' && git push origin <branch>`\n"
-        "8. Completion: `bd close <task-id> --reason \"...\"` then "
-        "`git push origin <branch>`\n\n"
-        "**Skills to reference in worker prompts** (tell agents to read these):\n"
-        "| Skill | When to reference |"
-        "\n|-------|-------------------|"
-        "\n| `.github/skills/figure-generation/SKILL.md` | Any task producing figures or charts |"
-        "\n| `.github/skills/compilation-protocol/SKILL.md` | LaTeX compilation tasks |"
-        "\n| `.github/skills/investigation-protocol/SKILL.md` | Investigation/experiment tasks |"
-        "\n| `.github/skills/evidence-system/SKILL.md` | Tasks producing findings |"
-        "\n| `.github/skills/artifact-gates/SKILL.md` | Tasks with PRODUCES/REQUIRES contracts |\n"
+        "\n## Dispatching Workers — CONTEXT-EFFICIENT PROTOCOL\n\n"
+        "Worker prompts are assembled BY CODE, not by you. This saves your context "
+        "for reasoning instead of copying role files.\n\n"
+        "**To dispatch a worker, write a compact dispatch spec to a JSON file:**\n"
+        "```bash\n"
+        'echo \'{"task_type": "investigation", "task_id": "bd-42", "branch": "agent-pilot",\n'
+        '  "briefing": "Run the pilot experiment on scenarios 1-2...",\n'
+        '  "strategic_context": "This tests whether encoding helps discovery...",\n'
+        '  "produces": "output/pilot_results.json",\n'
+        '  "requires": "demos/coupled-decisions/PROMPT.md",\n'
+        '  "metric_contract": "PRIMARY=MBRS, higher_is_better, baseline=0.0",\n'
+        '  "prompt_sections": "[copy ONLY the 5-15 lines relevant to this task]"\n'
+        "}' > /tmp/dispatch-bd-42.json\n"
+        "```\n\n"
+        "Then run:\n"
+        "```bash\n"
+        "python3 -c \"\n"
+        "import json; from voronoi.server.prompt import build_worker_prompt\n"
+        "spec = json.load(open('/tmp/dispatch-bd-42.json'))\n"
+        "prompt = build_worker_prompt(**spec)\n"
+        "open('/tmp/prompt-agent-pilot.txt', 'w').write(prompt)\n"
+        "\"\n"
+        "./scripts/spawn-agent.sh bd-42 agent-pilot /tmp/prompt-agent-pilot.txt\n"
+        "```\n\n"
+        "**Task types** (determines which role file is loaded automatically):\n"
+        "  - build/implementation → `.github/agents/worker-agent.agent.md`\n"
+        "  - scout → `.github/agents/scout.agent.md`\n"
+        "  - investigation/experiment → `.github/agents/investigator.agent.md`\n"
+        "  - exploration/comparison → `.github/agents/explorer.agent.md`\n"
+        "  - review_stats → `.github/agents/statistician.agent.md`\n"
+        "  - review_critic → `.github/agents/critic.agent.md`\n"
+        "  - review_method → `.github/agents/methodologist.agent.md`\n"
+        "  - theory → `.github/agents/theorist.agent.md`\n"
+        "  - synthesis → `.github/agents/synthesizer.agent.md`\n"
+        "  - evaluation → `.github/agents/evaluator.agent.md`\n"
+        "  - scribe → `.github/agents/scribe.agent.md`\n"
+        "  - paper/compilation → `.github/agents/worker-agent.agent.md`\n\n"
+        "**What you put in the briefing** (5-20 lines):\n"
+        "- WHAT to do (specific, concrete)\n"
+        "- Acceptance criteria\n"
+        "- File scope (which directories/files the agent owns)\n"
+        "- Any special instructions\n\n"
+        "**What you do NOT need to include** (the code handles these):\n"
+        "- Role definition (loaded from .github/agents/ automatically)\n"
+        "- Full PROMPT.md content (agent is told to read relevant sections)\n"
+        "- Git discipline boilerplate (injected automatically)\n"
+        "- Skill file references (selected by task type automatically)\n\n"
+        "**The briefing is the ONLY thing that costs you context tokens.**\n"
+        "Keep it focused. ~200 words max.\n"
     )
 
     # -- Rules -------------------------------------------------------------
     sections.append(
         "\n## Rules\n\n"
         "- Read `.github/agents/swarm-orchestrator.agent.md` at startup\n"
-        "- Read the FULL project brief before planning\n"
+        "- Read the FULL project brief ONCE at startup, then work from checkpoint\n"
         "- No overlapping file scopes between agents\n"
-        "- Write detailed, context-rich worker prompts with role definitions\n"
+        "- Use `build_worker_prompt()` for dispatch — never copy role files yourself\n"
         "- Diagnose failures (check git log, tmux output) before retrying\n"
         "- Push all completed work to remote when done\n"
         f"- Max concurrent agents: {max_agents}\n"
         "- EVERY task MUST declare PRODUCES and REQUIRES in Beads notes\n"
         "- For investigation epics, create a BASELINE task as the FIRST subtask \u2014 "
         "all experimental tasks depend on it\n"
-        "- For investigation tasks, include METRIC_CONTRACT in Beads notes "
-        "(metric shape, baseline reference, acceptance criteria)\n"
         "- Workers self-heal via verify loops \u2014 when they report VERIFY_EXHAUSTED, "
         "read their iteration log before re-dispatching\n"
         "- When a worker reports DESIGN_INVALID, dispatch Methodologist for post-mortem "
         "\u2192 create corrected experiment task\n"
         "- NEVER enter a worker's worktree to fix code yourself \u2014 "
         "dispatch a new agent or reassign the task\n"
-        "- NEVER rationalize an invalid experiment as a finding \u2014 fix the design and re-run\n"
         "- spawn-agent.sh will REJECT dispatch if REQUIRES files are missing\n"
         "- merge-agent.sh will REJECT merge if PRODUCES files are missing\n"
-        "- Include commit checkpoint instructions in EVERY worker prompt:\n"
-        '  "After completing [milestone], run git add -A && git commit -m \'[msg]\' '
-        "&& git push origin [branch] BEFORE continuing\"\n"
-        "- For figure-producing tasks, reference `.github/skills/figure-generation/SKILL.md`\n"
-        "- For LaTeX compilation tasks, reference `.github/skills/compilation-protocol/SKILL.md`\n"
         "- Before declaring convergence, run: `./scripts/convergence-gate.sh . <rigor>`\n"
     )
-    sections.append(_build_rigor_rules(rigor))
+    # Rigor-specific rules are in the orchestrator role file — no duplication here.
 
     # -- Eval score (for dispatcher convergence tracking) ------------------
     if rigor != "standard":
         sections.append(
-            "\n## Evaluator Score Output\n\n"
+            "\n## Evaluator Score Output — STRUCTURED FEEDBACK\n\n"
             "When the Evaluator scores the deliverable, write the result to "
-            "`.swarm/eval-score.json`:\n"
+            "`.swarm/eval-score.json` with **section-level feedback**:\n"
             "```json\n"
-            '{"score": 0.82, "rounds": 1}\n'
+            '{"score": 0.82, "rounds": 1,\n'
+            ' "dimensions": {\n'
+            '   "completeness": {"score": 0.85, "note": "Missing sensitivity analysis on param K"},\n'
+            '   "coherence": {"score": 0.75, "note": "Section 3 contradicts Section 5 on direction"},\n'
+            '   "strength": {"score": 0.70, "note": "Finding bd-43 has N=12, too small for claimed effect"},\n'
+            '   "actionability": {"score": 0.90, "note": "Good — concrete parameter ranges provided"}\n'
+            ' },\n'
+            ' "remediations": [\n'
+            '   "Run sensitivity analysis varying K from 0.1 to 1.0",\n'
+            '   "Resolve Section 3 vs Section 5 contradiction",\n'
+            '   "Increase sample size for bd-43 or downgrade confidence"\n'
+            ' ]\n'
+            '}\n'
             "```\n"
-            "This file is read by the progress monitor to track convergence.\n"
+            "This file is read by the progress monitor to track convergence.\n\n"
+            "**The remediations list is critical** — when the orchestrator creates "
+            "improvement tasks, it uses these specific remediations as task briefs "
+            "instead of guessing what needs to improve.  Be concrete and actionable.\n"
         )
 
     return "".join(sections)
 
 
 # ---------------------------------------------------------------------------
-# Internal helpers
+# Worker prompt assembly — code-built, not LLM-built
 # ---------------------------------------------------------------------------
 
-def _build_science_sections(mode: str, rigor: str) -> str:
-    """Build science-specific prompt sections based on mode and rigor."""
+# Role file mapping: task type → .github/agents/ filename
+ROLE_MAP: dict[str, str] = {
+    "build": "worker-agent.agent.md",
+    "implementation": "worker-agent.agent.md",
+    "scout": "scout.agent.md",
+    "investigation": "investigator.agent.md",
+    "experiment": "investigator.agent.md",
+    "exploration": "explorer.agent.md",
+    "comparison": "explorer.agent.md",
+    "review_stats": "statistician.agent.md",
+    "review_critic": "critic.agent.md",
+    "review_method": "methodologist.agent.md",
+    "theory": "theorist.agent.md",
+    "synthesis": "synthesizer.agent.md",
+    "evaluation": "evaluator.agent.md",
+    "scribe": "scribe.agent.md",
+    "paper": "worker-agent.agent.md",
+    "compilation": "worker-agent.agent.md",
+}
+
+# Skills to reference by task type
+SKILL_MAP: dict[str, list[str]] = {
+    "investigation": [
+        ".github/skills/investigation-protocol/SKILL.md",
+        ".github/skills/evidence-system/SKILL.md",
+    ],
+    "experiment": [
+        ".github/skills/investigation-protocol/SKILL.md",
+        ".github/skills/evidence-system/SKILL.md",
+    ],
+    "paper": [
+        ".github/skills/figure-generation/SKILL.md",
+        ".github/skills/compilation-protocol/SKILL.md",
+    ],
+    "compilation": [
+        ".github/skills/figure-generation/SKILL.md",
+        ".github/skills/compilation-protocol/SKILL.md",
+    ],
+}
+
+
+def build_worker_prompt(
+    *,
+    task_type: str,
+    task_id: str,
+    branch: str,
+    briefing: str,
+    workspace_path: str = "",
+    strategic_context: str = "",
+    produces: str = "",
+    requires: str = "",
+    metric_contract: str = "",
+    prompt_path: str = "",
+    prompt_sections: str = "",
+    extra_instructions: str = "",
+) -> str:
+    """Assemble a complete worker prompt from components.
+
+    This runs in code, NOT in the orchestrator's LLM context.
+    The orchestrator writes a compact dispatch spec; this function does the
+    heavy lifting of reading role files and assembling the full prompt.
+
+    Parameters
+    ----------
+    task_type : str
+        One of the keys in ROLE_MAP (build, investigation, scout, etc.)
+    task_id : str
+        Beads task ID (e.g. "bd-42")
+    branch : str
+        Git branch name for the worktree
+    briefing : str
+        Task-specific instructions from the orchestrator. Should be 5-20 lines
+        describing WHAT to do, acceptance criteria, and file scope.
+    workspace_path : str
+        Path to the investigation workspace (for reading files).
+    strategic_context : str
+        How this task fits the investigation (1-3 sentences).
+    produces : str
+        Comma-separated list of output files the agent MUST create.
+    requires : str
+        Comma-separated list of input files that must exist.
+    metric_contract : str
+        Metric shape + baseline + acceptance criteria (investigation tasks).
+    prompt_path : str
+        Path to PROMPT.md — the agent will be told to read relevant sections.
+    prompt_sections : str
+        Specific sections from the project brief to include verbatim.
+        Keep this focused — only the sections relevant to this task.
+    extra_instructions : str
+        Any additional orchestrator-specific instructions.
+
+    Returns
+    -------
+    str
+        The complete prompt text, ready to write to a file.
+    """
+    # 1. Read the role definition file
+    role_file = ROLE_MAP.get(task_type, "worker-agent.agent.md")
+    role_content = _read_role_file(role_file, workspace_path)
+
     sections: list[str] = []
 
-    if mode in ("investigate", "explore", "hybrid"):
-        sections.append(
-            "\n## Phase 0: Scout\n\n"
-            "Before planning tasks, dispatch a Scout agent "
-            "(use `.github/agents/scout.agent.md` as its role) to research "
-            "existing knowledge:\n"
-            "- Search codebase, docs, logs for prior work on this topic\n"
-            "- Produce a knowledge brief (`.swarm/scout-brief.md`)\n"
-        )
-        if rigor in ("scientific", "experimental"):
-            sections.append(
-                "- MUST include SOTA methodology for this problem type\n"
-                "- WAIT for Scout to complete before generating hypotheses\n"
-            )
+    # 2. Role definition (read from file, not from orchestrator context)
+    if role_content:
+        sections.append(role_content)
+        sections.append("\n---\n")
 
-    if mode in ("investigate", "hybrid") and rigor != "standard":
-        sections.append(
-            "\n## Hypothesis Management\n\n"
-            "After Scout completes, generate hypotheses and create a belief map:\n"
-            "1. Generate 3-7 hypotheses from Scout brief with prior probabilities\n"
-            "2. Write belief map to `.swarm/belief-map.json`\n"
-            "3. Prioritize by information gain: uncertainty × impact × testability\n"
-            "4. Create investigation tasks for top-priority hypotheses\n"
-        )
-        if rigor in ("scientific", "experimental"):
-            sections.append(
-                "\nAt Scientific+ rigor:\n"
-                "- Dispatch Theorist (`.github/agents/theorist.agent.md`) to refine "
-                "hypotheses and propose competing theories\n"
-                "- Dispatch Methodologist (`.github/agents/methodologist.agent.md`) "
-                "to batch-review all experimental designs\n"
-                "- WAIT for Methodologist approval before dispatching Investigators\n"
-                "- Every investigation task MUST have pre-registration\n"
-            )
+    # 3. Task assignment
+    sections.append(f"# Your Task: {task_id}\n\n")
+    sections.append(f"Branch: `{branch}`\n")
+    sections.append(f"Task ID: `{task_id}`\n\n")
+    sections.append(briefing)
+    sections.append("\n")
 
-    if rigor in ("analytical", "scientific", "experimental"):
+    # 4. Strategic context
+    if strategic_context:
+        sections.append(f"\n## Strategic Context\n\n{strategic_context}\n")
+
+    # 5. Artifact contracts
+    if produces:
+        sections.append(f"\n## Output Files (PRODUCES)\n\nYou MUST create these files: {produces}\n")
+    if requires:
+        sections.append(f"\n## Input Files (REQUIRES)\n\nThese must exist before you start: {requires}\n")
+
+    # 6. Metric contract (investigation tasks)
+    if metric_contract:
+        sections.append(f"\n## Metric Contract\n\n{metric_contract}\n")
+
+    # 7. Project brief sections (only relevant parts, not the whole thing)
+    if prompt_sections:
+        sections.append(f"\n## Relevant Project Brief\n\n{prompt_sections}\n")
+    elif prompt_path:
         sections.append(
-            "\n## Review Gates\n\n"
-            "Findings MUST pass review gates before entering the knowledge store:\n"
-            "- **Statistician** (`.github/agents/statistician.agent.md`): "
-            "Reviews CI, effect sizes, test appropriateness, data integrity\n"
-        )
-        if rigor in ("scientific", "experimental"):
-            sections.append(
-                "- **Critic** (`.github/agents/critic.agent.md`): "
-                "Adversarial review, partially blinded. Up to 3 rounds. "
-                "Unresolved = CONTESTED (blocks convergence).\n"
-            )
-        sections.append(
-            "- **Synthesizer** (`.github/agents/synthesizer.agent.md`): "
-            "Consistency check against validated findings, claim-evidence registry\n"
-            "- **Evaluator** (`.github/agents/evaluator.agent.md`): "
-            "Score deliverable (Completeness, Coherence, Strength, Actionability) "
-            "with claim-evidence traceability audit\n"
+            f"\n## Project Brief\n\nRead `{prompt_path}` for full context. "
+            f"Focus on the sections relevant to your task.\n"
         )
 
-    if rigor in ("analytical", "scientific", "experimental"):
-        sections.append(
-            "\n## Claim-Evidence Traceability — MANDATORY\n\n"
-            "Before writing the deliverable, the Synthesizer MUST produce "
-            "`.swarm/claim-evidence.json` with this structure:\n"
-            "```json\n"
-            '{"claims": [{"claim_id": "C1", "claim_text": "...", '
-            '"finding_ids": ["bd-5", "bd-8"], "hypothesis_ids": ["H1"], '
-            '"strength": "robust", "interpretation": "..."}], '
-            '"orphan_findings": [], "unsupported_claims": [], "coverage_score": 0.95}\n'
-            "```\n"
-            "**Rules:**\n"
-            "- Every claim in the deliverable MUST link to at least one finding ID\n"
-            "- Every finding MUST be cited by at least one claim (no orphan findings)\n"
-            "- Unsupported claims or orphan findings block convergence\n"
-            "- The Evaluator checks this registry during Strength scoring\n"
-            "- Strength labels: robust (sensitivity-tested), provisional (reviewed), "
-            "weak (unreviewed), unsupported (no evidence)\n"
-        )
+    # 8. Skills to read
+    skills = SKILL_MAP.get(task_type, [])
+    if skills:
+        sections.append("\n## Skills to Read\n\nBefore starting, read these:\n")
+        for s in skills:
+            sections.append(f"- `{s}`\n")
 
-    if rigor in ("analytical", "scientific", "experimental"):
-        sections.append(
-            "\n## Finding Interpretation — MANDATORY\n\n"
-            "The Statistician MUST add interpretation metadata to each finding during review:\n"
-            '```bash\n'
-            'bd update <finding-id> --notes "INTERPRETATION:[what this means practically]"\n'
-            'bd update <finding-id> --notes "PRACTICAL_SIGNIFICANCE:negligible|small|medium|large|very large"\n'
-            'bd update <finding-id> --notes "SUPPORTS_HYPOTHESIS:[hypothesis ID and name]"\n'
-            '```\n'
-            "The final report auto-generates:\n"
-            "- Finding-by-finding interpretation with practical significance\n"
-            "- Cross-finding comparison (ranked by effect size)\n"
-            "- Dedicated Negative Results section for refuted hypotheses\n"
-            "- Auto-generated Limitations from fragile/wide-CI/unreviewed findings\n"
-            "- Belief map trajectory (prior \u2192 posterior with evidence links)\n"
-        )
+    # 9. Extra instructions
+    if extra_instructions:
+        sections.append(f"\n## Additional Instructions\n\n{extra_instructions}\n")
 
-    if rigor != "standard":
-        sections.append("\n## Convergence Criteria\n\n")
-        if rigor == "analytical":
-            sections.append(
-                "- All questions answered with quantitative evidence\n"
-                "- Statistician reviewed all findings\n"
-                "- No unresolved contradictions\n"
-                "- Evaluator score ≥ 0.75 (max 2 improvement rounds)\n"
-            )
-        elif rigor == "scientific":
-            sections.append(
-                "- All hypotheses resolved (confirmed/refuted/inconclusive)\n"
-                "- Causal model accounts for all findings\n"
-                "- At least 1 competing theory ruled out\n"
-                "- At least 1 novel prediction tested\n"
-                "- No CONSISTENCY_CONFLICTs, no PARADIGM_STRESS\n"
-                "- All findings ROBUST or FRAGILE-documented\n"
-                "- Evaluator score ≥ 0.75 (max 2 improvement rounds)\n"
-            )
-        elif rigor == "experimental":
-            sections.append(
-                "- All Scientific criteria PLUS:\n"
-                "- All high-impact findings replicated\n"
-                "- Pre-registration compliance verified\n"
-                "- Power analysis documented for every experiment\n"
-            )
-
-    return "".join(sections)
-
-
-def _build_workflow_steps(mode: str, rigor: str, prompt_path: str) -> str:
-    """Build mode-appropriate workflow steps."""
-    steps = [f"1. Read `{prompt_path}` completely — understand the question fully\n"]
-    steps.append("2. Read `.github/agents/swarm-orchestrator.agent.md` for your full protocol\n")
-
-    if mode in ("investigate", "explore", "hybrid"):
-        steps.append("3. Dispatch Scout → wait for `.swarm/scout-brief.md`\n")
-        steps.append("4. Run `bd prime`, create an epic + tasks with dependencies "
-                      "and artifact contracts\n")
-        if rigor != "standard":
-            steps.append("5. Generate hypotheses → write `.swarm/belief-map.json`\n")
-            steps.append("6. Inject STRATEGIC_CONTEXT into each task's Beads notes\n")
-            steps.append("7. Create `.swarm/experiments.tsv` with header row\n")
-            ooda_step = 8
-        else:
-            steps.append("5. Create `.swarm/experiments.tsv` with header row\n")
-            ooda_step = 6
-    else:
-        steps.append("3. Run `bd prime`, create an epic + tasks with dependencies "
-                      "and artifact contracts\n")
-        ooda_step = 4
-
-    steps.append(
-        f"{ooda_step}. OODA loop:\n"
-        "   - Observe: `bd ready --json`, check findings, belief map, git activity, "
-        "experiment ledger (`.swarm/experiments.tsv`)\n"
-        "   - Orient:  Classify events, update strategic context, check convergence\n"
-        "   - Decide:  Prioritize by information gain, check review gates\n"
-        "   - Act:     Spawn agents (with role definitions + METRIC_CONTRACT!), merge work, "
-        "dispatch reviewers\n"
-        "   - Repeat until converged\n"
+    # 10. Self-verification protocol (Reflection pass + test loop)
+    sections.append(
+        "\n## Self-Verification — MANDATORY BEFORE CLOSING\n\n"
+        "Before closing your task, run this verification sequence:\n\n"
+        "**Step 1: Test loop (iterate until pass)**\n"
+        "```bash\n"
+        "# Run tests relevant to your work\n"
+        "pytest <your-test-files> -x -q  # or the project's test command\n"
+        "```\n"
+        "If tests FAIL: read the failure output, fix the code, re-run. "
+        "Repeat up to 3 times.\n"
+        "If tests PASS: proceed to Step 2.\n"
+        "If still failing after 3 attempts: update Beads:\n"
+        "```bash\n"
+        f"bd update {task_id} --notes 'VERIFY_EXHAUSTED:3 attempts, last error: <error>'\n"
+        "```\n"
+        "Do NOT close the task — the orchestrator will triage.\n\n"
+        "**Step 2: Self-review checklist**\n"
+        "Before closing, verify:\n"
+        "1. All PRODUCES artifacts exist and are non-empty\n"
+        "2. Reported metrics match the actual data (re-read your output files)\n"
+        "3. No hardcoded test values or simulated data\n"
+        "4. All commits are pushed to your branch\n\n"
+        "If any check fails, fix it now — do NOT close the task.\n\n"
+        "**Step 3: Incremental findings commit**\n"
+        "If you discovered findings during your work, ensure they are recorded "
+        "in Beads notes BEFORE closing. Do not rely on context memory — "
+        "write observations to Beads as you go:\n"
+        "```bash\n"
+        f"bd update {task_id} --notes 'OBSERVATION:<what you found>'\n"
+        "```\n"
     )
-    steps.append(
-        f"{ooda_step + 1}. Synthesizer produces `.swarm/claim-evidence.json` mapping every claim to findings\n"
+
+    # 11. Git discipline (always included)
+    sections.append(
+        "\n## Git Discipline — CRITICAL\n\n"
+        "Commit after every meaningful unit of work — a new file, a completed function, "
+        "a passing test. Do NOT wait until everything is done.\n"
+        f"After each milestone: `git add -A && git commit -m '[msg]' && git push origin {branch}`\n"
+        f"When done: `bd close {task_id} --reason '...'` then `git push origin {branch}`\n"
     )
-    steps.append(
-        f"{ooda_step + 2}. Write `.swarm/deliverable.md` and push results\n"
-    )
-    steps.append(
-        f"{ooda_step + 3}. If the project produced LaTeX files, dispatch a final "
-        "compilation agent to:\n"
-        "   - READ `.github/skills/figure-generation/SKILL.md` and "
-        "`.github/skills/compilation-protocol/SKILL.md` — follow them precisely\n"
-        "   - This task MUST declare `REQUIRES:` for ALL figure source data files\n"
-        "   - This task MUST declare `PRODUCES:.swarm/report.pdf`\n"
-        "   - PHASE 1 (BLOCKING): Scan .tex files for \\includegraphics references.\n"
-        "     For EACH referenced figure that doesn't exist on disk:\n"
-        "     a. Check for plotting scripts (plot_*.py, generate_*.py, make_figures.py)\n"
-        "     b. If script exists: run it, verify output path matches LaTeX reference\n"
-        "     c. If no script: write a matplotlib script from available data\n"
-        "     d. If no data: generate a placeholder with label '[DATA NOT AVAILABLE]'\n"
-        "     e. Commit EACH figure individually before generating the next\n"
-        "   - Run `./scripts/figure-lint.sh .` — this MUST pass before proceeding\n"
-        "   - PHASE 2: Compile LaTeX (tectonic > latexmk > pdflatex)\n"
-        "   - PHASE 3: Verify PDF (page count, no undefined refs, no blank boxes)\n"
-        "   - Copy final PDF to `.swarm/report.pdf`, commit, push\n"
-        "   - spawn-agent.sh will block this dispatch if REQUIRES data is missing\n"
-        "   - merge-agent.sh will block merge if report.pdf is not produced\n"
-    )
-    return "".join(steps)
+
+    return "\n".join(sections)
 
 
-def _build_rigor_rules(rigor: str) -> str:
-    """Build rigor-specific rules."""
-    rules: list[str] = []
-    if rigor in ("analytical", "scientific", "experimental"):
-        rules.append("- Every finding MUST pass Statistician review\n")
-        rules.append("- Every finding MUST include INTERPRETATION and PRACTICAL_SIGNIFICANCE\n")
-        rules.append("- Synthesizer MUST produce `.swarm/claim-evidence.json` BEFORE deliverable\n")
-        rules.append("- Every claim MUST trace to finding IDs; every finding MUST be cited\n")
-        rules.append("- Every task MUST declare PRODUCES and REQUIRES artifact contracts\n")
-    if rigor in ("scientific", "experimental"):
-        rules.append("- Investigation tasks MUST have pre-registration BEFORE execution\n")
-        rules.append("- Investigation tasks MUST have Methodologist approval BEFORE dispatch\n")
-        rules.append("- Findings MUST pass Critic adversarial review (partially blinded)\n")
-        rules.append("- Must propose competing theories with discriminating predictions\n")
-    if rigor == "experimental":
-        rules.append("- High-impact findings MUST be replicated before convergence\n")
-        rules.append("- Power analysis MANDATORY for every experiment\n")
-    return "".join(rules)
+def _read_role_file(filename: str, workspace_path: str = "") -> str:
+    """Read a role definition file from .github/agents/."""
+    candidates = []
+    if workspace_path:
+        candidates.append(Path(workspace_path) / ".github" / "agents" / filename)
+    # Also try relative to this file (for editable installs)
+    pkg_root = Path(__file__).resolve().parent.parent.parent.parent
+    candidates.append(pkg_root / ".github" / "agents" / filename)
+
+    for p in candidates:
+        if p.exists():
+            try:
+                return p.read_text()
+            except OSError:
+                continue
+    return ""

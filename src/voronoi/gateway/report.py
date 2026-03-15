@@ -22,6 +22,8 @@ import subprocess
 from pathlib import Path
 
 from voronoi.beads import run_bd as _run_bd
+from voronoi.utils import clean_finding_title as _clean_finding_title
+from voronoi.utils import extract_field as _parse_note_value
 
 
 # ---------------------------------------------------------------------------
@@ -31,37 +33,6 @@ from voronoi.beads import run_bd as _run_bd
 def _which(cmd: str) -> bool:
     """Check if a command is available on PATH."""
     return shutil.which(cmd) is not None
-
-
-def _clean_finding_title(title: str) -> str:
-    """Strip the leading *FINDING:* tag without damaging body text."""
-    for prefix in ("FINDING:", "FINDING"):
-        if title.upper().startswith(prefix):
-            title = title[len(prefix):]
-            break
-    return title.strip()
-
-
-def _parse_note_value(notes: str, key: str) -> str | None:
-    """Extract a value for *key* from Beads-style notes.
-
-    Handles both single-key lines (``KEY:value``) and pipe-separated
-    multi-key lines (``KEY1:val1 | KEY2:val2``).
-    """
-    key_upper = key.upper()
-    for line in notes.split("\n"):
-        if key_upper not in line.upper():
-            continue
-        # Split on pipe first to handle multi-key lines
-        for segment in line.split("|"):
-            segment = segment.strip()
-            if not segment.upper().startswith(key_upper):
-                continue
-            _, _, val = segment.partition(":")
-            val = val.strip()
-            if val:
-                return val
-    return None
 
 
 def _latin1_safe(text: str) -> str:

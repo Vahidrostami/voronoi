@@ -52,8 +52,8 @@ class TestHandleDemo:
         mock_q.get_running.return_value = []
         mock_gq.return_value = mock_q
 
-        with patch("voronoi.cli._find_data_dir", return_value=tmp_path / "data"), \
-             patch("voronoi.cli._list_demos", return_value=[{
+        with patch("voronoi.cli.find_data_dir", return_value=tmp_path / "data"), \
+             patch("voronoi.cli.list_demos", return_value=[{
                  "name": "test-demo",
                  "path": demo_dir,
                  "description": "Test",
@@ -70,14 +70,14 @@ class TestHandleDemo:
         assert inv.mode == "build"
         mock_q.set_demo_source.assert_called_once()
 
-    @patch("voronoi.cli._find_data_dir")
-    @patch("voronoi.cli._list_demos", return_value=[])
+    @patch("voronoi.cli.find_data_dir")
+    @patch("voronoi.cli.list_demos", return_value=[])
     def test_demo_not_found(self, mock_list, mock_data, tmp_path):
         result = handle_demo(str(tmp_path), "nonexistent", "chat1")
         assert "not found" in result
 
-    @patch("voronoi.cli._find_data_dir")
-    @patch("voronoi.cli._list_demos")
+    @patch("voronoi.cli.find_data_dir")
+    @patch("voronoi.cli.list_demos")
     def test_demo_no_prompt(self, mock_list, mock_data, tmp_path):
         mock_list.return_value = [{"name": "broken", "path": tmp_path, "description": "", "has_prompt": False}]
         result = handle_demo(str(tmp_path), "broken", "chat1")
