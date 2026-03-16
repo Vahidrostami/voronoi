@@ -314,12 +314,27 @@ def build_orchestrator_prompt(
         "4. Only proceed to paper after the revised experiment passes its gate\n"
     )
 
-    # -- Anti-simulation enforcement (compact) --------------------------------
+    # -- Anti-simulation enforcement (expanded — this is critical) ----------
     sections.append(
         "\n## Anti-Simulation — HARD GATE\n\n"
-        "NEVER create simulation/mock/fake files that replace real LLM calls. "
-        "The convergence gate will BLOCK completion if it detects simulated data. "
-        "Reduce N if budget is tight — never simulate.\n"
+        "**NEVER create simulation/mock/fake files that replace real LLM calls.** "
+        "This is a convergence-blocking violation.\n\n"
+        "Specifically:\n"
+        "- NEVER create files named `*sim*`, `*mock*`, `*fake*` that replace the mandated entry point\n"
+        "- NEVER hardcode detection probabilities, effect sizes, or scores that the experiment "
+        "is supposed to *measure* — this is circular reasoning\n"
+        "- NEVER use `np.random` / `random` sampling as a substitute for real LLM calls\n"
+        "- If the experiment requires too many LLM calls, **reduce N or k** — do NOT simulate\n"
+        "- If real results are disappointing (e.g., p > 0.05), report them honestly and flag "
+        "`RESULT_CONTRADICTS_HYPOTHESIS` — do NOT create a simulation to get better numbers\n\n"
+        "**The convergence gate will BLOCK completion** if it detects:\n"
+        "- Any `run_sim.py` / `run_mock.py` / `run_fake.py` runner scripts (CRITICAL)\n"
+        "- Source files with simulation-bypass patterns (hardcoded probabilities, np.random.seed)\n"
+        "- Insufficient LLM cache entries relative to the experiment design\n"
+        "- `results.json` with simulation provenance markers\n\n"
+        "**Provenance requirement:** Every `results.json` MUST include a `runner` field "
+        "naming the script that produced it (e.g., `\"runner\": \"run_experiments.py\"`). "
+        "The mandated entry point declared in PROMPT.md is the ONLY valid runner.\n"
     )
 
     # -- Workflow ----------------------------------------------------------

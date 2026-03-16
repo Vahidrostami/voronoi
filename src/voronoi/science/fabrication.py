@@ -490,12 +490,26 @@ def detect_simulation_bypass(
                     ))
                     result.passed = False
                     break
+                else:
+                    # Flag simulation patterns even in non-suspect filenames
+                    result.flags.append(FabricationFlag(
+                        severity="warning", category="simulation_pattern",
+                        message=(
+                            f"File '{rel_path}' contains simulation-like code "
+                            f"(matched: {pattern.pattern!r}) — verify this is not "
+                            f"replacing real LLM calls"
+                        ),
+                    ))
+                    break
 
     # 4. Check for alternative runner scripts
     run_files = list(workspace.glob("run_*.py")) + list(workspace.glob("run*.py"))
     for demo_dir in workspace.glob("demos/*/"):
         run_files.extend(demo_dir.glob("run_*.py"))
         run_files.extend(demo_dir.glob("run*.py"))
+    for sub_dir in workspace.glob("submissions/*/"):
+        run_files.extend(sub_dir.glob("run_*.py"))
+        run_files.extend(sub_dir.glob("run*.py"))
 
     for rf in run_files:
         fname_lower = rf.stem.lower()
@@ -503,9 +517,34 @@ def detect_simulation_bypass(
             rel_path = str(rf.relative_to(workspace))
             result.bypass_files.append(rel_path)
             result.flags.append(FabricationFlag(
-                severity="warning", category="alternative_runner",
-                message=f"Alternative runner '{rel_path}' exists alongside the mandated entry point.",
+                severity="critical", category="simulation_runner",
+                message=(
+                    f"Simulation runner '{rel_path}' exists alongside the mandated "
+                    f"entry point — results may come from simulation, not real LLM calls"
+                ),
             ))
+            result.passed = False
+
+    # 5. Check results.json provenance
+    for results_path in _find_results_files(workspace):
+        try:
+            data = json.loads(results_path.read_text())
+            if not isinstance(data, dict):
+                continue
+            runner = str(data.get("runner", data.get("entry_point", "")))
+            if runner:
+                runner_lower = runner.lower()
+                if any(kw in runner_lower for kw in ("sim", "mock", "fake")):
+                    result.flags.append(FabricationFlag(
+                        severity="critical", category="simulated_provenance",
+                        message=(
+                            f"results.json runner='{runner}' indicates simulation "
+                            f"provenance — not produced by real experiments"
+                        ),
+                    ))
+                    result.passed = False
+        except (json.JSONDecodeError, OSError):
+            continue
 
     return result
 

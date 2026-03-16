@@ -1521,11 +1521,13 @@ class TestSimulationBypassDetection:
         assert result.passed is True
 
     def test_alternative_runner_detected(self, tmp_path):
-        """run_sim.py alongside run_experiments.py should be flagged."""
+        """run_sim.py alongside run_experiments.py should be flagged as critical."""
         (tmp_path / "run_experiments.py").write_text("# real runner\n")
         (tmp_path / "run_sim.py").write_text("# simulation bypass\n")
         result = detect_simulation_bypass(tmp_path)
-        assert any(f.category == "alternative_runner" for f in result.flags)
+        assert any(f.category == "simulation_runner" for f in result.flags)
+        assert any(f.severity == "critical" for f in result.flags)
+        assert result.passed is False
         assert "run_sim.py" in str(result.bypass_files)
 
     def test_insufficient_cache_critical(self, tmp_path):
