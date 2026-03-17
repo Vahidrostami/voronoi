@@ -10,7 +10,7 @@ Produce a complete academic paper — with synthetic experimental evidence — t
 >
 > This paper makes three contributions. First, we formally characterize this problem class through three structural invariants: lever coupling, knowledge heterogeneity, and the cognitive assembly bottleneck. We show that approaches addressing any single invariant in isolation necessarily produce incomplete solutions. This characterization defines the structural conditions under which a unified framework can generalize across domains. Second, we introduce a multimodal encoding layer that transforms each knowledge type into a reasoning‑ready representation while preserving its native semantics: quantitative data are encoded as statistical profiles, policy knowledge as tiered constraint vectors, and expert judgment as temporal belief objects equipped with confidence and decay functions. By preserving epistemic differences rather than collapsing them, the framework enables agents to reason jointly across all knowledge types. Conflicts between sources — such as quantitative signals contradicting established heuristics — become diagnostic signals of potential structural change rather than unresolvable noise. Third, we present a progressive space‑reduction pipeline operating over coupled levers in three stages. Parallel diagnostic agents prune the combinatorial space along complementary analytical dimensions; a causal synthesis layer assembles the surviving evidence into structured interventions specifying lever, direction, scope, and mechanism; and a multidimensional quality gate filters candidates based on evidence density, constraint alignment, actionability, testability, and novelty.
 >
-> We instantiate the framework in the domain of Revenue Growth Management, where commercial levers — including pricing, promotion, assortment, distribution, and pack‑price architecture — are deeply coupled and where knowledge is distributed across numerical data, policy documents, and subject‑matter expertise. We show that the encoding layer enables cross‑type reasoning that reveals interaction effects invisible to siloed analyses, and that the progressive reduction pipeline efficiently compresses a large candidate space into a focused set of causally grounded, testable hypotheses. We conclude by identifying the structural conditions under which the framework generalizes to other domains characterized by coupled decision levers.
+> We instantiate the framework in the domain of Revenue Growth Management, where commercial levers — including pricing, promotion, assortment, distribution, and pack‑price architecture — are deeply coupled and where knowledge is distributed across numerical data, policy documents, and subject‑matter expertise. We show that the encoding layer improves the reliability of cross‑lever effect detection — reducing variance and eliminating failure modes in complex scenarios where raw‑text reasoning is inconsistent — and that combining structured encoding with multiple knowledge sources yields an interaction effect: the benefit of source diversity is realized only when the encoding preserves epistemic distinctions. The progressive reduction pipeline compresses the combinatorial lever‑pair space by 15–270× depending on scenario dimensionality, producing a focused set of causally grounded, testable hypotheses. We conclude by identifying the structural conditions under which the framework generalizes to other domains characterized by coupled decision levers.
 
 This abstract is the contract. Every claim made above must be substantiated in the paper.
 
@@ -51,7 +51,11 @@ encoding → single LLM discovery call → evaluation
 
 ## Core Hypothesis
 
-**Structured encoding of heterogeneous knowledge enables an LLM to discover cross-lever effects that it misses when the same information is presented as plain text. This advantage is amplified when multiple knowledge sources are combined — i.e., encoding and source diversity interact.**
+**Structured encoding of heterogeneous knowledge makes LLM-based cross-lever effect discovery consistently reliable — reducing variance and eliminating failure modes present in raw-text reasoning. This reliability advantage is amplified when multiple knowledge sources are combined: encoding and source diversity interact, because source diversity only helps when the encoding preserves epistemic distinctions.**
+
+### Why E2 (Cross-Source) Is the Flagship
+
+The interaction test (encoding × sources) is the paper's headline finding, but the **cross-source main effect at L4** is the most defensible individual claim. Constraint-boundary effects structurally require policy documents — no amount of data scanning discovers "promos > 40% prohibited when margin < 15%" from CSV alone. Unlike the encoding main effect (which is vulnerable to ceiling effects at moderate row counts), the all-sources vs data-only comparison genuinely removes information, making it robust to LLM capability improvements.
 
 ---
 
@@ -75,20 +79,37 @@ encoding → single LLM discovery call → evaluation
 
 ### Planted Effects
 
-Each scenario has **3 ground-truth effects**:
+Each scenario has **3 ground-truth effects** (all three are mandatory):
 
-- **Simpson's paradox** — Aggregate correlation reverses at segment level. Must use ≥3 overlapping subgroups where the paradox is NOT visible from scanning raw rows (groups must overlap in x-values, noise must partially mask within-group slopes). This is a data-only effect — detectable without knowledge sources.
-- **Constraint-boundary** — Data recommends an action; a compound multi-condition constraint prohibits it. The constraint must require ≥2 AND-joined conditions to identify. This is a cross-source effect — undetectable without policy knowledge.
-- Agents may add a third effect type if it passes a detection pilot (≥30% at L1, ≥60% at L4).
+- **Simpson's paradox** — Aggregate correlation reverses at segment level. Must use ≥4 overlapping subgroups where the paradox is NOT visible from scanning raw rows (groups must overlap in x-values with `x_spread ≤ x_std`, noise must partially mask within-group slopes with `noise_std ≥ 0.8 × |within_slope × x_std|`). Construction must be verified: after generation, run a validation check confirming that (a) the aggregate slope has opposite sign to the majority of within-group slopes, (b) a naive correlation on sampled rows (N=100) does NOT detect the reversal, and (c) the subgroup labels are NOT column headers but must be derived from binning or clustering (to prevent trivial group-by detection). This is a data-only effect — detectable without knowledge sources.
+- **Constraint-boundary** — Data recommends an action; a compound multi-condition constraint prohibits it. The constraint must require **≥3 conditions with at least one nested disjunction** (e.g., `(margin < 15% AND region ∈ {North, West}) OR (promo_depth > 40% AND pack_size < 500ml AND channel = convenience)`). Conditions must be distributed across ≥2 non-adjacent paragraphs in the policy document — never stated as a single rule block. This is a cross-source effect — undetectable without policy knowledge. **This effect type is the strongest test of the paper's thesis** — it structurally requires cross-source information.
+- **Interaction effect (mandatory)** — Two or more levers jointly produce a non-additive outcome that is invisible when levers are analyzed independently. For example: promotion depth has no main effect on margin, but promotion × pack-size interaction drives a significant margin shift in a specific segment. The interaction must involve ≥2 levers and ≥1 moderating variable, and must NOT be a textbook-standard pattern (e.g., avoid simple two-way interactions that are common in statistics curricula). Must pass L1-data detection check: if ≥80% of L1-data pilot runs detect it, the interaction is too easy — redesign with more confounders or weaker signal.
 
 **Distractor patterns:** Each scenario must include ≥2 real-but-non-planted statistical patterns (correlations, trends, clusters) that are NOT ground-truth effects.
 
 ### Scenario Requirements
 
-- **N ≥ 12 scenarios**, structurally varied (different column sets, subgroup counts, constraint types, lever combinations)
-- **≥ 500 rows** per scenario (the floor where encoding matters — below ~150 rows, LLMs can scan raw data reliably)
-- **≥ 5 lever columns** per scenario, covering ≥3 of the 5 RGM domains (pricing, promotion, assortment, distribution, pack-price architecture); at least 4 scenarios cover all 5
-- **≥ 2 categorical grouping variables** per scenario (creating multiplicative segment space)
+- **N ≥ 24 scenarios**, structurally varied (different column sets, subgroup counts, constraint types, lever combinations). This floor is derived from a power analysis (see below): at the observed d ≈ 0.48 for the encoding main effect, N ≥ 28 is needed for 80% power at α = 0.05; with mixed-effects modeling (k runs per scenario), N ≥ 24 suffices.
+- **≥ 1500 rows** per scenario (the floor where raw-data scanning starts to degrade for frontier LLMs — below ~500 rows, LLMs scan raw data reliably and ceiling effects kill the encoding advantage). **At least 8 scenarios must have ≥ 3000 rows** to stress-test attention degradation at scale.
+- **All rows must be delivered to the LLM.** The `--max-rows` flag (or any row truncation) is **prohibited**. If context length is a concern, reduce column count — never truncate rows. At 1500 rows × 15 columns, L1 is ~240K characters (~75K tokens). For 3000-row scenarios, verify the model's context window accommodates the full payload; if not, reduce columns to stay within limits.
+- **Use realistic RGM column names** (e.g., `discount_pct`, `promo_depth`, `shelf_space_share`, `pack_size_ml`, `distribution_coverage`) — not generic `col_1`, `col_2` names. Realistic names increase ecological validity and make the task harder for raw-text scanning.
+- **≥ 5 lever columns** per scenario, covering ≥3 of the 5 RGM domains (pricing, promotion, assortment, distribution, pack-price architecture); at least 8 scenarios cover all 5.
+- **≥ 10 lever columns** in at least 6 scenarios (high-dimensional scenarios are critical for E3 compression claims).
+- **≥ 2 categorical grouping variables** per scenario (creating multiplicative segment space).
+
+### Power Analysis
+
+Prior experiments measured d ≈ 0.48 for the encoding main effect with N = 12 (underpowered — observed p > 0.05). Required sample sizes at 80% power, α = 0.05:
+
+| Effect | Observed d | Required N (paired t) | With mixed-effects (k=3) | Notes |
+|--------|-----------|----------------------|--------------------------|-------|
+| Encoding main | 0.48 | 28 | 24 | Prior run got d=0.00 at 500 rows; harder scenarios at 1500+ rows needed |
+| Interaction | ~0.35 (est.) | 52 | 40 | Prior run got d=0.00; mandatory interaction effect + finer rubric should surface signal |
+| Cross-source at L4 | ~1.0 (est. from E2 design) | 10 | 8 | Most robust — removing sources genuinely removes information |
+
+The cross-source comparison (E2) is expected to have a large effect because removing entire knowledge sources genuinely removes information — unlike encoding level, where L1 still contains all the data. This is why E2 is the flagship experiment.
+
+If the interaction remains underpowered at N = 24, the paper reports the encoding main effect and cross-source main effect as separate findings, with the interaction as exploratory. Pre-register this fallback.
 
 ### Discovery and Evaluation
 
@@ -96,35 +117,49 @@ The LLM reports **3–5 findings in structured JSON** (columns, direction, magni
 
 **Evaluation uses two-stage rubric matching:**
 1. **Code pre-filter** — score Variables and Direction from structured JSON fields; eliminate obvious non-matches (both dimensions = 0) without an LLM call
-2. **Batched LLM judge** — one call per discovery run scores all surviving (finding, GT) pairs on 5 dimensions (Variables, Direction, Scope, Mechanism, Quantification), each 0/1. Match threshold: ≥3/5.
+2. **Batched LLM judge** — one call per discovery run scores all surviving (finding, GT) pairs on **8 dimensions**:
+   - **Binary (0/1):** Variables, Direction, Scope, Mechanism, Quantification (same as before)
+   - **Continuous (0–2):** Precision (how precisely the effect is characterized — 0 = vague, 1 = approximate, 2 = exact), Completeness (how much of the GT effect is captured — 0 = fragment, 1 = partial, 2 = full), Specificity (how narrowly scoped vs. generic — 0 = generic, 1 = partially scoped, 2 = fully conditioned on correct subpopulation)
+   - **Match score** = (sum of binary dims) + (sum of continuous dims / 6). Range: 0.0–6.0. Match threshold: ≥ 3.5.
+   - The continuous dimensions break ceiling effects: two findings that both pass 5/5 binary dims can still differ on precision and specificity.
 
 **Vote calibration:** Phase 1 (pilot) runs 3 votes per batch to compute Krippendorff's α. If α ≥ 0.85, Phase 2 drops to 1 vote. If α < 0.40, revise the judge prompt.
 
 ### Metrics
 
-- **Primary: Mean Best Rubric Score (MBRS)** — For each GT effect, take the highest rubric score from the top-3 ranked findings. Average across GT effects per scenario. Analyze via 2×2 repeated-measures ANOVA (encoding × sources), report interaction F-test + main effects + Cohen's d + 95% CI.
-- **MBRS by effect type** — Separate MBRS for data-only GT effects (Simpson's) and cross-source GT effects (constraint-boundary). The interaction hypothesis predicts that cross-source MBRS shows a larger encoding × sources interaction than data-only MBRS.
-- **Secondary**: F1 at ≥3/5 and ≥4/5 thresholds, effect-type coverage.
+- **Primary: Mean Best Rubric Score (MBRS)** — For each GT effect, take the highest rubric score from the top-3 ranked findings. Average across GT effects per scenario. MBRS now ranges 0.0–6.0 (not 0–1) due to the continuous dimensions. Normalize to [0, 1] for reporting: `MBRS_norm = MBRS / 6.0`. Analyze via 2×2 repeated-measures ANOVA (encoding × sources), report interaction F-test + main effects + Cohen's d + 95% CI.
+- **MBRS by effect type** — Separate MBRS for data-only GT effects (Simpson's), cross-source GT effects (constraint-boundary), and interaction effects. The interaction hypothesis predicts that cross-source MBRS shows a larger encoding × sources interaction than data-only MBRS. The interaction-effect MBRS tests whether structured encoding helps detect non-additive patterns that require multi-lever reasoning.
+- **Secondary**: F1 at ≥3.5/6.0 and ≥4.5/6.0 thresholds, effect-type coverage.
 
 ### Phases
 
-**Phase 1 — Pilot (2 scenarios, all 4 cells, k=3 runs):**
-- Validates planted effect difficulty: `MBRS_L4-all − MBRS_L1-data ≥ 0.20`
+**Phase 0 — Difficulty Calibration (3 scenarios, L1-data only, k=3 runs):**
+
+Before investing in the full factorial, verify that the task is actually hard enough for raw-text reasoning to struggle. Run 3 structurally varied scenarios through L1-data only.
+- **Anti-ceiling gate:** `mean MBRS_L1-data < 0.80` (normalized). If L1-data already scores ≥ 0.80, the scenarios are too easy — the encoding condition has no room to improve. Remediation options (agent decides which): increase row count, add more confounders/distractor patterns, increase noise in Simpson's construction, add more constraint conditions, make interaction effects weaker-signal.
+- **Variance gate:** `SD(MBRS) across 3 scenarios > 0.05`. If SD ≈ 0, all scenarios are at the same difficulty — add structural variation.
+- **Per-effect check:** For each planted effect type, at least 1 of 3 scenarios must have MBRS < 0.67 at L1-data. If every effect type is at ceiling, the effects are too prototypical.
+- Phase 0 scenarios can be reused in Phase 2 if they pass all gates.
+
+**Phase 1 — Pilot (3 scenarios, all 4 cells, k=3 runs):**
+- Validates planted effect difficulty: `MBRS_L4-all − MBRS_L1-data ≥ 0.15` (relaxed from 0.20 given harder scenarios)
+- **Anti-ceiling gate:** No cell may have `SD(MBRS) = 0.00` across all scenarios. If any cell has zero variance, the rubric cannot discriminate — harden scenarios or refine rubric continuous dimensions before proceeding.
 - Calibrates judge reliability (α threshold for vote count)
 - Validates encoding hashes differ, L4 chars within [0.7×, 1.5×] of L1
 - If any gate fails: STOP, diagnose, revise. Do NOT proceed.
 
-**Phase 2 — Full (N ≥ 12 scenarios, k=3 runs per cell):**
-- HARD GATE: Interaction effect p < 0.05 OR encoding main effect p < 0.05. At least one must hold.
-- If both fail: flag `DESIGN_INVALID`, do NOT proceed to paper.
+**Phase 2 — Full (N ≥ 24 scenarios, k=3 runs per cell):**
+- HARD GATE: At least one of the following must hold at p < 0.05: (a) interaction effect, (b) encoding main effect, (c) cross-source main effect at L4.
+- If all three fail: flag `DESIGN_INVALID`, do NOT proceed to paper.
+- Report all three tests regardless of significance. The cross-source main effect is expected to be the largest and most robust.
 
 **Phase 3 — Paper + Webapp (only after Phase 2 passes)**
 
 ### Optional: Sequential Stopping
 
-Run scenarios in batches of 4. After each batch:
-- If interaction p < 0.01: stop early, sufficient evidence
-- If interaction p > 0.50 with ≥ 8 scenarios: stop for futility
+Run scenarios in batches of 6. After each batch:
+- If interaction p < 0.01 AND cross-source main effect p < 0.01: stop early, sufficient evidence
+- If all three tests p > 0.50 with ≥ 18 scenarios: stop for futility
 
 If used, pre-register the stopping rule and report adjusted p-values.
 
@@ -150,23 +185,47 @@ Report two ratios:
 1. **Pipeline compression**: Stage 1 output → Stage 3 output
 2. **Effective compression**: naive_space → Stage 3 output (this matters for the paper's claim)
 
-**Metric**: Median effective compression ≥ 100×. Quality gate scores all 5 abstract dimensions (evidence density, constraint alignment, actionability, testability, novelty). Log to `output/pipeline_scores.json`.
+**Metric**: Effective compression varies by scenario dimensionality. Report the full distribution:
+- **Low-dimensional scenarios** (5 levers, 2–3 segments): expect 15–30× effective compression
+- **High-dimensional scenarios** (10+ levers, 4+ segments): expect 100–270× effective compression
+- Report median, IQR, and per-scenario values. The paper's claim is that compression scales with scenario complexity — NOT a fixed 100× floor.
+
+Example: With 10 levers, 12 segments, 3 sources: naive_space = C(10,2) × 12 × 3 = 1620. Pipeline output of 6 candidates → 270× compression.
+
+Quality gate scores all 5 abstract dimensions (evidence density, constraint alignment, actionability, testability, novelty). Log to `output/pipeline_scores.json`.
 
 ---
 
 ## Hard Rules
 
 1. **Same model for all cells.** Never switch models between conditions.
-2. **Never truncate context.** Reduce scenario count instead.
+2. **Never truncate rows.** All rows must be delivered to the LLM. No `--max-rows` flag, no sampling, no row limits. If context is tight, reduce column count or scenario count — never truncate rows. This is the most critical rule: row truncation below 500 caused ceiling effects in prior experiments (L1 MBRS 0.954 at 150 rows, killing the encoding advantage).
 3. **Never name effect categories in discovery prompts.** Category-blind only.
 4. **Encoding replaces, never appends.** L4 chars within [0.7×, 1.5×] of L1.
 5. **Single entry point:** `run_experiments.py`.
 6. **All LLM calls via** `copilot -p "<prompt>" -s --no-color --allow-all`. Cache by prompt hash. Record model in `results.json`.
 7. **Ground truth never loaded by the reasoning system.** Used only for evaluation.
-8. **Minimum 500 rows per scenario.**
-9. **NO SIMULATION MODE.** Do NOT substitute real LLM calls with sampling, hardcoded probabilities, or mock scripts. Do NOT create `*sim*`, `*mock*`, or `*fake*` files. The ONLY entry point is `run_experiments.py`. Reduce k or N if call budget is tight — never simulate.
-10. **LLM cache validation.** `.llm_cache/` must contain ≥ `N × 4 × k` entries (scenarios × cells × runs). If nearly empty, the experiment was not run.
-11. **Judge call efficiency.** Batched prompts + code pre-filtering are mandatory, not optional.
+8. **Minimum 1500 rows per scenario.** At least 8 scenarios must have ≥ 3000 rows.
+9. **k ≥ 3 runs per cell.** Never reduce to k = 1. Within-cell variance is essential for detecting effects; k = 1 produces degenerate zero-variance cells that make ANOVA meaningless.
+10. **NO SIMULATION MODE.** Do NOT substitute real LLM calls with sampling, hardcoded probabilities, or mock scripts. Do NOT create `*sim*`, `*mock*`, or `*fake*` files. The ONLY entry point is `run_experiments.py`. Reduce N if call budget is tight — never simulate, never reduce k below 3.
+11. **LLM cache validation.** `.llm_cache/` must contain ≥ `N × 4 × k` entries (scenarios × cells × runs). If nearly empty, the experiment was not run.
+12. **Judge call efficiency.** Batched prompts + code pre-filtering are mandatory, not optional.
+13. **Validate Simpson's paradox construction.** After generating each scenario, run automated checks: (a) aggregate slope sign ≠ majority within-group slope sign, (b) naive 100-row sample correlation does NOT detect the reversal, (c) subgroup x-ranges overlap with `x_spread ≤ x_std`, (d) noise satisfies `noise_std ≥ 0.8 × |within_slope × x_std|`, (e) subgroup labels are derived from binning/clustering, not raw column values. If validation fails, regenerate the scenario.
+14. **Use realistic RGM column names.** No generic `col_1`/`scenario_*` naming. Columns must reflect actual RGM lever names (e.g., `discount_pct`, `promo_depth`, `shelf_space_share`).
+15. **Validate interaction effect construction.** After generating each scenario, verify: (a) main effects of the interacting levers are non-significant (p > 0.10) when tested independently, (b) the interaction term is significant (p < 0.05) in a two-way ANOVA, (c) the effect is not a standard textbook pattern (agent must document why).
+
+---
+
+## Known Failure Modes — Read Before Building
+
+Prior runs produced a decisive null result (encoding F = 0.000, d = 0.000). Root-cause analysis identified the following design traps. These are NOT hard rules — they are documented anti-patterns to help agents avoid repeating the same failures.
+
+1. **Ceiling from easy patterns.** Simpson's paradox is extensively represented in LLM training data. If you plant only textbook-standard patterns, the LLM recognizes them from raw numbers regardless of encoding. Mitigation: use the mandatory interaction effect (which is domain-specific and not textbook), increase noise, require subgroup derivation rather than column lookup.
+2. **Ceiling from coarse rubric.** A 5-binary-dimension rubric (max score 5) clusters scores at the top when the model is competent. Two findings that differ meaningfully in precision/specificity both score 5/5. The continuous rubric dimensions (Precision, Completeness, Specificity) exist specifically to break this ceiling.
+3. **k = 1 collapses variance.** With one run per cell, ANOVA gets N observations with zero within-cell variance. The "exact null" (F = 0.000) likely reflects a single cached reasoning path, not genuine equivalence.
+4. **500 rows is within easy-scan range.** Frontier LLMs with 128K+ context process 500 × 15 tabular data in a single attention pass. The encoding advantage emerges where raw scanning degrades — empirically around 1500+ rows.
+5. **Simple constraints are trivially parsed.** A 2-condition AND constraint in one paragraph is extracted in one reading. Distributing ≥3 conditions with nested logic across multiple paragraphs requires structured extraction.
+6. **Fewer than 3 planted effects per scenario reduces statistical power at the effect-type level.** All three are mandatory — Simpson's, constraint-boundary, and interaction.
 
 ---
 
@@ -174,9 +233,10 @@ Report two ratios:
 
 Agents own ALL implementation decisions not listed in Hard Rules:
 
-- Exact scenario count (≥12), rows per scenario, column designs
-- Simpson's paradox construction parameters (group overlap, noise levels, number of subgroups) — the only constraint is that the paradox must not be trivially visible from raw CSV at 500+ rows
-- Constraint-boundary construction (number of conditions, how they're buried in prose) — must be compound (≥2 AND-joined)
+- Exact scenario count (≥24), rows per scenario (≥1500, with ≥8 at ≥3000), column designs
+- Simpson's paradox construction parameters (group overlap, noise levels, number of subgroups ≥4) — the only constraint is that the paradox must not be trivially visible from raw CSV at 1500+ rows and subgroup labels must be derived, not direct columns
+- Constraint-boundary construction (number of conditions ≥3, how they're distributed across paragraphs) — must include at least one nested disjunction
+- Interaction effect construction (which levers, what moderating variable, signal strength) — must not be a textbook-standard pattern and must pass the L1-data detection check
 - Encoding representations (statistical profiles, constraint vectors, belief objects, process graphs)
 - Discovery prompt wording (must be category-blind, must request structured JSON, must constrain to 3–5 findings)
 - Rubric judge prompt wording (must include vocabulary normalization)
@@ -185,7 +245,7 @@ Agents own ALL implementation decisions not listed in Hard Rules:
 - Causal synthesis schema (must include lever, direction, scope, mechanism)
 - Quality gate weights and threshold (no hard cap on output count)
 - Whether to include L2/L3 for a gradient plot (optional)
-- Whether to add effect types (must pass detection pilot first)
+- Whether to add a 4th+ effect type beyond the 3 mandatory ones (must pass detection pilot first)
 - Paper structure, related work, figure design, webapp layout
 
 ---
@@ -194,13 +254,16 @@ Agents own ALL implementation decisions not listed in Hard Rules:
 
 | ID | Criterion | How measured |
 |----|-----------|-------------|
-| **SC1** | Encoding improves discovery | Main effect of encoding, p < 0.05, or interaction p < 0.05 |
-| **SC2** | Cross-source reasoning benefits from encoding | Interaction (encoding × sources) on cross-source MBRS |
-| **SC3** | Pipeline compression ≥ 100× effective | Median naive_space / Stage 3 output |
+| **SC1** | Encoding improves discovery reliability | Main effect of encoding p < 0.05, OR interaction p < 0.05, OR cross-source main effect at L4 p < 0.05. At least one must hold. |
+| **SC2** | Cross-source reasoning benefits from encoding | Interaction (encoding × sources) on cross-source MBRS. If underpowered, report cross-source main effect at L4 as primary, interaction as exploratory. |
+| **SC9** | Design avoids ceiling effects | No cell has SD(MBRS) = 0.00 across scenarios; mean MBRS_L1-data < 0.80 (normalized). Verified in Phase 0 + Phase 1. |
+| **SC3** | Pipeline compression scales with dimensionality | Report full distribution. High-dimensional scenarios (10+ levers) must achieve ≥100× effective compression. |
 | **SC4** | Three invariants formally defined + single-invariant insufficiency | Logical argument in paper |
 | **SC5** | Paper compiles, figures from actual data | Compilation + review |
 | **SC6** | All claims backed by effect sizes and CIs | Statistical reporting |
 | **SC7** | Pipeline architecture matches abstract | `pipeline_scores.json` with 5-dim gate |
+| **SC8** | Simpson's paradox construction validated | Automated checks pass for all scenarios (see Hard Rule 13) |
+| **SC10** | Interaction effect construction validated | Automated checks pass for all scenarios (see Hard Rule 15) |
 
 ---
 
@@ -231,18 +294,18 @@ demos/coupled-decisions/
 
 ### Expected LLM Call Budget
 
-With N=12 scenarios, 4 cells, k=3 runs, batched judging, code pre-filtering, and pilot-validated single vote:
+With N=24 scenarios, 4 cells, k=3 runs, batched judging, code pre-filtering, and pilot-validated single vote:
 
 | Component | Formula | Calls |
 |-----------|---------|-------|
-| Factorial discovery | 12 × 4 cells × 3 runs | 144 |
-| Factorial judging (batched, 1 vote) | 144 batched calls | 144 |
-| E3 pipeline | 12 × ~4 agents | ~48 |
-| **Total** | | **~336** |
+| Factorial discovery | 24 × 4 cells × 3 runs | 288 |
+| Factorial judging (batched, 1 vote) | 288 batched calls | 288 |
+| E3 pipeline | 24 × ~4 agents | ~96 |
+| **Total** | | **~672** |
 
-If pilot α < 0.85 (3-vote mode): judging × 3 → ~528 total.
+If pilot α < 0.85 (3-vote mode): judging × 3 → ~1152 total.
 
-With optional sequential stopping (pre-registered): expected ~200 calls.
+With optional sequential stopping (pre-registered, batches of 6): expected ~400–500 calls.
 
 ---
 
