@@ -83,7 +83,7 @@ Each scenario has **3 ground-truth effects** (all three are mandatory):
 
 - **Simpson's paradox** — Aggregate correlation reverses at segment level. Must use ≥4 overlapping subgroups where the paradox is NOT visible from scanning raw rows (groups must overlap in x-values with `x_spread ≤ x_std`, noise must partially mask within-group slopes with `noise_std ≥ 0.8 × |within_slope × x_std|`). Construction must be verified: after generation, run a validation check confirming that (a) the aggregate slope has opposite sign to the majority of within-group slopes, (b) a naive correlation on sampled rows (N=100) does NOT detect the reversal, and (c) the subgroup labels are NOT column headers but must be derived from binning or clustering (to prevent trivial group-by detection). This is a data-only effect — detectable without knowledge sources.
 - **Constraint-boundary** — Data recommends an action; a compound multi-condition constraint prohibits it. The constraint must require **≥3 conditions with at least one nested disjunction** (e.g., `(margin < 15% AND region ∈ {North, West}) OR (promo_depth > 40% AND pack_size < 500ml AND channel = convenience)`). Conditions must be distributed across ≥2 non-adjacent paragraphs in the policy document — never stated as a single rule block. This is a cross-source effect — undetectable without policy knowledge. **This effect type is the strongest test of the paper's thesis** — it structurally requires cross-source information.
-- **Interaction effect (mandatory)** — Two or more levers jointly produce a non-additive outcome that is invisible when levers are analyzed independently. For example: promotion depth has no main effect on margin, but promotion × pack-size interaction drives a significant margin shift in a specific segment. The interaction must involve ≥2 levers and ≥1 moderating variable, and must NOT be a textbook-standard pattern (e.g., avoid simple two-way interactions that are common in statistics curricula). Must pass L1-data detection check: if ≥80% of L1-data pilot runs detect it, the interaction is too easy — redesign with more confounders or weaker signal.
+- **Interaction effect (mandatory)** — Two or more levers jointly produce a non-additive outcome that is invisible when levers are analyzed independently. For example: promotion depth has no main effect on margin, but promotion × pack-size interaction drives a significant margin shift in a specific segment. The interaction must involve ≥2 levers and ≥1 moderating variable, and must NOT be a textbook-standard pattern (e.g., avoid simple two-way interactions that are common in statistics curricula). Must pass L1-data detection check: if ≥80% of L1-data pilot runs detect it, the interaction is too easy — redesign with more confounders or weaker signal. **Run 2 upgrade:** at least half of scenarios must include a **3-way or 4-way interaction** (e.g., price × promotion × channel) where pairwise analysis shows nothing — only the full joint term is significant.
 
 **Distractor patterns:** Each scenario must include ≥2 real-but-non-planted statistical patterns (correlations, trends, clusters) that are NOT ground-truth effects.
 
@@ -220,12 +220,44 @@ Quality gate scores all 5 abstract dimensions (evidence density, constraint alig
 
 Prior runs produced a decisive null result (encoding F = 0.000, d = 0.000). Root-cause analysis identified the following design traps. These are NOT hard rules — they are documented anti-patterns to help agents avoid repeating the same failures.
 
-1. **Ceiling from easy patterns.** Simpson's paradox is extensively represented in LLM training data. If you plant only textbook-standard patterns, the LLM recognizes them from raw numbers regardless of encoding. Mitigation: use the mandatory interaction effect (which is domain-specific and not textbook), increase noise, require subgroup derivation rather than column lookup.
+1. **Ceiling from easy patterns.** Simpson's paradox is extensively represented in LLM training data. If you plant only textbook-standard patterns, the LLM recognizes them from raw numbers regardless of encoding. Mitigation: use the mandatory interaction effect (which is domain-specific and not textbook), increase noise, require subgroup derivation rather than column lookup. **Run 1 confirmed this:** Simpson's MBRS was 0.85–0.98 across all cells. Run 2 must use multi-mediator Simpson's variants (see Run 2 Directions).
 2. **Ceiling from coarse rubric.** A 5-binary-dimension rubric (max score 5) clusters scores at the top when the model is competent. Two findings that differ meaningfully in precision/specificity both score 5/5. The continuous rubric dimensions (Precision, Completeness, Specificity) exist specifically to break this ceiling.
 3. **k = 1 collapses variance.** With one run per cell, ANOVA gets N observations with zero within-cell variance. The "exact null" (F = 0.000) likely reflects a single cached reasoning path, not genuine equivalence.
 4. **500 rows is within easy-scan range.** Frontier LLMs with 128K+ context process 500 × 15 tabular data in a single attention pass. The encoding advantage emerges where raw scanning degrades — empirically around 1500+ rows.
 5. **Simple constraints are trivially parsed.** A 2-condition AND constraint in one paragraph is extracted in one reading. Distributing ≥3 conditions with nested logic across multiple paragraphs requires structured extraction.
 6. **Fewer than 3 planted effects per scenario reduces statistical power at the effect-type level.** All three are mandatory — Simpson's, constraint-boundary, and interaction.
+
+---
+
+## Run 2 Directions — Amplify Encoding Effect
+
+Run 1 (18 hrs, 26 scenarios) established: **sources dominate encoding in aggregate** (η²=0.120 vs 0.013), but encoding was highly significant for interaction-effect detection (η²=0.241, p<0.001). Simpson's paradox hit ceiling (MBRS 0.85–0.98 across all cells). The aggregate encoding null likely reflects that 2 of 3 effect types don't stress the encoding layer.
+
+**Goal for Run 2:** Push encoding from subgroup-significant to aggregate-significant by designing scenarios where raw-text representations are *structurally incapable* of making relevant patterns legible.
+
+### New Scenario Complexity Types
+
+Add these to the scenario generator. Each scenario should include **at least 2** of the following on top of the 3 mandatory planted effects:
+
+**1. Higher-order interactions (3-way, 4-way).** Current scenarios test pairwise coupling. Add lever triples where price × promotion × channel interact: the price–promotion elasticity reverses sign depending on channel. L4's cross-lever interaction profiles (lever triples) directly encode this; raw CSV does not. **Priority: highest — lowest implementation cost, directly stresses encoding.**
+
+**2. Regime-switching data.** The data-generating process changes at an unknown breakpoint (e.g., market disruption mid-dataset). Pre-break correlations mislead post-break. Temporal belief objects with decay coefficients model this; raw CSV treats all rows equally. Include at least 4 scenarios with a regime break.
+
+**3. Temporal coupling (time-lagged interactions).** Lever A's change at $t$ affects lever B's optimum at $t+\Delta t$. No single time-slice shows the coupling. Statistical profiles with cross-period correlation detect it; raw rows do not. Real-world analogue: promotion depth today affects brand equity (price elasticity) next quarter.
+
+**4. Contradictory experts with segment-conditional validity.** Expert A says effect is positive (correct for segment X, wrong for Y). Expert B says negative (correct for Y, wrong for X). Raw text: LLM picks one or averages. Structured encoding: temporal belief objects with evidence fields let the LLM cross-reference each belief against segment-level profiles.
+
+**5. Cascading constraint activation.** Constraint C1 is always active. Hitting C1's boundary activates dormant C2, which constrains a *different* lever pair. Raw text mentions both constraints but not the activation dependency. Tiered constraint vectors with conditional triggers encode this.
+
+**6. Multi-mediator Simpson's paradox.** Current Simpson's: one confounder → stratify → reversal visible (too easy — ceiling). Harder: A → M1 → M2 → B where M1/M2 are partially observed. Stratifying by M1 alone doesn't resolve the paradox. This breaks the current ceiling.
+
+### Updated Anti-Ceiling Gate
+
+Phase 0 must verify: `mean MBRS_L1-data < 0.65` (tightened from 0.80) for scenarios using the new complexity types. If L1-data still scores above 0.65 on these, the scenario is not hard enough.
+
+### Framing for the Paper
+
+Do not frame the encoding finding as "encoding helps for hard problems" (sounds obvious). Frame as: **"Encoding depth exhibits a phase transition — irrelevant below a complexity threshold and critical above it."** The Run 1 interaction-effect subgroup (η²=0.241) is evidence of this transition; Run 2 scenarios are designed to cross the threshold more often.
 
 ---
 
