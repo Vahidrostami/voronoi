@@ -42,7 +42,7 @@ class DispatcherConfig:
     orchestrator_model: str = ""  # e.g. "claude-opus-4.6", "" = CLI default
     worker_model: str = ""        # e.g. "claude-sonnet-4.6", "" = CLI default
     progress_interval: int = 30  # seconds between progress updates
-    timeout_hours: int = 24      # max hours before marking investigation exhausted
+    timeout_hours: int = 48      # max hours before marking investigation exhausted
     max_retries: int = 2         # max times to restart a dead agent
     stall_minutes: int = 45      # warn/restart if 0 tasks after this long
 

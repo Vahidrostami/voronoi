@@ -21,7 +21,7 @@ class SandboxConfig:
     image: str = "voronoi-python:latest"
     cpus: int = 4
     memory: str = "8g"
-    timeout_hours: int = 12
+    timeout_hours: int = 48
     network: bool = True
     fallback_to_host: bool = True
 
