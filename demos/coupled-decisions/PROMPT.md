@@ -254,3 +254,16 @@ demos/coupled-decisions/
 Python 3.11+, numpy, scipy, matplotlib. Copilot CLI for all LLM calls.
 
 When complete: delete agent branches, remove worktrees, kill tmux sessions.
+
+---
+
+## Completion Protocol
+
+**Do NOT write `.swarm/deliverable.md` until ALL of the following are true:**
+1. Phase 2 HARD GATE passed (at least one p<0.05 among interaction, encoding main, cross-source main)
+2. E3 pipeline compression results logged to `output/pipeline_scores.json`
+3. Paper compiles with all figures from actual experimental data
+4. `output/results.json` contains complete per-scenario per-cell per-run metrics + ANOVA results
+5. All 10 Success Criteria verified
+
+Writing `deliverable.md` prematurely will cause the server to mark this investigation as complete and kill all agents. The deliverable is the LAST file written, after everything else is done.

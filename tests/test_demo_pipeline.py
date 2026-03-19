@@ -67,7 +67,8 @@ class TestHandleDemo:
         call_args = mock_q.enqueue.call_args
         inv = call_args[0][0]
         assert inv.question == prompt_content
-        assert inv.mode == "build"
+        assert inv.mode == "investigate"
+        assert inv.rigor in ("analytical", "scientific", "experimental")
         mock_q.set_demo_source.assert_called_once()
 
     @patch("voronoi.cli.find_data_dir")

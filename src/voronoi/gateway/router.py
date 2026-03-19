@@ -883,12 +883,23 @@ def handle_demo(project_dir: str, demo_name: str, chat_id: str = "") -> str:
                 f"Use `/voronoi status` to check progress."
             )
 
+    # Detect rigor from PROMPT.md content — demos with experimental
+    # designs, statistical tests, or multi-phase protocols need higher
+    # rigor to prevent premature completion.
+    from voronoi.gateway.intent import _determine_rigor, WorkflowMode, RigorLevel
+    _RIGOR_ORDER = [RigorLevel.STANDARD, RigorLevel.ANALYTICAL,
+                    RigorLevel.SCIENTIFIC, RigorLevel.EXPERIMENTAL]
+    detected_rigor = _determine_rigor(prompt_content, WorkflowMode.INVESTIGATE)
+    # Floor at analytical — demos are never trivial builds
+    if _RIGOR_ORDER.index(detected_rigor) < _RIGOR_ORDER.index(RigorLevel.ANALYTICAL):
+        detected_rigor = RigorLevel.ANALYTICAL
+
     inv = Investigation(
         chat_id=chat_id,
         question=prompt_content,
         slug=make_slug(demo_name),
-        mode="build",
-        rigor="standard",
+        mode="investigate",
+        rigor=detected_rigor.value,
         investigation_type="lab",
     )
     inv_id = q.enqueue(inv)
