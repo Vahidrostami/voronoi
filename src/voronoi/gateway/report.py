@@ -61,10 +61,10 @@ class ReportGenerator:
     workspace_path : Path
         Root of the investigation workspace.
     mode : str | None
-        Investigation mode (investigate/explore/build/experiment).
+        Investigation mode (discover/prove).
         When provided, drives format selection directly.
     rigor : str | None
-        Rigor level (standard/analytical/scientific/experimental).
+        Rigor level (adaptive/scientific/experimental).
         When provided, drives format selection directly.
     """
 
@@ -543,7 +543,7 @@ class ReportGenerator:
 
     def build_teaser(self, investigation_id: int, question: str,
                      total_tasks: int, closed_tasks: int,
-                     elapsed_min: float, *, mode: str = "investigate",
+                     elapsed_min: float, *, mode: str = "discover",
                      codename: str = "") -> str:
         """3-5 bullet point teaser for Telegram."""
         from voronoi.gateway.progress import MODE_EMOJI, progress_bar

@@ -54,6 +54,29 @@ fi
 
 WORKTREE_PATH="${SWARM_DIR}/${BRANCH_NAME}"
 
+resolve_default_branch() {
+    local branch
+    branch=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##') || true
+    if [[ -n "$branch" ]]; then
+        echo "$branch"
+        return
+    fi
+    branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || true
+    if [[ -n "$branch" && "$branch" != "HEAD" ]]; then
+        echo "$branch"
+        return
+    fi
+    if git show-ref --verify --quiet refs/heads/main; then
+        echo "main"
+        return
+    fi
+    if git show-ref --verify --quiet refs/heads/master; then
+        echo "master"
+        return
+    fi
+    echo "main"
+}
+
 echo "--- Spawning agent: $BRANCH_NAME ---"
 
 # =========================================================================
@@ -193,7 +216,9 @@ for line in notes.split('\n'):
 
 # 1. Create worktree on a new branch
 cd "$PROJECT_DIR"
-git worktree add "$WORKTREE_PATH" -b "$BRANCH_NAME" 2>/dev/null || {
+git worktree prune >/dev/null 2>&1 || true
+DEFAULT_BRANCH=$(resolve_default_branch)
+git worktree add "$WORKTREE_PATH" -b "$BRANCH_NAME" "$DEFAULT_BRANCH" 2>/dev/null || {
     echo "Worktree or branch already exists, reusing..."
     git worktree add "$WORKTREE_PATH" "$BRANCH_NAME" 2>/dev/null || true
 }

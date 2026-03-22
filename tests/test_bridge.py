@@ -24,10 +24,8 @@ from voronoi.gateway.router import (
     handle_guide,
     handle_pivot,
     handle_abort,
-    handle_investigate,
-    handle_explore,
-    handle_build,
-    handle_experiment,
+    handle_discover,
+    handle_prove,
     handle_belief,
     handle_journal,
     handle_finding,
@@ -139,7 +137,7 @@ class TestHandlers:
         q = InvestigationQueue(Path.home() / ".voronoi" / "queue.db")
         # Enqueue a test investigation
         inv = Investigation(chat_id="test", question="test q", slug="abort-test",
-                            mode="build", rigor="standard")
+                            mode="discover", rigor="adaptive")
         inv_id = q.enqueue(inv)
         result = handle_abort(str(tmp_path))
         assert "Abort requested" in result
@@ -156,56 +154,31 @@ class TestHandlers:
 class TestScienceHandlers:
     @patch("voronoi.gateway.router.InvestigationQueue", autospec=True)
     @patch("voronoi.gateway.router.make_slug", return_value="test-slug")
-    def test_handle_investigate(self, mock_slug, mock_queue_cls, tmp_path):
+    def test_handle_discover(self, mock_slug, mock_queue_cls, tmp_path):
         mock_q = MagicMock()
         mock_q.enqueue.return_value = 1
         mock_q.get_queued.return_value = []
         mock_q.get_running.return_value = []
         mock_queue_cls.return_value = mock_q
 
-        result = handle_investigate(str(tmp_path), "Why is latency high?", "chat1")
+        result = handle_discover(str(tmp_path), "Why is latency high?", "chat1")
         assert "Voronoi" in result
         assert "LAUNCHED" in result
-        assert "investigation" in result
+        assert "discovery" in result
 
     @patch("voronoi.gateway.router.InvestigationQueue", autospec=True)
     @patch("voronoi.gateway.router.make_slug", return_value="test-slug")
-    def test_handle_explore(self, mock_slug, mock_queue_cls, tmp_path):
+    def test_handle_prove(self, mock_slug, mock_queue_cls, tmp_path):
         mock_q = MagicMock()
         mock_q.enqueue.return_value = 2
         mock_q.get_queued.return_value = []
         mock_q.get_running.return_value = []
         mock_queue_cls.return_value = mock_q
 
-        result = handle_explore(str(tmp_path), "Redis vs Memcached", "chat1")
-        assert "Voronoi" in result
-        assert "exploration" in result
-
-    @patch("voronoi.gateway.router.InvestigationQueue", autospec=True)
-    @patch("voronoi.gateway.router.make_slug", return_value="test-slug")
-    def test_handle_build(self, mock_slug, mock_queue_cls, tmp_path):
-        mock_q = MagicMock()
-        mock_q.enqueue.return_value = 3
-        mock_q.get_queued.return_value = []
-        mock_q.get_running.return_value = []
-        mock_queue_cls.return_value = mock_q
-
-        result = handle_build(str(tmp_path), "Build REST API", "chat1")
-        assert "Voronoi" in result
-        assert "build" in result
-
-    @patch("voronoi.gateway.router.InvestigationQueue", autospec=True)
-    @patch("voronoi.gateway.router.make_slug", return_value="test-slug")
-    def test_handle_experiment(self, mock_slug, mock_queue_cls, tmp_path):
-        mock_q = MagicMock()
-        mock_q.enqueue.return_value = 4
-        mock_q.get_queued.return_value = []
-        mock_q.get_running.return_value = []
-        mock_queue_cls.return_value = mock_q
-
-        result = handle_experiment(str(tmp_path), "test batch size effect", "chat1")
+        result = handle_prove(str(tmp_path), "test batch size effect", "chat1")
         assert "Voronoi" in result
         assert "LAUNCHED" in result
+        assert "proof" in result
 
 
 # ---------------------------------------------------------------------------
@@ -353,11 +326,11 @@ class TestFreeText:
     def test_science_question(self, tmp_path):
         router = CommandRouter(str(tmp_path))
         text, _ = router.handle_free_text("Why is our model accuracy dropping?", "chat1", True)
-        assert "investigate" in text.lower()
+        assert "discover" in text.lower()
         assert "Voronoi" in text
 
     def test_explore_question(self, tmp_path):
         router = CommandRouter(str(tmp_path))
         text, _ = router.handle_free_text("Which database should we use — Postgres vs MySQL?", "chat1", True)
-        assert "explore" in text.lower()
+        assert "discover" in text.lower()
         assert "Voronoi" in text

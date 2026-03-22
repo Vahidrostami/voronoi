@@ -18,6 +18,7 @@ from typing import Optional
 logger = logging.getLogger("voronoi.workspace")
 
 from voronoi.server.repo_url import RepoRef
+from voronoi.utils import git_init_main
 
 
 @dataclass
@@ -107,7 +108,7 @@ class WorkspaceManager:
         workspace_path.mkdir(parents=True)
 
         # 1. git init + initial commit
-        self._run_git(["git", "init"], cwd=str(workspace_path))
+        git_init_main(workspace_path)
         self._run_git(
             ["git", "commit", "--allow-empty", "-m", "voronoi: lab workspace"],
             cwd=str(workspace_path),
@@ -145,10 +146,27 @@ class WorkspaceManager:
         swarm_path = self.active_dir / f"inv-{investigation_id}-{slug}-swarm"
 
         removed = False
-        for p in [swarm_path, workspace_path]:
-            if p.exists():
-                shutil.rmtree(p)
-                removed = True
+        if swarm_path.exists():
+            for worktree in sorted(swarm_path.glob("agent-*")):
+                if worktree.is_dir():
+                    subprocess.run(
+                        ["git", "worktree", "remove", str(worktree), "--force"],
+                        cwd=str(workspace_path if workspace_path.exists() else swarm_path.parent),
+                        capture_output=True,
+                        text=True,
+                    )
+            subprocess.run(
+                ["git", "worktree", "prune"],
+                cwd=str(workspace_path if workspace_path.exists() else swarm_path.parent),
+                capture_output=True,
+                text=True,
+            )
+            shutil.rmtree(swarm_path, ignore_errors=True)
+            removed = True
+
+        if workspace_path.exists():
+            shutil.rmtree(workspace_path)
+            removed = True
         return removed
 
     def list_active(self) -> list[str]:

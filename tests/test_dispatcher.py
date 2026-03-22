@@ -59,7 +59,7 @@ class TestDispatchNext:
             workspace_path=tmp_path / "ws",
             tmux_session="test-session",
             question="test",
-            mode="investigate",
+            mode="discover",
         )
 
         with patch("subprocess.run"):
@@ -77,7 +77,7 @@ class TestProgressMonitoring:
             workspace_path=tmp_path,
             tmux_session="test",
             question="test",
-            mode="investigate",
+            mode="discover",
         )
         run.task_snapshot = {
             "bd-1": {"status": "in_progress", "title": "Task 1"},
@@ -101,7 +101,7 @@ class TestProgressMonitoring:
             workspace_path=tmp_path,
             tmux_session="test",
             question="test",
-            mode="investigate",
+            mode="discover",
             phase="starting",
         )
         run.task_snapshot = {"bd-1": {"status": "open", "title": "Task 1"}}
@@ -117,7 +117,7 @@ class TestProgressMonitoring:
             workspace_path=tmp_path,
             tmux_session="test",
             question="test",
-            mode="investigate",
+            mode="discover",
         )
         (tmp_path / ".swarm").mkdir()
         (tmp_path / ".swarm" / "deliverable.md").write_text("# Results\n")
@@ -131,7 +131,7 @@ class TestProgressMonitoring:
             workspace_path=tmp_path,
             tmux_session="test",
             question="test",
-            mode="investigate",
+            mode="discover",
         )
 
         with patch("subprocess.run") as mock_run:
@@ -155,7 +155,7 @@ class TestProgressMonitoring:
             workspace_path=tmp_path,
             tmux_session="test",
             question="test",
-            mode="investigate",
+            mode="discover",
         )
         run.task_snapshot = {"bd-1": {"status": "open", "title": "Old"}}
 
@@ -182,7 +182,7 @@ class TestProgressMonitoring:
             workspace_path=tmp_path,
             tmux_session="test",
             question="Why is model degrading?",
-            mode="investigate",
+            mode="discover",
         )
         run.task_snapshot = {"bd-1": {"status": "closed", "title": "Done"}}
 
@@ -204,7 +204,7 @@ class TestProgressMonitoring:
             workspace_path=tmp_path,
             tmux_session="test",
             question="Why is model degrading?",
-            mode="investigate",
+            mode="discover",
         )
         run.task_snapshot = {"bd-1": {"status": "open", "title": "Incomplete"}}
 
@@ -229,7 +229,7 @@ class TestProgressMonitoring:
             workspace_path=tmp_path,
             tmux_session="test",
             question="Test question",
-            mode="build",
+            mode="discover",
             chat_id="12345",
         )
         run.task_snapshot = {"bd-1": {"status": "closed", "title": "Done"}}
@@ -258,7 +258,7 @@ class TestAbortSignal:
             workspace_path=ws,
             tmux_session="test-session",
             question="test",
-            mode="investigate",
+            mode="discover",
         )
 
         with patch("subprocess.run"):
@@ -281,7 +281,7 @@ class TestAbortSignal:
             workspace_path=ws,
             tmux_session="test-session",
             question="test",
-            mode="investigate",
+            mode="discover",
         )
 
         d._check_abort_signal()
@@ -301,7 +301,7 @@ class TestHeartbeatStallDetection:
             workspace_path=tmp_path,
             tmux_session="test",
             question="test",
-            mode="investigate",
+            mode="discover",
         )
         events = d._check_heartbeat_stalls(run)
         assert events == []
@@ -313,7 +313,7 @@ class TestHeartbeatStallDetection:
             workspace_path=tmp_path,
             tmux_session="test",
             question="test",
-            mode="investigate",
+            mode="discover",
         )
         # Create a stalled heartbeat file
         from datetime import datetime, timezone, timedelta
@@ -333,6 +333,32 @@ class TestHeartbeatStallDetection:
         assert len(events) == 1
         assert "stuck" in events[0]["msg"]
 
+    def test_check_progress_does_not_emit_heartbeat_events_by_default(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        run.task_snapshot = {"bd-1": {"status": "in_progress", "title": "Task 1", "notes": ""}}
+
+        with patch.object(d, "_check_findings", return_value=[]), \
+             patch.object(d, "_check_design_invalid", return_value=[]), \
+             patch.object(d, "_check_event_log", return_value=[]), \
+             patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout=json.dumps([
+                    {"id": "bd-1", "status": "in_progress", "title": "Task 1", "notes": ""},
+                ]),
+                stderr="",
+            )
+            events = d._check_progress(run)
+
+        assert all(event["type"] != "heartbeat_stall" for event in events)
+
 
 # ---------------------------------------------------------------------------
 # DESIGN_INVALID detection
@@ -346,7 +372,7 @@ class TestDesignInvalidDetection:
             workspace_path=tmp_path,
             tmux_session="test",
             question="test",
-            mode="investigate",
+            mode="discover",
         )
         tasks = [
             {"id": "bd-5", "title": "Test encoding ablation", "status": "open",
@@ -364,7 +390,7 @@ class TestDesignInvalidDetection:
             workspace_path=tmp_path,
             tmux_session="test",
             question="test",
-            mode="investigate",
+            mode="discover",
         )
         tasks = [
             {"id": "bd-5", "title": "Test encoding", "status": "closed",
@@ -380,7 +406,7 @@ class TestDesignInvalidDetection:
             workspace_path=tmp_path,
             tmux_session="test",
             question="test",
-            mode="investigate",
+            mode="discover",
         )
         tasks = [
             {"id": "bd-5", "title": "Test", "status": "open",
@@ -406,7 +432,7 @@ class TestDesignInvalidHardGate:
             workspace_path=tmp_path,
             tmux_session="test",
             question="test",
-            mode="investigate",
+            mode="discover",
         )
         run.task_snapshot = {
             "bd-1": {"status": "open", "title": "Experiment",
@@ -421,7 +447,7 @@ class TestDesignInvalidHardGate:
             workspace_path=tmp_path,
             tmux_session="test",
             question="test",
-            mode="investigate",
+            mode="discover",
         )
         run.task_snapshot = {
             "bd-1": {"status": "closed", "title": "Experiment",
@@ -436,7 +462,7 @@ class TestDesignInvalidHardGate:
             workspace_path=tmp_path,
             tmux_session="test",
             question="test",
-            mode="investigate",
+            mode="discover",
         )
         run.task_snapshot = {
             "bd-1": {"status": "open", "title": "Task", "notes": ""},
@@ -451,7 +477,7 @@ class TestDesignInvalidHardGate:
             workspace_path=tmp_path,
             tmux_session="test",
             question="test",
-            mode="investigate",
+            mode="discover",
         )
         run.task_snapshot = {
             "bd-1": {"status": "open", "title": "Task"},
@@ -466,7 +492,7 @@ class TestDesignInvalidHardGate:
             workspace_path=tmp_path,
             tmux_session="test",
             question="test",
-            mode="investigate",
+            mode="discover",
         )
         (tmp_path / ".swarm").mkdir(parents=True)
         (tmp_path / ".swarm" / "deliverable.md").write_text("# Results\n")
@@ -484,7 +510,7 @@ class TestDesignInvalidHardGate:
             workspace_path=tmp_path,
             tmux_session="test",
             question="test",
-            mode="investigate",
+            mode="discover",
         )
         (tmp_path / ".swarm").mkdir(parents=True)
         (tmp_path / ".swarm" / "deliverable.md").write_text("# Results\n")
@@ -505,7 +531,7 @@ class TestDesignInvalidHardGate:
             workspace_path=tmp_path,
             tmux_session="test",
             question="test",
-            mode="investigate",
+            mode="discover",
         )
         run.task_snapshot = {
             "bd-1": {"status": "open", "title": "Experiment",
@@ -531,7 +557,7 @@ class TestDesignInvalidHardGate:
             workspace_path=tmp_path,
             tmux_session="test",
             question="test",
-            mode="investigate",
+            mode="discover",
         )
         run.task_snapshot = {
             "bd-1": {"status": "open", "title": "Experiment",
@@ -551,7 +577,7 @@ class TestDesignInvalidHardGate:
             workspace_path=tmp_path,
             tmux_session="test",
             question="test",
-            mode="investigate",
+            mode="discover",
         )
         run.task_snapshot = {}
 

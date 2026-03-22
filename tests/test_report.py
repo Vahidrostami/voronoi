@@ -318,13 +318,13 @@ class TestFormatDetection:
 
     def test_report_from_rigor_standard(self, tmp_path):
         (tmp_path / ".swarm").mkdir()
-        rg = ReportGenerator(tmp_path, rigor="standard")
+        rg = ReportGenerator(tmp_path, rigor="adaptive")
         assert rg.is_manuscript is False
         assert rg.doc_type == "report"
 
     def test_report_from_rigor_analytical(self, tmp_path):
         (tmp_path / ".swarm").mkdir()
-        rg = ReportGenerator(tmp_path, rigor="analytical")
+        rg = ReportGenerator(tmp_path, rigor="adaptive")
         assert rg.is_manuscript is False
 
     def test_fallback_detects_academic_headings(self, tmp_path):
@@ -438,7 +438,7 @@ class TestManuscriptMarkdown:
     @patch("voronoi.gateway.report._run_bd")
     def test_teaser_says_report_when_not_manuscript(self, mock_bd, workspace):
         mock_bd.return_value = (0, json.dumps([]))
-        rg = ReportGenerator(workspace, rigor="standard")
+        rg = ReportGenerator(workspace, rigor="adaptive")
         teaser = rg.build_teaser(1, "test", 5, 5, 10)
         assert "report" in teaser.lower()
 
@@ -463,7 +463,7 @@ class TestAutoMarkdown:
     @patch("voronoi.gateway.report._run_bd")
     def test_auto_markdown_report(self, mock_bd, workspace):
         mock_bd.return_value = (0, json.dumps([]))
-        rg = ReportGenerator(workspace, rigor="standard")
+        rg = ReportGenerator(workspace, rigor="adaptive")
         md = rg.build_auto_markdown()
         assert "Investigation Report" in md
 

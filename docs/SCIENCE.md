@@ -21,19 +21,21 @@ The gateway and execution layers consume these; the orchestrator and review agen
 
 ## 2. Rigor Level Gate Matrix
 
-| Gate | Standard | Analytical | Scientific | Experimental |
-|------|:--------:|:----------:|:----------:|:------------:|
+Rigor is determined by mode: DISCOVER uses adaptive rigor (starts analytical, escalates), PROVE uses scientific or experimental from the start.
+
+| Gate | DISCOVER (initial) | DISCOVER (escalated) | PROVE (scientific) | PROVE (experimental) |
+|------|:------------------:|:-------------------:|:-----------------:|:-------------------:|
 | Code review (Critic inline) | YES | YES | YES | YES |
 | Statistician review | — | YES | YES | YES |
 | Finding interpretation | — | YES | YES | YES |
 | Claim-evidence registry | — | YES | YES | YES |
 | Final evaluation (CCSA) | — | YES | YES | YES |
-| Methodologist design review | — | — | YES (advisory) | YES (mandatory) |
-| Pre-registration | — | — | YES | YES |
-| Pre-reg compliance audit | — | — | YES | YES |
-| Power analysis | — | — | YES | YES |
-| Partial blinding for Critic | — | — | YES | YES |
-| Adversarial review loop | — | — | YES | YES |
+| Methodologist design review | — | YES (advisory) | YES (mandatory) | YES (mandatory) |
+| Pre-registration | — | YES | YES | YES |
+| Pre-reg compliance audit | — | YES | YES | YES |
+| Power analysis | — | YES | YES | YES |
+| Partial blinding for Critic | — | YES | YES | YES |
+| Adversarial review loop | — | YES | YES | YES |
 | Replication | — | — | — | YES |
 
 ## 3. Pre-Registration

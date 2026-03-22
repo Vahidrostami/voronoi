@@ -173,47 +173,63 @@ And for each worker:
 
 ---
 
-## 4. Classifier
+## 4. Two Science Modes: DISCOVER and PROVE
+
+Voronoi has two science modes and three meta modes. The old seven-mode × four-rigor matrix (BUILD, INVESTIGATE, EXPLORE, HYBRID × STANDARD/ANALYTICAL/SCIENTIFIC/EXPERIMENTAL) is replaced by two intent-driven modes with **adaptive rigor**.
 
 ```mermaid
 flowchart LR
     INPUT["User message"] --> CLASSIFY["intent.py\nPattern matching"]
     CLASSIFY --> MODE{"Mode"}
-    MODE -->|"build, create, ship"| BUILD["Build - Standard"]
-    MODE -->|"why, investigate"| INV["Investigate - Scientific"]
-    MODE -->|"compare, evaluate"| EXP["Explore - Analytical"]
-    MODE -->|"figure out and fix"| HYB["Hybrid - Scientific"]
-    MODE -->|"paper, manuscript"| HYB
-    MODE -->|"test whether"| EXPT["Investigate - Experimental"]
+    MODE -->|"open question, why, compare, explore"| DISCOVER["DISCOVER\nAdaptive rigor"]
+    MODE -->|"detailed hypothesis, prove, PROMPT.md"| PROVE["PROVE\nScientific rigor"]
+    MODE -->|"status, recall, guide"| META["Meta handlers"]
 ```
 
-| Mode | Rigor | Roles activated |
-|------|-------|----------------|
-| **Build** | Standard | Builder, Critic (inline) |
-| **Explore** | Analytical | + Scout, Statistician, Explorer, Synthesizer, Evaluator |
-| **Investigate** | Scientific | + Methodologist, Theorist, all gates |
-| **Investigate** | Experimental | Full pipeline + replication |
+| Mode | User gives | Rigor | How it works |
+|------|-----------|-------|--------------|
+| **DISCOVER** | An open question — "go figure this out" | Adaptive — starts analytical, escalates to scientific when hypotheses crystallize | Free exploration. Scout first, form hypotheses, pursue multiple paths in parallel. Agents explore creatively. Orchestrator casts roles dynamically based on what it finds. |
+| **PROVE** | A specific hypothesis or detailed PROMPT.md | Scientific/Experimental — full gates from the start | Structured hypothesis testing. Pre-registration, controlled experiments, statistical validation, replication for high-impact findings. |
+| **STATUS** | (meta) | — | Query swarm state |
+| **RECALL** | (meta) | — | Search knowledge store |
+| **GUIDE** | (meta) | — | Operator guidance |
 
-When in doubt, classify higher — gates can be skipped but not added retroactively.
+### Why two modes?
+
+- **BUILD, INVESTIGATE, EXPLORE, HYBRID were artificial distinctions.** When someone says "figure out why X is slow," they want discovery — whether that involves building test harnesses, exploring alternatives, or investigating causally. The orchestrator decides the approach, not the classifier.
+- **Adaptive rigor in DISCOVER mirrors real science.** You don't pre-register before you even know what you're looking at. Start with Scout + exploration; when real hypotheses emerge, engage Methodologist + Statistician.
+- **PROVE is for when the user has already done the discovery mentally.** Detailed PROMPT.md files (like coupled-decisions) skip exploration and go straight to rigorous testing.
+
+### Creative Freedom Protocol (DISCOVER mode)
+
+- No rigid "Scout first → plan → dispatch by role" sequence
+- Orchestrator casts roles dynamically based on what it finds
+- Multiple agents can pursue different hypotheses simultaneously
+- `SERENDIPITY` events — when an agent finds something unexpected, the orchestrator can pivot the entire investigation
+- Rigor escalates automatically: if belief map shows testable hypotheses, engage pre-registration and review gates
 
 ---
 
 ## 5. Role Registry
 
-| Role | File | Activated at | Key responsibility |
-|------|------|-------------|-------------------|
-| Builder 🔨 | `worker-agent.agent.md` | Standard+ | Implements code in isolated worktree |
-| Scout 🔍 | `scout.agent.md` | Analytical+ | Prior knowledge research, SOTA anchoring |
-| Investigator 🔬 | `investigator.agent.md` | Analytical+ | Pre-registered experiments, raw data + SHA-256 |
-| Explorer 🧭 | `explorer.agent.md` | Analytical+ | Option evaluation with comparison matrices |
-| Statistician 📊 | `statistician.agent.md` | Analytical+ | CI, effect sizes, data integrity, p-hacking flags |
-| Critic ⚖️ | `critic.agent.md` | Standard+ | Adversarial review; partially blinded at Scientific+ |
-| Synthesizer 🧩 | `synthesizer.agent.md` | Analytical+ | Consistency checks, deliverable, journal |
-| Evaluator 🎯 | `evaluator.agent.md` | Analytical+ | Scores deliverable: Completeness·Coherence·Strength·Actionability |
-| Theorist 🧬 | `theorist.agent.md` | Scientific+ | Causal models, competing theories, paradigm stress |
-| Methodologist 📐 | `methodologist.agent.md` | Scientific+ | Experimental design review, power analysis |
-| Scribe ✍️ | `scribe.agent.md` | Any | LaTeX compilation, figure generation |
-| Worker | `worker-agent.agent.md` | Standard+ | Generic tasks |
+All 12 roles are available in both DISCOVER and PROVE modes. The difference is **when** they activate:
+- **PROVE**: Full role set from the start (pre-registration, methodologist review, etc.)
+- **DISCOVER**: Orchestrator casts roles dynamically as the investigation evolves
+
+| Role | File | DISCOVER | PROVE | Key responsibility |
+|------|------|----------|-------|-------------------|
+| Builder 🔨 | `worker-agent.agent.md` | On demand | On demand | Implements code in isolated worktree |
+| Scout 🔍 | `scout.agent.md` | Always first | Always first | Prior knowledge research, SOTA anchoring |
+| Investigator 🔬 | `investigator.agent.md` | When hypotheses emerge | From start | Pre-registered experiments, raw data + SHA-256 |
+| Explorer 🧭 | `explorer.agent.md` | When comparing options | When comparing options | Option evaluation with comparison matrices |
+| Statistician 📊 | `statistician.agent.md` | When rigor escalates | From start | CI, effect sizes, data integrity, p-hacking flags |
+| Critic ⚖️ | `critic.agent.md` | On demand | From start | Adversarial review; partially blinded at high rigor |
+| Synthesizer 🧩 | `synthesizer.agent.md` | At convergence | Before convergence | Consistency checks, deliverable, journal |
+| Evaluator 🎯 | `evaluator.agent.md` | At convergence | Before convergence | Scores deliverable: Completeness·Coherence·Strength·Actionability |
+| Theorist 🧬 | `theorist.agent.md` | When hypotheses emerge | From start | Causal models, competing theories, paradigm stress |
+| Methodologist 📐 | `methodologist.agent.md` | When rigor escalates | From start (mandatory) | Experimental design review, power analysis |
+| Scribe ✍️ | `scribe.agent.md` | On demand | On demand | LaTeX compilation, figure generation |
+| Worker | `worker-agent.agent.md` | On demand | On demand | Generic tasks |
 
 ---
 

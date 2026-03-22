@@ -26,8 +26,8 @@ class TestBuildOrchestratorPrompt:
     def test_basic_build_prompt(self):
         prompt = build_orchestrator_prompt(
             question="Build a REST API",
-            mode="build",
-            rigor="standard",
+            mode="discover",
+            rigor="adaptive",
         )
         assert "swarm orchestrator" in prompt
         assert "PROMPT.md" in prompt
@@ -36,8 +36,8 @@ class TestBuildOrchestratorPrompt:
     def test_references_agent_files(self):
         prompt = build_orchestrator_prompt(
             question="test",
-            mode="build",
-            rigor="standard",
+            mode="discover",
+            rigor="adaptive",
         )
         # Must reference the orchestrator role file
         assert ".github/agents/swarm-orchestrator.agent.md" in prompt
@@ -49,7 +49,7 @@ class TestBuildOrchestratorPrompt:
     def test_codename_in_prompt(self):
         prompt = build_orchestrator_prompt(
             question="test",
-            mode="investigate",
+            mode="discover",
             rigor="scientific",
             codename="Dopamine",
         )
@@ -58,8 +58,8 @@ class TestBuildOrchestratorPrompt:
     def test_workspace_path_in_prompt(self):
         prompt = build_orchestrator_prompt(
             question="test",
-            mode="build",
-            rigor="standard",
+            mode="discover",
+            rigor="adaptive",
             workspace_path="/tmp/workspace",
         )
         assert "/tmp/workspace" in prompt
@@ -67,8 +67,8 @@ class TestBuildOrchestratorPrompt:
     def test_output_dir_in_prompt(self):
         prompt = build_orchestrator_prompt(
             question="test",
-            mode="build",
-            rigor="standard",
+            mode="discover",
+            rigor="adaptive",
             output_dir="demos/coupled-decisions",
         )
         assert "demos/coupled-decisions" in prompt
@@ -76,8 +76,8 @@ class TestBuildOrchestratorPrompt:
     def test_custom_prompt_path(self):
         prompt = build_orchestrator_prompt(
             question="test",
-            mode="build",
-            rigor="standard",
+            mode="discover",
+            rigor="adaptive",
             prompt_path="demos/my-demo/PROMPT.md",
         )
         assert "demos/my-demo/PROMPT.md" in prompt
@@ -85,8 +85,8 @@ class TestBuildOrchestratorPrompt:
     def test_max_agents_in_prompt(self):
         prompt = build_orchestrator_prompt(
             question="test",
-            mode="build",
-            rigor="standard",
+            mode="discover",
+            rigor="adaptive",
             max_agents=8,
         )
         assert "8" in prompt
@@ -94,8 +94,8 @@ class TestBuildOrchestratorPrompt:
     def test_safe_flag_in_prompt(self):
         prompt = build_orchestrator_prompt(
             question="test",
-            mode="build",
-            rigor="standard",
+            mode="discover",
+            rigor="adaptive",
             safe=True,
         )
         assert "--safe" in prompt
@@ -108,88 +108,59 @@ class TestBuildOrchestratorPrompt:
 class TestScienceSections:
     """Test that mode/rigor combinations produce correct science content."""
 
-    def test_build_standard_no_science(self):
+    def test_discover_adaptive_has_creative_freedom(self):
         prompt = build_orchestrator_prompt(
-            question="test", mode="build", rigor="standard",
+            question="test", mode="discover", rigor="adaptive",
         )
-        # Build/standard should NOT have science-specific sections
-        assert "## Phase 0: Scout" not in prompt
-        assert "## Hypothesis Management" not in prompt
-        assert "## Convergence Criteria" not in prompt
+        assert "Creative Freedom" in prompt
+        assert "SERENDIPITY" in prompt
 
-    def test_investigate_scientific_has_scout(self):
+    def test_prove_scientific_has_scout(self):
         prompt = build_orchestrator_prompt(
-            question="test", mode="investigate", rigor="scientific",
+            question="test", mode="prove", rigor="scientific",
         )
         assert "Scout" in prompt
         assert ".github/agents/scout.agent.md" in prompt
 
-    def test_investigate_scientific_has_hypotheses(self):
+    def test_prove_scientific_has_hypotheses(self):
         prompt = build_orchestrator_prompt(
-            question="test", mode="investigate", rigor="scientific",
+            question="test", mode="prove", rigor="scientific",
         )
-        # Key science terms should appear in the compact science section
         assert "pre-registration" in prompt.lower()
         assert "Methodologist" in prompt
 
-    def test_scientific_has_review_gates(self):
+    def test_prove_has_review_gates(self):
         prompt = build_orchestrator_prompt(
-            question="test", mode="investigate", rigor="scientific",
+            question="test", mode="prove", rigor="scientific",
         )
-        # Compact section references key gates
         assert "Statistician" in prompt
         assert "claim-evidence" in prompt.lower()
         assert "Evaluator" in prompt or "0.75" in prompt
 
-    def test_analytical_has_claim_evidence(self):
+    def test_discover_adaptive_has_eval_score(self):
         prompt = build_orchestrator_prompt(
-            question="test", mode="explore", rigor="analytical",
+            question="test", mode="discover", rigor="adaptive",
         )
-        assert "claim-evidence" in prompt.lower()
-        assert "Statistician" in prompt
-        assert "0.75" in prompt
+        assert "eval-score.json" in prompt
 
-    def test_analytical_has_stats_but_no_critic(self):
+    def test_prove_experimental_has_replication(self):
         prompt = build_orchestrator_prompt(
-            question="test", mode="explore", rigor="analytical",
-        )
-        assert "Statistician" in prompt
-        assert "Critic" not in prompt or "Critic" in prompt  # may appear in table
-        # Critic adversarial review should NOT be mentioned for analytical
-        assert "adversarial" not in prompt.lower() or "blinded" not in prompt.lower()
-
-    def test_scientific_has_convergence_criteria(self):
-        prompt = build_orchestrator_prompt(
-            question="test", mode="investigate", rigor="scientific",
-        )
-        # Convergence criteria are in the role file; prompt has compact reminders
-        assert "convergence" in prompt.lower()
-        assert "Methodologist" in prompt
-
-    def test_experimental_has_replication(self):
-        prompt = build_orchestrator_prompt(
-            question="test", mode="investigate", rigor="experimental",
+            question="test", mode="prove", rigor="experimental",
         )
         assert "replicated" in prompt.lower()
         assert "Power analysis" in prompt
 
-    def test_scientific_has_pre_registration_rule(self):
+    def test_prove_scientific_has_pre_registration_rule(self):
         prompt = build_orchestrator_prompt(
-            question="test", mode="investigate", rigor="scientific",
+            question="test", mode="prove", rigor="scientific",
         )
         assert "pre-registration" in prompt.lower()
 
-    def test_eval_score_output_for_non_standard(self):
+    def test_prove_has_eval_score(self):
         prompt = build_orchestrator_prompt(
-            question="test", mode="investigate", rigor="analytical",
+            question="test", mode="prove", rigor="scientific",
         )
         assert "eval-score.json" in prompt
-
-    def test_no_eval_score_for_standard(self):
-        prompt = build_orchestrator_prompt(
-            question="test", mode="build", rigor="standard",
-        )
-        assert "eval-score.json" not in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -346,7 +317,7 @@ class TestRoleMapping:
 
     def test_all_roles_in_mapping_table(self):
         prompt = build_orchestrator_prompt(
-            question="test", mode="investigate", rigor="scientific",
+            question="test", mode="discover", rigor="scientific",
         )
         for role in self.EXPECTED_ROLES:
             assert f".github/agents/{role}.agent.md" in prompt, \
@@ -362,14 +333,14 @@ class TestInvariantsInPrompt:
 
     def test_invariants_section_present(self):
         prompt = build_orchestrator_prompt(
-            question="test", mode="investigate", rigor="scientific",
+            question="test", mode="discover", rigor="scientific",
         )
         assert "Investigation Invariants" in prompt
         assert "invariants.json" in prompt
 
     def test_revise_section_present(self):
         prompt = build_orchestrator_prompt(
-            question="test", mode="investigate", rigor="scientific",
+            question="test", mode="discover", rigor="scientific",
         )
         assert "REVISE" in prompt
         assert "REVISE_OF" in prompt
@@ -377,19 +348,19 @@ class TestInvariantsInPrompt:
 
     def test_invariants_in_build_mode_too(self):
         prompt = build_orchestrator_prompt(
-            question="test", mode="build", rigor="standard",
+            question="test", mode="discover", rigor="adaptive",
         )
         assert "Investigation Invariants" in prompt
 
     def test_scribe_in_role_mapping(self):
         prompt = build_orchestrator_prompt(
-            question="test", mode="investigate", rigor="scientific",
+            question="test", mode="discover", rigor="scientific",
         )
         assert "scribe.agent.md" in prompt
 
     def test_success_criteria_tracking_section(self):
         prompt = build_orchestrator_prompt(
-            question="test", mode="investigate", rigor="scientific",
+            question="test", mode="discover", rigor="scientific",
         )
         assert "Success Criteria Tracking" in prompt
         assert "success-criteria.json" in prompt
@@ -397,7 +368,7 @@ class TestInvariantsInPrompt:
 
     def test_success_criteria_in_build_too(self):
         prompt = build_orchestrator_prompt(
-            question="test", mode="build", rigor="standard",
+            question="test", mode="discover", rigor="adaptive",
         )
         assert "Success Criteria Tracking" in prompt
 
@@ -411,7 +382,7 @@ class TestPhaseGateEnforcement:
 
     def test_phase_gate_section_present(self):
         prompt = build_orchestrator_prompt(
-            question="test", mode="investigate", rigor="scientific",
+            question="test", mode="discover", rigor="scientific",
         )
         assert "Phase Gate Enforcement" in prompt
         assert "DESIGN_INVALID" in prompt
@@ -419,19 +390,19 @@ class TestPhaseGateEnforcement:
 
     def test_phase_gate_in_build_mode_too(self):
         prompt = build_orchestrator_prompt(
-            question="test", mode="build", rigor="standard",
+            question="test", mode="discover", rigor="adaptive",
         )
         assert "Phase Gate Enforcement" in prompt
 
     def test_phase_gate_mentions_structural_enforcement(self):
         prompt = build_orchestrator_prompt(
-            question="test", mode="investigate", rigor="analytical",
+            question="test", mode="discover", rigor="adaptive",
         )
         assert "structurally" in prompt.lower() or "BLOCK completion" in prompt
 
     def test_data_invariants_in_prompt(self):
         prompt = build_orchestrator_prompt(
-            question="test", mode="investigate", rigor="scientific",
+            question="test", mode="discover", rigor="scientific",
         )
         assert "min_csv_rows" in prompt
         assert "convergence gate" in prompt.lower()

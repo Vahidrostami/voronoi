@@ -12,6 +12,7 @@ Minimal emoji. Narrative over data dumps.
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -21,31 +22,24 @@ from typing import Optional
 # ---------------------------------------------------------------------------
 
 MODE_EMOJI: dict[str, str] = {
-    "investigate": "🔬",
-    "explore": "🧭",
-    "build": "🔨",
-    "hybrid": "🔬🔨",
-    "experiment": "🧪",
+    "discover": "🔬",
+    "prove": "🧪",
 }
 
 RIGOR_DESCRIPTIONS: dict[str, str] = {
-    "standard": "quality checks",
-    "analytical": "statistical validation · effect sizes",
-    "scientific": "pre-registration · hypothesis testing",
+    "adaptive": "adaptive rigor · escalates dynamically",
+    "scientific": "pre-registration · hypothesis testing · full gates",
     "experimental": "controlled experiments · replication",
 }
 
 MODE_VERB: dict[str, str] = {
-    "investigate": "investigation",
-    "explore": "exploration",
-    "build": "build",
-    "hybrid": "investigation",
-    "experiment": "experiment",
+    "discover": "discovery",
+    "prove": "proof",
 }
 
 # Buddy-style phase descriptions — conversational, not labels
 PHASE_DESCRIPTIONS: dict[str, dict[str, str]] = {
-    "investigate": {
+    "discover": {
         "starting": "Setting things up...",
         "scouting": "Doing some background research first.",
         "planning": "Planning the investigation — generating hypotheses and breaking work into tasks.",
@@ -55,25 +49,7 @@ PHASE_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "converging": "Almost done — evaluating the final deliverable.",
         "complete": "Wrapping up and writing the report.",
     },
-    "explore": {
-        "starting": "Setting things up...",
-        "scouting": "Surveying what's out there.",
-        "planning": "Mapping out what to explore.",
-        "investigating": "Researching options in parallel.",
-        "reviewing": "Evaluating and comparing what we found.",
-        "synthesizing": "Comparing alternatives — building the recommendation.",
-        "converging": "Finalizing the recommendation.",
-        "complete": "Writing up the report.",
-    },
-    "build": {
-        "starting": "Setting things up...",
-        "planning": "Breaking down the build into tasks.",
-        "investigating": "Building — agents coding in parallel.",
-        "reviewing": "Code review in progress.",
-        "synthesizing": "Integrating all the pieces.",
-        "complete": "Polishing the deliverables.",
-    },
-    "experiment": {
+    "prove": {
         "starting": "Setting things up...",
         "scouting": "Reviewing methodology and prior art.",
         "planning": "Designing and pre-registering experiments.",
@@ -83,22 +59,6 @@ PHASE_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "converging": "Replication checks and final evaluation.",
         "complete": "Writing the manuscript.",
     },
-    "hybrid": {
-        "starting": "Setting things up...",
-        "scouting": "Researching before we plan.",
-        "planning": "Planning the investigation + build.",
-        "investigating": "Working — agents running in parallel.",
-        "reviewing": "Validating findings.",
-        "synthesizing": "Integrating investigation + build.",
-        "converging": "Evaluating completeness.",
-        "complete": "Writing the deliverable.",
-    },
-}
-
-# Keep old PHASE_LABELS alive as alias for backward compat (scripts may use it)
-PHASE_LABELS: dict[str, dict[str, str]] = {
-    mode: {phase: f"*{desc}*" for phase, desc in phases.items()}
-    for mode, phases in PHASE_DESCRIPTIONS.items()
 }
 
 
@@ -143,7 +103,7 @@ def estimate_remaining(elapsed_sec: float, done: int, total: int) -> str:
 
 def phase_description(mode: str, phase: str) -> str:
     """Return the conversational phase description."""
-    descs = PHASE_DESCRIPTIONS.get(mode, PHASE_DESCRIPTIONS["investigate"])
+    descs = PHASE_DESCRIPTIONS.get(mode, PHASE_DESCRIPTIONS["discover"])
     return descs.get(phase, phase)
 
 
@@ -156,11 +116,6 @@ def voronoi_header(inv_id: int, mode: str, suffix: str = "",
     if suffix:
         parts[0] += f" — {suffix}"
     return parts[0]
-
-
-def phase_label(mode: str, phase: str) -> str:
-    """Return the mode-aware phase label (backward compat)."""
-    return phase_description(mode, phase)
 
 
 # ---------------------------------------------------------------------------
@@ -195,6 +150,79 @@ def _read_tsv_rows(path: Path) -> list[dict]:
         return rows
     except OSError:
         return []
+
+
+def _read_swarm_config(workspace: Path) -> dict:
+    data = _read_json(workspace / ".swarm-config.json")
+    return data if isinstance(data, dict) else {}
+
+
+def _iter_agent_worktrees(workspace: Path) -> list[Path]:
+    config = _read_swarm_config(workspace)
+    candidates: list[Path] = []
+
+    configured = config.get("swarm_dir")
+    if configured:
+        candidates.append(Path(configured))
+    candidates.append(workspace.parent / f"{workspace.name}-swarm")
+
+    seen: set[Path] = set()
+    worktrees: list[Path] = []
+    for swarm_dir in candidates:
+        if swarm_dir in seen or not swarm_dir.exists() or not swarm_dir.is_dir():
+            continue
+        seen.add(swarm_dir)
+        for path in sorted(swarm_dir.glob("agent-*")):
+            if path.is_dir():
+                worktrees.append(path)
+    return worktrees
+
+
+def _read_all_experiment_rows(workspace: Path) -> list[dict]:
+    rows: list[dict] = []
+    seen: set[tuple[tuple[str, str], ...]] = set()
+
+    for path in [workspace, *_iter_agent_worktrees(workspace)]:
+        for row in _read_tsv_rows(path / ".swarm" / "experiments.tsv"):
+            key = tuple(sorted((str(k), str(v)) for k, v in row.items()))
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(row)
+    return rows
+
+
+def _artifact_progress_summary(workspace: Path) -> str:
+    observations: list[tuple[float, str]] = []
+    now = time.time()
+
+    for worktree in _iter_agent_worktrees(workspace):
+        files: list[Path] = []
+        files.extend(path for path in worktree.glob("demos/*/run.log") if path.is_file())
+        files.extend(path for path in worktree.glob("demos/*/output/*.json") if path.is_file())
+        files.extend(path for path in worktree.glob(".swarm/*.json") if path.is_file())
+        if not files:
+            continue
+
+        latest = max(files, key=lambda path: path.stat().st_mtime)
+        age_sec = max(0, now - latest.stat().st_mtime)
+        age = format_duration(age_sec)
+        output_count = sum(1 for path in worktree.glob("demos/*/output/*.json") if path.is_file())
+        observations.append(
+            (
+                latest.stat().st_mtime,
+                f"{worktree.name} updated {age} ago ({output_count} outputs; latest {latest.name})",
+            )
+        )
+
+    if not observations:
+        return ""
+
+    observations.sort(reverse=True)
+    lead = observations[0][1]
+    if len(observations) == 1:
+        return f"Observed artifacts: {lead}"
+    return f"Observed artifacts: {lead} · +{len(observations) - 1} other active worktrees"
 
 
 def assess_track_status(
@@ -327,6 +355,11 @@ def build_digest(
         lines.append("")
         lines.append(exp_summary)
 
+    artifact_summary = _artifact_progress_summary(workspace)
+    if artifact_summary:
+        lines.append("")
+        lines.append(artifact_summary)
+
     # Success criteria check
     criteria_summary = _criteria_summary(workspace)
     if criteria_summary:
@@ -379,7 +412,7 @@ def build_digest_whatsup(
         in_prog = inv.get("in_progress_tasks", 0)
         ready = inv.get("ready_tasks", 0)
         phase = inv.get("phase", "")
-        mode = inv.get("mode", "investigate")
+        mode = inv.get("mode", "discover")
         healthy = inv.get("agents_healthy", 0)
         stuck = inv.get("agents_stuck", 0)
         question = inv.get("question", "")[:80]
@@ -430,7 +463,7 @@ def _extract_task_title(event: dict) -> str:
 
 def _experiment_summary(workspace: Path) -> str:
     """Read experiments.tsv and return a one-line summary."""
-    rows = _read_tsv_rows(workspace / ".swarm" / "experiments.tsv")
+    rows = _read_all_experiment_rows(workspace)
     if not rows:
         return ""
     keep = sum(1 for r in rows if r.get("status") == "keep")
@@ -548,28 +581,3 @@ def format_restart(codename: str, attempt: int, max_retries: int,
         lines.append(f"\nLast output:\n```\n{log_tail[-300:]}\n```")
     return "\n".join(lines)
 
-
-# ---------------------------------------------------------------------------
-# Backward-compat wrappers (used by old tests)
-# ---------------------------------------------------------------------------
-
-def format_workflow_start(mode: str, rigor: str, summary: str) -> str:
-    """Format a workflow-start notification for Telegram (backward compat)."""
-    return format_launch(
-        codename="Voronoi",
-        mode=mode,
-        rigor=rigor,
-        question=summary,
-    )
-
-
-def format_workflow_complete(mode: str, total_tasks: int, findings: int,
-                             duration_min: float) -> str:
-    """Format a workflow-completion notification for Telegram (backward compat)."""
-    return format_complete(
-        codename="Voronoi",
-        mode=mode,
-        total_tasks=total_tasks,
-        closed_tasks=total_tasks,
-        elapsed_sec=duration_min * 60,
-    )

@@ -67,8 +67,8 @@ class TestHandleDemo:
         call_args = mock_q.enqueue.call_args
         inv = call_args[0][0]
         assert inv.question == prompt_content
-        assert inv.mode == "investigate"
-        assert inv.rigor in ("analytical", "scientific", "experimental")
+        assert inv.mode == "prove"
+        assert inv.rigor in ("scientific", "experimental")
         mock_q.set_demo_source.assert_called_once()
 
     @patch("voronoi.cli.find_data_dir")
@@ -125,22 +125,22 @@ class TestFullTextPassthrough:
         long_question = "Why is our model accuracy " + "dropping " * 20 + "after each retrain cycle?"
         assert len(long_question) > 80  # longer than the old summary limit
 
-        with patch("voronoi.gateway.router.handle_investigate") as mock_inv:
-            mock_inv.return_value = "OK"
+        with patch("voronoi.gateway.router.handle_discover") as mock_disc:
+            mock_disc.return_value = "OK"
             router.handle_free_text(long_question, "chat1", True)
 
         # The full text must have been passed, not a truncated summary
-        call_args = mock_inv.call_args[0]
+        call_args = mock_disc.call_args[0]
         assert call_args[1] == long_question  # second arg is the question text
 
     def test_explicit_command_passes_full_args(self, tmp_path):
-        """Explicit /voronoi investigate passes full args even if long."""
+        """Explicit /voronoi discover passes full args even if long."""
         router = CommandRouter(str(tmp_path))
         long_args = ["Why", "is", "our", "model"] + ["very"] * 30 + ["slow?"]
-        with patch("voronoi.gateway.router.handle_investigate") as mock_inv:
-            mock_inv.return_value = "OK"
-            router.route("investigate", long_args, "chat1")
-        call_args = mock_inv.call_args[0]
+        with patch("voronoi.gateway.router.handle_discover") as mock_disc:
+            mock_disc.return_value = "OK"
+            router.route("discover", long_args, "chat1")
+        call_args = mock_disc.call_args[0]
         assert "very" in call_args[1]
         assert call_args[1] == " ".join(long_args)
 
@@ -166,7 +166,7 @@ class TestEvalScorePropagation:
             workspace_path=tmp_path,
             tmux_session="test",
             question="test",
-            mode="investigate",
+            mode="discover",
         )
         assert run.eval_score == 0.0
 
@@ -185,7 +185,7 @@ class TestEvalScorePropagation:
             workspace_path=tmp_path,
             tmux_session="test",
             question="test",
-            mode="investigate",
+            mode="discover",
         )
         d._refresh_eval_score(run)
         assert run.eval_score == 0.0  # unchanged
@@ -197,7 +197,7 @@ class TestEvalScorePropagation:
             workspace_path=tmp_path,
             tmux_session="test",
             question="test",
-            mode="investigate",
+            mode="discover",
         )
         swarm = tmp_path / ".swarm"
         swarm.mkdir()
@@ -214,24 +214,24 @@ class TestEvalScorePropagation:
             workspace_path=tmp_path,
             tmux_session="test",
             question="test",
-            mode="build",
-            rigor="standard",
+            mode="discover",
+            rigor="adaptive",
         )
         swarm = tmp_path / ".swarm"
         swarm.mkdir()
         (swarm / "deliverable.md").write_text("# Done")
         assert d._is_complete(run) is True
 
-    def test_is_complete_analytical_needs_convergence(self, dispatcher_setup):
-        """Analytical rigor requires convergence.json even with deliverable."""
+    def test_is_complete_scientific_needs_convergence(self, dispatcher_setup):
+        """Scientific rigor requires convergence.json even with deliverable."""
         d, msgs, tmp_path = dispatcher_setup
         run = RunningInvestigation(
             investigation_id=1,
             workspace_path=tmp_path,
             tmux_session="test",
             question="test",
-            mode="investigate",
-            rigor="analytical",
+            mode="prove",
+            rigor="scientific",
         )
         swarm = tmp_path / ".swarm"
         swarm.mkdir()
@@ -268,7 +268,7 @@ class TestTimeoutDetection:
             workspace_path=tmp_path,
             tmux_session="test",
             question="test",
-            mode="investigate",
+            mode="discover",
         )
         d._write_timeout_convergence(run)
         conv = tmp_path / ".swarm" / "convergence.json"
@@ -287,7 +287,7 @@ class TestTimeoutDetection:
             workspace_path=tmp_path,
             tmux_session="test",
             question="test q",
-            mode="build",
+            mode="discover",
             started_at=time.time() - 3 * 3600,  # 3h ago, timeout is 2h
         )
         run.last_update_at = 0  # force progress check
@@ -322,7 +322,7 @@ class TestTimeoutDetection:
         d, _, tmp_path = dispatcher_setup
         run = RunningInvestigation(
             investigation_id=1, workspace_path=tmp_path,
-            tmux_session="t", question="q", mode="investigate",
+            tmux_session="t", question="q", mode="discover",
         )
         assert d._effective_timeout(run) == 2  # config default
 
@@ -334,7 +334,7 @@ class TestTimeoutDetection:
         (swarm / "timeout_hours").write_text("72")
         run = RunningInvestigation(
             investigation_id=1, workspace_path=tmp_path,
-            tmux_session="t", question="q", mode="investigate",
+            tmux_session="t", question="q", mode="discover",
         )
         assert d._effective_timeout(run) == 72
 
@@ -346,7 +346,7 @@ class TestTimeoutDetection:
         (swarm / "timeout_hours").write_text("not-a-number")
         run = RunningInvestigation(
             investigation_id=1, workspace_path=tmp_path,
-            tmux_session="t", question="q", mode="investigate",
+            tmux_session="t", question="q", mode="discover",
         )
         assert d._effective_timeout(run) == 2  # falls back to config
 
@@ -358,7 +358,7 @@ class TestTimeoutDetection:
 
         run = RunningInvestigation(
             investigation_id=1, workspace_path=tmp_path,
-            tmux_session="test", question="test q", mode="build",
+            tmux_session="test", question="test q", mode="discover",
             started_at=time.time() - 3 * 3600,  # 3h ago, config timeout is 2h
         )
         # Extend to 6h — should NOT time out at 3h elapsed

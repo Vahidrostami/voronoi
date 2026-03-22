@@ -131,10 +131,8 @@ Central dispatch point for all user actions. Every Telegram command and programm
 
 | Function | Mode | Rigor |
 |----------|------|-------|
-| `handle_investigate(project_dir, question, chat_id) -> str` | INVESTIGATE | SCIENTIFIC |
-| `handle_explore(project_dir, question, chat_id) -> str` | EXPLORE | ANALYTICAL |
-| `handle_build(project_dir, question, chat_id) -> str` | BUILD | STANDARD |
-| `handle_experiment(project_dir, question, chat_id) -> str` | INVESTIGATE | EXPERIMENTAL |
+| `handle_discover(project_dir, question, chat_id) -> str` | DISCOVER | ADAPTIVE |
+| `handle_prove(project_dir, hypothesis, chat_id) -> str` | PROVE | SCIENTIFIC |
 | `handle_demo(project_dir, demo_name, chat_id, dry_run, safe) -> str` | (from demo) | (from demo) |
 
 ### Internal Helpers

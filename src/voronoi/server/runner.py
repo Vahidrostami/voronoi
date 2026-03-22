@@ -173,7 +173,7 @@ class ServerConfig:
 
 
 def create_investigation_from_text(
-    text: str, chat_id: str, mode: str = "investigate", rigor: str = "scientific",
+    text: str, chat_id: str, mode: str = "discover", rigor: str = "adaptive",
 ) -> Investigation:
     """Parse user text into an Investigation, extracting repo URL if present."""
     repo_ref = extract_repo_url(text)

@@ -1,7 +1,10 @@
 """Intent classifier for scientific questions.
 
-Classifies free-text messages into Voronoi workflow modes and rigor levels,
-matching the classification logic defined in DESIGN.md §3.
+Classifies free-text messages into Voronoi workflow modes:
+- DISCOVER: open questions, adaptive rigor, creative exploration
+- PROVE: specific hypotheses, full science gates from the start
+
+Plus meta modes: STATUS, RECALL, GUIDE.
 """
 
 from __future__ import annotations
@@ -13,22 +16,19 @@ from typing import Optional
 
 
 class WorkflowMode(Enum):
-    """Voronoi workflow modes — matches DESIGN.md §3."""
-    BUILD = "build"
-    INVESTIGATE = "investigate"
-    EXPLORE = "explore"
-    HYBRID = "hybrid"
+    """Voronoi workflow modes — two science modes + three meta modes."""
+    DISCOVER = "discover"      # Open question — adaptive rigor
+    PROVE = "prove"            # Specific hypothesis — full science gates
     STATUS = "status"          # Meta: query swarm state
     RECALL = "recall"          # Meta: search knowledge store
     GUIDE = "guide"            # Meta: operator guidance
 
 
 class RigorLevel(Enum):
-    """Rigor levels — matches DESIGN.md §3."""
-    STANDARD = "standard"
-    ANALYTICAL = "analytical"
-    SCIENTIFIC = "scientific"
-    EXPERIMENTAL = "experimental"
+    """Rigor levels for Voronoi investigations."""
+    ADAPTIVE = "adaptive"            # DISCOVER — starts analytical, escalates
+    SCIENTIFIC = "scientific"        # PROVE — full gates from the start
+    EXPERIMENTAL = "experimental"    # PROVE + replication
 
 
 @dataclass(frozen=True)
@@ -42,7 +42,7 @@ class ClassifiedIntent:
 
     @property
     def is_science(self) -> bool:
-        return self.mode in (WorkflowMode.INVESTIGATE, WorkflowMode.EXPLORE, WorkflowMode.HYBRID)
+        return self.mode in (WorkflowMode.DISCOVER, WorkflowMode.PROVE)
 
     @property
     def is_meta(self) -> bool:
@@ -59,48 +59,17 @@ _COMMAND_PATTERNS: list[tuple[re.Pattern, WorkflowMode, Optional[RigorLevel]]] =
     (re.compile(r"^/voronoi\s+tasks", re.I), WorkflowMode.STATUS, None),
     (re.compile(r"^/voronoi\s+ready", re.I), WorkflowMode.STATUS, None),
     (re.compile(r"^/voronoi\s+recall\b", re.I), WorkflowMode.RECALL, None),
-    (re.compile(r"^/voronoi\s+investigate\b", re.I), WorkflowMode.INVESTIGATE, RigorLevel.SCIENTIFIC),
-    (re.compile(r"^/voronoi\s+explore\b", re.I), WorkflowMode.EXPLORE, RigorLevel.ANALYTICAL),
-    (re.compile(r"^/voronoi\s+build\b", re.I), WorkflowMode.BUILD, RigorLevel.STANDARD),
-    (re.compile(r"^/voronoi\s+experiment\b", re.I), WorkflowMode.INVESTIGATE, RigorLevel.EXPERIMENTAL),
+    (re.compile(r"^/voronoi\s+discover\b", re.I), WorkflowMode.DISCOVER, RigorLevel.ADAPTIVE),
+    (re.compile(r"^/voronoi\s+prove\b", re.I), WorkflowMode.PROVE, RigorLevel.SCIENTIFIC),
     (re.compile(r"^/voronoi\s+guide\b", re.I), WorkflowMode.GUIDE, None),
     (re.compile(r"^/voronoi\s+pivot\b", re.I), WorkflowMode.GUIDE, None),
 ]
 
-# Scientific investigation signals
-_INVESTIGATE_SIGNALS = [
-    r"\bwhy\b.*\b(is|are|did|does|was|were|do|has|have)\b",
-    r"\broot\s*cause\b",
-    r"\bwhat\s+caused\b",
-    r"\binvestigat",
-    r"\bdiagnos",
-    r"\bhypothes[ie]s",
-    r"\bcorrelat",
-    r"\bcausal",
-    r"\bregress",     # regression analysis context
-    r"\bwhat\s+explains?\b",
-    r"\bwhy\s+is\s+\w+\s+(dropping|increasing|failing|crashing|slow)",
-    r"\bfigure\s+out\b.*\bwhy\b",
-    r"\bdetermine\s+(the\s+)?cause\b",
-]
-
-# Exploration signals
-_EXPLORE_SIGNALS = [
-    r"\bwhich\b.*\b(should|best|better|versus|vs\.?)\b",
-    r"\bcompare\b",
-    r"\bcomparison\b",
-    r"\bevaluat",
-    r"\boptions?\s+(for|to)\b",
-    r"\btrade.?off",
-    r"\bpros?\s+(and|&)\s+cons?\b",
-    r"\balternativ",
-    r"\bbenchmark",
-    r"\bwhat\s+(are|is)\s+(the\s+)?(best|top|recommended)",
-]
-
-# Experimental signals (highest rigor)
-_EXPERIMENTAL_SIGNALS = [
+# PROVE signals — specific hypothesis, controlled experiments, structured validation
+_PROVE_SIGNALS = [
     r"\btest\s+whether\b",
+    r"\bprove\b",
+    r"\bvalidat",
     r"\bexperiment\b",
     r"\ba/?b\s+test\b",
     r"\bcontrolled?\s+(trial|experiment|test)",
@@ -112,26 +81,37 @@ _EXPERIMENTAL_SIGNALS = [
     r"\breproducib",
     r"\bsample\s+size\b",
     r"\bsignificance\b",
+    r"\bpre.?regist",
+    r"\bhypothesis\s*:\s*.{10,}",  # "hypothesis: <detailed statement>"
+    r"\bh[0-9]\s*:",               # "H1: ...", "H0: ..."
+    r"\bnull\s+hypothesis\b",
+    r"\balternative\s+hypothesis\b",
 ]
 
-# Analytical signals (elevated rigor for build/explore)
-_ANALYTICAL_SIGNALS = [
-    r"\boptimiz",
-    r"\bimprov",
-    r"\bperformanc",
-    r"\bmeasur",
-    r"\bquantif",
-    r"\bmetric",
-    r"\bstatistic",
-    r"\banalyz",
-    r"\banalysi",
-    r"\beffect\s+size\b",
-    r"\bconfidence\s+interval\b",
-    r"\bsample\s+size\b",
-]
-
-# Build signals
-_BUILD_SIGNALS = [
+# DISCOVER signals — open questions, exploration, building, investigation
+_DISCOVER_SIGNALS = [
+    r"\bwhy\b.*\b(is|are|did|does|was|were|do|has|have)\b",
+    r"\broot\s*cause\b",
+    r"\bwhat\s+caused\b",
+    r"\binvestigat",
+    r"\bdiagnos",
+    r"\bhypothes[ie]s",
+    r"\bcorrelat",
+    r"\bcausal",
+    r"\bregress",
+    r"\bwhat\s+explains?\b",
+    r"\bfigure\s+out\b",
+    r"\bdetermine\s+(the\s+)?cause\b",
+    r"\bwhich\b.*\b(should|best|better|versus|vs\.?)\b",
+    r"\bcompare\b",
+    r"\bcomparison\b",
+    r"\bevaluat",
+    r"\boptions?\s+(for|to)\b",
+    r"\btrade.?off",
+    r"\bpros?\s+(and|&)\s+cons?\b",
+    r"\balternativ",
+    r"\bbenchmark",
+    r"\bwhat\s+(are|is)\s+(the\s+)?(best|top|recommended)",
     r"\bbuild\b",
     r"\bcreate\b",
     r"\bimplement\b",
@@ -144,23 +124,17 @@ _BUILD_SIGNALS = [
     r"\binstall\b",
     r"\brefactor\b",
     r"\bmigrat",
-]
-
-# Hybrid signals (investigate + build)
-_HYBRID_SIGNALS = [
-    r"\bfigure\s+out\b.*\b(and|then)\s+(fix|build|implement)\b",
-    r"\bdiagnose\b.*\b(and|then)\s+(fix|resolve)\b",
-    r"\bfind\b.*\b(and|then)\s+(fix|patch)\b",
-    r"\bwhy\b.*\band\b.*\bfix\b",
-    r"\bdebug\s+and\s+(fix|resolve)\b",
+    r"\boptimiz",
+    r"\bimprov",
+    r"\bperformanc",
+    r"\banalyz",
     r"\bwrite\s+(a\s+)?(research\s+)?paper\b",
-    r"\bgenerate\s+(a\s+)?paper\b",
-    r"\bdraft\s+(a\s+)?paper\b",
     r"\bpaper\s+(on|about|for)\b",
     r"\bwrite\s+(a\s+)?(research\s+)?manuscript\b",
-    r"\bdraft\s+(a\s+)?manuscript\b",
     r"\bmanuscript\s+(on|about|for)\b",
-    r"\babstract\s*:?\s*.{20,}",
+    r"\bfigure\s+out\b.*\b(and|then)\s+(fix|build|implement)\b",
+    r"\bdiagnose\b.*\b(and|then)\s+(fix|resolve)\b",
+    r"\bdebug\s+and\s+(fix|resolve)\b",
 ]
 
 # Recall/knowledge-query signals
@@ -183,16 +157,21 @@ def _count_matches(text: str, patterns: list[str]) -> int:
 def classify(text: str) -> ClassifiedIntent:
     """Classify a free-text message into a Voronoi workflow intent.
 
+    Two science modes:
+    - DISCOVER: open questions, adaptive rigor, creative exploration
+    - PROVE: specific hypotheses, full science gates
+
     Priority order:
     1. Explicit /voronoi commands (highest confidence)
-    2. Pattern-based classification with signal counting
-    3. Default to GUIDE (lowest confidence)
+    2. PROVE signals (specific hypothesis, controlled experiments)
+    3. DISCOVER signals (open questions, building, exploring)
+    4. Default to GUIDE (lowest confidence)
     """
     text = text.strip()
     if not text:
         return ClassifiedIntent(
             mode=WorkflowMode.GUIDE,
-            rigor=RigorLevel.STANDARD,
+            rigor=RigorLevel.ADAPTIVE,
             confidence=0.0,
             summary="Empty message",
             original_text=text,
@@ -205,63 +184,53 @@ def classify(text: str) -> ClassifiedIntent:
             payload = pattern.sub("", text).strip()
             return ClassifiedIntent(
                 mode=mode,
-                rigor=rigor or RigorLevel.STANDARD,
+                rigor=rigor or RigorLevel.ADAPTIVE,
                 confidence=1.0,
                 summary=payload or f"{mode.value} command",
                 original_text=text,
             )
 
-    # 2. Pattern-based classification
-    scores: dict[WorkflowMode, int] = {
-        WorkflowMode.INVESTIGATE: _count_matches(text, _INVESTIGATE_SIGNALS),
-        WorkflowMode.EXPLORE: _count_matches(text, _EXPLORE_SIGNALS),
-        WorkflowMode.BUILD: _count_matches(text, _BUILD_SIGNALS),
-        WorkflowMode.HYBRID: _count_matches(text, _HYBRID_SIGNALS),
-        WorkflowMode.RECALL: _count_matches(text, _RECALL_SIGNALS),
-    }
+    # 2. Check for PROVE signals first (specific hypothesis → full gates)
+    prove_score = _count_matches(text, _PROVE_SIGNALS)
+    discover_score = _count_matches(text, _DISCOVER_SIGNALS)
+    recall_score = _count_matches(text, _RECALL_SIGNALS)
 
-    # Experimental signals boost investigation score (experiments are investigations)
-    experimental_score = _count_matches(text, _EXPERIMENTAL_SIGNALS)
-    scores[WorkflowMode.INVESTIGATE] += experimental_score
-
-    # Hybrid check first (it's a combination)
-    if scores[WorkflowMode.HYBRID] > 0:
-        rigor = RigorLevel.SCIENTIFIC
+    # PROVE if strong prove signals dominate
+    if prove_score >= 2 or (prove_score >= 1 and discover_score == 0):
+        rigor = RigorLevel.EXPERIMENTAL if prove_score >= 3 else RigorLevel.SCIENTIFIC
         return ClassifiedIntent(
-            mode=WorkflowMode.HYBRID,
+            mode=WorkflowMode.PROVE,
             rigor=rigor,
-            confidence=min(0.6 + scores[WorkflowMode.HYBRID] * 0.15, 0.95),
+            confidence=min(0.6 + prove_score * 0.15, 0.95),
             summary=_make_summary(text),
             original_text=text,
         )
 
-    # Find best non-hybrid mode
-    best_mode = max(
-        [WorkflowMode.INVESTIGATE, WorkflowMode.EXPLORE, WorkflowMode.BUILD, WorkflowMode.RECALL],
-        key=lambda m: scores[m],
-    )
-    best_score = scores[best_mode]
-
-    if best_score == 0:
-        # No strong signals — default to GUIDE
+    # Recall
+    if recall_score > 0 and recall_score >= discover_score:
         return ClassifiedIntent(
-            mode=WorkflowMode.GUIDE,
-            rigor=RigorLevel.STANDARD,
-            confidence=0.3,
+            mode=WorkflowMode.RECALL,
+            rigor=RigorLevel.ADAPTIVE,
+            confidence=min(0.5 + recall_score * 0.15, 0.95),
             summary=_make_summary(text),
             original_text=text,
         )
 
-    # Determine rigor level
-    rigor = _determine_rigor(text, best_mode)
+    # DISCOVER if any discover signals
+    if discover_score > 0:
+        return ClassifiedIntent(
+            mode=WorkflowMode.DISCOVER,
+            rigor=RigorLevel.ADAPTIVE,
+            confidence=min(0.5 + discover_score * 0.15, 0.95),
+            summary=_make_summary(text),
+            original_text=text,
+        )
 
-    # Confidence based on signal strength
-    confidence = min(0.5 + best_score * 0.15, 0.95)
-
+    # No strong signals — default to GUIDE
     return ClassifiedIntent(
-        mode=best_mode,
-        rigor=rigor,
-        confidence=confidence,
+        mode=WorkflowMode.GUIDE,
+        rigor=RigorLevel.ADAPTIVE,
+        confidence=0.3,
         summary=_make_summary(text),
         original_text=text,
     )
@@ -270,28 +239,15 @@ def classify(text: str) -> ClassifiedIntent:
 def _determine_rigor(text: str, mode: WorkflowMode) -> RigorLevel:
     """Determine rigor level for a classified mode.
 
-    DESIGN.md §3: "When in doubt, classify higher."
+    PROVE → scientific or experimental.
+    DISCOVER → always adaptive (orchestrator escalates dynamically).
     """
-    experimental_score = _count_matches(text, _EXPERIMENTAL_SIGNALS)
-    if experimental_score > 0:
+    prove_score = _count_matches(text, _PROVE_SIGNALS)
+    if prove_score >= 3:
         return RigorLevel.EXPERIMENTAL
-
-    analytical_score = _count_matches(text, _ANALYTICAL_SIGNALS)
-
-    if mode == WorkflowMode.INVESTIGATE:
-        # Investigations default to Scientific
+    if mode == WorkflowMode.PROVE:
         return RigorLevel.SCIENTIFIC
-    elif mode == WorkflowMode.EXPLORE:
-        # Explorations default to Analytical
-        return RigorLevel.ANALYTICAL
-    elif mode == WorkflowMode.RECALL:
-        return RigorLevel.STANDARD
-    elif mode == WorkflowMode.BUILD:
-        if analytical_score > 0:
-            return RigorLevel.ANALYTICAL
-        return RigorLevel.STANDARD
-    else:
-        return RigorLevel.STANDARD
+    return RigorLevel.ADAPTIVE
 
 
 def _make_summary(text: str, max_len: int = 80) -> str:
@@ -375,7 +331,7 @@ def classify_compound(text: str) -> list[ClassifiedPhase]:
         deduped.append(phase)
 
     return deduped if deduped else [ClassifiedPhase(
-        mode=WorkflowMode.GUIDE, rigor=RigorLevel.STANDARD,
+        mode=WorkflowMode.GUIDE, rigor=RigorLevel.ADAPTIVE,
         description=_make_summary(text), order=0,
     )]
 

@@ -35,7 +35,7 @@ __all__ = [
     "handle_tasks", "handle_ready", "handle_health", "handle_board",
     "handle_reprioritize", "handle_pause", "handle_resume", "handle_add",
     "handle_abort", "handle_pivot", "handle_guide",
-    "handle_investigate", "handle_explore", "handle_build", "handle_experiment",
+    "handle_discover", "handle_prove",
     "handle_recall", "handle_belief", "handle_journal", "handle_finding",
     "handle_results", "handle_demo",
 ]
@@ -160,7 +160,7 @@ def handle_whatsup(project_dir: str) -> str:
         label = inv.codename or f"#{inv.id}"
         elapsed_sec = (time.time() - inv.started_at) if inv.started_at else 0
         question = inv.question or ""
-        mode = inv.mode or "investigate"
+        mode = inv.mode or "discover"
 
         # Get task counts
         total_tasks = 0
@@ -332,7 +332,7 @@ def handle_board(project_dir: str) -> str:
     q = _get_queue(project_dir)
     running_invs = q.get_running()
     if not running_invs:
-        return "\U0001f4ed No running investigations. Start one with `/voronoi investigate <question>`."
+        return "\U0001f4ed No running investigations. Start one with `/voronoi discover <question>`."
 
     # Priority → icon (P0/P1 urgent, P2 normal, P3/P4 low)
     def _pri_icon(pri: int) -> str:
@@ -756,24 +756,16 @@ def _workflow_response(mode: str, rigor: str, question: str,
     )
 
 
-def handle_investigate(project_dir: str, question: str, chat_id: str = "") -> str:
-    inv_id, qs, cn = _enqueue(project_dir, question, "investigate", "scientific", chat_id)
-    return _workflow_response("investigate", "scientific", question, inv_id, qs, cn)
+def handle_discover(project_dir: str, question: str, chat_id: str = "") -> str:
+    """Handle DISCOVER mode — open question, adaptive rigor."""
+    inv_id, qs, cn = _enqueue(project_dir, question, "discover", "adaptive", chat_id)
+    return _workflow_response("discover", "adaptive", question, inv_id, qs, cn)
 
 
-def handle_explore(project_dir: str, question: str, chat_id: str = "") -> str:
-    inv_id, qs, cn = _enqueue(project_dir, question, "explore", "analytical", chat_id)
-    return _workflow_response("explore", "analytical", question, inv_id, qs, cn)
-
-
-def handle_build(project_dir: str, description: str, chat_id: str = "") -> str:
-    inv_id, qs, cn = _enqueue(project_dir, description, "build", "standard", chat_id)
-    return _workflow_response("build", "standard", description, inv_id, qs, cn)
-
-
-def handle_experiment(project_dir: str, hypothesis: str, chat_id: str = "") -> str:
-    inv_id, qs, cn = _enqueue(project_dir, hypothesis, "investigate", "experimental", chat_id)
-    return _workflow_response("investigate", "experimental", hypothesis, inv_id, qs, cn)
+def handle_prove(project_dir: str, hypothesis: str, chat_id: str = "") -> str:
+    """Handle PROVE mode — specific hypothesis, full science gates."""
+    inv_id, qs, cn = _enqueue(project_dir, hypothesis, "prove", "scientific", chat_id)
+    return _workflow_response("prove", "scientific", hypothesis, inv_id, qs, cn)
 
 
 # ---------------------------------------------------------------------------
@@ -887,18 +879,18 @@ def handle_demo(project_dir: str, demo_name: str, chat_id: str = "") -> str:
     # designs, statistical tests, or multi-phase protocols need higher
     # rigor to prevent premature completion.
     from voronoi.gateway.intent import _determine_rigor, WorkflowMode, RigorLevel
-    _RIGOR_ORDER = [RigorLevel.STANDARD, RigorLevel.ANALYTICAL,
+    _RIGOR_ORDER = [RigorLevel.ADAPTIVE,
                     RigorLevel.SCIENTIFIC, RigorLevel.EXPERIMENTAL]
-    detected_rigor = _determine_rigor(prompt_content, WorkflowMode.INVESTIGATE)
-    # Floor at analytical — demos are never trivial builds
-    if _RIGOR_ORDER.index(detected_rigor) < _RIGOR_ORDER.index(RigorLevel.ANALYTICAL):
-        detected_rigor = RigorLevel.ANALYTICAL
+    detected_rigor = _determine_rigor(prompt_content, WorkflowMode.PROVE)
+    # Floor at scientific — demos with detailed prompts are PROVE mode
+    if _RIGOR_ORDER.index(detected_rigor) < _RIGOR_ORDER.index(RigorLevel.SCIENTIFIC):
+        detected_rigor = RigorLevel.SCIENTIFIC
 
     inv = Investigation(
         chat_id=chat_id,
         question=prompt_content,
         slug=make_slug(demo_name),
-        mode="investigate",
+        mode="prove",
         rigor=detected_rigor.value,
         investigation_type="lab",
     )
@@ -964,7 +956,7 @@ _INTRO_MESSAGE = (
     "*Voronoi* — ask a question, get evidence.\n\n"
     "Drop me a question — anything from _\"why is our model degrading?\"_ "
     "to _\"does EWC beat replay for catastrophic forgetting?\"_ — and I'll "
-    "dispatch a swarm of AI agents to investigate it.\n\n"
+    "dispatch a swarm of AI agents to discover the answer.\n\n"
     "Or send `/voronoi` for commands."
 )
 
@@ -976,13 +968,11 @@ def _LOW_CONFIDENCE_MESSAGE(text: str, intent) -> str:
         f"I'm not quite sure what you'd like ({confidence_pct}% → _{mode_label}_).\n\n"
         f"Your message: _{text[:120]}_\n\n"
         "Try something like:\n"
-        "  _Why is our model accuracy dropping?_ → investigate\n"
-        "  _Compare Redis vs Memcached_ → explore\n"
-        "  _Build a REST API with auth_ → build\n\n"
+        "  _Why is our model accuracy dropping?_ → discover\n"
+        "  _Prove that EWC beats replay_ → prove\n\n"
         "Or use a command directly:\n"
-        "`/voronoi investigate <question>`\n"
-        "`/voronoi explore <question>`\n"
-        "`/voronoi build <description>`"
+        "`/voronoi discover <question>`\n"
+        "`/voronoi prove <hypothesis>`"
     )
 
 
@@ -990,8 +980,8 @@ _HELP_MESSAGE = (
     "*Voronoi* — your AI research lab\n\n"
     "Just ask me anything:\n"
     "  → _Why is our model accuracy dropping?_\n"
-    "  → _Compare Redis vs Memcached_\n"
-    "  → _Build a REST API with auth_\n\n"
+    "  → _Prove that EWC beats replay for catastrophic forgetting_\n"
+    "  → _Compare Redis vs Memcached_\n\n"
     "I'll figure out what to do — classify intent, pick the right "
     "rigor level, spawn parallel agents, and deliver findings.\n\n"
     "━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -1000,10 +990,8 @@ _HELP_MESSAGE = (
     "`/voronoi board` — Kanban snapshot (To Do / In Progress / Done)\n"
     "`/voronoi progress` — are we on track? metrics + criteria\n\n"
     "*Workflows*\n"
-    "`/voronoi investigate <question>`\n"
-    "`/voronoi explore <question>`\n"
-    "`/voronoi build <description>`\n"
-    "`/voronoi experiment <hypothesis>`\n\n"
+    "`/voronoi discover <question>`\n"
+    "`/voronoi prove <hypothesis>`\n\n"
     "*Knowledge*\n"
     "`/voronoi belief` · `journal` · `finding <id>` · `recall <query>`\n\n"
     "*Control*\n"
@@ -1081,17 +1069,11 @@ class CommandRouter:
                 return handle_ready(self.project_dir), None
             elif sub == "health":
                 return handle_health(self.project_dir), None
-            elif sub == "investigate" and args:
-                txt = handle_investigate(self.project_dir, " ".join(args), chat_id)
+            elif sub == "discover" and args:
+                txt = handle_discover(self.project_dir, " ".join(args), chat_id)
                 return txt, None
-            elif sub == "explore" and args:
-                txt = handle_explore(self.project_dir, " ".join(args), chat_id)
-                return txt, None
-            elif sub == "build" and args:
-                txt = handle_build(self.project_dir, " ".join(args), chat_id)
-                return txt, None
-            elif sub == "experiment" and args:
-                txt = handle_experiment(self.project_dir, " ".join(args), chat_id)
+            elif sub == "prove" and args:
+                txt = handle_prove(self.project_dir, " ".join(args), chat_id)
                 return txt, None
             elif sub == "demo" and args:
                 demo_action = args[0].lower()
@@ -1164,7 +1146,7 @@ class CommandRouter:
                       {"intent": intent.mode.value, "confidence": intent.confidence})
             return _LOW_CONFIDENCE_MESSAGE(text, intent), None
 
-        if not intent.is_science and intent.mode != WorkflowMode.BUILD:
+        if not intent.is_science:
             _save_msg(self.project_dir, chat_id, "user", text,
                       {"intent": intent.mode.value, "confidence": intent.confidence})
             return _LOW_CONFIDENCE_MESSAGE(text, intent), None
@@ -1177,14 +1159,10 @@ class CommandRouter:
         })
 
         # Dispatch workflow with full question text (not truncated summary)
-        if intent.mode == WorkflowMode.INVESTIGATE:
-            txt = handle_investigate(self.project_dir, text, chat_id)
-        elif intent.mode == WorkflowMode.EXPLORE:
-            txt = handle_explore(self.project_dir, text, chat_id)
-        elif intent.mode == WorkflowMode.BUILD:
-            txt = handle_build(self.project_dir, text, chat_id)
-        elif intent.mode == WorkflowMode.HYBRID:
-            txt = handle_investigate(self.project_dir, text, chat_id)
+        if intent.mode == WorkflowMode.PROVE:
+            txt = handle_prove(self.project_dir, text, chat_id)
+        elif intent.mode == WorkflowMode.DISCOVER:
+            txt = handle_discover(self.project_dir, text, chat_id)
         else:
             txt = handle_guide(self.project_dir, text)
 

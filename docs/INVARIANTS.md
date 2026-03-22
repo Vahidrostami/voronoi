@@ -35,8 +35,8 @@ Investigations MUST follow the state machine: `queued → running → {complete 
 
 ## 3. Science Invariants
 
-### INV-08: Rigor Only Escalates
-Once classified, rigor level can be escalated (standard → analytical) but MUST NOT be downgraded. Gates cannot be added retroactively, so initial classification should err higher.
+### INV-08: Adaptive Rigor (DISCOVER) / Fixed Rigor (PROVE)
+In DISCOVER mode, rigor starts at analytical level and escalates dynamically when testable hypotheses emerge. The orchestrator CAN escalate rigor (analytical → scientific) but MUST NOT downgrade it once escalated. In PROVE mode, rigor is scientific or experimental from the start and MUST NOT be downgraded.
 
 ### INV-09: Baseline-First
 Every investigation epic's first subtask MUST be a baseline measurement. All experimental tasks MUST be blocked until the baseline completes. No exceptions.

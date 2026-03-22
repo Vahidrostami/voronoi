@@ -95,7 +95,7 @@ class TestPreRegistration:
             "PRE_REG: HYPOTHESIS=[h] | METHOD=[m] | CONTROLS=[c] | "
             "EXPECTED_RESULT=[e] | CONFOUNDS=[cf] | STAT_TEST=[t] | SAMPLE_SIZE=[10]"
         )
-        valid, missing = validate_pre_registration(notes, "analytical")
+        valid, missing = validate_pre_registration(notes, "adaptive")
         assert valid is True
         assert missing == []
 
@@ -110,7 +110,7 @@ class TestPreRegistration:
         assert "SENSITIVITY_PLAN" in missing
 
     def test_validate_empty(self):
-        valid, missing = validate_pre_registration("", "analytical")
+        valid, missing = validate_pre_registration("", "adaptive")
         assert valid is False
         assert len(missing) > 0
 
@@ -235,30 +235,33 @@ class TestConvergence:
     def test_standard_with_deliverable(self, tmp_path):
         (tmp_path / ".swarm").mkdir()
         (tmp_path / ".swarm" / "deliverable.md").write_text("# Done")
-        result = check_convergence(tmp_path, "standard")
+        result = check_convergence(tmp_path, "adaptive")
         assert result.converged is True
         assert result.status == "converged"
 
     def test_standard_no_deliverable(self, tmp_path):
         (tmp_path / ".swarm").mkdir()
-        result = check_convergence(tmp_path, "standard")
+        result = check_convergence(tmp_path, "adaptive")
         assert result.converged is False
 
-    def test_analytical_high_score(self, tmp_path):
+    def test_adaptive_high_score(self, tmp_path):
         (tmp_path / ".swarm").mkdir()
-        result = check_convergence(tmp_path, "analytical", eval_score=0.80)
+        (tmp_path / ".swarm" / "deliverable.md").write_text("# Done")
+        result = check_convergence(tmp_path, "adaptive", eval_score=0.80)
         assert result.converged is True
 
-    def test_analytical_low_score_needs_improvement(self, tmp_path):
+    def test_adaptive_low_score_needs_improvement(self, tmp_path):
         (tmp_path / ".swarm").mkdir()
-        result = check_convergence(tmp_path, "analytical", eval_score=0.60,
+        (tmp_path / ".swarm" / "deliverable.md").write_text("# Done")
+        result = check_convergence(tmp_path, "adaptive", eval_score=0.60,
                                     improvement_rounds=0)
         assert result.converged is False
         assert result.status == "not_ready"
 
-    def test_analytical_max_improvement_rounds(self, tmp_path):
+    def test_adaptive_max_improvement_rounds(self, tmp_path):
         (tmp_path / ".swarm").mkdir()
-        result = check_convergence(tmp_path, "analytical", eval_score=0.60,
+        (tmp_path / ".swarm" / "deliverable.md").write_text("# Done")
+        result = check_convergence(tmp_path, "adaptive", eval_score=0.60,
                                     improvement_rounds=2)
         assert result.converged is True
         assert result.status == "diminishing_returns"
@@ -372,13 +375,13 @@ class TestDataIntegrity:
 class TestDispatchGates:
     def test_no_gates(self, tmp_path):
         task = {"notes": "", "title": "Build something"}
-        ok, blockers = check_dispatch_gates(task, tmp_path, "standard")
+        ok, blockers = check_dispatch_gates(task, tmp_path, "adaptive")
         assert ok is True
         assert blockers == []
 
     def test_requires_file_missing(self, tmp_path):
         task = {"notes": "REQUIRES:data/input.csv", "title": "Process data"}
-        ok, blockers = check_dispatch_gates(task, tmp_path, "standard")
+        ok, blockers = check_dispatch_gates(task, tmp_path, "adaptive")
         assert ok is False
         assert any("REQUIRES missing" in b for b in blockers)
 
@@ -386,12 +389,12 @@ class TestDispatchGates:
         (tmp_path / "data").mkdir()
         (tmp_path / "data" / "input.csv").write_text("data")
         task = {"notes": "REQUIRES:data/input.csv", "title": "Process data"}
-        ok, blockers = check_dispatch_gates(task, tmp_path, "standard")
+        ok, blockers = check_dispatch_gates(task, tmp_path, "adaptive")
         assert ok is True
 
     def test_gate_file_missing(self, tmp_path):
         task = {"notes": "GATE:.swarm/validation_report.json", "title": "Write paper"}
-        ok, blockers = check_dispatch_gates(task, tmp_path, "standard")
+        ok, blockers = check_dispatch_gates(task, tmp_path, "adaptive")
         assert ok is False
         assert any("GATE file missing" in b for b in blockers)
 
@@ -400,7 +403,7 @@ class TestDispatchGates:
         (tmp_path / ".swarm" / "validation_report.json").write_text(
             json.dumps({"status": "failed"}))
         task = {"notes": "GATE:.swarm/validation_report.json", "title": "Write paper"}
-        ok, blockers = check_dispatch_gates(task, tmp_path, "standard")
+        ok, blockers = check_dispatch_gates(task, tmp_path, "adaptive")
         assert ok is False
         assert any("GATE not passing" in b for b in blockers)
 
@@ -409,7 +412,7 @@ class TestDispatchGates:
         (tmp_path / ".swarm" / "validation_report.json").write_text(
             json.dumps({"status": "pass", "converged": True}))
         task = {"notes": "GATE:.swarm/validation_report.json", "title": "Write paper"}
-        ok, blockers = check_dispatch_gates(task, tmp_path, "standard")
+        ok, blockers = check_dispatch_gates(task, tmp_path, "adaptive")
         assert ok is True
 
     def test_scientific_investigation_needs_methodologist(self, tmp_path):
@@ -441,12 +444,12 @@ class TestDispatchGates:
 class TestMergeGates:
     def test_no_gates(self, tmp_path):
         task = {"notes": "", "title": "Build something"}
-        ok, blockers = check_merge_gates(task, tmp_path, "standard")
+        ok, blockers = check_merge_gates(task, tmp_path, "adaptive")
         assert ok is True
 
     def test_produces_missing(self, tmp_path):
         task = {"notes": "PRODUCES:output/results.json", "title": "Run experiments"}
-        ok, blockers = check_merge_gates(task, tmp_path, "standard")
+        ok, blockers = check_merge_gates(task, tmp_path, "adaptive")
         assert ok is False
         assert any("PRODUCES missing" in b for b in blockers)
 
@@ -454,12 +457,12 @@ class TestMergeGates:
         (tmp_path / "output").mkdir()
         (tmp_path / "output" / "results.json").write_text("{}")
         task = {"notes": "PRODUCES:output/results.json", "title": "Run experiments"}
-        ok, blockers = check_merge_gates(task, tmp_path, "standard")
+        ok, blockers = check_merge_gates(task, tmp_path, "adaptive")
         assert ok is True
 
     def test_finding_needs_stat_review(self, tmp_path):
         task = {"notes": "TYPE:finding", "title": "FINDING: encoding helps"}
-        ok, blockers = check_merge_gates(task, tmp_path, "analytical")
+        ok, blockers = check_merge_gates(task, tmp_path, "adaptive")
         assert ok is False
         assert any("Statistician" in b for b in blockers)
 
@@ -481,7 +484,7 @@ class TestMergeGates:
             ),
             "title": "FINDING: encoding helps",
         }
-        ok, blockers = check_merge_gates(task, tmp_path, "analytical")
+        ok, blockers = check_merge_gates(task, tmp_path, "adaptive")
         assert ok is True
 
     def test_finding_needs_critic_at_scientific(self, tmp_path):
@@ -987,7 +990,7 @@ class TestMergeGateAntiFabrication:
             "title": "FINDING: something discovered",
             "notes": "TYPE:finding\nEFFECT_SIZE:0.5\nSTAT_REVIEW: APPROVED\nCRITIC_REVIEW: APPROVED\n",
         }
-        can_merge, blockers = check_merge_gates(task, tmp_path, "analytical")
+        can_merge, blockers = check_merge_gates(task, tmp_path, "adaptive")
         assert not can_merge
         assert any("FABRICATION_CHECK" in b for b in blockers)
 
@@ -1320,7 +1323,7 @@ class TestConvergenceDesignInvalid:
                  "notes": "DESIGN_INVALID: L1 beats L4, encoding broken"},
             ],
         )
-        result = check_convergence(tmp_path, "analytical", eval_score=0.80)
+        result = check_convergence(tmp_path, "scientific", eval_score=0.80)
         assert result.converged is False
         assert any("DESIGN_INVALID" in b for b in result.blockers)
 
@@ -1333,7 +1336,7 @@ class TestConvergenceDesignInvalid:
                  "notes": "DESIGN_INVALID: was broken, now fixed"},
             ],
         )
-        result = check_convergence(tmp_path, "analytical", eval_score=0.80)
+        result = check_convergence(tmp_path, "scientific", eval_score=0.80)
         assert not any("DESIGN_INVALID" in b for b in result.blockers)
 
 
@@ -1348,7 +1351,7 @@ class TestConvergenceSuccessCriteria:
             {"id": "SC1", "description": "L4 > L1", "met": False},
         ])
         monkeypatch.setattr("voronoi.science._helpers._fetch_tasks", lambda ws: [])
-        result = check_convergence(tmp_path, "analytical", eval_score=0.80)
+        result = check_convergence(tmp_path, "scientific", eval_score=0.80)
         assert result.converged is False
         assert any("SC1" in b for b in result.blockers)
 
@@ -1359,13 +1362,13 @@ class TestConvergenceSuccessCriteria:
             {"id": "SC2", "description": "Pipeline 10x", "met": True},
         ])
         monkeypatch.setattr("voronoi.science._helpers._fetch_tasks", lambda ws: [])
-        result = check_convergence(tmp_path, "analytical", eval_score=0.80)
+        result = check_convergence(tmp_path, "scientific", eval_score=0.80)
         assert not any("Success criterion" in b for b in result.blockers)
 
     def test_no_criteria_file_does_not_block(self, tmp_path, monkeypatch):
         (tmp_path / ".swarm").mkdir()
         monkeypatch.setattr("voronoi.science._helpers._fetch_tasks", lambda ws: [])
-        result = check_convergence(tmp_path, "analytical", eval_score=0.80)
+        result = check_convergence(tmp_path, "scientific", eval_score=0.80)
         assert not any("Success criterion" in b for b in result.blockers)
 
 
@@ -1383,7 +1386,7 @@ class TestConvergenceHypothesisAlignment:
                  "notes": "RESULT_CONTRADICTS_HYPOTHESIS:Expected L4>L1 but observed L1>L4"},
             ],
         )
-        result = check_convergence(tmp_path, "analytical", eval_score=0.80)
+        result = check_convergence(tmp_path, "scientific", eval_score=0.80)
         assert result.converged is False
         assert any("contradicts hypothesis" in b.lower() for b in result.blockers)
 
@@ -1396,7 +1399,7 @@ class TestConvergenceHypothesisAlignment:
                  "notes": "RESULT_CONTRADICTS_HYPOTHESIS:Was broken, redesigned"},
             ],
         )
-        result = check_convergence(tmp_path, "analytical", eval_score=0.80)
+        result = check_convergence(tmp_path, "scientific", eval_score=0.80)
         assert not any("contradicts hypothesis" in b.lower() for b in result.blockers)
 
 
@@ -1410,7 +1413,7 @@ class TestMergeGateEVA:
             "title": "FINDING: encoding helps",
             "notes": "TASK_TYPE:investigation\nSTAT_REVIEW: APPROVED",
         }
-        ok, blockers = check_merge_gates(task, tmp_path, "analytical")
+        ok, blockers = check_merge_gates(task, tmp_path, "adaptive")
         assert ok is False
         assert any("EVA" in b for b in blockers)
 
@@ -1432,7 +1435,7 @@ class TestMergeGateEVA:
                 f"DATA_FILE:data/raw/r.csv\nDATA_HASH:{h}\nN:3\n"
             ),
         }
-        ok, blockers = check_merge_gates(task, tmp_path, "analytical")
+        ok, blockers = check_merge_gates(task, tmp_path, "adaptive")
         assert ok is True
 
     def test_investigation_with_eva_fail_blocked(self, tmp_path):
@@ -1440,13 +1443,13 @@ class TestMergeGateEVA:
             "title": "FINDING: encoding helps",
             "notes": "TASK_TYPE:investigation\nSTAT_REVIEW: APPROVED\nEVA: FAIL | CHECK:manipulation",
         }
-        ok, blockers = check_merge_gates(task, tmp_path, "analytical")
+        ok, blockers = check_merge_gates(task, tmp_path, "adaptive")
         assert ok is False
         assert any("EVA FAILED" in b for b in blockers)
 
     def test_non_investigation_no_eva_required(self, tmp_path):
         task = {"title": "Build encoder", "notes": "TASK_TYPE:build"}
-        ok, blockers = check_merge_gates(task, tmp_path, "analytical")
+        ok, blockers = check_merge_gates(task, tmp_path, "adaptive")
         assert ok is True
 
 
@@ -1562,7 +1565,7 @@ class TestOrchestratorCheckpoint:
         cp = OrchestratorCheckpoint(
             cycle=5,
             phase="investigating",
-            mode="investigate",
+            mode="discover",
             rigor="experimental",
             hypotheses_summary="H1:confirmed, H2:testing",
             total_tasks=30,
@@ -1611,7 +1614,7 @@ class TestOrchestratorCheckpoint:
 
     def test_format_for_prompt(self):
         cp = OrchestratorCheckpoint(
-            cycle=10, phase="reviewing", mode="investigate", rigor="scientific",
+            cycle=10, phase="reviewing", mode="discover", rigor="scientific",
             hypotheses_summary="H1:confirmed, H2:refuted",
             total_tasks=40, closed_tasks=30,
             active_workers=["agent-stats"],

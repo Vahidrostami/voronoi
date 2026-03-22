@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -57,7 +58,7 @@ class RunningInvestigation:
     mode: str
     codename: str = ""
     chat_id: str = ""
-    rigor: str = "standard"
+    rigor: str = "adaptive"
     started_at: float = field(default_factory=time.time)
     last_update_at: float = 0
     task_snapshot: dict = field(default_factory=dict)
@@ -185,7 +186,7 @@ class InvestigationDispatcher:
                 mode=inv.mode,
                 codename=inv.codename,
                 chat_id=inv.chat_id,
-                rigor=inv.rigor or "standard",
+                rigor=inv.rigor or "adaptive",
                 started_at=inv.started_at or time.time(),
             )
 
@@ -429,12 +430,8 @@ class InvestigationDispatcher:
                     f"The orchestrator may be stuck. Will auto-restart if the agent exits."
                 ))
 
-            # Event-log-based activity detection
+            # Event-log-based activity detection remains opportunistic only.
             events.extend(self._check_event_log(run))
-
-            # Heartbeat-based stall detection for active agents
-            if session_alive and run.task_snapshot:
-                events.extend(self._check_heartbeat_stalls(run))
 
             if not session_alive or self._is_complete(run) or timed_out:
                 if timed_out and not self._is_complete(run):
@@ -660,6 +657,25 @@ class InvestigationDispatcher:
         events: list[dict] = []
         ws = run.workspace_path
         old_phase = run.phase
+        checkpoint = self._latest_checkpoint(run)
+
+        if checkpoint:
+            phase = checkpoint.get("phase", "")
+            if isinstance(phase, str) and phase:
+                run.phase = phase
+            try:
+                score = float(checkpoint.get("eval_score", 0.0))
+                if 0.0 <= score <= 1.0:
+                    run.eval_score = max(run.eval_score, score)
+            except (TypeError, ValueError):
+                pass
+            try:
+                run.improvement_rounds = max(
+                    run.improvement_rounds,
+                    int(checkpoint.get("improvement_rounds", 0)),
+                )
+            except (TypeError, ValueError):
+                pass
 
         if (ws / ".swarm" / "deliverable.md").exists():
             run.phase = "complete"
@@ -698,6 +714,57 @@ class InvestigationDispatcher:
 
         return events
 
+    def _latest_checkpoint(self, run: RunningInvestigation) -> dict | None:
+        """Return the newest orchestrator checkpoint from the workspace or worktrees."""
+        candidates = [run.workspace_path / ".swarm" / "orchestrator-checkpoint.json"]
+        swarm_dir = self._swarm_dir(run.workspace_path)
+        if swarm_dir:
+            candidates.extend(
+                path / ".swarm" / "orchestrator-checkpoint.json"
+                for path in sorted(swarm_dir.glob("agent-*"))
+                if path.is_dir()
+            )
+
+        latest: dict | None = None
+        latest_ts = float("-inf")
+        for path in candidates:
+            if not path.exists():
+                continue
+            try:
+                data = json.loads(path.read_text())
+            except (json.JSONDecodeError, OSError):
+                continue
+            if not isinstance(data, dict):
+                continue
+
+            ts = path.stat().st_mtime
+            last_updated = data.get("last_updated", "")
+            if isinstance(last_updated, str) and last_updated:
+                try:
+                    ts = datetime.fromisoformat(last_updated).timestamp()
+                except ValueError:
+                    pass
+            if ts > latest_ts:
+                latest = data
+                latest_ts = ts
+        return latest
+
+    def _swarm_dir(self, workspace_path: Path) -> Path | None:
+        config_path = workspace_path / ".swarm-config.json"
+        if config_path.exists():
+            try:
+                data = json.loads(config_path.read_text())
+            except (json.JSONDecodeError, OSError):
+                data = None
+            if isinstance(data, dict):
+                swarm_dir = data.get("swarm_dir")
+                if isinstance(swarm_dir, str) and swarm_dir:
+                    path = Path(swarm_dir)
+                    if path.exists():
+                        return path
+        fallback = workspace_path.parent / f"{workspace_path.name}-swarm"
+        return fallback if fallback.exists() else None
+
     def _check_paradigm_stress(self, run: RunningInvestigation) -> list[dict]:
         """Check for paradigm stress in scientific investigations."""
         events: list[dict] = []
@@ -716,7 +783,12 @@ class InvestigationDispatcher:
         return events
 
     def _check_heartbeat_stalls(self, run: RunningInvestigation) -> list[dict]:
-        """Check agent heartbeats for stalled workers."""
+        """Check agent heartbeats for stalled workers.
+
+        This helper is kept for environments that emit heartbeat files, but it
+        is not part of the default dispatcher polling path because the current
+        runtime does not write them consistently.
+        """
         events: list[dict] = []
         try:
             from voronoi.science import check_heartbeat_stall
@@ -795,7 +867,7 @@ class InvestigationDispatcher:
 
         if (run.workspace_path / ".swarm" / "deliverable.md").exists():
             # For standard rigor, deliverable is sufficient
-            if run.rigor == "standard":
+            if run.rigor == "adaptive":
                 return True
             # For higher rigor, also need convergence signal
             conv = run.workspace_path / ".swarm" / "convergence.json"

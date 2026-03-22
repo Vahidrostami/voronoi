@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 from voronoi.beads import run_cmd as _run_cmd
+from voronoi.utils import resolve_git_default_branch
 
 
 class GitHubPublisher:
@@ -58,8 +59,10 @@ class GitHubPublisher:
             f"https://github.com/{full_repo}.git",
         ], cwd=workspace_path)
 
+        default_branch = resolve_git_default_branch(workspace_path)
+
         code3, output3 = _run_cmd([
-            "git", "push", "voronoi-lab", "main", "--force",
+            "git", "push", "voronoi-lab", default_branch, "--force",
         ], cwd=workspace_path, timeout=120)
 
         if code3 == 0:

@@ -18,7 +18,8 @@ Science is a superset of engineering — the system is designed for science and 
 | Single prompt builder | CLI and Telegram produce identical orchestrator behavior via `prompt.py`. |
 | `.github/` as source of truth | Agent roles live in files Copilot auto-discovers — never duplicated in Python code. |
 | Prompt references, not duplicates | Orchestrator is told "read the file" — roles stay in sync automatically. |
-| Auto-classified rigor | Users don't configure rigor. System infers and can escalate, never downgrade. |
+| Two science modes | DISCOVER (adaptive rigor, creative exploration) and PROVE (full gates, structured validation). |
+| Adaptive rigor | DISCOVER starts light and escalates when hypotheses crystallize. PROVE starts at full scientific rigor. |
 | OODA over linear pipeline | Investigations are iterative — hypothesis revision needs loops, not waterfalls. |
 | Simplicity criterion | All else equal, simpler is better. Small improvement + big complexity = reject. |
 
@@ -71,7 +72,7 @@ The system is organized into four layers, each with clear responsibilities and b
 | From → To | Contract |
 |-----------|----------|
 | Entry → Gateway | Free-text string + chat_id |
-| Gateway → Server | `Investigation` object with mode, rigor, question, repo |
+| Gateway → Server | `Investigation` object with mode (discover/prove), question, repo |
 | Server → Execution | Orchestrator prompt (string) + workspace path + tmux session |
 | Execution → Science | `.swarm/` files: belief-map.json, findings in Beads, raw data |
 | Science → Execution | Convergence result, paradigm stress flags, gate pass/fail |

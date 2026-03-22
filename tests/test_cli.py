@@ -51,9 +51,6 @@ def testfind_data_dir():
 def test_init_creates_files():
     """voronoi init scaffolds expected files into target directory."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        # Initialize a git repo first (init guards against running in source repo)
-        subprocess.run(["git", "init"], cwd=tmpdir, capture_output=True)
-
         result = subprocess.run(
             [sys.executable, "-m", "voronoi.cli", "init"],
             cwd=tmpdir,
@@ -77,6 +74,14 @@ def test_init_creates_files():
         assert (target / ".github" / "agents").is_dir()
         assert (target / ".github" / "prompts").is_dir()
         assert (target / ".github" / "skills").is_dir()
+
+        branch = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=tmpdir,
+            capture_output=True,
+            text=True,
+        )
+        assert branch.stdout.strip() == "main"
 
 
 def test_init_blocks_inside_source_repo():

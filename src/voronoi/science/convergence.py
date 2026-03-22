@@ -115,8 +115,8 @@ def save_belief_map(workspace: Path, bm: BeliefMap) -> None:
 class OrchestratorCheckpoint:
     cycle: int = 0
     phase: str = "starting"
-    mode: str = "investigate"
-    rigor: str = "standard"
+    mode: str = "discover"
+    rigor: str = "adaptive"
     hypotheses_summary: str = ""
     total_tasks: int = 0
     closed_tasks: int = 0
@@ -145,7 +145,7 @@ def load_checkpoint(workspace: Path) -> OrchestratorCheckpoint:
             return OrchestratorCheckpoint()
         return OrchestratorCheckpoint(
             cycle=d.get("cycle", 0), phase=d.get("phase", "starting"),
-            mode=d.get("mode", "investigate"), rigor=d.get("rigor", "standard"),
+            mode=d.get("mode", "discover"), rigor=d.get("rigor", "adaptive"),
             hypotheses_summary=d.get("hypotheses_summary", ""),
             total_tasks=d.get("total_tasks", 0), closed_tasks=d.get("closed_tasks", 0),
             active_workers=d.get("active_workers", []),
@@ -224,13 +224,27 @@ def check_convergence(workspace: Path, rigor: str,
     blockers: list[str] = []
     swarm = workspace / ".swarm"
 
-    if rigor == "standard":
+    if rigor == "adaptive":
         if not (swarm / "deliverable.md").exists():
             blockers.append("No deliverable produced")
         if blockers:
             return ConvergenceResult(False, "not_ready", "; ".join(blockers), blockers=blockers)
-        return ConvergenceResult(True, "converged", "All build tasks complete")
+        # Adaptive rigor: basic convergence if eval score present, otherwise just deliverable
+        if eval_score >= 0.75 and not blockers:
+            return ConvergenceResult(True, "converged", "Evaluator PASS", score=eval_score)
+        if eval_score >= 0.50 and improvement_rounds < 2:
+            return ConvergenceResult(False, "not_ready",
+                                     f"Score {eval_score:.2f} — improvement round needed",
+                                     score=eval_score, blockers=blockers)
+        if eval_score <= 0.0:
+            return ConvergenceResult(True, "converged", "All tasks complete")
+        if improvement_rounds >= 2:
+            return ConvergenceResult(True, "diminishing_returns",
+                                     f"Max improvement rounds reached (score={eval_score:.2f})",
+                                     score=eval_score)
+        return ConvergenceResult(True, "converged", "All tasks complete")
 
+    # For scientific/experimental rigor: full convergence checks
     if eval_score <= 0.0:
         blockers.append("No evaluator score yet")
 
@@ -246,18 +260,6 @@ def check_convergence(workspace: Path, rigor: str,
     contested = _helpers._find_contested_findings(workspace, tasks)
     if contested:
         blockers.append(f"{len(contested)} contested findings")
-
-    if rigor == "analytical":
-        if eval_score >= 0.75 and not blockers:
-            return ConvergenceResult(True, "converged", "Evaluator PASS", score=eval_score)
-        if eval_score >= 0.50 and improvement_rounds < 2:
-            return ConvergenceResult(False, "not_ready",
-                                     f"Score {eval_score:.2f} — improvement round needed",
-                                     score=eval_score, blockers=blockers)
-        if improvement_rounds >= 2:
-            return ConvergenceResult(True, "diminishing_returns",
-                                     f"Max improvement rounds reached (score={eval_score:.2f})",
-                                     score=eval_score)
 
     if rigor in ("scientific", "experimental"):
         bm = load_belief_map(workspace)

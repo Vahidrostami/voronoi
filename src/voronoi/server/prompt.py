@@ -40,9 +40,9 @@ def build_orchestrator_prompt(
     question : str
         The investigation/build question or the literal content of PROMPT.md.
     mode : str
-        One of investigate, explore, build, hybrid.
+        One of discover, prove.
     rigor : str
-        One of standard, analytical, scientific, experimental.
+        One of adaptive, scientific, experimental.
     workspace_path : str
         Absolute path to the workspace (shown in prompt for context).
     codename : str
@@ -57,11 +57,8 @@ def build_orchestrator_prompt(
         If True, spawns workers with restricted tool access.
     """
     _MODE_VERB = {
-        "investigate": "Investigation",
-        "explore": "Exploration",
-        "build": "Build",
-        "hybrid": "Investigation",
-        "experiment": "Experiment",
+        "discover": "Discovery",
+        "prove": "Proof",
     }
     verb = _MODE_VERB.get(mode, mode.title())
     label = codename or "Voronoi"
@@ -122,14 +119,14 @@ def build_orchestrator_prompt(
     # The orchestrator's role file (.github/agents/swarm-orchestrator.agent.md)
     # contains the full OODA workflow, role selection tables, convergence
     # criteria, and review gate definitions.  We only add mode/rigor context.
-    if mode in ("investigate", "explore", "hybrid") and rigor != "standard":
+    if mode in ("discover", "prove"):
         sections.append(
             "\n## Science Mode Active\n\n"
             f"Mode: **{mode}** | Rigor: **{rigor}**\n\n"
             "Your role file has the complete protocol for this rigor level. "
             "Key reminders:\n"
         )
-        if rigor in ("scientific", "experimental"):
+        if mode == "prove" or rigor in ("scientific", "experimental"):
             sections.append(
                 "- Dispatch Scout first → wait for `.swarm/scout-brief.md`\n"
                 "- Dispatch Theorist + Methodologist before investigators\n"
@@ -156,7 +153,7 @@ def build_orchestrator_prompt(
                 "```\n"
                 "Same polling protocol.  Do NOT write deliverable.md until approved.\n"
             )
-        if rigor in ("analytical", "scientific", "experimental"):
+        if rigor in ("adaptive", "scientific", "experimental") or mode == "prove":
             sections.append(
                 "- Findings MUST pass Statistician review\n"
                 "- Synthesizer MUST produce `.swarm/claim-evidence.json`\n"
@@ -167,6 +164,30 @@ def build_orchestrator_prompt(
                 "- High-impact findings MUST be replicated\n"
                 "- Power analysis MANDATORY for every experiment\n"
             )
+
+    # -- Creative Freedom (DISCOVER mode) ------------------------------------
+    if mode in ("discover",) or (mode not in ("prove",) and rigor == "adaptive"):
+        sections.append(
+            "\n## Creative Freedom Protocol (DISCOVER Mode)\n\n"
+            "This is free scientific exploration. You are NOT locked into a rigid sequence.\n\n"
+            "**What to do:**\n"
+            "- Cast roles DYNAMICALLY based on what you find — don't pre-commit to a fixed team\n"
+            "- Let multiple agents pursue different hypotheses simultaneously\n"
+            "- When an agent finds something unexpected, consider pivoting the investigation\n"
+            "- Start with Scout + any agents that seem useful — no mandatory sequence\n\n"
+            "**Adaptive rigor:** Start light (no pre-registration, no human gates). "
+            "When testable hypotheses crystallize in the belief map, ESCALATE:\n"
+            "- Engage Methodologist to review experimental design\n"
+            "- Engage Statistician for quantitative findings\n"
+            "- Require pre-registration for hypothesis tests\n"
+            "- Activate review gates for completed experiments\n\n"
+            "**SERENDIPITY handling:**\n"
+            "When an agent flags `SERENDIPITY:<description>` in Beads notes:\n"
+            "1. Read the description during your OODA Observe step\n"
+            "2. Decide: pivot investigation, spawn follow-up agents, or note and continue\n"
+            "3. NEVER discard unexpected findings — record them even if not pursued\n"
+            "4. Update the belief map with any serendipitous hypotheses\n"
+        )
 
     # -- Investigation invariants (injected into every prompt) -------------
     sections.append(
@@ -231,7 +252,7 @@ def build_orchestrator_prompt(
         "from voronoi.science import OrchestratorCheckpoint, save_checkpoint\n"
         "from pathlib import Path\n"
         "cp = OrchestratorCheckpoint(\n"
-        "    cycle=N, phase='investigating', mode='investigate', rigor='experimental',\n"
+        "    cycle=N, phase='investigating', mode='discover', rigor='scientific',\n"
         "    hypotheses_summary='H1:confirmed, H2:testing',\n"
         "    total_tasks=50, closed_tasks=20,\n"
         "    active_workers=['agent-pilot', 'agent-scenario-3'],\n"
@@ -376,7 +397,7 @@ def build_orchestrator_prompt(
         "  ./scripts/convergence-gate.sh <workspace> <rigor>  # Multi-signal convergence check\n\n"
         "Monitor agents:\n"
         "  bd show <id> --json                                    # Task status\n"
-        "  git log main..<branch> --oneline                      # Commits\n"
+        "  git log $(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##' || git rev-parse --abbrev-ref HEAD)..<branch> --oneline  # Commits\n"
         "  tmux capture-pane -t $(jq -r .tmux_session .swarm-config.json):<branch>"
         " -p 2>/dev/null | tail -20\n\n"
         "Telegram notifications:\n"
@@ -463,8 +484,7 @@ def build_orchestrator_prompt(
     # Rigor-specific rules are in the orchestrator role file — no duplication here.
 
     # -- Eval score (for dispatcher convergence tracking) ------------------
-    if rigor != "standard":
-        sections.append(
+    sections.append(
             "\n## Evaluator Score Output — STRUCTURED FEEDBACK\n\n"
             "When the Evaluator scores the deliverable, write the result to "
             "`.swarm/eval-score.json` with **section-level feedback**:\n"

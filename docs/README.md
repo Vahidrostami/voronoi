@@ -22,7 +22,7 @@ This directory contains the **complete technical specification** for Voronoi. Th
 | [CLI.md](CLI.md) | CLI commands, project scaffolding, demo management | Working on CLI or `voronoi` command |
 | [AGENT-ROLES.md](AGENT-ROLES.md) | 11 agent roles, activation rules, verify loops | Working on agent orchestration |
 | [DATA-STRUCTURES.md](DATA-STRUCTURES.md) | All dataclasses, schemas, file formats, DB schemas | Implementing or consuming data |
-| [WORKFLOWS.md](WORKFLOWS.md) | End-to-end workflows: investigate, explore, build, demo | Understanding user journeys |
+| [WORKFLOWS.md](WORKFLOWS.md) | End-to-end workflows: discover, prove, demo | Understanding user journeys |
 | [INVARIANTS.md](INVARIANTS.md) | System-wide invariants that must never be violated | Code review, debugging |
 | [GLOSSARY.md](GLOSSARY.md) | Terms, acronyms, concepts used across the project | Onboarding, disambiguation |
 

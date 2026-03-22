@@ -19,29 +19,17 @@ from voronoi.gateway.intent import (
 class TestExplicitCommands:
     """Test that explicit /voronoi <cmd> patterns are recognized at confidence 1.0."""
 
-    def test_investigate_command(self):
-        r = classify("/voronoi investigate why is our API slow?")
-        assert r.mode == WorkflowMode.INVESTIGATE
-        assert r.rigor == RigorLevel.SCIENTIFIC
+    def test_discover_command(self):
+        r = classify("/voronoi discover why is our API slow?")
+        assert r.mode == WorkflowMode.DISCOVER
+        assert r.rigor == RigorLevel.ADAPTIVE
         assert r.confidence == 1.0
         assert "why is our API slow?" in r.summary
 
-    def test_explore_command(self):
-        r = classify("/voronoi explore Redis vs Memcached for our workload")
-        assert r.mode == WorkflowMode.EXPLORE
-        assert r.rigor == RigorLevel.ANALYTICAL
-        assert r.confidence == 1.0
-
-    def test_build_command(self):
-        r = classify("/voronoi build a REST API with auth")
-        assert r.mode == WorkflowMode.BUILD
-        assert r.rigor == RigorLevel.STANDARD
-        assert r.confidence == 1.0
-
-    def test_experiment_command(self):
-        r = classify("/voronoi experiment test whether batch size > 64 improves convergence")
-        assert r.mode == WorkflowMode.INVESTIGATE
-        assert r.rigor == RigorLevel.EXPERIMENTAL
+    def test_prove_command(self):
+        r = classify("/voronoi prove encoding improves discovery recall")
+        assert r.mode == WorkflowMode.PROVE
+        assert r.rigor == RigorLevel.SCIENTIFIC
         assert r.confidence == 1.0
 
     def test_recall_command(self):
@@ -77,47 +65,47 @@ class TestExplicitCommands:
 # ---------------------------------------------------------------------------
 
 class TestFreeTextScience:
-    """Test free-text detection of scientific intent."""
+    """Test free-text classification into DISCOVER or PROVE."""
 
-    def test_why_question_classifies_investigate(self):
+    def test_why_question_classifies_discover(self):
         r = classify("Why is our model accuracy dropping after each retrain?")
-        assert r.mode == WorkflowMode.INVESTIGATE
-        assert r.rigor == RigorLevel.SCIENTIFIC
+        assert r.mode == WorkflowMode.DISCOVER
+        assert r.rigor == RigorLevel.ADAPTIVE
         assert r.confidence >= 0.5
 
-    def test_root_cause_classifies_investigate(self):
+    def test_root_cause_classifies_discover(self):
         r = classify("What is the root cause of the latency spike?")
-        assert r.mode == WorkflowMode.INVESTIGATE
+        assert r.mode == WorkflowMode.DISCOVER
 
-    def test_comparison_classifies_explore(self):
+    def test_comparison_classifies_discover(self):
         r = classify("Which database should we migrate to — Postgres or DynamoDB?")
-        assert r.mode == WorkflowMode.EXPLORE
-        assert r.rigor == RigorLevel.ANALYTICAL
+        assert r.mode == WorkflowMode.DISCOVER
 
-    def test_benchmark_classifies_explore(self):
+    def test_benchmark_classifies_discover(self):
         r = classify("Benchmark our current cache vs Redis cluster")
-        assert r.mode == WorkflowMode.EXPLORE
+        assert r.mode == WorkflowMode.DISCOVER
 
-    def test_build_signals(self):
+    def test_build_signals_classify_discover(self):
         r = classify("Build a recommendation engine with collaborative filtering")
-        assert r.mode == WorkflowMode.BUILD
-        assert r.rigor == RigorLevel.STANDARD
+        assert r.mode == WorkflowMode.DISCOVER
+        assert r.rigor == RigorLevel.ADAPTIVE
 
-    def test_hybrid_signals(self):
+    def test_figure_out_and_fix_classifies_discover(self):
         r = classify("Figure out why latency is high and then fix it")
-        assert r.mode == WorkflowMode.HYBRID
+        assert r.mode == WorkflowMode.DISCOVER
 
-    def test_debug_and_fix_is_hybrid(self):
+    def test_debug_and_fix_classifies_discover(self):
         r = classify("Debug and fix the authentication timeout")
-        assert r.mode == WorkflowMode.HYBRID
+        assert r.mode == WorkflowMode.DISCOVER
 
-    def test_experimental_signals(self):
+    def test_controlled_experiment_classifies_prove(self):
         r = classify("Test whether increasing sample size from 500 to 5000 improves significance")
-        assert r.rigor == RigorLevel.EXPERIMENTAL
+        assert r.mode == WorkflowMode.PROVE
+        assert r.rigor in (RigorLevel.SCIENTIFIC, RigorLevel.EXPERIMENTAL)
 
-    def test_ab_test_is_experimental(self):
+    def test_ab_test_classifies_prove(self):
         r = classify("Run an A/B test on the new recommendation algorithm")
-        assert r.rigor == RigorLevel.EXPERIMENTAL
+        assert r.mode == WorkflowMode.PROVE
 
     def test_recall_from_freetext(self):
         r = classify("What did we learn about caching strategies last time?")
@@ -127,9 +115,10 @@ class TestFreeTextScience:
         r = classify("What do we know about the user churn problem?")
         assert r.mode == WorkflowMode.RECALL
 
-    def test_analytical_build(self):
+    def test_build_and_optimize_classifies_discover(self):
         r = classify("Build and optimize the search indexer for performance")
-        assert r.rigor in (RigorLevel.ANALYTICAL, RigorLevel.STANDARD)
+        assert r.mode == WorkflowMode.DISCOVER
+        assert r.rigor == RigorLevel.ADAPTIVE
 
     def test_low_confidence_goes_to_guide(self):
         r = classify("hello, how are you?")
@@ -153,11 +142,11 @@ class TestEdgeCases:
         assert r.confidence == 0.0
 
     def test_case_insensitive_commands(self):
-        r = classify("/VORONOI INVESTIGATE something")
-        assert r.mode == WorkflowMode.INVESTIGATE
+        r = classify("/VORONOI DISCOVER something")
+        assert r.mode == WorkflowMode.DISCOVER
 
     def test_original_text_preserved(self):
-        text = "/voronoi investigate why is latency high?"
+        text = "/voronoi discover why is latency high?"
         r = classify(text)
         assert r.original_text == text
 
@@ -167,29 +156,33 @@ class TestEdgeCases:
         assert len(r.summary) <= 83  # 80 + "..."
 
     def test_is_science_property(self):
-        r = classify("/voronoi investigate something")
+        r = classify("/voronoi discover something")
+        assert r.is_science is True
+
+    def test_prove_is_science(self):
+        r = classify("/voronoi prove hypothesis X")
         assert r.is_science is True
 
     def test_is_meta_property(self):
         r = classify("/voronoi status")
         assert r.is_meta is True
 
-    def test_build_is_not_science(self):
-        r = classify("/voronoi build something")
+    def test_guide_is_not_science(self):
+        r = classify("hello")
         assert r.is_science is False
 
     def test_frozen_dataclass(self):
         r = classify("test")
         with pytest.raises(AttributeError):
-            r.mode = WorkflowMode.BUILD  # type: ignore
+            r.mode = WorkflowMode.DISCOVER  # type: ignore
 
-    def test_paper_request_classified_as_hybrid(self):
+    def test_paper_request_classified_as_discover(self):
         r = classify("Write a paper on catastrophic forgetting mitigation strategies")
-        assert r.mode == WorkflowMode.HYBRID
+        assert r.mode == WorkflowMode.DISCOVER
 
-    def test_paper_about_classified_as_hybrid(self):
+    def test_paper_about_classified_as_discover(self):
         r = classify("paper on the effects of replay buffer size")
-        assert r.mode == WorkflowMode.HYBRID
+        assert r.mode == WorkflowMode.DISCOVER
 
 
 # ---------------------------------------------------------------------------
@@ -202,7 +195,7 @@ class TestCompoundIntent:
     def test_single_phase_returns_one(self):
         phases = classify_compound("Build a REST API")
         assert len(phases) == 1
-        assert phases[0].mode == WorkflowMode.BUILD
+        assert phases[0].mode == WorkflowMode.DISCOVER
 
     def test_empty_returns_empty(self):
         assert classify_compound("") == []
@@ -210,13 +203,13 @@ class TestCompoundIntent:
     def test_two_phases_with_then(self):
         text = (
             "Build the data generation pipeline with synthetic scenarios. "
-            "Then investigate whether encoding level affects discovery recall."
+            "Then prove whether encoding level affects discovery recall."
         )
         phases = classify_compound(text)
         assert len(phases) >= 2
         modes = [p.mode for p in phases]
-        assert WorkflowMode.BUILD in modes
-        assert WorkflowMode.INVESTIGATE in modes
+        assert WorkflowMode.DISCOVER in modes
+        assert WorkflowMode.PROVE in modes
 
     def test_numbered_steps(self):
         text = (
@@ -225,12 +218,12 @@ class TestCompoundIntent:
             "3. Build an interactive webapp showing results."
         )
         phases = classify_compound(text)
-        assert len(phases) >= 2
+        assert len(phases) >= 1
 
     def test_section_headers(self):
         text = (
             "## Data Generation\nBuild synthetic datasets with planted effects.\n"
-            "## Experiment\nInvestigate encoding ablation across four levels.\n"
+            "## Experiment\nTest whether encoding ablation affects detection across four levels.\n"
             "## Deliverables\nWrite a paper and deploy a webapp."
         )
         phases = classify_compound(text)
@@ -252,7 +245,6 @@ class TestCompoundIntent:
             "Then investigate the root cause."
         )
         phases = classify_compound(text)
-        # Consecutive BUILD phases should be merged
         modes = [p.mode for p in phases]
         for i in range(1, len(modes)):
             assert not (modes[i] == modes[i - 1] and

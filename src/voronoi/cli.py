@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 
 from voronoi import __version__
+from voronoi.utils import git_init_main
 
 # Framework files to copy into user projects
 FRAMEWORK_DIRS = ["scripts"]
@@ -108,8 +109,8 @@ def _build_orchestrator_prompt(
 
     return build_orchestrator_prompt(
         question=question,
-        mode="build",
-        rigor="standard",
+        mode="discover",
+        rigor="adaptive",
         workspace_path=str(Path.cwd()),
         prompt_path=prompt_path,
         output_dir=output_dir,
@@ -133,7 +134,7 @@ def cmd_init(args: argparse.Namespace) -> None:
     # Ensure it's a git repo with at least one commit (agents use git worktrees)
     if not (target / ".git").is_dir():
         print("  Initializing git repository...")
-        subprocess.run(["git", "init"], cwd=str(target), capture_output=True)
+        git_init_main(target)
         print("  ✓ git init")
 
     # Ensure at least one commit exists (git worktree requires it)
@@ -442,7 +443,7 @@ def cmd_clean(args: argparse.Namespace) -> None:
             print(f"  ✓ {name}/")
 
     # Remove framework files (only if they look like ours)
-    for filename in FRAMEWORK_FILES:
+    for filename in TEMPLATE_FILES:
         p = target / filename
         if p.is_file():
             p.unlink()

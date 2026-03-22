@@ -32,6 +32,16 @@ class TestProvisionLab:
         info = wm.provision_lab(1, "test", "question")
         assert (Path(info.path) / ".git").exists()
 
+    def test_uses_main_as_default_branch(self, wm):
+        info = wm.provision_lab(1, "branch-test", "question")
+        result = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=info.path,
+            capture_output=True,
+            text=True,
+        )
+        assert result.stdout.strip() == "main"
+
     def test_overwrites_existing(self, wm):
         wm.provision_lab(1, "test", "question 1")
         info = wm.provision_lab(1, "test", "question 2")

@@ -158,7 +158,7 @@ def check_dispatch_gates(task: dict, workspace: Path, rigor: str) -> tuple[bool,
             blockers.append("Methodologist REJECTED this design")
         elif mr == "CONDITIONAL":
             blockers.append("Methodologist review CONDITIONAL — conditions not yet met")
-    if task_type == "investigation" and rigor in ("analytical", "scientific", "experimental"):
+    if task_type == "investigation" and rigor in ("adaptive", "scientific", "experimental"):
         valid, missing = validate_pre_registration(notes, rigor)
         if not valid:
             blockers.append(f"Pre-registration incomplete: {', '.join(missing)}")
@@ -175,7 +175,7 @@ def check_merge_gates(task: dict, workspace: Path, rigor: str) -> tuple[bool, li
             if prod and not (workspace / prod).exists():
                 blockers.append(f"PRODUCES missing: {prod}")
     title = task.get("title", "")
-    if "FINDING" in title.upper() and rigor in ("analytical", "scientific", "experimental"):
+    if "FINDING" in title.upper() and rigor in ("adaptive", "scientific", "experimental"):
         sr = extract_field(notes, "STAT_REVIEW")
         if not sr:
             blockers.append("Finding needs Statistician review")
@@ -187,12 +187,12 @@ def check_merge_gates(task: dict, workspace: Path, rigor: str) -> tuple[bool, li
             blockers.append("Finding needs Critic review")
         elif cr == "REJECTED":
             blockers.append("Critic REJECTED this finding")
-    if "FINDING" in title.upper() and rigor in ("analytical", "scientific", "experimental"):
+    if "FINDING" in title.upper() and rigor in ("adaptive", "scientific", "experimental"):
         fab = verify_finding_against_data(workspace, notes, str(task.get("id", "")))
         for flag in fab.critical_flags:
             blockers.append(f"FABRICATION_CHECK: {flag.message}")
     task_type = extract_field(notes, "TASK_TYPE")
-    if task_type == "investigation" and rigor in ("analytical", "scientific", "experimental"):
+    if task_type == "investigation" and rigor in ("adaptive", "scientific", "experimental"):
         eva = extract_field(notes, "EVA")
         if not eva:
             blockers.append("EVA not recorded — run Experimental Validity Audit before merge")

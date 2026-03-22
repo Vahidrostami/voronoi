@@ -7,7 +7,6 @@ in test_dispatcher.py.  These tests cover the formatting functions only.
 from pathlib import Path
 
 from voronoi.gateway.progress import (
-    format_workflow_start, format_workflow_complete,
     format_launch, format_complete, format_failure, format_alert,
     format_restart, format_duration, progress_bar, estimate_remaining,
     build_digest, build_digest_whatsup, assess_track_status,
@@ -15,35 +14,15 @@ from voronoi.gateway.progress import (
 )
 
 
-class TestFormatting:
-    def test_format_workflow_start(self):
-        msg = format_workflow_start("investigate", "scientific", "Why is latency high?")
-        assert "investigate" in msg.lower()
-        assert "scientific" in msg.lower() or "hypothesis" in msg.lower()
-        assert "Why is latency high?" in msg
-
-    def test_format_workflow_start_explore(self):
-        msg = format_workflow_start("explore", "analytical", "Redis vs Memcached")
-        assert "Redis vs Memcached" in msg
-
-    def test_format_workflow_start_build(self):
-        msg = format_workflow_start("build", "standard", "Build REST API")
-        assert "Build REST API" in msg
-
-    def test_format_workflow_complete(self):
-        msg = format_workflow_complete("investigate", 12, 3, 15.5)
-        assert "12" in msg
-
-
 class TestBuddyFormatters:
     def test_format_launch(self):
-        msg = format_launch("Synapse", "investigate", "scientific", "Why is latency high?")
+        msg = format_launch("Synapse", "discover", "adaptive", "Why is latency high?")
         assert "Synapse" in msg
         assert "is live" in msg
         assert "latency" in msg
 
     def test_format_complete(self):
-        msg = format_complete("Synapse", "investigate", 20, 18, 3600)
+        msg = format_complete("Synapse", "discover", 20, 18, 3600)
         assert "Synapse" in msg
         assert "done" in msg.lower()
         assert "18" in msg
@@ -135,7 +114,7 @@ class TestBuildDigest:
         }
         msg = build_digest(
             codename="Synapse",
-            mode="investigate",
+            mode="discover",
             phase="investigating",
             elapsed_sec=3600,
             task_snapshot=snapshot,
@@ -152,7 +131,7 @@ class TestBuildDigest:
     def test_digest_with_findings(self, tmp_path):
         msg = build_digest(
             codename="Synapse",
-            mode="investigate",
+            mode="discover",
             phase="reviewing",
             elapsed_sec=7200,
             task_snapshot={"t1": {"status": "closed", "notes": ""}},
@@ -173,7 +152,7 @@ class TestBuildDigest:
         )
         msg = build_digest(
             codename="Synapse",
-            mode="investigate",
+            mode="discover",
             phase="investigating",
             elapsed_sec=3600,
             task_snapshot={"t1": {"status": "in_progress", "notes": ""}},
@@ -183,6 +162,35 @@ class TestBuildDigest:
         assert "Experiment" in msg
         assert "1 good" in msg
         assert "1 discard" in msg
+
+    def test_digest_merges_worker_ledgers_and_artifacts(self, tmp_path):
+        (tmp_path / ".swarm").mkdir()
+        swarm_dir = tmp_path.parent / f"{tmp_path.name}-swarm"
+        agent_dir = swarm_dir / "agent-phase2"
+        (agent_dir / ".swarm").mkdir(parents=True)
+        (agent_dir / "demos" / "demo-a" / "output").mkdir(parents=True)
+        (tmp_path / ".swarm-config.json").write_text(
+            '{"swarm_dir": "%s"}' % str(swarm_dir)
+        )
+        (agent_dir / ".swarm" / "experiments.tsv").write_text(
+            "timestamp\ttask_id\tbranch\tmetric_name\tmetric_value\tstatus\tdescription\n"
+            "2026-01-01\tbd-9\tagent-phase2\tmbrs\t0.7\tkeep\tscenario 9\n"
+        )
+        (agent_dir / "demos" / "demo-a" / "output" / "pilot_results.json").write_text("{}")
+
+        msg = build_digest(
+            codename="Synapse",
+            mode="discover",
+            phase="investigating",
+            elapsed_sec=3600,
+            task_snapshot={"t1": {"status": "in_progress", "notes": ""}},
+            workspace=tmp_path,
+            events_since_last=[],
+        )
+
+        assert "Experiment" in msg
+        assert "1 good" in msg
+        assert "Observed artifacts" in msg
 
 
 class TestBuildDigestWhatsup:

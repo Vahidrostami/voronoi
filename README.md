@@ -21,16 +21,16 @@
 
 <br/>
 
-<img src="assets/voronoi-manuscript.svg" alt="Voronoi — scientific discovery with feedback loops" width="800"/>
+<img src="assets/voronoi-manuscript.svg" alt="Voronoi — open question to discovery and manuscript" width="800"/>
 
-<sub>Question → hypotheses → parallel agents → failure → OODA loop → new hypothesis → convergence → manuscript</sub>
+<sub>Open question → scout → parallel agents → failure → OODA loop → new hypothesis → convergence → manuscript</sub>
 
 <br/>
 
 <details>
-<summary>Quick investigation (simpler flow)</summary>
+<summary>Hypothesis proof (simpler flow)</summary>
 <br/>
-<img src="assets/voronoi-demo.svg" alt="Voronoi — quick investigation to findings" width="800"/>
+<img src="assets/voronoi-demo.svg" alt="Voronoi — hypothesis-driven proof" width="800"/>
 </details>
 
 <br/>
@@ -87,7 +87,7 @@ graph LR
 ```
 
 1. **You ask** — Telegram or CLI, natural language
-2. **Classifier** picks the workflow (build / investigate / explore) and rigor level
+2. **Classifier** picks the mode: **DISCOVER** (open question, adaptive rigor) or **PROVE** (specific hypothesis, full science gates)
 3. **Scout** researches existing knowledge, generates hypotheses
 4. **Agents run in parallel** — each in its own git worktree + tmux session
 5. **Self-healing verify loop** — each agent iterates against its own errors (test failures, lint, crashes) before escalating. Builders retry up to 5 times; investigators retry each experiment variant up to 3 times.
@@ -155,9 +155,8 @@ graph TD
 
 | Command | What happens |
 |---------|-------------|
-| `/voronoi investigate <question>` | Parallel investigation with findings |
-| `/voronoi explore <question>` | Options, benchmark, comparison matrix |
-| `/voronoi build <description>` | Decompose, parallel build, merge |
+| `/voronoi discover <question>` | Open exploration — adaptive rigor, creative agents |
+| `/voronoi prove <hypothesis>` | Structured hypothesis testing — full science gates |
 | `/voronoi status` | Conversational status — what's happening? |
 | `/voronoi progress` | Are we on track? Metrics, criteria, belief map |
 | `/voronoi results [id]` | View past investigation results |
@@ -193,15 +192,22 @@ voronoi demo run emergent-ecosystem --safe
 
 Builder 🔨 · Scout 🔍 · Investigator 🔬 · Critic ⚖️ · Synthesizer 🧩 · Evaluator 🎯 · Explorer 🧭 · Theorist 🧬 · Methodologist 📐 · Statistician 📊 · Scribe ✍️ · Worker ⚙️
 
-**4 Rigor Levels** — auto-classified from your question:
+**Two Science Modes** — auto-classified from your question:
 
-| Gate | Standard | Analytical | Scientific | Experimental |
-|------|:--------:|:----------:|:----------:|:------------:|
-| Critic review | ✅ | ✅ | ✅ | ✅ |
-| Statistician | — | ✅ | ✅ | ✅ |
-| Methodologist | — | — | ✅ | ✅ |
-| Pre-registration | — | — | ✅ | ✅ |
-| Replication | — | — | — | ✅ |
+| Mode | Rigor | When |
+|------|-------|------|
+| **DISCOVER** | Adaptive | Open question — "why", "figure out", "compare", "build" |
+| **PROVE** | Scientific/Experimental | Specific hypothesis — "test whether", detailed PROMPT.md |
+
+DISCOVER starts light and escalates rigor as hypotheses crystallize. PROVE has full science gates from the start.
+
+| Gate | DISCOVER (initial) | DISCOVER (escalated) | PROVE |
+|------|:------------------:|:-------------------:|:-----:|
+| Critic review | ✅ | ✅ | ✅ |
+| Statistician | — | ✅ | ✅ |
+| Methodologist | — | ✅ | ✅ |
+| Pre-registration | — | ✅ | ✅ |
+| Replication | — | — | ✅ (experimental) |
 
 **Evidence System** — every finding includes:
 
@@ -290,7 +296,7 @@ Each agent is a **full Copilot CLI session** in its own **tmux window** with its
 | Evidence system (SHA-256) | ✅ | — | — | — |
 | Telegram-native interface | ✅ | — | — | — |
 | Docker-sandboxed execution | ✅ | — | ✅ | — |
-| Role-based specialization | ✅ (11) | ✅ | ✅ | ✅ (6) |
+| Role-based specialization | ✅ (12) | ✅ | ✅ | ✅ (6) |
 | Works with any LLM agent | ✅ | ✅ | ✅ | — |
 
 </details>
@@ -321,7 +327,7 @@ pip install voronoi[report]  # optional: PDF generation
 
 ```bash
 git clone https://github.com/Vahidrostami/voronoi && cd voronoi
-pip install -e . && pytest   # 624 tests
+pip install -e . && pytest   # 642 tests
 ```
 
 See [DESIGN.md](DESIGN.md) for the full design philosophy.

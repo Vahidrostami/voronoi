@@ -6,130 +6,131 @@
 
 ## 1. Workflow Selection
 
-The intent classifier maps user input to a workflow:
+The intent classifier maps user input to one of two science modes:
 
 | Mode | Rigor | Trigger Examples |
 |------|-------|-----------------|
-| BUILD | Standard | "build", "implement", "deploy", "refactor", "create" |
-| EXPLORE | Analytical | "which best", "compare", "evaluate", "tradeoffs" |
-| INVESTIGATE | Scientific | "why", "root cause", "hypothesis", "investigate" |
-| INVESTIGATE | Experimental | "A/B test", "controlled trial", "p-value target" |
-| HYBRID | Scientific | "figure out and fix", "paper", "manuscript" |
+| DISCOVER | Adaptive | "why", "figure out", "compare", "build", "explore", "what if", open questions |
+| PROVE | Scientific/Experimental | "test whether", "prove hypothesis", "A/B test", detailed PROMPT.md with pre-registered design |
 
-**Invariant**: When in doubt, classify higher. Gates can be skipped but not added retroactively.
+**Key principle**: Open question → DISCOVER. Specific hypothesis → PROVE. When in doubt, DISCOVER — the orchestrator escalates rigor as hypotheses emerge.
 
 ---
 
-## 2. Build Workflow (Standard Rigor)
+## 2. DISCOVER Workflow (Adaptive Rigor)
+
+### Philosophy
+
+DISCOVER is free scientific exploration. The user gives an open question; agents explore creatively, form hypotheses, and pursue multiple paths in parallel. Rigor adapts dynamically — starts light, escalates when testable hypotheses crystallize.
 
 ### Roles Active
-Builder, Critic, Worker
+All 12 roles available. Orchestrator casts dynamically based on what it finds.
+
+### Adaptive Rigor Escalation
+
+```
+Phase 1: Explore (analytical-level rigor)
+  → Scout + Builder + Explorer run in parallel
+  → No pre-registration required
+  → Critic reviews inline
+
+Phase 2: Hypothesize (rigor escalates when belief map has testable hypotheses)
+  → Theorist engaged
+  → Statistician engaged
+  → Pre-registration now required for hypothesis tests
+
+Phase 3: Test (scientific-level rigor)
+  → Methodologist reviews experimental design
+  → Investigators run pre-registered experiments
+  → Full review gates active
+```
 
 ### Steps
 
-1. **Classify** — Intent classifier returns `BUILD` + `STANDARD`
-2. **Enqueue** — Investigation queued with mode=build
+1. **Classify** — Intent classifier returns `DISCOVER` + `ADAPTIVE`
+2. **Enqueue** — Investigation queued with mode=discover
 3. **Dispatch** — Workspace provisioned, orchestrator launched
-4. **Decompose** — Orchestrator breaks task into subtasks with dependency graph
-5. **Dispatch Workers** — Each subtask → Builder agent in own worktree
-6. **Verify Loop** — Each builder: code → test → lint → retry (max 5)
-7. **Code Review** — Critic reviews each completed branch
-8. **Merge** — `merge-agent.sh` integrates branches to main
-9. **Complete** — All tasks closed, tests passing
+4. **Free Exploration** — Orchestrator reads question, dispatches Scout + any relevant initial agents in parallel. No rigid sequence.
+5. **Hypothesis Formation** — As agents report back, orchestrator forms belief map. SERENDIPITY events can redirect exploration.
+6. **Rigor Escalation** — When hypotheses are testable, orchestrator engages Methodologist + Statistician. Pre-registration kicks in.
+7. **Parallel Investigation** — Multiple agents pursue different hypotheses simultaneously
+8. **Inner Loop** — Each agent: execute → verify → retry (self-healing)
+9. **OODA Outer Loop** — Orchestrator observes findings, updates belief map, decides next actions
+10. **Review Gates** — Statistician + Critic review findings (activated when rigor escalated)
+11. **Synthesis** — Synthesizer assembles deliverable
+12. **Evaluation** — Evaluator scores output
 
 ### Convergence
-All tasks closed + tests passing on main.
+All active hypotheses resolved OR orchestrator judges exploration complete + eval score ≥ 0.75.
 
 ### Deliverable
-Working code on main branch.
+Report with findings, evidence chain, and recommendations. If scope warrants, scientific manuscript.
+
+### SERENDIPITY Protocol
+
+When an agent finds something unexpected:
+1. Agent flags `SERENDIPITY:<description>` in Beads notes
+2. Orchestrator reads this during OODA Observe
+3. Orchestrator decides: pivot investigation, spawn follow-up agents, or note and continue
+4. Unexpected findings are never discarded — they're recorded even if not pursued
 
 ---
 
-## 3. Explore Workflow (Analytical Rigor)
+## 3. PROVE Workflow (Scientific/Experimental Rigor)
+
+### Philosophy
+
+PROVE is structured hypothesis testing. The user provides a specific, testable hypothesis (or a detailed PROMPT.md). Full science gates from the start. No exploration phase — go straight to rigorous validation.
 
 ### Roles Active
-Scout, Explorer, Statistician, Critic, Synthesizer, Evaluator + (Builder if implementation needed)
+All 12 roles from the start.
 
 ### Steps
 
-1. **Classify** — `EXPLORE` + `ANALYTICAL`
-2. **Scout Phase** — Scout researches prior knowledge, SOTA, existing solutions
-3. **Decompose** — Orchestrator identifies options to evaluate
-4. **Explore** — Explorer agents evaluate each option:
-   - Comparison matrices
-   - Pros/cons with evidence
-   - Benchmarks where applicable
-5. **Statistical Review** — Statistician reviews any quantitative claims
-6. **Synthesis** — Synthesizer assembles comparison deliverable
-7. **Evaluation** — Evaluator scores: Completeness, Coherence, Strength, Actionability
-8. **Convergence Check**
-
-### Convergence
-Statistician reviewed + no contradictions + eval score ≥ 0.75.
-
-### Deliverable
-Comparison report with recommendations, backed by evidence.
-
----
-
-## 4. Investigate Workflow (Scientific Rigor)
-
-### Roles Active
-All 12 roles.
-
-### OODA Loop
-
-The orchestrator runs iterative OODA cycles until convergence.
-
-```
-OBSERVE → ORIENT → DECIDE → ACT → (repeat until converged)
-```
-
-### Steps
-
-1. **Classify** — `INVESTIGATE` + `SCIENTIFIC`
+1. **Classify** — `PROVE` + `SCIENTIFIC` (or `EXPERIMENTAL` if replication signals detected)
 2. **Scout Phase** — Prior knowledge, SOTA anchoring, gap identification
 3. **Theory Phase** — Theorist proposes causal models and competing theories
 4. **Hypothesis Generation** — Orchestrator initializes belief map with hypotheses
 5. **Baseline** — First subtask is ALWAYS a baseline measurement (hard gate)
 6. **Pre-Registration** — Each investigator pre-registers: hypothesis, method, controls, stat test, sample size, power analysis, sensitivity plan
-7. **Methodologist Review** — Approves or revises experimental design (advisory but recorded)
+7. **Methodologist Review** — Mandatory — approves or revises experimental design
 8. **Dispatch Investigators** — Parallel experiments in worktrees
 9. **Inner Loop** — Each investigator:
    - Execute experiment
    - Verify: runs without crash, metric extracted
-   - **Self-verification**: test loop (up to 3 retries), produces check, metric consistency
+   - Self-verification: test loop (up to 3 retries), produces check, metric consistency
    - EVA: manipulation check, artifact check, sanity check
    - If DESIGN_INVALID → escalate to Methodologist
    - Commit raw data with SHA-256
    - Sensitivity analysis (2+ parameter variations)
    - Create FINDING in Beads
-   - **Incremental findings commit**: write observations to Beads as they occur
-10. **OODA Observe** — Orchestrator reads findings, belief map, experiment ledger
-11. **OODA Orient** — Update strategic context, check paradigm stress, convergence
-12. **OODA Decide** — Information-gain priority, review gates, replication needs
-13. **OODA Act** — Merge completed work, spawn new agents, update belief map
-14. **Statistician Review** — Independent recomputation, interpretation metadata
-15. **Critic Review** — Partially blinded adversarial review
-16. **Synthesis** — Claim-evidence registry → deliverable (report or manuscript)
-17. **Evaluation** — CCSA scoring with **structured feedback**: per-dimension scores, specific notes, and concrete remediations list
-18. **Convergence** — All hypotheses resolved, no paradigm stress, eval ≥ 0.75
+10. **OODA Loop** — Orchestrator reads findings, updates belief map, checks convergence
+11. **Statistician Review** — Independent recomputation, interpretation metadata
+12. **Critic Review** — Partially blinded adversarial review
+13. **Synthesis** — Claim-evidence registry → deliverable (report or manuscript)
+14. **Evaluation** — CCSA scoring with structured feedback
+15. **Convergence** — All hypotheses resolved, no paradigm stress, eval ≥ 0.75
 
-### Human Review Gates (Scientific+ Rigor)
+### Human Review Gates (PROVE mode)
 
-At Scientific and Experimental rigor, the investigation pauses for human approval at two decision points:
+At two key decision points, the investigation pauses for human approval:
 
 | Gate | When | What the Human Sees |
-|------|------|--------------------|
+|------|------|--------------------|  
 | **Pre-registration** | After pre-reg complete, before running experiments | Hypothesis, method, N, design summary |
 | **Convergence** | After findings collected, before finalizing deliverable | Findings summary, eval score, convergence status |
 
-The orchestrator writes `.swarm/human-gate.json` with `status: "pending"`. The dispatcher detects this and sends a Telegram message. The human replies `/approve <id>` or `/revise <id> <feedback>`. The orchestrator polls the file and resumes when approved.
+### Additional Experimental Gates
 
-This prevents costly methodology errors and ensures human oversight at high-stakes decision points.
+| Gate | Description |
+|------|-------------|
+| Mandatory Methodologist review | Design review is blocking, not advisory |
+| Replication | High-impact findings MUST be replicated |
+| Pre-reg compliance audit | Verify experiment matched pre-registration |
+| Power analysis documented | Required and verified |
 
 ### Convergence
-All hypotheses resolved + competing theory ruled out + novel prediction tested + no PARADIGM_STRESS + eval score ≥ 0.75.
+All hypotheses resolved + competing theory ruled out + novel prediction tested + no PARADIGM_STRESS + eval score ≥ 0.75. For EXPERIMENTAL rigor: + all high-impact findings replicated + pre-reg compliance verified.
 
 ### DESIGN_INVALID Recovery Flow
 
@@ -159,26 +160,7 @@ Scientific report or manuscript with:
 
 ---
 
-## 5. Experiment Workflow (Experimental Rigor)
-
-### Roles Active
-All 12 roles + replication.
-
-### Additional Gates (beyond Scientific)
-
-| Gate | Description |
-|------|-------------|
-| Mandatory Methodologist review | Design review is blocking, not advisory |
-| Replication | High-impact findings MUST be replicated |
-| Pre-reg compliance audit | Verify experiment matched pre-registration |
-| Power analysis documented | Required and verified |
-
-### Convergence
-All Scientific criteria + all high-impact findings replicated + pre-reg compliance verified.
-
----
-
-## 6. Demo Workflow
+## 4. Demo Workflow
 
 ### CLI Path
 
