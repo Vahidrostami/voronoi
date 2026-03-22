@@ -482,8 +482,10 @@ def cmd_server(args: argparse.Namespace) -> None:
         _server_prune(args)
     elif args.server_action == "config":
         _server_config(args)
+    elif args.server_action == "extend-timeout":
+        _server_extend_timeout(args)
     else:
-        print("Usage: voronoi server {init|start|status|prune|config}")
+        print("Usage: voronoi server {init|start|status|prune|config|extend-timeout}")
         sys.exit(1)
 
 
@@ -766,6 +768,69 @@ def _server_config(args: argparse.Namespace) -> None:
     print(config.config_path.read_text())
 
 
+def _server_extend_timeout(args: argparse.Namespace) -> None:
+    """Extend (or set) the timeout for a running investigation.
+
+    Writes the new total timeout to <workspace>/.swarm/timeout_hours so the
+    dispatcher picks it up on the next poll cycle — no restart required.
+    """
+    from voronoi.server.runner import ServerConfig
+    from voronoi.server.workspace import WorkspaceManager
+
+    config = ServerConfig()
+    if not config.base_dir.exists():
+        print("Server not initialized. Run: voronoi server init")
+        sys.exit(1)
+
+    hours = args.hours
+    if hours <= 0:
+        print("Error: hours must be a positive integer.", file=sys.stderr)
+        sys.exit(1)
+
+    wm = WorkspaceManager(config.base_dir)
+    active = wm.list_active()
+
+    target = args.investigation
+
+    # Match by investigation ID ("#3" or "3") or by workspace name substring
+    matched: list[Path] = []
+    target_clean = target.lstrip("#")
+    for name in active:
+        ws_path = config.base_dir / "active" / name
+        # Match numeric ID against queue.db investigation ID stored in .swarm/
+        inv_id_path = ws_path / ".swarm" / "investigation_id"
+        if inv_id_path.exists():
+            try:
+                if inv_id_path.read_text().strip() == target_clean:
+                    matched.append(ws_path)
+                    continue
+            except OSError:
+                pass
+        # Fallback: match workspace directory name
+        if target_clean in name:
+            matched.append(ws_path)
+
+    if not matched:
+        print(f"No active workspace matching '{target}'.", file=sys.stderr)
+        print("Active workspaces:")
+        for name in active:
+            print(f"  {name}")
+        sys.exit(1)
+    if len(matched) > 1:
+        print(f"Ambiguous — '{target}' matches multiple workspaces:", file=sys.stderr)
+        for ws in matched:
+            print(f"  {ws.name}", file=sys.stderr)
+        sys.exit(1)
+
+    ws_path = matched[0]
+    swarm_dir = ws_path / ".swarm"
+    swarm_dir.mkdir(parents=True, exist_ok=True)
+    override_file = swarm_dir / "timeout_hours"
+    override_file.write_text(str(hours))
+    print(f"Timeout for {ws_path.name} set to {hours}h (was {config.sandbox.timeout_hours}h default).")
+    print("The dispatcher will pick this up on the next poll cycle.")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="voronoi",
@@ -805,6 +870,9 @@ def main() -> None:
     server_prune = server_sub.add_parser("prune", help="Clean up old workspaces")
     server_prune.add_argument("--force", action="store_true", help="Actually remove workspaces")
     server_sub.add_parser("config", help="Show server configuration")
+    ext_parser = server_sub.add_parser("extend-timeout", help="Extend timeout for a running investigation")
+    ext_parser.add_argument("investigation", help="Investigation ID or workspace name")
+    ext_parser.add_argument("hours", type=int, help="New total timeout in hours")
 
     args = parser.parse_args()
 

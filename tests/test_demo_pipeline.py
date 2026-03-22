@@ -317,6 +317,76 @@ class TestTimeoutDetection:
         assert 1 not in d.running
         d._queue.complete.assert_called_once_with(1)
 
+    def test_effective_timeout_default(self, dispatcher_setup):
+        """Without override file, uses config default."""
+        d, _, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1, workspace_path=tmp_path,
+            tmux_session="t", question="q", mode="investigate",
+        )
+        assert d._effective_timeout(run) == 2  # config default
+
+    def test_effective_timeout_override(self, dispatcher_setup):
+        """Override file in .swarm/timeout_hours takes precedence."""
+        d, _, tmp_path = dispatcher_setup
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(exist_ok=True)
+        (swarm / "timeout_hours").write_text("72")
+        run = RunningInvestigation(
+            investigation_id=1, workspace_path=tmp_path,
+            tmux_session="t", question="q", mode="investigate",
+        )
+        assert d._effective_timeout(run) == 72
+
+    def test_effective_timeout_bad_value_falls_back(self, dispatcher_setup):
+        """Non-integer or non-positive values fall back to config default."""
+        d, _, tmp_path = dispatcher_setup
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(exist_ok=True)
+        (swarm / "timeout_hours").write_text("not-a-number")
+        run = RunningInvestigation(
+            investigation_id=1, workspace_path=tmp_path,
+            tmux_session="t", question="q", mode="investigate",
+        )
+        assert d._effective_timeout(run) == 2  # falls back to config
+
+    def test_timeout_override_prevents_timeout(self, dispatcher_setup):
+        """Extending timeout prevents a running investigation from timing out."""
+        d, msgs, tmp_path = dispatcher_setup
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(exist_ok=True)
+
+        run = RunningInvestigation(
+            investigation_id=1, workspace_path=tmp_path,
+            tmux_session="test", question="test q", mode="build",
+            started_at=time.time() - 3 * 3600,  # 3h ago, config timeout is 2h
+        )
+        # Extend to 6h — should NOT time out at 3h elapsed
+        (swarm / "timeout_hours").write_text("6")
+        run.last_update_at = 0
+        d.running[1] = run
+
+        def _mock_run(cmd, **kwargs):
+            m = MagicMock()
+            if "has-session" in cmd:
+                m.returncode = 0  # session alive
+            elif "bd" in cmd:
+                m.returncode = 0
+                m.stdout = "[]"
+                m.stderr = ""
+            else:
+                m.returncode = 0
+                m.stdout = ""
+                m.stderr = ""
+            return m
+
+        with patch("subprocess.run", side_effect=_mock_run), \
+             patch("voronoi.server.dispatcher.subprocess.run", side_effect=_mock_run):
+            d.poll_progress()
+
+        # Should still be running — timeout extended past 3h
+        assert 1 in d.running
+
 
 # ---------------------------------------------------------------------------
 # Fix 5: Atomic queue claiming

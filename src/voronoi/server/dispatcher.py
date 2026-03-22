@@ -411,9 +411,10 @@ class InvestigationDispatcher:
                             inv_id, len(events), run.phase)
                 self._send_progress_batch(run, events)
 
-            # Check for timeout
+            # Check for timeout (per-investigation override via .swarm/timeout_hours)
             elapsed_hours = (now - run.started_at) / 3600
-            timed_out = elapsed_hours >= self.config.timeout_hours
+            effective_timeout = self._effective_timeout(run)
+            timed_out = elapsed_hours >= effective_timeout
 
             # Stall detection: warn if 0 tasks after stall_minutes
             if (session_alive and not run.stall_warned
@@ -437,7 +438,7 @@ class InvestigationDispatcher:
 
             if not session_alive or self._is_complete(run) or timed_out:
                 if timed_out and not self._is_complete(run):
-                    reason = f"timeout ({self.config.timeout_hours}h)"
+                    reason = f"timeout ({effective_timeout}h)"
                     logger.warning("Investigation #%d timed out after %.1fh",
                                    inv_id, elapsed_hours)
                     # Kill tmux session if still alive
@@ -496,15 +497,34 @@ class InvestigationDispatcher:
                 logger.warning("Failed to read eval-score.json for #%d: %s",
                                run.investigation_id, e)
 
+    def _effective_timeout(self, run: RunningInvestigation) -> int:
+        """Return the effective timeout for an investigation.
+
+        Checks for a per-investigation override file at
+        ``<workspace>/.swarm/timeout_hours``.  The file should contain a
+        single integer (the new total timeout in hours).  If the file is
+        missing or unreadable, falls back to ``self.config.timeout_hours``.
+        """
+        override_path = run.workspace_path / ".swarm" / "timeout_hours"
+        if override_path.exists():
+            try:
+                value = int(override_path.read_text().strip())
+                if value > 0:
+                    return value
+            except (ValueError, OSError):
+                pass
+        return self.config.timeout_hours
+
     def _write_timeout_convergence(self, run: RunningInvestigation) -> None:
         """Write convergence.json indicating timeout exhaustion."""
         conv_path = run.workspace_path / ".swarm" / "convergence.json"
         conv_path.parent.mkdir(parents=True, exist_ok=True)
         from datetime import datetime, timezone
+        effective = self._effective_timeout(run)
         data = {
             "status": "exhausted",
             "converged": False,
-            "reason": f"Timed out after {self.config.timeout_hours}h",
+            "reason": f"Timed out after {effective}h",
             "score": run.eval_score,
             "blockers": ["timeout"],
             "timestamp": datetime.now(timezone.utc).isoformat(),

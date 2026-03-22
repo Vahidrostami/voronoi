@@ -2,7 +2,7 @@
 
 > CLI commands, project scaffolding, demo management, server control.
 
-**TL;DR**: Entry point `voronoi` → subcommands: `init` (scaffold), `upgrade`, `demo {list|run|clean}`, `server {init|start|status|prune|config}`, `clean`, `version`. `init` copies `.github/` roles+skills+prompts + `scripts/`. User-owned: CLAUDE.md, AGENTS.md (never overwritten). All in `src/voronoi/cli.py`.
+**TL;DR**: Entry point `voronoi` → subcommands: `init` (scaffold), `upgrade`, `demo {list|run|clean}`, `server {init|start|status|prune|config|extend-timeout}`, `clean`, `version`. `init` copies `.github/` roles+skills+prompts + `scripts/`. User-owned: CLAUDE.md, AGENTS.md (never overwritten). All in `src/voronoi/cli.py`.
 
 ## 1. Entry Point
 
@@ -32,7 +32,8 @@ voronoi
     ├── start                  # Start dispatcher + Telegram bridge
     ├── status                 # Show server status
     ├── prune                  # Clean stale investigations
-    └── config                 # View/edit server config
+    ├── config                 # View/edit server config
+    └── extend-timeout         # Extend timeout for a running investigation
 ```
 
 ## 3. `voronoi init`
@@ -155,6 +156,29 @@ Cleans up:
 ### `voronoi server config`
 
 View and edit `~/.voronoi/config.json`.
+
+### `voronoi server extend-timeout`
+
+Extend (or set) the timeout for a running investigation **without restarting** the server.
+
+```bash
+voronoi server extend-timeout <investigation> <hours>
+```
+
+- `<investigation>`: Investigation ID (e.g. `3` or `#3`) or workspace name substring.
+- `<hours>`: New **total** timeout in hours (not additional hours).
+
+Writes `<workspace>/.swarm/timeout_hours` which the dispatcher reads on the next poll cycle.
+
+**Example:** Extend a 48h investigation to 72h while it's running:
+```bash
+voronoi server extend-timeout coupled-decisions 72
+```
+
+You can also write the file manually:
+```bash
+echo 72 > ~/.voronoi/active/<workspace-name>/.swarm/timeout_hours
+```
 
 ---
 
