@@ -110,13 +110,31 @@ flowchart LR
 
 ---
 
-## 3. `.github/` — Agent Roles, Prompts, and Skills
+## 3. File Audience Separation
+
+Voronoi strictly separates files by audience:
+
+| Files | Audience | Shipped with pip? |
+|-------|----------|:-:|
+| `CLAUDE.md` (repo root) | Developers working ON Voronoi | No |
+| `docs/*.md` | Developers working ON Voronoi | No |
+| `src/voronoi/data/templates/CLAUDE.md` | Investigation agents working WITH Voronoi | Yes |
+| `src/voronoi/data/agents/` | Investigation agents (also Copilot during dev via `.github/` symlink) | Yes |
+| `src/voronoi/data/scripts/` | Runtime scripts (spawn, merge, convergence) | Yes |
+| `scripts/` (repo root) | Dev-only scripts (sync, dashboard, health-check) | No |
+
+`sync-package-data.sh` copies `.github/{agents,skills,prompts}` → `src/voronoi/data/` before `pip install .`.
+Editable installs (`pip install -e .`) read from the repo root directly.
+
+---
+
+## 4. `.github/` — Agent Roles, Prompts, and Skills
 
 Copilot auto-discovers these files. They are the **real** role definitions — the prompt builder *references* them, never duplicates.
 
 ```
 .github/
-├── agents/                          # Role definitions (11 roles)
+├── agents/                          # Role definitions (12 roles)
 │   ├── swarm-orchestrator.agent.md  # OODA loop, convergence, paradigm checks
 │   ├── worker-agent.agent.md        # Build tasks, artifact contracts
 │   ├── scout.agent.md               # Prior knowledge research
@@ -127,9 +145,9 @@ Copilot auto-discovers these files. They are the **real** role definitions — t
 │   ├── methodologist.agent.md       # Experimental design review
 │   ├── statistician.agent.md        # CI, effect sizes, data integrity
 │   ├── synthesizer.agent.md         # Consistency checks, deliverable
-│   └── evaluator.agent.md           # Final scoring (CCSA formula)
+│   ├── evaluator.agent.md           # Final scoring (CCSA formula)
+│   └── scribe.agent.md              # LaTeX compilation, figures
 ├── prompts/                         # Invocable prompts
-│   ├── swarm.prompt.md              # /swarm — full orchestration
 │   ├── spawn.prompt.md              # /spawn — single agent dispatch
 │   ├── merge.prompt.md              # /merge — branch integration
 │   ├── standup.prompt.md            # /standup — cross-agent status
@@ -194,6 +212,7 @@ When in doubt, classify higher — gates can be skipped but not added retroactiv
 | Evaluator 🎯 | `evaluator.agent.md` | Analytical+ | Scores deliverable: Completeness·Coherence·Strength·Actionability |
 | Theorist 🧬 | `theorist.agent.md` | Scientific+ | Causal models, competing theories, paradigm stress |
 | Methodologist 📐 | `methodologist.agent.md` | Scientific+ | Experimental design review, power analysis |
+| Scribe ✍️ | `scribe.agent.md` | Any | LaTeX compilation, figure generation |
 | Worker | `worker-agent.agent.md` | Standard+ | Generic tasks |
 
 ---
@@ -204,11 +223,17 @@ Pure plumbing — no decision logic. The orchestrator (copilot) makes all decisi
 
 | Script | What it does |
 |--------|-------------|
-| `swarm-init.sh` | `git init` · `bd init` · tmux session · `.swarm-config.json` · Telegram bridge |
 | `spawn-agent.sh` | `git worktree add` → tmux window → `copilot -p prompt` |
 | `merge-agent.sh` | `git merge` → push → clean worktree → `bd close` |
+| `convergence-gate.sh` | Multi-signal convergence validation + figure-lint |
+| `health-check.sh` | Agent health monitoring (tmux + git + process tree) |
+| `swarm-init.sh` | `git init` · `bd init` · tmux session · config |
 | `notify-telegram.sh` | Source this, call `notify_telegram "event" "message"` |
+| `figure-lint.sh` | Verify all `\includegraphics` refs resolve |
 | `teardown.sh` | Kill tmux, prune worktrees/branches |
+| `sync-package-data.sh` | Copy framework files for pip build |
+| `dashboard.py` | Rich terminal dashboard (optional dev tool) |
+| `telegram-bridge.py` | Telegram ↔ Voronoi gateway |
 
 ```mermaid
 sequenceDiagram
@@ -255,9 +280,27 @@ stateDiagram-v2
 - Builds prompt via `prompt.py` (shared builder)
 - Launches copilot in tmux with `; exit` (session dies when agent finishes)
 - Polls progress every 30s: `bd list --json` for task diffs, findings, phase changes
+- Builds narrative digest messages (buddy-style) via `progress.py:build_digest()`
+- Reads `.swarm/experiments.tsv` and `.swarm/success-criteria.json` for track assessment
 - Reads `.swarm/eval-score.json` for evaluator score propagation
 - Detects completion: `deliverable.md` (standard) or `+ convergence.json` (analytical+)
 - Enforces timeout (configurable, default 8h)
+
+### Telegram Notifications
+
+Messages use a conversational buddy style — narrative updates instead of data dumps.
+
+**Three tiers:**
+- *Alert* (immediate) — agent died, design invalid, stall, auth expired
+- *Digest* (every 30s when events) — what happened, where we are, track status, what's next
+- *Milestone* (on transition) — phase change, completion, failure
+
+**Pull commands (via `/voronoi`):**
+- `status` / `whatsup` — unified what's-happening overview (tasks + agents + phase)
+- `progress` / `howsitgoing` — experiment metrics, success criteria, belief map, track assessment
+- `belief` · `journal` · `finding <id>` — knowledge lookups (resolved to investigation workspace)
+- `guide <msg>` · `pivot <msg>` — operator guidance (written to all active workspaces)
+- `abort` — stop all running investigations
 
 ---
 
@@ -271,22 +314,37 @@ stateDiagram-v2
 | Raw Data | `data/raw/` | CSV/JSON with SHA-256 integrity hash |
 | Belief Map | `.swarm/belief-map.json` | Hypothesis probabilities, information-gain prioritization |
 | Journal | `.swarm/journal.md` | Narrative continuity across OODA cycles |
-| Strategic Context | `.swarm/strategic-context.md` | Decision rationale, dead ends, remaining gaps || Experiment Ledger | `.swarm/experiments.tsv` | Append-only chronological record of all experiments |
-| Verify Logs | `.swarm/verify-log-<id>.jsonl` | Per-task iteration history for self-healing agents || Deliverable | `.swarm/deliverable.md` | Final output artifact scored by Evaluator |
+| Strategic Context | `.swarm/strategic-context.md` | Decision rationale, dead ends, remaining gaps |
+| Orchestrator Checkpoint | `.swarm/orchestrator-checkpoint.json` | Compressed orchestrator state — survives restarts |
+| Experiment Ledger | `.swarm/experiments.tsv` | Append-only chronological record of all experiments |
+| Verify Logs | `.swarm/verify-log-<id>.jsonl` | Per-task iteration history for self-healing agents |
+| Deliverable | `.swarm/deliverable.md` | Final output artifact scored by Evaluator |
 | Eval Score | `.swarm/eval-score.json` | Evaluator score for convergence tracking |
+
+### Context Management
+
+The orchestrator uses a **checkpoint-driven OODA loop** to keep context bounded during long runs (~2-4K tokens/cycle vs ~20K+ without). See [docs/CONTEXT-MANAGEMENT.md](docs/CONTEXT-MANAGEMENT.md) for the full design.
+
+Key mechanisms:
+- **Checkpoint file** — written after every OODA cycle, read at cycle start
+- **Targeted Beads queries** — `bd query "updated>30m"` instead of `bd list --json`
+- **Code-assembled worker prompts** — `build_worker_prompt()` reads role files from disk
+- **Belief map as lossy compression** — findings → posteriors, then forget details
 
 ### OODA workflow
 
 ```mermaid
 flowchart TB
-    OBS["Observe\nbd ready - findings - belief map"] --> ORI["Orient\nClassify events - update context\nconvergence + paradigm check"]
-    ORI --> DEC["Decide\nInformation-gain priority\nReview gates - replication"]
-    DEC --> ACT["Act\nSpawn agents - merge work\nAccept findings - update belief map"]
-    ACT -->|"not converged"| OBS
-    ACT -->|"converged"| EVAL["Evaluator scores deliverable"]
+    CP["Read checkpoint +\nbelief map"] --> OBS["Observe\nbd query (targeted) -\nexperiment ledger"]
+    OBS --> ORI["Orient\nClassify events -\nupdate belief map"]
+    ORI --> DEC["Decide\nInformation-gain priority\nReview gates"]
+    DEC --> ACT["Act\nDispatch (code-assembled)\nMerge work"]
+    ACT --> SAVE["Write checkpoint"]
+    SAVE -->|"not converged"| CP
+    SAVE -->|"converged"| EVAL["Evaluator scores deliverable"]
     EVAL -->|"score >= 0.75"| DONE["Converge"]
     EVAL -->|"score 0.50-0.74"| IMP["Improvement round, max 2"]
-    IMP --> OBS
+    IMP --> CP
     EVAL -->|"score < 0.50"| DELIVER["Deliver with quality disclosure"]
 ```
 
@@ -605,7 +663,13 @@ timestamp	task_id	branch	metric_name	metric_value	status	description
 ```
 voronoi/
 ├── cli.py                  # voronoi init · demo · upgrade · server
-├── science.py              # Pre-registration · belief map · convergence · integrity
+├── utils.py                # Shared field extraction, note parsing, title cleaning
+├── science/                # Science gate enforcement (subpackage)
+│   ├── __init__.py         # Re-exports all public symbols
+│   ├── _helpers.py         # Beads queries, consistency, interpretation, I/O
+│   ├── convergence.py      # Belief map, checkpoint, convergence detection
+│   ├── fabrication.py      # Anti-fabrication, simulation bypass
+│   └── gates.py            # Dispatch/merge gates, pre-reg, invariants, calibration
 ├── gateway/
 │   ├── intent.py           # Free-text → mode + rigor classification
 │   ├── router.py           # Command dispatch (investigate · demo · status · guide)

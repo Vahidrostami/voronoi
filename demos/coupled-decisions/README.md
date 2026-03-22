@@ -27,7 +27,7 @@ The interaction is the headline finding.
 
 ### E3: Pipeline Compression (Observational)
 
-Full pipeline (diagnostic agents → causal synthesis → quality gate) on all scenarios at L4-all. Measures effective compression from naive combinatorial space.
+Full pipeline (diagnostic agents → causal synthesis → quality gate) on all scenarios at L4-all. Measures effective compression from naive combinatorial space. Compression scales with scenario dimensionality: 15–30× for 5-lever scenarios, 100–270× for 10+ lever scenarios.
 
 ### Signal Chain
 
@@ -54,7 +54,7 @@ voronoi demo run coupled-decisions
 
 ```
 Phase 1: Pilot — 2 scenarios, all 4 cells, k=3 runs, calibration gates
-Phase 2: Full — ≥12 scenarios × 4 cells × k=3 runs, ANOVA
+Phase 2: Full — ≥24 scenarios × 4 cells × k=3 runs, ANOVA (N≥24 for 80% power at d≈0.48)
 Phase 3: Paper + webapp (gated on Phase 2)
 ```
 
@@ -76,9 +76,9 @@ demos/coupled-decisions/
 
 ## Success Criteria
 
-1. Encoding main effect OR interaction p < 0.05
-2. Interaction on cross-source MBRS (encoding × sources)
-3. Pipeline effective compression ≥ 100×
+1. At least one of: encoding main effect, interaction, or cross-source main effect at L4, p < 0.05
+2. Interaction on cross-source MBRS (encoding × sources); cross-source main effect at L4 is the flagship
+3. Pipeline effective compression ≥ 100× on high-dimensional scenarios (10+ levers)
 4. Three invariants formally defined in paper
 5. Paper compiles with figures from actual data
 6. All claims backed by effect sizes and CIs
@@ -86,7 +86,7 @@ demos/coupled-decisions/
 
 ## Call Budget
 
-~336 LLM calls (best case) to ~528 (3-vote fallback). See PROMPT.md for breakdown.
+~672 LLM calls (best case) to ~1152 (3-vote fallback). With sequential stopping: ~400–500. See PROMPT.md for breakdown.
 
 ## Prerequisites
 

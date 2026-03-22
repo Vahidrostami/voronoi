@@ -203,12 +203,43 @@ fi
 if [ "$RIGOR" != "standard" ]; then
     echo "  Running simulation-bypass detection..."
     SIM_CHECK=$(python3 -c "
-import sys
+import sys, json, glob
 sys.path.insert(0, '${WORKSPACE}/src' if __import__('os').path.isdir('${WORKSPACE}/src') else '.')
 try:
     from voronoi.science import detect_simulation_bypass
     from pathlib import Path
-    result = detect_simulation_bypass(Path('$WORKSPACE'))
+    ws = Path('$WORKSPACE')
+    # Estimate expected LLM calls from success-criteria or invariants
+    expected = 0
+    sc_file = ws / '.swarm' / 'success-criteria.json'
+    if sc_file.exists():
+        try:
+            sc = json.load(open(sc_file))
+            # Look for cache validation criteria
+            for c in (sc if isinstance(sc, list) else []):
+                desc = str(c.get('description', '')).lower()
+                if 'cache' in desc or 'llm_call' in desc:
+                    import re
+                    nums = re.findall(r'\d+', desc)
+                    if nums:
+                        expected = max(expected, int(nums[-1]))
+        except Exception:
+            pass
+    # Fallback: count cache entries and flag if suspiciously low for the project size
+    if expected == 0:
+        result_files = list(ws.rglob('results.json'))
+        for rf in result_files:
+            try:
+                d = json.load(open(rf))
+                if isinstance(d, dict):
+                    n = d.get('n_scenarios', 0)
+                    k = d.get('k_runs', d.get('runs_per_cell', 0))
+                    cells = d.get('n_cells', 4)
+                    if n and k:
+                        expected = max(expected, n * cells * k)
+            except Exception:
+                pass
+    result = detect_simulation_bypass(ws, expected_min_llm_calls=expected)
     if not result.flags:
         print('OK:no simulation bypass detected')
     else:

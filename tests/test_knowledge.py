@@ -10,9 +10,9 @@ import pytest
 from voronoi.gateway.knowledge import (
     Finding,
     KnowledgeStore,
-    _parse_finding_notes,
     _escape_md,
 )
+from voronoi.utils import parse_finding_notes as _parse_finding_notes
 
 
 # ---------------------------------------------------------------------------

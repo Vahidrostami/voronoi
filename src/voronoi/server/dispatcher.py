@@ -22,8 +22,10 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from voronoi.gateway.progress import (
-    MODE_EMOJI, MODE_VERB, progress_bar, estimate_remaining,
-    voronoi_header, phase_label,
+    MODE_EMOJI, MODE_VERB,
+    format_launch, format_complete, format_failure, format_alert,
+    format_restart, format_duration, phase_description,
+    build_digest,
 )
 
 logger = logging.getLogger("voronoi.dispatcher")
@@ -40,7 +42,7 @@ class DispatcherConfig:
     orchestrator_model: str = ""  # e.g. "claude-opus-4.6", "" = CLI default
     worker_model: str = ""        # e.g. "claude-sonnet-4.6", "" = CLI default
     progress_interval: int = 30  # seconds between progress updates
-    timeout_hours: int = 8       # max hours before marking investigation exhausted
+    timeout_hours: int = 48      # max hours before marking investigation exhausted
     max_retries: int = 2         # max times to restart a dead agent
     stall_minutes: int = 45      # warn/restart if 0 tasks after this long
 
@@ -66,6 +68,8 @@ class RunningInvestigation:
     eval_score: float = 0.0
     retry_count: int = 0
     stall_warned: bool = False
+    notified_design_invalid: set = field(default_factory=set)
+    last_event_ts: float = 0  # For event log polling
 
     @property
     def label(self) -> str:
@@ -247,15 +251,14 @@ class InvestigationDispatcher:
         logger.info("Investigation %s (#%d) LIVE in tmux=%s workspace=%s",
                     inv.codename, inv.id, tmux_session, workspace_path)
 
-        mode_emoji = MODE_EMOJI.get(inv.mode, "🔷")
-        verb = MODE_VERB.get(inv.mode, inv.mode)
         label = inv.codename or f"#{inv.id}"
-        self.send_message(
-            f"🟢 *Voronoi · {label}* {mode_emoji} is LIVE\n\n"
-            f"_{inv.question}_\n\n"
-            f"Orchestrator is planning tasks and spawning agents.\n"
-            f"First progress update in ~30s."
-        )
+        rigor = getattr(inv, 'rigor', 'standard') or 'standard'
+        self.send_message(format_launch(
+            codename=label,
+            mode=inv.mode,
+            rigor=rigor,
+            question=inv.question,
+        ))
 
     def _build_prompt(self, inv, workspace_path: Path) -> str:
         from voronoi.server.prompt import build_orchestrator_prompt
@@ -382,6 +385,9 @@ class InvestigationDispatcher:
         # Check for abort signal from the router
         self._check_abort_signal()
 
+        # Check for pending human gates (Scientific+ rigor)
+        self.check_human_gates()
+
         completed_ids = []
 
         for inv_id, run in self.running.items():
@@ -405,9 +411,10 @@ class InvestigationDispatcher:
                             inv_id, len(events), run.phase)
                 self._send_progress_batch(run, events)
 
-            # Check for timeout
+            # Check for timeout (per-investigation override via .swarm/timeout_hours)
             elapsed_hours = (now - run.started_at) / 3600
-            timed_out = elapsed_hours >= self.config.timeout_hours
+            effective_timeout = self._effective_timeout(run)
+            timed_out = elapsed_hours >= effective_timeout
 
             # Stall detection: warn if 0 tasks after stall_minutes
             if (session_alive and not run.stall_warned
@@ -416,12 +423,14 @@ class InvestigationDispatcher:
                 run.stall_warned = True
                 logger.warning("Investigation #%d stalled — 0 tasks after %.0fmin",
                                inv_id, elapsed_hours * 60)
-                self.send_message(
-                    f"⚠️ *Voronoi · {run.label}* — stalled\n\n"
-                    f"No tasks created after {elapsed_hours * 60:.0f}min. "
-                    f"The orchestrator may be stuck. "
-                    f"Will auto-restart if the agent exits."
-                )
+                self.send_message(format_alert(
+                    run.label,
+                    f"No tasks created after {int(elapsed_hours * 60)}min. "
+                    f"The orchestrator may be stuck. Will auto-restart if the agent exits."
+                ))
+
+            # Event-log-based activity detection
+            events.extend(self._check_event_log(run))
 
             # Heartbeat-based stall detection for active agents
             if session_alive and run.task_snapshot:
@@ -429,7 +438,7 @@ class InvestigationDispatcher:
 
             if not session_alive or self._is_complete(run) or timed_out:
                 if timed_out and not self._is_complete(run):
-                    reason = f"timeout ({self.config.timeout_hours}h)"
+                    reason = f"timeout ({effective_timeout}h)"
                     logger.warning("Investigation #%d timed out after %.1fh",
                                    inv_id, elapsed_hours)
                     # Kill tmux session if still alive
@@ -488,15 +497,34 @@ class InvestigationDispatcher:
                 logger.warning("Failed to read eval-score.json for #%d: %s",
                                run.investigation_id, e)
 
+    def _effective_timeout(self, run: RunningInvestigation) -> int:
+        """Return the effective timeout for an investigation.
+
+        Checks for a per-investigation override file at
+        ``<workspace>/.swarm/timeout_hours``.  The file should contain a
+        single integer (the new total timeout in hours).  If the file is
+        missing or unreadable, falls back to ``self.config.timeout_hours``.
+        """
+        override_path = run.workspace_path / ".swarm" / "timeout_hours"
+        if override_path.exists():
+            try:
+                value = int(override_path.read_text().strip())
+                if value > 0:
+                    return value
+            except (ValueError, OSError):
+                pass
+        return self.config.timeout_hours
+
     def _write_timeout_convergence(self, run: RunningInvestigation) -> None:
         """Write convergence.json indicating timeout exhaustion."""
         conv_path = run.workspace_path / ".swarm" / "convergence.json"
         conv_path.parent.mkdir(parents=True, exist_ok=True)
         from datetime import datetime, timezone
+        effective = self._effective_timeout(run)
         data = {
             "status": "exhausted",
             "converged": False,
-            "reason": f"Timed out after {self.config.timeout_hours}h",
+            "reason": f"Timed out after {effective}h",
             "score": run.eval_score,
             "blockers": ["timeout"],
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -615,10 +643,8 @@ class InvestigationDispatcher:
             title = task.get("title", "")
             if ("DESIGN_INVALID" in notes
                     and task.get("status") != "closed"
-                    and tid not in getattr(run, "_notified_design_invalid", set())):
-                if not hasattr(run, "_notified_design_invalid"):
-                    run._notified_design_invalid = set()
-                run._notified_design_invalid.add(tid)
+                    and tid not in run.notified_design_invalid):
+                run.notified_design_invalid.add(tid)
                 diagnosis = ""
                 for line in notes.split("\n"):
                     if "DESIGN_INVALID" in line:
@@ -663,7 +689,7 @@ class InvestigationDispatcher:
                 run.phase = "planning"
 
         if run.phase != old_phase:
-            phase_msg = phase_label(run.mode, run.phase)
+            phase_msg = phase_description(run.mode, run.phase)
             events.append({"type": "phase", "msg": phase_msg})
 
         # Check for paradigm stress (Scientific+ only)
@@ -709,53 +735,47 @@ class InvestigationDispatcher:
             logger.debug("Heartbeat stall check failed: %s", e)
         return events
 
+    def _check_event_log(self, run: RunningInvestigation) -> list[dict]:
+        """Check the structured event log for notable activity."""
+        events: list[dict] = []
+        try:
+            from voronoi.server.events import summarize_events
+            summary = summarize_events(run.workspace_path, since=run.last_event_ts)
+            if summary["count"] == 0:
+                return events
+            run.last_event_ts = summary["last_event_ts"]
+
+            # Report failures
+            if summary["failures"] > 0:
+                events.append({
+                    "type": "event_log",
+                    "msg": f"📝 {summary['count']} events since last poll "
+                           f"({summary['failures']} failures, "
+                           f"{summary['total_tokens']:,} tokens)",
+                })
+            # Log token accumulation periodically (every 50K tokens)
+            elif summary["total_tokens"] > 50000:
+                events.append({
+                    "type": "event_log",
+                    "msg": f"📝 {summary['count']} events, "
+                           f"{summary['total_tokens']:,} tokens since last poll",
+                })
+        except Exception as e:
+            logger.debug("Event log check failed: %s", e)
+        return events
+
     def _send_progress_batch(self, run: RunningInvestigation, events: list[dict]) -> None:
-        elapsed = (time.time() - run.started_at) / 60
-        findings = [e for e in events if e["type"] == "finding"]
-        phases = [e for e in events if e["type"] == "phase"]
-        progress = [e for e in events if e["type"] == "progress"]
-        tasks = [e for e in events if e["type"] in ("task_done", "task_started", "task_new")]
-
-        mode_emoji = MODE_EMOJI.get(run.mode, "🔷")
-        lines = [f"📡 *Voronoi · {run.label}* {mode_emoji} · {elapsed:.0f}min\n"]
-
-        # Progress bar first — instant status at a glance
-        total = len(run.task_snapshot)
-        closed = sum(1 for t in run.task_snapshot.values() if t["status"] == "closed")
-        if total > 0:
-            bar = progress_bar(closed, total)
-            eta = estimate_remaining(time.time() - run.started_at, closed, total)
-            eta_str = f" · {eta}" if eta else ""
-            lines.append(f"{bar}{eta_str}")
-
-        for e in phases:
-            lines.append(f"\n{e['msg']}")
-
-        # Activity timeline — show what happened (up to 5 items)
-        if len(tasks) <= 5:
-            for e in tasks:
-                lines.append(e["msg"])
-        elif tasks:
-            done = sum(1 for e in tasks if e["type"] == "task_done")
-            started = sum(1 for e in tasks if e["type"] == "task_started")
-            new = sum(1 for e in tasks if e["type"] == "task_new")
-            parts = []
-            if done:
-                parts.append(f"{done} completed")
-            if started:
-                parts.append(f"{started} started")
-            if new:
-                parts.append(f"{new} new")
-            lines.append(f"📋 Tasks: {', '.join(parts)}")
-
-        for e in findings:
-            lines.append("")
-            lines.append(e["msg"])
-
-        for e in progress:
-            lines.append(e["msg"])
-
-        self.send_message("\n".join(lines))
+        msg = build_digest(
+            codename=run.label,
+            mode=run.mode,
+            phase=run.phase,
+            elapsed_sec=time.time() - run.started_at,
+            task_snapshot=run.task_snapshot,
+            workspace=run.workspace_path,
+            events_since_last=events,
+            eval_score=run.eval_score,
+        )
+        self.send_message(msg)
 
     def _has_open_design_invalid(self, run: RunningInvestigation) -> bool:
         """Check if any open tasks have DESIGN_INVALID flag.
@@ -849,10 +869,11 @@ class InvestigationDispatcher:
         if not failed and self._has_open_design_invalid(run):
             logger.warning("Completion blocked for %s: DESIGN_INVALID tasks still open",
                            run.label)
-            self.send_message(
-                f"🚨 *Voronoi · {run.label}* — completion blocked\n\n"
-                f"DESIGN_INVALID experiments still open. Fix the design and re-run."
-            )
+            self.send_message(format_alert(
+                run.label,
+                "Completion blocked — experiments flagged as DESIGN_INVALID are still open. "
+                "Fix the design and re-run."
+            ))
             return
 
         elapsed = (time.time() - run.started_at) / 60
@@ -878,13 +899,16 @@ class InvestigationDispatcher:
                 except OSError:
                     pass
 
-            msg = (f"💀 *Voronoi · {run.label}* FAILED\n\n"
-                   f"Reason: {failure_reason}\n"
-                   f"Tasks: {closed}/{total_tasks} completed in {elapsed:.0f}min")
-            if run.retry_count > 0:
-                msg += f"\nRetries: {run.retry_count}/{self.config.max_retries}"
-            if log_tail:
-                msg += f"\n\nLast log:\n```\n{log_tail[-400:]}\n```"
+            msg = format_failure(
+                codename=run.label,
+                reason=failure_reason,
+                elapsed_sec=time.time() - run.started_at,
+                closed=closed,
+                total=total_tasks,
+                log_tail=log_tail,
+                retry_count=run.retry_count,
+                max_retries=self.config.max_retries,
+            )
             self.send_message(msg)
             return
 
@@ -940,11 +964,12 @@ class InvestigationDispatcher:
         logger.info("Restarting investigation #%d (attempt %d/%d)",
                     run.investigation_id, run.retry_count, self.config.max_retries)
 
-        self.send_message(
-            f"🔄 *Voronoi · {run.label}* — agent died, restarting "
-            f"(attempt {run.retry_count}/{self.config.max_retries})\n\n"
-            + (f"Last log:\n```\n{tail[-500:]}\n```" if tail else "No log captured.")
-        )
+        self.send_message(format_restart(
+            run.label,
+            attempt=run.retry_count,
+            max_retries=self.config.max_retries,
+            log_tail=tail,
+        ))
 
         # Ensure orchestrator prompt still exists
         prompt_file = run.workspace_path / ".swarm" / "orchestrator-prompt.txt"
@@ -971,13 +996,13 @@ class InvestigationDispatcher:
                 logger.error("Auth expired for #%d — skipping remaining retries: %s",
                              run.investigation_id, e)
                 run.retry_count = self.config.max_retries  # exhaust retries
-                self.send_message(
-                    f"🔑 *Voronoi · {run.label}* — Copilot auth expired.\n\n"
-                    f"SSH into the server and run one of:\n"
-                    f"• `copilot` → `/login`\n"
-                    f"• `gh auth login`\n\n"
-                    f"Then retry with /spawn"
-                )
+                self.send_message(format_alert(
+                    run.label,
+                    "Copilot auth expired. SSH into the server and run:\n"
+                    "• `copilot` → `/login`\n"
+                    "• `gh auth login`\n\n"
+                    "Then retry with /spawn"
+                ))
             else:
                 logger.error("Failed to restart #%d: %s", run.investigation_id, e)
             return False
@@ -1012,7 +1037,7 @@ class InvestigationDispatcher:
             if ok:
                 self.send_message(f"📦 *Published:* [{slug}]({url})")
         except Exception:
-            pass
+            logger.debug("Failed to publish %s", run.label, exc_info=True)
 
     def _handle_abort(self) -> None:
         for inv_id, run in list(self.running.items()):
@@ -1021,7 +1046,7 @@ class InvestigationDispatcher:
                 capture_output=True,
             )
             self.queue.fail(inv_id, "Aborted by operator")
-            self.send_message(f"🛑 Voronoi · {run.label} aborted")
+            self.send_message(f"*{run.label}* aborted.")
         self.running.clear()
 
     def _check_abort_signal(self) -> None:
@@ -1045,3 +1070,104 @@ class InvestigationDispatcher:
             except OSError:
                 pass
             self._handle_abort()
+
+    # ------------------------------------------------------------------
+    # Human gate — pause for human approval at key decision points
+    # ------------------------------------------------------------------
+
+    def check_human_gates(self) -> None:
+        """Check for pending human gates across running investigations.
+
+        For Scientific+ rigor, the orchestrator writes a
+        ``.swarm/human-gate.json`` file at key decision points:
+        - After pre-registration (before running experiments)
+        - Before convergence (before finalizing deliverable)
+
+        The dispatcher detects these files, pauses the investigation
+        (kills the tmux session), and sends a Telegram message asking
+        the human to ``/approve <id>`` or ``/revise <id> <feedback>``.
+        """
+        for run in self.running.values():
+            if run.rigor not in ("scientific", "experimental"):
+                continue
+            gate_path = run.workspace_path / ".swarm" / "human-gate.json"
+            if not gate_path.exists():
+                continue
+            try:
+                data = json.loads(gate_path.read_text())
+                if not isinstance(data, dict):
+                    continue
+                if data.get("status") == "approved":
+                    continue  # Already approved, orchestrator should resume
+                if data.get("status") == "pending":
+                    gate_type = data.get("gate", "unknown")
+                    summary = data.get("summary", "")
+                    logger.info("Human gate '%s' pending for %s",
+                                gate_type, run.label)
+                    self.send_message(
+                        f"⏸️ *{run.label} — Human Review Required*\n\n"
+                        f"Gate: *{gate_type}*\n"
+                        f"{summary}\n\n"
+                        f"Reply `/approve {run.investigation_id}` to proceed\n"
+                        f"Reply `/revise {run.investigation_id} <feedback>` to request changes"
+                    )
+                    # Mark as notified so we don't spam
+                    data["status"] = "notified"
+                    gate_path.write_text(json.dumps(data, indent=2))
+            except (json.JSONDecodeError, OSError) as e:
+                logger.debug("Human gate read failed for %s: %s", run.label, e)
+
+    def approve_human_gate(self, investigation_id: int, feedback: str = "") -> bool:
+        """Approve a pending human gate, allowing the investigation to resume.
+
+        Parameters
+        ----------
+        investigation_id : int
+            The investigation to approve.
+        feedback : str
+            Optional feedback that will be written for the orchestrator to read.
+
+        Returns True if the gate was found and approved, False otherwise.
+        """
+        run = self.running.get(investigation_id)
+        if not run:
+            return False
+        gate_path = run.workspace_path / ".swarm" / "human-gate.json"
+        if not gate_path.exists():
+            return False
+        try:
+            data = json.loads(gate_path.read_text())
+            data["status"] = "approved"
+            if feedback:
+                data["feedback"] = feedback
+            gate_path.write_text(json.dumps(data, indent=2))
+            self.send_message(f"✅ *{run.label}* — gate approved. Investigation resuming.")
+            return True
+        except (json.JSONDecodeError, OSError) as e:
+            logger.error("Failed to approve gate for %s: %s", run.label, e)
+            return False
+
+    def revise_human_gate(self, investigation_id: int, feedback: str) -> bool:
+        """Reject a pending human gate with revision feedback.
+
+        The orchestrator reads the feedback and creates revision tasks.
+        """
+        run = self.running.get(investigation_id)
+        if not run:
+            return False
+        gate_path = run.workspace_path / ".swarm" / "human-gate.json"
+        if not gate_path.exists():
+            return False
+        try:
+            data = json.loads(gate_path.read_text())
+            data["status"] = "revision_requested"
+            data["feedback"] = feedback
+            gate_path.write_text(json.dumps(data, indent=2))
+            self.send_message(
+                f"🔄 *{run.label}* — revision requested.\n"
+                f"Feedback: _{feedback}_"
+            )
+            return True
+        except (json.JSONDecodeError, OSError) as e:
+            logger.error("Failed to write revision for %s: %s", run.label, e)
+            return False

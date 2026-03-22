@@ -128,30 +128,26 @@ class TestScienceSections:
         prompt = build_orchestrator_prompt(
             question="test", mode="investigate", rigor="scientific",
         )
-        assert "Hypothesis" in prompt
-        assert "belief-map.json" in prompt
+        # Key science terms should appear in the compact science section
+        assert "pre-registration" in prompt.lower()
+        assert "Methodologist" in prompt
 
     def test_scientific_has_review_gates(self):
         prompt = build_orchestrator_prompt(
             question="test", mode="investigate", rigor="scientific",
         )
+        # Compact section references key gates
         assert "Statistician" in prompt
-        assert "Critic" in prompt
-        assert "Synthesizer" in prompt
-        assert "Evaluator" in prompt
-        # Must reference the actual agent files
-        assert ".github/agents/statistician.agent.md" in prompt
-        assert ".github/agents/critic.agent.md" in prompt
-        # Must require claim-evidence traceability
         assert "claim-evidence" in prompt.lower()
+        assert "Evaluator" in prompt or "0.75" in prompt
 
     def test_analytical_has_claim_evidence(self):
         prompt = build_orchestrator_prompt(
             question="test", mode="explore", rigor="analytical",
         )
         assert "claim-evidence" in prompt.lower()
-        assert "INTERPRETATION" in prompt or "interpretation" in prompt.lower()
-        assert "PRACTICAL_SIGNIFICANCE" in prompt
+        assert "Statistician" in prompt
+        assert "0.75" in prompt
 
     def test_analytical_has_stats_but_no_critic(self):
         prompt = build_orchestrator_prompt(
@@ -166,8 +162,9 @@ class TestScienceSections:
         prompt = build_orchestrator_prompt(
             question="test", mode="investigate", rigor="scientific",
         )
-        assert "Convergence" in prompt
-        assert "hypotheses resolved" in prompt
+        # Convergence criteria are in the role file; prompt has compact reminders
+        assert "convergence" in prompt.lower()
+        assert "Methodologist" in prompt
 
     def test_experimental_has_replication(self):
         prompt = build_orchestrator_prompt(
@@ -293,7 +290,7 @@ class TestWorkspaceGitHubProvisioning:
             d.mkdir(parents=True)
             (d / f"test.{subdir[:-1]}.md").write_text(f"# {subdir}")
 
-        with patch("voronoi.cli._find_data_dir", return_value=data_dir):
+        with patch("voronoi.cli.find_data_dir", return_value=data_dir):
             wm._ensure_github_files(workspace)
 
         assert (workspace / ".github" / "agents" / "test.agent.md").exists()
@@ -307,13 +304,22 @@ class TestWorkspaceGitHubProvisioning:
         workspace = tmp_path / "workspace"
         (workspace / ".github" / "agents").mkdir(parents=True)
         (workspace / ".github" / "agents" / "existing.md").write_text("keep me")
+        # Pre-create CLAUDE.md so templates copy is also skipped
+        (workspace / "CLAUDE.md").write_text("existing")
+        (workspace / "AGENTS.md").write_text("existing")
+        # Pre-create scripts/ so scripts copy is also skipped
+        (workspace / "scripts").mkdir()
 
-        with patch("voronoi.cli._find_data_dir") as mock_find:
+        with patch("voronoi.cli.find_data_dir") as mock_find:
+            mock_find.return_value = tmp_path / "fake-data"
+            (tmp_path / "fake-data" / "scripts").mkdir(parents=True)
+            (tmp_path / "fake-data" / "templates").mkdir(parents=True)
             wm._ensure_github_files(workspace)
-            # Should not even call _find_data_dir since agents/ already exists
-            mock_find.assert_not_called()
 
+        # Existing agent file should not be overwritten
         assert (workspace / ".github" / "agents" / "existing.md").read_text() == "keep me"
+        # Pre-existing CLAUDE.md should not be overwritten
+        assert (workspace / "CLAUDE.md").read_text() == "existing"
 
     def test_provision_lab_copies_github(self, tmp_path):
         from voronoi.server.workspace import WorkspaceManager

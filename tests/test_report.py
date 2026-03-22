@@ -8,8 +8,10 @@ import pytest
 
 from voronoi.gateway.report import (
     ReportGenerator,
-    _clean_finding_title,
-    _parse_note_value,
+)
+from voronoi.utils import (
+    clean_finding_title as _clean_finding_title,
+    extract_field as _parse_note_value,
 )
 
 
@@ -56,7 +58,7 @@ class TestParseNoteValue:
         assert _parse_note_value(notes, "N") == "500"
 
     def test_missing_key(self):
-        assert _parse_note_value("EFFECT_SIZE:0.5", "VALENCE") is None
+        assert _parse_note_value("EFFECT_SIZE:0.5", "VALENCE") == ""
 
     def test_mixed_format(self):
         notes = "SOURCE_TASK:bd-5 | EFFECT_SIZE:0.82\nVALENCE:positive"
@@ -86,7 +88,7 @@ class TestTeaser:
         assert "COMPLETE" in teaser
         assert "Voronoi" in teaser
         assert "EWC" in teaser
-        assert "12/12" in teaser
+        assert "100%" in teaser
         assert "18min" in teaser
         assert "report attached" in teaser.lower()
 
@@ -98,7 +100,7 @@ class TestTeaser:
         teaser = rg.build_teaser(1, "test question", 5, 3, 10)
 
         assert "COMPLETE" in teaser
-        assert "3/5" in teaser
+        assert "60%" in teaser
         assert "0 findings" in teaser
 
     @patch("voronoi.gateway.report._run_bd")

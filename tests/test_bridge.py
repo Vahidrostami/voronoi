@@ -5,6 +5,7 @@ logic.  The bridge script is a thin Telegram I/O layer that delegates
 to these modules — it is not tested directly here.
 """
 
+import importlib.util
 import json
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -15,6 +16,8 @@ from voronoi.gateway.config import load_config, save_chat_id
 from voronoi.gateway.router import (
     CommandRouter,
     handle_status,
+    handle_whatsup,
+    handle_howsitgoing,
     handle_tasks,
     handle_ready,
     handle_health,
@@ -29,6 +32,15 @@ from voronoi.gateway.router import (
     handle_journal,
     handle_finding,
 )
+
+
+def _load_bridge_module():
+    bridge_path = Path(__file__).resolve().parent.parent / "scripts" / "telegram-bridge.py"
+    spec = importlib.util.spec_from_file_location("voronoi_telegram_bridge", bridge_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 # ---------------------------------------------------------------------------
@@ -70,13 +82,23 @@ class TestConfig:
 
 class TestHandlers:
     def test_handle_status(self, tmp_path):
-        # Create queue.db so _get_queue works
+        # status is now an alias for whatsup — conversational
         swarm_dir = tmp_path / ".swarm"
         swarm_dir.mkdir(parents=True, exist_ok=True)
         result = handle_status(str(tmp_path))
-        assert "Swarm Status" in result
-        # With no running investigations, no task counts shown
-        assert "Queued" in result
+        # Should return something (buddy style - no running = simple msg)
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+    def test_handle_whatsup_no_running(self, tmp_path):
+        result = handle_whatsup(str(tmp_path))
+        # Either nothing or queued items — both are valid
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+    def test_handle_howsitgoing_no_running(self, tmp_path):
+        result = handle_howsitgoing(str(tmp_path))
+        assert "Nothing running" in result
 
     def test_handle_tasks_no_running(self, tmp_path):
         result = handle_tasks(str(tmp_path))
@@ -106,8 +128,10 @@ class TestHandlers:
     def test_handle_abort(self, tmp_path):
         result = handle_abort(str(tmp_path))
         assert "Abort requested" in result
-        # Should write abort signal file
-        assert (tmp_path / ".swarm" / "abort-signal").exists()
+        # Should write abort signal to global fallback when no active investigations
+        assert (Path.home() / ".voronoi" / ".swarm" / "abort-signal").exists()
+        # Clean up
+        (Path.home() / ".voronoi" / ".swarm" / "abort-signal").unlink(missing_ok=True)
 
     def test_handle_abort_cancels_queued(self, tmp_path):
         """Abort should cancel queued investigations via the queue."""
@@ -242,12 +266,78 @@ class TestCommandRouter:
     def test_route_status(self, tmp_path):
         router = CommandRouter(str(tmp_path))
         text, _ = router.route("status", [], "chat1")
-        assert "Swarm Status" in text
+        # Now returns conversational buddy-style response
+        assert isinstance(text, str)
+        assert len(text) > 0
+
+    def test_route_progress(self, tmp_path):
+        router = CommandRouter(str(tmp_path))
+        text, _ = router.route("progress", [], "chat1")
+        assert isinstance(text, str)
+
+    def test_route_whatsup(self, tmp_path):
+        router = CommandRouter(str(tmp_path))
+        text, _ = router.route("whatsup", [], "chat1")
+        assert isinstance(text, str)
+
+    def test_route_howsitgoing(self, tmp_path):
+        router = CommandRouter(str(tmp_path))
+        text, _ = router.route("howsitgoing", [], "chat1")
+        assert isinstance(text, str)
 
     def test_route_unknown(self, tmp_path):
         router = CommandRouter(str(tmp_path))
         text, _ = router.route("xyzzy", [], "chat1")
         assert "Unknown command" in text
+
+
+class TestHumanGateBridgeCommands:
+    def test_approve_command_calls_dispatcher(self):
+        bridge = _load_bridge_module()
+        dispatcher = MagicMock()
+        dispatcher.approve_human_gate.return_value = True
+
+        text = bridge.format_human_gate_command_reply("approve", ["42"], dispatcher)
+
+        dispatcher.approve_human_gate.assert_called_once_with(42, "")
+        assert "Approved human gate" in text
+
+    def test_revise_requires_feedback(self):
+        bridge = _load_bridge_module()
+        dispatcher = MagicMock()
+
+        text = bridge.format_human_gate_command_reply("revise", ["42"], dispatcher)
+
+        dispatcher.revise_human_gate.assert_not_called()
+        assert text == "Usage: /revise <investigation-id> <feedback>"
+
+    def test_revise_command_calls_dispatcher(self):
+        bridge = _load_bridge_module()
+        dispatcher = MagicMock()
+        dispatcher.revise_human_gate.return_value = True
+
+        text = bridge.format_human_gate_command_reply(
+            "revise", ["42", "needs", "more", "controls"], dispatcher
+        )
+
+        dispatcher.revise_human_gate.assert_called_once_with(42, "needs more controls")
+        assert "Requested revision" in text
+
+    def test_invalid_human_gate_id(self):
+        bridge = _load_bridge_module()
+        dispatcher = MagicMock()
+
+        text = bridge.format_human_gate_command_reply("approve", ["abc"], dispatcher)
+
+        dispatcher.approve_human_gate.assert_not_called()
+        assert "Invalid investigation ID" in text
+
+    def test_dispatcher_unavailable(self):
+        bridge = _load_bridge_module()
+
+        text = bridge.format_human_gate_command_reply("approve", ["42"], None)
+
+        assert "Dispatcher unavailable" in text
 
 
 # ---------------------------------------------------------------------------

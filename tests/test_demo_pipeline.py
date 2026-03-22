@@ -52,8 +52,8 @@ class TestHandleDemo:
         mock_q.get_running.return_value = []
         mock_gq.return_value = mock_q
 
-        with patch("voronoi.cli._find_data_dir", return_value=tmp_path / "data"), \
-             patch("voronoi.cli._list_demos", return_value=[{
+        with patch("voronoi.cli.find_data_dir", return_value=tmp_path / "data"), \
+             patch("voronoi.cli.list_demos", return_value=[{
                  "name": "test-demo",
                  "path": demo_dir,
                  "description": "Test",
@@ -67,17 +67,18 @@ class TestHandleDemo:
         call_args = mock_q.enqueue.call_args
         inv = call_args[0][0]
         assert inv.question == prompt_content
-        assert inv.mode == "build"
+        assert inv.mode == "investigate"
+        assert inv.rigor in ("analytical", "scientific", "experimental")
         mock_q.set_demo_source.assert_called_once()
 
-    @patch("voronoi.cli._find_data_dir")
-    @patch("voronoi.cli._list_demos", return_value=[])
+    @patch("voronoi.cli.find_data_dir")
+    @patch("voronoi.cli.list_demos", return_value=[])
     def test_demo_not_found(self, mock_list, mock_data, tmp_path):
         result = handle_demo(str(tmp_path), "nonexistent", "chat1")
         assert "not found" in result
 
-    @patch("voronoi.cli._find_data_dir")
-    @patch("voronoi.cli._list_demos")
+    @patch("voronoi.cli.find_data_dir")
+    @patch("voronoi.cli.list_demos")
     def test_demo_no_prompt(self, mock_list, mock_data, tmp_path):
         mock_list.return_value = [{"name": "broken", "path": tmp_path, "description": "", "has_prompt": False}]
         result = handle_demo(str(tmp_path), "broken", "chat1")
@@ -315,6 +316,76 @@ class TestTimeoutDetection:
         # Should have been completed via timeout
         assert 1 not in d.running
         d._queue.complete.assert_called_once_with(1)
+
+    def test_effective_timeout_default(self, dispatcher_setup):
+        """Without override file, uses config default."""
+        d, _, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1, workspace_path=tmp_path,
+            tmux_session="t", question="q", mode="investigate",
+        )
+        assert d._effective_timeout(run) == 2  # config default
+
+    def test_effective_timeout_override(self, dispatcher_setup):
+        """Override file in .swarm/timeout_hours takes precedence."""
+        d, _, tmp_path = dispatcher_setup
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(exist_ok=True)
+        (swarm / "timeout_hours").write_text("72")
+        run = RunningInvestigation(
+            investigation_id=1, workspace_path=tmp_path,
+            tmux_session="t", question="q", mode="investigate",
+        )
+        assert d._effective_timeout(run) == 72
+
+    def test_effective_timeout_bad_value_falls_back(self, dispatcher_setup):
+        """Non-integer or non-positive values fall back to config default."""
+        d, _, tmp_path = dispatcher_setup
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(exist_ok=True)
+        (swarm / "timeout_hours").write_text("not-a-number")
+        run = RunningInvestigation(
+            investigation_id=1, workspace_path=tmp_path,
+            tmux_session="t", question="q", mode="investigate",
+        )
+        assert d._effective_timeout(run) == 2  # falls back to config
+
+    def test_timeout_override_prevents_timeout(self, dispatcher_setup):
+        """Extending timeout prevents a running investigation from timing out."""
+        d, msgs, tmp_path = dispatcher_setup
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(exist_ok=True)
+
+        run = RunningInvestigation(
+            investigation_id=1, workspace_path=tmp_path,
+            tmux_session="test", question="test q", mode="build",
+            started_at=time.time() - 3 * 3600,  # 3h ago, config timeout is 2h
+        )
+        # Extend to 6h — should NOT time out at 3h elapsed
+        (swarm / "timeout_hours").write_text("6")
+        run.last_update_at = 0
+        d.running[1] = run
+
+        def _mock_run(cmd, **kwargs):
+            m = MagicMock()
+            if "has-session" in cmd:
+                m.returncode = 0  # session alive
+            elif "bd" in cmd:
+                m.returncode = 0
+                m.stdout = "[]"
+                m.stderr = ""
+            else:
+                m.returncode = 0
+                m.stdout = ""
+                m.stderr = ""
+            return m
+
+        with patch("subprocess.run", side_effect=_mock_run), \
+             patch("voronoi.server.dispatcher.subprocess.run", side_effect=_mock_run):
+            d.poll_progress()
+
+        # Should still be running — timeout extended past 3h
+        assert 1 in d.running
 
 
 # ---------------------------------------------------------------------------

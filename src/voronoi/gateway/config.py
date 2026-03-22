@@ -28,14 +28,20 @@ def load_dotenv(env_path: Path | None = None) -> None:
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
+            if line.startswith("export "):
+                line = line[7:]
             if "=" in line:
                 key, _, value = line.partition("=")
                 key = key.strip()
                 value = value.strip()
-                if "  #" in value:
-                    value = value[: value.index("  #")].strip()
-                elif "\t#" in value:
-                    value = value[: value.index("\t#")].strip()
+                # Strip surrounding quotes
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+                    value = value[1:-1]
+                else:
+                    if "  #" in value:
+                        value = value[: value.index("  #")].strip()
+                    elif "\t#" in value:
+                        value = value[: value.index("\t#")].strip()
                 if key not in os.environ:
                     os.environ[key] = value
 

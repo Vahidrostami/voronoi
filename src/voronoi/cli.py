@@ -13,7 +13,9 @@ from voronoi import __version__
 
 # Framework files to copy into user projects
 FRAMEWORK_DIRS = ["scripts"]
-FRAMEWORK_FILES = ["CLAUDE.md", "AGENTS.md", ".env.example"]
+
+# Top-level template files (written from data/templates/)
+TEMPLATE_FILES = ["CLAUDE.md", "AGENTS.md"]
 
 # .github/ subdirectories to copy (agent definitions, prompts, skills)
 GITHUB_SUBDIRS = ["agents", "prompts", "skills"]
@@ -22,25 +24,61 @@ GITHUB_SUBDIRS = ["agents", "prompts", "skills"]
 USER_OWNED = {"CLAUDE.md", "AGENTS.md"}
 
 
-def _find_data_dir() -> Path:
+def find_data_dir() -> Path:
     """Locate the framework data files.
 
     Works for both editable installs (repo root) and normal pip installs
     (bundled in package data).
+
+    For editable installs, .github/ and scripts/ live at the repo root.
+    For packaged installs, they live under src/voronoi/data/.
     """
+    # Normal install: data bundled inside the package
+    bundled = Path(__file__).resolve().parent / "data"
+    if bundled.is_dir() and (bundled / "agents").is_dir():
+        return bundled
+
     # Editable install: data lives at repo root
     repo_root = Path(__file__).resolve().parent.parent.parent
     if (repo_root / "scripts").is_dir() and (repo_root / "pyproject.toml").is_file():
         return repo_root
 
-    # Normal install: data bundled inside the package
-    bundled = Path(__file__).resolve().parent / "data"
-    if bundled.is_dir():
-        return bundled
-
     print("Error: cannot find voronoi framework files.", file=sys.stderr)
     print("  If you installed with pip, rebuild with: ./scripts/sync-package-data.sh && pip install .", file=sys.stderr)
     sys.exit(1)
+
+
+def _resolve_github_src(data: Path) -> Path:
+    """Resolve the .github/ source directory.
+
+    For editable installs: repo_root/.github/
+    For packaged installs: data/ contains agents/, prompts/, skills/ directly.
+    """
+    # Packaged install: agents/ lives directly under data/
+    if (data / "agents").is_dir():
+        return data
+    # Editable install: .github/ at repo root
+    github = data / ".github"
+    if github.is_dir():
+        return github
+    return data
+
+
+def _resolve_templates_dir(data: Path) -> Path:
+    """Resolve the templates directory for CLAUDE.md and AGENTS.md.
+
+    For editable installs: src/voronoi/data/templates/
+    For packaged installs: data/templates/
+    """
+    # Packaged install
+    templates = data / "templates"
+    if templates.is_dir():
+        return templates
+    # Editable install: look inside the package
+    pkg_templates = Path(__file__).resolve().parent / "data" / "templates"
+    if pkg_templates.is_dir():
+        return pkg_templates
+    return data  # fallback
 
 
 def _copy_dir(src: Path, dst: Path) -> None:
@@ -83,7 +121,7 @@ def _build_orchestrator_prompt(
 def cmd_init(args: argparse.Namespace) -> None:
     """Scaffold voronoi into the current directory."""
     target = Path.cwd()
-    data = _find_data_dir()
+    data = find_data_dir()
 
     # Guard: don't init inside the framework repo itself
     if (target / "pyproject.toml").exists() and (target / "src" / "voronoi").is_dir():
@@ -121,23 +159,29 @@ def cmd_init(args: argparse.Namespace) -> None:
             print(f"  ✓ {dirname}/")
 
     # Copy .github/ subdirectories (agents, prompts, skills)
-    github_src = data / ".github"
-    if github_src.is_dir():
-        github_dst = target / ".github"
-        github_dst.mkdir(exist_ok=True)
-        for subdir in GITHUB_SUBDIRS:
-            src = github_src / subdir
-            if src.is_dir():
-                _copy_dir(src, github_dst / subdir)
-        print("  ✓ .github/ (agents, prompts, skills)")
+    github_src = _resolve_github_src(data)
+    github_dst = target / ".github"
+    github_dst.mkdir(exist_ok=True)
+    for subdir in GITHUB_SUBDIRS:
+        src = github_src / subdir
+        if src.is_dir():
+            _copy_dir(src, github_dst / subdir)
+    print("  ✓ .github/ (agents, prompts, skills)")
 
-    # Copy top-level framework files
-    for filename in FRAMEWORK_FILES:
-        src = data / filename
+    # Copy runtime constitution templates
+    templates_dir = _resolve_templates_dir(data)
+    for filename in TEMPLATE_FILES:
+        src = templates_dir / filename
         dst = target / filename
         if src.is_file():
             shutil.copy2(src, dst)
-            print(f"  ✓ {filename}")
+            print(f"  ✓ {filename} (runtime constitution)")
+
+    # Copy .env.example if available
+    env_src = data / ".env.example"
+    if env_src.is_file():
+        shutil.copy2(env_src, target / ".env.example")
+        print("  ✓ .env.example")
 
     # Run swarm-init.sh if present
     init_script = target / "scripts" / "swarm-init.sh"
@@ -154,7 +198,7 @@ def cmd_init(args: argparse.Namespace) -> None:
 def cmd_upgrade(args: argparse.Namespace) -> None:
     """Upgrade framework files, preserving user-edited files."""
     target = Path.cwd()
-    data = _find_data_dir()
+    data = find_data_dir()
 
     if not (target / "scripts").is_dir():
         print("Error: no voronoi project here. Run 'voronoi init' first.")
@@ -171,19 +215,20 @@ def cmd_upgrade(args: argparse.Namespace) -> None:
             print(f"  ✓ {dirname}/ (replaced)")
 
     # Overwrite .github/ subdirectories (agents, prompts, skills)
-    github_src = data / ".github"
-    if github_src.is_dir():
-        github_dst = target / ".github"
-        github_dst.mkdir(exist_ok=True)
-        for subdir in GITHUB_SUBDIRS:
-            src = github_src / subdir
-            if src.is_dir():
-                _copy_dir(src, github_dst / subdir)
-        print("  ✓ .github/ (agents, prompts, skills replaced)")
+    github_src = _resolve_github_src(data)
+    github_dst = target / ".github"
+    github_dst.mkdir(exist_ok=True)
+    for subdir in GITHUB_SUBDIRS:
+        src = github_src / subdir
+        dst = github_dst / subdir
+        if src.is_dir():
+            _copy_dir(src, dst)
+    print("  ✓ .github/ (agents, prompts, skills replaced)")
 
     # User-owned files: only copy if missing
-    for filename in FRAMEWORK_FILES:
-        src = data / filename
+    templates_dir = _resolve_templates_dir(data)
+    for filename in TEMPLATE_FILES:
+        src = templates_dir / filename
         dst = target / filename
         if not dst.exists() and src.is_file():
             shutil.copy2(src, dst)
@@ -194,7 +239,7 @@ def cmd_upgrade(args: argparse.Namespace) -> None:
     print("\nUpgrade complete.")
 
 
-def _list_demos(data: Path) -> list[dict]:
+def list_demos(data: Path) -> list[dict]:
     """Return list of available demos with metadata."""
     demos_dir = data / "demos"
     if not demos_dir.is_dir():
@@ -220,11 +265,11 @@ def _list_demos(data: Path) -> list[dict]:
 
 def cmd_demo(args: argparse.Namespace) -> None:
     """Handle demo subcommands: list, run, clean."""
-    data = _find_data_dir()
+    data = find_data_dir()
     target = Path.cwd()
 
     if args.demo_action == "list":
-        demos = _list_demos(data)
+        demos = list_demos(data)
         if not demos:
             print("No demos found.")
             return
@@ -237,7 +282,7 @@ def cmd_demo(args: argparse.Namespace) -> None:
 
     elif args.demo_action == "run":
         name = args.name
-        demos = _list_demos(data)
+        demos = list_demos(data)
         demo = next((d for d in demos if d["name"] == name), None)
         if demo is None:
             print(f"Error: demo '{name}' not found.", file=sys.stderr)
@@ -437,8 +482,10 @@ def cmd_server(args: argparse.Namespace) -> None:
         _server_prune(args)
     elif args.server_action == "config":
         _server_config(args)
+    elif args.server_action == "extend-timeout":
+        _server_extend_timeout(args)
     else:
-        print("Usage: voronoi server {init|start|status|prune|config}")
+        print("Usage: voronoi server {init|start|status|prune|config|extend-timeout}")
         sys.exit(1)
 
 
@@ -498,7 +545,7 @@ def _server_init(args: argparse.Namespace) -> None:
                 break
 
     # Copy .env.example into ~/.voronoi/ for easy editing
-    env_example_src = _find_data_dir() / ".env.example"
+    env_example_src = find_data_dir() / ".env.example"
     env_example_dst = config.base_dir / ".env.example"
     env_dst = config.base_dir / ".env"
     if env_example_src.is_file() and not env_example_dst.exists():
@@ -556,7 +603,8 @@ def _server_start(args: argparse.Namespace) -> None:
     # Load .env from ~/.voronoi/ if it exists
     env_file = config.base_dir / ".env"
     if env_file.exists():
-        _load_dotenv(env_file)
+        from voronoi.gateway.config import load_dotenv
+        load_dotenv(env_file)
         print(f"  ✓ Loaded {env_file}")
 
     # Verify bot token is available
@@ -629,28 +677,9 @@ def _server_start(args: argparse.Namespace) -> None:
         print("\nTelegram bridge stopped.")
 
 
-def _load_dotenv(env_path: Path) -> None:
-    """Load a .env file into os.environ (only sets vars not already set)."""
-    with open(env_path) as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            if "=" in line:
-                key, _, value = line.partition("=")
-                key = key.strip()
-                value = value.strip()
-                # Strip inline comments
-                for sep in ("  #", "\t#"):
-                    if sep in value:
-                        value = value[:value.index(sep)].strip()
-                if key not in os.environ:
-                    os.environ[key] = value
-
-
 def _find_bridge_script() -> Path | None:
     """Locate telegram-bridge.py in data dir or repo."""
-    data = _find_data_dir()
+    data = find_data_dir()
     candidates = [
         data / "scripts" / "telegram-bridge.py",
         Path(__file__).resolve().parent.parent.parent / "scripts" / "telegram-bridge.py",
@@ -739,6 +768,69 @@ def _server_config(args: argparse.Namespace) -> None:
     print(config.config_path.read_text())
 
 
+def _server_extend_timeout(args: argparse.Namespace) -> None:
+    """Extend (or set) the timeout for a running investigation.
+
+    Writes the new total timeout to <workspace>/.swarm/timeout_hours so the
+    dispatcher picks it up on the next poll cycle — no restart required.
+    """
+    from voronoi.server.runner import ServerConfig
+    from voronoi.server.workspace import WorkspaceManager
+
+    config = ServerConfig()
+    if not config.base_dir.exists():
+        print("Server not initialized. Run: voronoi server init")
+        sys.exit(1)
+
+    hours = args.hours
+    if hours <= 0:
+        print("Error: hours must be a positive integer.", file=sys.stderr)
+        sys.exit(1)
+
+    wm = WorkspaceManager(config.base_dir)
+    active = wm.list_active()
+
+    target = args.investigation
+
+    # Match by investigation ID ("#3" or "3") or by workspace name substring
+    matched: list[Path] = []
+    target_clean = target.lstrip("#")
+    for name in active:
+        ws_path = config.base_dir / "active" / name
+        # Match numeric ID against queue.db investigation ID stored in .swarm/
+        inv_id_path = ws_path / ".swarm" / "investigation_id"
+        if inv_id_path.exists():
+            try:
+                if inv_id_path.read_text().strip() == target_clean:
+                    matched.append(ws_path)
+                    continue
+            except OSError:
+                pass
+        # Fallback: match workspace directory name
+        if target_clean in name:
+            matched.append(ws_path)
+
+    if not matched:
+        print(f"No active workspace matching '{target}'.", file=sys.stderr)
+        print("Active workspaces:")
+        for name in active:
+            print(f"  {name}")
+        sys.exit(1)
+    if len(matched) > 1:
+        print(f"Ambiguous — '{target}' matches multiple workspaces:", file=sys.stderr)
+        for ws in matched:
+            print(f"  {ws.name}", file=sys.stderr)
+        sys.exit(1)
+
+    ws_path = matched[0]
+    swarm_dir = ws_path / ".swarm"
+    swarm_dir.mkdir(parents=True, exist_ok=True)
+    override_file = swarm_dir / "timeout_hours"
+    override_file.write_text(str(hours))
+    print(f"Timeout for {ws_path.name} set to {hours}h (was {config.sandbox.timeout_hours}h default).")
+    print("The dispatcher will pick this up on the next poll cycle.")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="voronoi",
@@ -778,6 +870,9 @@ def main() -> None:
     server_prune = server_sub.add_parser("prune", help="Clean up old workspaces")
     server_prune.add_argument("--force", action="store_true", help="Actually remove workspaces")
     server_sub.add_parser("config", help="Show server configuration")
+    ext_parser = server_sub.add_parser("extend-timeout", help="Extend timeout for a running investigation")
+    ext_parser.add_argument("investigation", help="Investigation ID or workspace name")
+    ext_parser.add_argument("hours", type=int, help="New total timeout in hours")
 
     args = parser.parse_args()
 
