@@ -267,6 +267,8 @@ def run_bot(config: dict) -> None:
             reply_text, _ = router.route("tasks", [], chat_id)
         elif data == "progress":
             reply_text, _ = router.route("progress", [], chat_id)
+        elif data == "details":
+            reply_text, _ = router.route("details", [], chat_id)
         elif data == "abort":
             reply_text, _ = router.route("abort", [], chat_id)
         elif data == "belief":
@@ -340,20 +342,20 @@ def run_bot(config: dict) -> None:
                 try:
                     if "is live" in text.lower():
                         reply_markup = InlineKeyboardMarkup([
-                            [InlineKeyboardButton("Status", callback_data="status"),
-                             InlineKeyboardButton("Abort", callback_data="abort")],
+                            [InlineKeyboardButton("📊 Status", callback_data="status"),
+                             InlineKeyboardButton("🛑 Abort", callback_data="abort")],
                         ])
                     elif any(k in text for k in ("tasks)", "Estimated:", "working right now")):
-                        # Digest update
+                        # Digest update — compact view, offer Details for full view
                         reply_markup = InlineKeyboardMarkup([
-                            [InlineKeyboardButton("Progress", callback_data="progress"),
-                             InlineKeyboardButton("Guide", callback_data="guide_prompt"),
-                             InlineKeyboardButton("Abort", callback_data="abort")],
+                            [InlineKeyboardButton("📋 Details", callback_data="details"),
+                             InlineKeyboardButton("💬 Guide", callback_data="guide_prompt"),
+                             InlineKeyboardButton("🛑 Abort", callback_data="abort")],
                         ])
                     elif "is done" in text.lower():
                         reply_markup = InlineKeyboardMarkup([
-                            [InlineKeyboardButton("Details", callback_data="progress"),
-                             InlineKeyboardButton("Belief Map", callback_data="belief")],
+                            [InlineKeyboardButton("📋 Details", callback_data="details"),
+                             InlineKeyboardButton("🧠 Belief Map", callback_data="belief")],
                         ])
                 except Exception:
                     pass  # buttons are best-effort

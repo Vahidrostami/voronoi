@@ -71,6 +71,8 @@ class RunningInvestigation:
     stall_warned: bool = False
     notified_design_invalid: set = field(default_factory=set)
     last_event_ts: float = 0  # For event log polling
+    last_event_ts_by_path: dict[str, float] = field(default_factory=dict)
+    last_digest_events: list[dict] = field(default_factory=list)  # For detail retrieval
 
     @property
     def label(self) -> str:
@@ -173,7 +175,7 @@ class InvestigationDispatcher:
 
             result = subprocess.run(
                 ["tmux", "has-session", "-t", tmux_session],
-                capture_output=True,
+                capture_output=True, timeout=10,
             )
             session_alive = result.returncode == 0
 
@@ -336,7 +338,7 @@ class InvestigationDispatcher:
         subprocess.run(
             ["tmux", "pipe-pane", "-t", session,
              f"cat >> {shlex.quote(str(log_path))}"],
-            capture_output=True,
+            capture_output=True, timeout=10,
         )
         # Launch the agent.  The prompt is read from a file via shell
         # redirection to avoid ARG_MAX / tmux send-keys buffer issues
@@ -361,7 +363,7 @@ class InvestigationDispatcher:
              f'{env_exports}cd {safe_ws} && {safe_cmd} {safe_flags}{model_flag} '
              f'-p "$(cat .swarm/orchestrator-prompt.txt)" ; exit',
              "Enter"],
-            capture_output=True,
+            capture_output=True, timeout=10,
         )
 
     def _copy_demo_files(self, demo_info: tuple[str, str], workspace_path: Path) -> None:
@@ -402,11 +404,12 @@ class InvestigationDispatcher:
 
             result = subprocess.run(
                 ["tmux", "has-session", "-t", run.tmux_session],
-                capture_output=True,
+                capture_output=True, timeout=10,
             )
             session_alive = result.returncode == 0
 
             events = self._check_progress(run)
+            events.extend(self._check_event_log(run))
             if events:
                 logger.info("Investigation #%d: %d events (phase=%s)",
                             inv_id, len(events), run.phase)
@@ -430,9 +433,6 @@ class InvestigationDispatcher:
                     f"The orchestrator may be stuck. Will auto-restart if the agent exits."
                 ))
 
-            # Event-log-based activity detection remains opportunistic only.
-            events.extend(self._check_event_log(run))
-
             if not session_alive or self._is_complete(run) or timed_out:
                 if timed_out and not self._is_complete(run):
                     reason = f"timeout ({effective_timeout}h)"
@@ -442,7 +442,7 @@ class InvestigationDispatcher:
                     if session_alive:
                         subprocess.run(
                             ["tmux", "kill-session", "-t", run.tmux_session],
-                            capture_output=True,
+                            capture_output=True, timeout=10,
                         )
                     # Write exhaustion convergence
                     self._write_timeout_convergence(run)
@@ -812,31 +812,56 @@ class InvestigationDispatcher:
         events: list[dict] = []
         try:
             from voronoi.server.events import summarize_events
-            summary = summarize_events(run.workspace_path, since=run.last_event_ts)
-            if summary["count"] == 0:
+            total_count = 0
+            total_tokens = 0
+            total_failures = 0
+            latest_ts = run.last_event_ts
+
+            roots = [run.workspace_path]
+            swarm_dir = self._swarm_dir(run.workspace_path)
+            if swarm_dir:
+                roots.extend(
+                    path for path in sorted(swarm_dir.glob("agent-*"))
+                    if path.is_dir()
+                )
+
+            for root in roots:
+                key = str(root.resolve())
+                since = run.last_event_ts_by_path.get(key, run.last_event_ts)
+                summary = summarize_events(root, since=since)
+                if summary["count"] == 0:
+                    continue
+                total_count += summary["count"]
+                total_tokens += summary["total_tokens"]
+                total_failures += summary["failures"]
+                latest_ts = max(latest_ts, summary["last_event_ts"])
+                run.last_event_ts_by_path[key] = summary["last_event_ts"]
+
+            if total_count == 0:
                 return events
-            run.last_event_ts = summary["last_event_ts"]
+            run.last_event_ts = latest_ts
 
             # Report failures
-            if summary["failures"] > 0:
+            if total_failures > 0:
                 events.append({
                     "type": "event_log",
-                    "msg": f"📝 {summary['count']} events since last poll "
-                           f"({summary['failures']} failures, "
-                           f"{summary['total_tokens']:,} tokens)",
+                    "msg": f"📝 {total_count} events since last poll "
+                           f"({total_failures} failures, "
+                           f"{total_tokens:,} tokens)",
                 })
             # Log token accumulation periodically (every 50K tokens)
-            elif summary["total_tokens"] > 50000:
+            elif total_tokens > 50000:
                 events.append({
                     "type": "event_log",
-                    "msg": f"📝 {summary['count']} events, "
-                           f"{summary['total_tokens']:,} tokens since last poll",
+                    "msg": f"📝 {total_count} events, "
+                           f"{total_tokens:,} tokens since last poll",
                 })
         except Exception as e:
             logger.debug("Event log check failed: %s", e)
         return events
 
     def _send_progress_batch(self, run: RunningInvestigation, events: list[dict]) -> None:
+        run.last_digest_events = events  # store for detail retrieval
         msg = build_digest(
             codename=run.label,
             mode=run.mode,
@@ -846,8 +871,31 @@ class InvestigationDispatcher:
             workspace=run.workspace_path,
             events_since_last=events,
             eval_score=run.eval_score,
+            compact=True,
         )
         self.send_message(msg)
+
+    def get_detail(self, inv_id: int | None = None) -> str:
+        """Return a detailed (non-compact) digest for a running investigation."""
+        if inv_id is not None:
+            run = self.running.get(inv_id)
+        elif self.running:
+            run = next(iter(self.running.values()))
+        else:
+            return "No investigation is running right now."
+        if run is None:
+            return f"Investigation #{inv_id} is not currently running."
+        return build_digest(
+            codename=run.label,
+            mode=run.mode,
+            phase=run.phase,
+            elapsed_sec=time.time() - run.started_at,
+            task_snapshot=run.task_snapshot,
+            workspace=run.workspace_path,
+            events_since_last=run.last_digest_events,
+            eval_score=run.eval_score,
+            compact=False,
+        )
 
     def _has_open_design_invalid(self, run: RunningInvestigation) -> bool:
         """Check if any open tasks have DESIGN_INVALID flag.
@@ -1087,14 +1135,14 @@ class InvestigationDispatcher:
         # Kill the main orchestrator session
         subprocess.run(
             ["tmux", "kill-session", "-t", run.tmux_session],
-            capture_output=True,
+            capture_output=True, timeout=10,
         )
         # Kill the swarm worker session (convention: <workspace-name>-swarm)
         ws_name = run.workspace_path.name
         for suffix in ["-swarm", "-workers"]:
             subprocess.run(
                 ["tmux", "kill-session", "-t", f"{ws_name}{suffix}"],
-                capture_output=True,
+                capture_output=True, timeout=10,
             )
         logger.info("Cleaned up tmux sessions for %s", run.label)
 
@@ -1115,7 +1163,7 @@ class InvestigationDispatcher:
         for inv_id, run in list(self.running.items()):
             subprocess.run(
                 ["tmux", "kill-session", "-t", run.tmux_session],
-                capture_output=True,
+                capture_output=True, timeout=10,
             )
             self.queue.fail(inv_id, "Aborted by operator")
             self.send_message(f"*{run.label}* aborted.")

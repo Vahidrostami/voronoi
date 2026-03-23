@@ -18,7 +18,7 @@ from voronoi.beads import run_bd, has_beads_dir
 from voronoi.gateway.intent import ClassifiedIntent, WorkflowMode, classify
 from voronoi.gateway.progress import (
     MODE_EMOJI, RIGOR_DESCRIPTIONS, MODE_VERB,
-    build_digest_whatsup, phase_description, format_duration,
+    build_digest_whatsup, build_digest, phase_description, format_duration,
     assess_track_status, _criteria_summary, _experiment_summary,
     progress_bar, _clean_question_preview,
 )
@@ -37,7 +37,7 @@ __all__ = [
     "handle_abort", "handle_pivot", "handle_guide",
     "handle_discover", "handle_prove",
     "handle_recall", "handle_belief", "handle_journal", "handle_finding",
-    "handle_results", "handle_demo",
+    "handle_results", "handle_demo", "handle_details",
 ]
 
 
@@ -913,6 +913,52 @@ def handle_demo(project_dir: str, demo_name: str, chat_id: str = "") -> str:
     )
 
 
+def handle_details(project_dir: str) -> str:
+    """Return a detailed (non-compact) progress view for the active investigation."""
+    q = _get_queue(project_dir)
+    running = q.get_running()
+    if not running:
+        return "No investigation is running right now."
+    inv = running[0]
+    ws = Path(inv.workspace_path) if inv.workspace_path else None
+    if ws is None or not ws.exists():
+        return f"Investigation {inv.codename or f'#{inv.id}'} has no accessible workspace."
+
+    # Read task snapshot from bd
+    task_snapshot: dict = {}
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["bd", "list", "--json"],
+            capture_output=True, text=True, timeout=15, cwd=str(ws),
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            import json as _json
+            tasks = _json.loads(result.stdout)
+            if isinstance(tasks, list):
+                for t in tasks:
+                    tid = t.get("id", "")
+                    task_snapshot[tid] = {
+                        "status": t.get("status", ""),
+                        "title": t.get("title", ""),
+                        "notes": t.get("notes", ""),
+                    }
+    except Exception:
+        pass
+
+    elapsed_sec = (time.time() - (inv.started_at or time.time()))
+    return build_digest(
+        codename=inv.codename or f"#{inv.id}",
+        mode=inv.mode or "discover",
+        phase="investigating",
+        elapsed_sec=elapsed_sec,
+        task_snapshot=task_snapshot,
+        workspace=ws,
+        events_since_last=[],
+        compact=False,
+    )
+
+
 def handle_results(project_dir: str, inv_id_str: str = "") -> str:
     """Look up a past investigation and return its teaser."""
     q = _get_queue(project_dir)
@@ -1095,6 +1141,8 @@ class CommandRouter:
             elif sub == "results":
                 inv_id = args[0] if args else ""
                 return handle_results(self.project_dir, inv_id), None
+            elif sub == "details":
+                return handle_details(self.project_dir), None
             elif sub == "reprioritize" and len(args) >= 2:
                 return handle_reprioritize(self.project_dir, args[0], args[1]), None
             elif sub == "pause" and args:

@@ -70,7 +70,7 @@ def progress_bar(done: int, total: int, width: int = 20) -> str:
     """Render a clean text progress bar: ████████████░░░░░░░░ 60%"""
     if total == 0:
         return "░" * width + " 0%"
-    pct = done / total
+    pct = min(done / total, 1.0)
     filled = round(pct * width)
     bar = "█" * filled + "░" * (width - filled)
     return f"{bar} {int(pct * 100)}%"
@@ -92,7 +92,7 @@ def format_duration(seconds: float) -> str:
 
 def estimate_remaining(elapsed_sec: float, done: int, total: int) -> str:
     """Estimate time remaining based on current rate. Returns '' if unknown."""
-    if done == 0 or total == done:
+    if done == 0 or done >= total:
         return ""
     rate = elapsed_sec / done
     remaining_sec = rate * (total - done)
@@ -282,11 +282,16 @@ def build_digest(
     workspace: Path,
     events_since_last: list[dict],
     eval_score: float = 0.0,
+    compact: bool = False,
 ) -> str:
     """Build a conversational narrative digest message.
 
     This replaces the old per-event ``_send_progress_batch`` with a single
     buddy-style message that covers: what happened, where we are, what's next.
+
+    compact=True produces a shorter message suitable for periodic updates:
+    findings as one-liners, criteria as count only, no artifact details.
+    compact=False produces the full detailed view (for /details command).
     """
     elapsed_str = format_duration(elapsed_sec)
 
@@ -318,7 +323,11 @@ def build_digest(
             happened.append(f"Finished {len(completed)} tasks")
     if findings:
         for f in findings:
-            title = f.get("msg", "").replace("🔬 *NEW FINDING*\n", "").strip()
+            raw = f.get("msg", "")
+            if compact:
+                title = _compact_finding_line(raw)
+            else:
+                title = raw.replace("🔬 *NEW FINDING*\n", "").strip()
             happened.append(f"New finding: {title}")
     if design_invalids:
         for d in design_invalids:
@@ -355,13 +364,14 @@ def build_digest(
         lines.append("")
         lines.append(exp_summary)
 
-    artifact_summary = _artifact_progress_summary(workspace)
-    if artifact_summary:
-        lines.append("")
-        lines.append(artifact_summary)
+    if not compact:
+        artifact_summary = _artifact_progress_summary(workspace)
+        if artifact_summary:
+            lines.append("")
+            lines.append(artifact_summary)
 
     # Success criteria check
-    criteria_summary = _criteria_summary(workspace)
+    criteria_summary = _criteria_summary(workspace, compact=compact)
     if criteria_summary:
         lines.append("")
         lines.append(criteria_summary)
@@ -461,6 +471,24 @@ def _extract_task_title(event: dict) -> str:
     return msg[:80]
 
 
+def _compact_finding_line(msg: str, max_len: int = 100) -> str:
+    """Extract a short one-liner from a finding message for compact digests."""
+    text = msg.replace("🔬 *NEW FINDING*\n", "").strip()
+    # Strip "FINDING:" prefix
+    upper = text.upper()
+    if upper.startswith("FINDING:"):
+        text = text[len("FINDING:"):].strip()
+    # Take first sentence or clause
+    for sep in (". ", " — ", "; "):
+        idx = text.find(sep)
+        if 0 < idx < max_len:
+            text = text[:idx + 1]
+            break
+    if len(text) > max_len:
+        text = text[:max_len - 1] + "…"
+    return text
+
+
 def _experiment_summary(workspace: Path) -> str:
     """Read experiments.tsv and return a one-line summary."""
     rows = _read_all_experiment_rows(workspace)
@@ -483,8 +511,12 @@ def _experiment_summary(workspace: Path) -> str:
     return "Experiments: " + " ".join(parts)
 
 
-def _criteria_summary(workspace: Path) -> str:
-    """Read success-criteria.json and return a one-line summary."""
+def _criteria_summary(workspace: Path, compact: bool = False) -> str:
+    """Read success-criteria.json and return a summary.
+
+    compact=True: one-line count only (for periodic digests).
+    compact=False: full list with per-criterion status.
+    """
     path = workspace / ".swarm" / "success-criteria.json"
     if not path.exists():
         return ""
@@ -496,13 +528,15 @@ def _criteria_summary(workspace: Path) -> str:
         return ""
     met = sum(1 for c in data if c.get("met"))
     total = len(data)
+    header = f"Success criteria: {met}/{total} met"
+    if compact:
+        return header
     summaries: list[str] = []
     for c in data:
         cid = c.get("id", "?")
         check = "✓" if c.get("met") else "○"
         desc = c.get("description", "")[:40]
         summaries.append(f"{check} {cid}: {desc}")
-    header = f"Success criteria: {met}/{total} met"
     return header + "\n" + "\n".join(summaries)
 
 

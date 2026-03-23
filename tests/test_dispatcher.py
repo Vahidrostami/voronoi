@@ -16,6 +16,7 @@ from voronoi.server.dispatcher import (
     InvestigationDispatcher,
     RunningInvestigation,
 )
+from voronoi.server.events import SwarmEvent, append_event
 
 
 @pytest.fixture
@@ -240,6 +241,53 @@ class TestProgressMonitoring:
         # If a document was sent, it should use the per-investigation chat_id
         for doc in docs:
             assert doc[0] == "12345", f"Expected chat_id '12345', got '{doc[0]}'"
+
+    def test_poll_progress_includes_event_log_alerts(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        d.running[1] = run
+
+        with patch.object(d, "_check_abort_signal"), \
+             patch.object(d, "check_human_gates"), \
+             patch.object(d, "_refresh_eval_score"), \
+             patch.object(d, "_check_progress", return_value=[{"type": "task_new", "msg": "task"}]), \
+             patch.object(d, "_check_event_log", return_value=[{"type": "event_log", "msg": "event"}]), \
+             patch.object(d, "_is_complete", return_value=False), \
+             patch.object(d, "_send_progress_batch") as send_batch, \
+             patch("voronoi.server.dispatcher.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            d.poll_progress()
+
+        sent_events = send_batch.call_args.args[1]
+        assert [event["type"] for event in sent_events] == ["task_new", "event_log"]
+
+    def test_check_event_log_reads_worker_worktrees(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+
+        swarm_dir = tmp_path / "investigation-swarm"
+        worker = swarm_dir / "agent-1"
+        worker.mkdir(parents=True)
+        (tmp_path / ".swarm-config.json").write_text(json.dumps({"swarm_dir": str(swarm_dir)}))
+        append_event(worker, SwarmEvent(agent="agent-1", event="tool_call", status="fail"))
+
+        events = d._check_event_log(run)
+
+        assert len(events) == 1
+        assert events[0]["type"] == "event_log"
+        assert "1 failures" in events[0]["msg"]
 
 
 class TestAbortSignal:

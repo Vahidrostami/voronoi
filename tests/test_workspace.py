@@ -1,5 +1,6 @@
 """Tests for voronoi.server.workspace — Workspace Manager."""
 
+from contextlib import contextmanager
 import subprocess
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -48,6 +49,21 @@ class TestProvisionLab:
         prompt = Path(info.path) / "PROMPT.md"
         assert "question 2" in prompt.read_text()
 
+    @patch.object(WorkspaceManager, "_voronoi_init")
+    def test_uses_workspace_lock(self, mock_init, wm):
+        entered: list[str] = []
+
+        @contextmanager
+        def fake_lock(name, timeout=120.0, poll_interval=0.1):
+            entered.append(name)
+            yield
+
+        with patch.object(wm, "_exclusive_lock", side_effect=fake_lock):
+            wm.provision_lab(1, "test", "question")
+
+        assert len(entered) == 1
+        assert entered[0].startswith("workspace-")
+
 
 class TestProvisionRepo:
     @patch.object(WorkspaceManager, "_run_git")
@@ -70,6 +86,26 @@ class TestProvisionRepo:
         calls = mock_git.call_args_list
         clone_calls = [c for c in calls if "--reference" in str(c)]
         assert len(clone_calls) > 0
+
+    @patch.object(WorkspaceManager, "_run_git")
+    @patch.object(WorkspaceManager, "_voronoi_init")
+    def test_uses_repo_and_workspace_locks(self, mock_init, mock_git, wm):
+        entered: list[str] = []
+
+        @contextmanager
+        def fake_lock(name, timeout=120.0, poll_interval=0.1):
+            entered.append(name)
+            yield
+
+        mock_git.return_value = subprocess.CompletedProcess([], 0)
+        repo = RepoRef(owner="acme", name="api")
+
+        with patch.object(wm, "_exclusive_lock", side_effect=fake_lock):
+            wm.provision_repo(1, repo, "test")
+
+        assert len(entered) == 2
+        assert entered[0].startswith("repo-")
+        assert entered[1].startswith("workspace-")
 
 
 class TestWorkspaceManagement:
