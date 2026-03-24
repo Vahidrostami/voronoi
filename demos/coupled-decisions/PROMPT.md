@@ -16,33 +16,32 @@ This abstract is the contract. Every claim made above must be substantiated in t
 
 ---
 
-## Experimental Design: 2×4 Factorial + Difficulty Stratification + Pipeline Observation
+## Experimental Design: 2×2 Factorial + Difficulty Stratification + Pipeline Observation
 
-A **2×4 within-subject factorial** tests encoding and source composition simultaneously. A separate **pipeline observation** tests the compression claim. The three-invariants characterization is a logical argument — no experiment needed.
+A **2×2 within-subject factorial** tests whether structured encoding makes LLM reasoning over heterogeneous knowledge more reliable. A separate **pipeline observation** tests the compression claim. The three-invariants characterization is a logical argument — no experiment needed.
 
-### The 2×4 Factorial (Source Decomposition)
+### The 2×2 Factorial
 
-|  | **Data-only** | **Data+Policy** | **Data+Experts** | **All-sources** |
-|--|---|---|---|---|
-| **L1 (raw text)** | L1-D | L1-DP | L1-DE | L1-A |
-| **L4 (structured)** | L4-D | L4-DP | L4-DE | L4-A |
+|  | **Data-only** | **All-sources** |
+|--|---|---|
+| **L1 (raw text)** | L1-D | L1-A |
+| **L4 (structured)** | L4-D | L4-A |
 
-**Why 2×4 instead of 2×2:** The prior 2×2 design lumped all non-data sources together and could not determine *which* source type drives the interaction. Source decomposition answers: is it the policy constraints? The expert beliefs? Both? This is critical because if only policy drives the effect, the expert encoding is decorative.
+**Rationale:** In production, practitioners always have all available knowledge — data, policies, expert judgment. The question is whether encoding that knowledge structurally improves outcomes versus pasting it as raw text. Source ablations (policy-only, expert-only) answer questions nobody asks in practice and produce trivially predictable results (e.g., "experts alone without policy context don't help" — obvious). Budget saved from dropped conditions is redirected to more replications on the contrasts that matter.
 
-Six planned tests from one dataset:
+Three planned tests from one dataset:
 
 | Abstract claim | Statistical test |
 |---|---|
-| Encoding enables discovery | Main effect of encoding (L4 vs L1, pooled across source conditions) |
-| Cross-source reasoning works (policy) | L4-DP vs L4-D (policy adds value at L4?) |
-| Cross-source reasoning works (experts) | L4-DE vs L4-D (experts add value at L4?) |
-| Cross-source reasoning works (combined) | L4-A vs L4-D |
-| **Encoding enables policy integration** | **Interaction: (L4-DP − L4-D) > (L1-DP − L1-D)** |
+| Encoding improves discovery | Main effect of encoding (L4 vs L1, pooled) |
+| Cross-source reasoning works | L4-A vs L4-D (all-sources adds value under structured encoding) |
 | **Encoding enables cross-source reasoning** | **Interaction: (L4-A − L4-D) > (L1-A − L1-D)** |
 
-Bonferroni correction: α = 0.05/6 ≈ 0.0083 per test.
+Bonferroni correction: α = 0.05/3 ≈ 0.017 per test.
 
-The policy interaction is predicted to be the strongest (constraint-boundary effects structurally require policy), with the expert interaction weaker but present for contradictory-expert scenarios.
+The interaction is the headline finding. Two predicted sub-patterns:
+- L1-A ≤ L1-D: adding raw sources as text hurts or is neutral (information overload). This establishes the *problem*.
+- L4-A > L4-D: encoding unlocks cross-source reasoning. This establishes the *solution*.
 
 ### Difficulty Stratification
 
@@ -90,11 +89,11 @@ Prior run failure: L4-A constraint section rendered **empty headers with no rule
 | Condition | Code | Included |
 |-----------|------|----------|
 | **Data-only** | D | Quantitative data only |
-| **Data+Policy** | DP | Data + policy documents (constraint rules) |
-| **Data+Experts** | DE | Data + expert beliefs (temporal, segment-conditional) |
 | **All-sources** | A | Data + policies + expert beliefs + playbook |
 
 Playbook is always bundled with all-sources (never isolated) because it is procedural scaffolding, not an independent knowledge source.
+
+**No partial-source conditions (DP, DE).** Source ablation is an engineering diagnostic done in Phase −1 — not an experimental condition. In production, all sources are always available. Testing "data + experts without policy" answers a question no practitioner has.
 
 ### Data Generation: Structural Equation Model (SEM)
 
@@ -196,7 +195,7 @@ DATA AND CONTEXT:
 - **Reasoning checklist:** Explicit instructions to perform subgroup analysis, constraint checking, and multi-variable interaction testing. These are *analytical procedures*, not effect-type hints.
 - **Naive-then-corrected structure:** Forces the LLM to articulate why the obvious conclusion is wrong — this naturally elicits the planted effects.
 - **Exactly 5 findings:** Prevents the LLM from producing 3 shallow observations and stopping.
-- **Same prompt for all 8 cells.** Only the encoded content changes.
+- **Same prompt for all 4 cells.** Only the encoded content changes.
 
 ### Evaluation
 
@@ -212,16 +211,20 @@ DATA AND CONTEXT:
 
 ### Metrics
 
-#### Primary: MBRS (Mean Best Rubric Score)
-- Best match per GT effect, averaged per scenario. Normalized to [0,1].
-- Analyzed via 2×4 repeated-measures ANOVA + Cohen's d + 95% CI.
-- MBRS by effect type: Separate for Simpson's, constraint-boundary, interaction.
-- Thesis-weighted MBRS: Interaction×2, constraint-boundary×1, Simpson's×1.
-- Report both equal-weighted and thesis-weighted.
+#### Co-Primary: Decision Regret + Constraint Violation Rate (deterministic, no LLM judge)
 
-#### Deterministic Sub-Metrics (LLM-free, independently verifiable)
+These metrics are computed purely from the model's structured JSON output against the known SEM/DAG. No LLM judge involved — eliminates the "LLM-judging-LLM" circularity.
 
-These metrics use NO LLM judge — computed purely from the structured JSON findings against ground truth. They eliminate the "LLM-judging-LLM" circularity critique.
+| Metric | Computation | What it measures |
+|---|---|---|
+| **Decision Regret** | Extract (lever, direction, magnitude) from each finding. Forward-simulate through the scenario's causal DAG. `regret = E[outcome | optimal_action] − E[outcome | model_recommended_action]`. Infeasible actions (constraint violations) incur penalty = 2× max feasible regret. | Does the model's recommendation actually improve outcomes? Sensitive to all three effect types: wrong direction from Simpson's → high regret; infeasible from constraint miss → penalty; suboptimal combination from missed interaction → moderate regret. |
+| **Constraint Violation Rate** | For each recommended action, check against all ground-truth constraint rules. Binary per recommendation: does it violate any active constraint? Rate = violated / total recommendations. | Will the model's advice get a practitioner in trouble? Directly tests whether encoding makes policy knowledge actionable. |
+
+Analyzed via 2×2 repeated-measures ANOVA + Cohen's d + 95% CI. Report per difficulty tier.
+
+**Why these are superior to MBRS:** Decision Regret measures *practical value*, not pattern-spotting. A paper that shows "L4-A recommendations yield 23% less regret than L1-D" is immediately interpretable by both ML reviewers and practitioners. Constraint Violation Rate is binary and domain-grounded — no rubric design choices to debate.
+
+#### Secondary: Deterministic Discovery Metrics (LLM-free)
 
 | Metric | Computation | What it measures |
 |---|---|---|
@@ -229,67 +232,66 @@ These metrics use NO LLM judge — computed purely from the structured JSON find
 | **Direction Accuracy** | Exact match after normalization (positive/negative/reversal/non-additive) | Did it get the sign right? |
 | **Constraint Rule Match** | Exact match on RULE_ID or ≥50% condition overlap with ground-truth rule | Did it find the specific policy conflict? |
 | **Scope Precision** | Jaccard similarity on segment conditions (e.g., region, channel values) | Did it identify the correct subpopulation? |
+| **Causal Edge Recovery F1** | Parse stated mechanisms into (cause, effect, direction) triples. Compare against planted DAG edges. | Did the model recover the causal structure? Well-understood benchmark in ML community. |
 
-Report deterministic metrics in a parallel table alongside MBRS. If deterministic metrics show the same interaction pattern as MBRS, the finding is robust to evaluator choice.
+#### Secondary: Reliability Metrics
 
-#### Constraint Detection Rate (CDR) — for constraint-boundary effects only
+| Metric | Computation | What it measures |
+|---|---|---|
+| **Cross-run σ** | Standard deviation of Decision Regret across k runs per scenario × cell | Is L4 more *stable* than L1? The thesis is about reliability, not just accuracy. |
+| **Failure Rate** | Proportion of runs where best-match score = 0 for any planted effect | Does L4 have fewer total misses? |
 
-For each scenario × cell, score the best constraint-boundary finding on 4 sub-dimensions:
-1. **Mentioned conflict** (binary): Did the finding acknowledge data-policy tension?
-2. **Identified rule** (binary): Did it reference the correct constraint or rule ID?
-3. **Identified conditions** (proportion): What fraction of the compound conditions were stated?
-4. **Identified threshold** (binary): Did it give the numeric boundary?
+Prediction: L4 has lower σ and lower failure rate than L1. The gap widens with difficulty tier.
 
-CDR = mean of (1)–(4). Report CDR per cell. Prediction: L4-A ≫ L1-A ≫ L1-D on CDR, with L4 specifically excelling on conditions and threshold (impossible to extract from prose at L1).
+#### Tertiary: MBRS (retained for comparability)
 
-#### Secondary
-- **F1 by cell** at ≥3.5/6.0 and ≥4.5/6.0 thresholds. Report per-cell, not just aggregate. Prediction: L4-A has highest precision (fewest false discoveries).
-- **Precision by cell**: `(correct findings) / (total findings)` — catches the "shotgun strategy" where models dump many low-quality findings.
+- **MBRS (Mean Best Rubric Score)**: Best match per GT effect, averaged per scenario. Normalized to [0,1]. Retained as a descriptive metric for comparability with prior runs. NOT used for hypothesis testing — Decision Regret and Constraint Violation Rate are the test statistics.
+- **F1 by cell** at ≥3.5/6.0 threshold. Report per-cell.
+- **Precision by cell**: `(correct findings) / (total findings)`.
 
 ### Phases
 
 **Phase −1 — Encoding Pre-Flight (1 scenario, 0 LLM calls):**
 
 Before any experimentation, verify encoding quality:
-1. Generate all 8 encodings for 1 scenario. Print character counts.
+1. Generate all 4 encodings for 1 scenario. Print character counts.
 2. L4-A constraint section MUST contain populated rules — not just headers. If empty → fix `PolicyDocument` construction and `_build_constraint_vectors()` before proceeding.
 3. L4-A belief objects MUST have populated claims, confidence, decay, evidence, segment_validity.
 4. Diff L4-D vs L4-A: delta MUST contain actual constraint rules and belief content.
-5. Diff L4-D vs L4-DP: delta MUST contain constraint rules only (no expert content).
-6. Diff L4-D vs L4-DE: delta MUST contain expert beliefs only (no constraint content).
-7. Diff L1-D vs L1-A: delta MUST contain policy prose and expert text.
-8. Character ratio [0.7×, 1.5×] achieved via content, NOT padding. Zero `"(no additional signal)"` lines allowed.
-9. **If any check fails: STOP and fix the encoding layer.**
+5. Diff L1-D vs L1-A: delta MUST contain policy prose and expert text.
+6. Character ratio [0.7×, 1.5×] achieved via content, NOT padding. Zero `"(no additional signal)"` lines allowed.
+7. **Source ablation diagnostic (engineering only, not experimental):** Generate L4-DP and L4-DE for this 1 scenario. Verify L4-DP contains policy rules, L4-DE contains expert beliefs. If either is empty/broken, fix the encoder. These conditions are NOT used in the experiment.
+8. **If any check fails: STOP and fix the encoding layer.**
 
 **Phase 0 — Difficulty Calibration (3 scenarios per tier = 9, L1-D only, k=3):**
 - Run 3 easy, 3 medium, 3 hard scenarios at L1-D.
-- **Anti-ceiling (easy):** mean MBRS < 0.75. These should be findable but not trivial.
-- **Anti-ceiling (medium):** mean MBRS < 0.55.
-- **Floor check (hard):** mean MBRS > 0.05. Hard scenarios must be non-trivial (not total noise).
-- **Tier separation:** easy_mean − hard_mean ≥ 0.20. If tiers don't separate → adjust SNR multipliers.
-- **Per-effect:** Each effect type MBRS < 0.67 in ≥1 medium/hard scenario.
+- **Anti-ceiling (easy):** mean Decision Regret > 0.15 (not trivially solvable).
+- **Anti-ceiling (medium):** mean Decision Regret > 0.30.
+- **Floor check (hard):** mean Decision Regret < 0.95. Hard scenarios must be non-trivial (not total noise).
+- **Tier separation:** hard_regret − easy_regret ≥ 0.15.
 - Reusable in Phase 2 if passed.
 
-**Phase 1 — Pilot (6 scenarios = 2 per difficulty tier, all 8 cells, k=3):**
-- Improvement gate: `MBRS_L4-A − MBRS_L1-D ≥ 0.10`
+**Phase 1 — Pilot (6 scenarios = 2 per difficulty tier, all 4 cells, k=3):**
+- Improvement gate: L4-A Decision Regret < L1-D Decision Regret by ≥0.10
 - Anti-ceiling: no cell SD = 0.00
 - Encoding verification: hashes differ, L4 chars within [0.7×, 1.5×] of L1
-- **Source decomposition diagnostic:** Compare L4-DP vs L4-D and L4-DE vs L4-D separately. If L4-DE < L4-D (experts hurt), investigate expert encoding quality. If L4-DP < L4-D, constraint encoding is broken.
-- **Per-effect diagnostic:** Print MBRS by effect type × cell to identify which effects benefit from encoding. If constraint-boundary MBRS drops at L4-DP → the constraint encoding is broken.
+- **Per-effect diagnostic:** Print Decision Regret by effect type × cell to identify which effects benefit from encoding.
 - **Difficulty diagnostic:** Print interaction contrast by difficulty tier. If easy scenarios show zero interaction → good (confirms dose-response). If hard scenarios show zero interaction → encoding isn't strong enough.
-- **Deterministic metrics diagnostic:** Compute Variable Recall and Direction Accuracy per cell. Verify they show the same pattern as MBRS.
+- **Constraint Violation Rate diagnostic:** L4-A must have lower violation rate than L1-A. If not, constraint encoding is broken.
+- **Reliability diagnostic:** Compare cross-run σ between L4 and L1. L4 σ should be lower.
 - **Max 2 revision attempts.** On 3rd failure → `DESIGN_INVALID`, do NOT paper.
 - If gates pass: proceed. If fail: STOP, diagnose, revise.
 
-**Phase 2 — Full (N = 36, all 8 cells, k=3 or k=1 if α≥0.85):**
-- HARD GATE: p<0.0083 (Bonferroni-corrected) on at least one of: (a) encoding×sources interaction (L4-A vs L4-D vs L1-A vs L1-D), (b) encoding main, (c) policy integration interaction (L4-DP vs L4-D vs L1-DP vs L1-D).
+**Phase 2 — Full (N = 36, all 4 cells, k=3 or k=1 if α≥0.85):**
+- HARD GATE: p<0.017 (Bonferroni-corrected) on at least one of: (a) encoding×sources interaction on Decision Regret, (b) encoding main effect on Decision Regret, (c) encoding main effect on Constraint Violation Rate.
 - If all fail: `DESIGN_INVALID`, do NOT paper.
-- Report all six planned tests regardless of significance.
+- Report all three planned tests regardless of significance.
 - Report per-difficulty-tier interaction contrasts.
-- Report all deterministic sub-metrics (Variable Recall, Direction Accuracy, Constraint Rule Match, Scope Precision) per cell.
-- Report CDR (Constraint Detection Rate) per cell.
-- Report F1 and Precision per cell.
+- Report all deterministic discovery metrics (Variable Recall, Direction Accuracy, Constraint Rule Match, Scope Precision, Causal Edge Recovery F1) per cell.
+- Report reliability metrics (cross-run σ, failure rate) per cell.
+- Report Constraint Violation Rate per cell.
 - Report dose-response trend: linear regression of interaction d on difficulty tier.
+- Report MBRS per cell as descriptive comparability metric.
 
 **Phase 3 — Paper + Webapp (only after Phase 2 passes)**
 
@@ -328,37 +330,38 @@ This converts the compression claim from "we select 15 from N" (trivially achiev
 6. **LLM calls via** `copilot -p "<prompt>" -s --no-color --allow-all`. Cache by prompt hash.
 7. **Ground truth used only for evaluation**, never loaded by reasoning system.
 8. **≥1500 rows per scenario.** ≥8 scenarios at ≥3000 rows.
-9. **k ≥ 3 runs per cell in Phase 1.** Phase 2 may use k=1 if α≥0.85 in Phase 1 vote calibration. Zero-variance cells make ANOVA meaningless.
+9. **k ≥ 3 runs per cell in Phase 1.** Phase 2 may use k=1 if α≥0.85 in Phase 1 vote calibration.
 10. **NO SIMULATION.** No mock/fake/sim files. Reduce N if budget is tight — never simulate.
-11. **Cache validation.** `.llm_cache/` must contain ≥ N×8×k entries (8 cells per scenario).
+11. **Cache validation.** `.llm_cache/` must contain ≥ N×4×k entries (4 cells per scenario).
 12. **Batched judge calls** + code pre-filtering mandatory.
 13. **Validate Simpson's construction.** After generating each scenario, automated checks: (a) aggregate slope sign ≠ majority within-group slope sign, (b) naive 100-row sample does NOT detect the reversal, (c) subgroup x-ranges overlap with `x_spread ≤ x_std`, (d) noise satisfies `noise_std ≥ 0.8 × |within_slope × x_std|`, (e) subgroup labels derived from binning/clustering, not raw column values. If validation fails, regenerate.
 14. **Realistic RGM column names.** No generic `col_1`.
 15. **Validate interaction construction.** Main effects p>0.10 individually, joint term p<0.05, not textbook-standard.
-16. **Parallelize LLM calls.** For each scenario, dispatch all 8 cells simultaneously in separate subprocesses or tmux panes. Never serialize cells within one scenario. During Phase 2, maintain ≥8 concurrent LLM calls at all times.
+16. **Parallelize LLM calls.** For each scenario, dispatch all 4 cells simultaneously. During Phase 2, maintain ≥4 concurrent LLM calls at all times.
 17. **No encoding padding.** L4 character ratio must be achieved through real analytical content. If `_build_constraint_vectors()` or `_build_belief_objects()` returns empty/header-only content, the scenario generator is broken — fix it before running.
-18. **Deterministic metrics are primary evidence.** The paper MUST report Variable Recall, Direction Accuracy, Rule Match, and Scope Precision alongside MBRS. If deterministic metrics contradict MBRS (e.g., MBRS shows interaction but Variable Recall does not), the MBRS result is suspect — investigate the judge.
+18. **Deterministic metrics are primary evidence.** The paper MUST report Decision Regret and Constraint Violation Rate as co-primary. MBRS is descriptive only. If deterministic metrics contradict MBRS, the MBRS result is suspect — investigate the judge.
 19. **Code pre-filter is mandatory gate.** No finding may score >0 on the rubric unless it passes the code pre-filter (correct variables AND correct direction). This prevents the LLM judge from awarding credit to plausible-sounding but factually wrong findings.
-20. **k=1 audit requirement.** If Phase 2 uses k=1 (after α≥0.85 in Phase 1), randomly select 6 scenarios (2 per difficulty tier) and re-run at k=3 as a post-hoc audit. If the k=3 scores differ from k=1 scores by >0.10 MBRS in >2 scenarios, fall back to k=3 for all cells.
+20. **k=1 audit requirement.** If Phase 2 uses k=1 (after α≥0.85 in Phase 1), randomly select 6 scenarios (2 per difficulty tier) and re-run at k=3 as a post-hoc audit. If the k=3 scores differ from k=1 scores by >0.10 Decision Regret in >2 scenarios, fall back to k=3 for all cells.
 21. **No LLM call may generate results.json.** The ANOVA, Cohen's d, CIs, and all statistical tests must be computed by deterministic Python code (scipy/numpy) from the cached rubric scores. The LLM is used only for (a) discovery calls and (b) judge calls — never for statistical computation.
+22. **Decision Regret computation is deterministic.** Forward-simulation through the known DAG uses only numpy arithmetic. No LLM involvement. The DAG and SEM coefficients are stored in `ground_truth.json` per scenario.
 
 ---
 
 ## Call Budget
 
-With N=36, 8 cells, and k dependent on Phase 1 vote calibration:
+With N=36, 4 cells, and k dependent on Phase 1 vote calibration:
 
 | Phase | Scenarios | Cells | k | Discovery | Judge (batched) | Total |
 |---|---|---|---|---|---|---|
-| Phase −1 | 1 | 8 | 0 | 0 | 0 | **0** |
+| Phase −1 | 1 | 4 | 0 | 0 | 0 | **0** |
 | Phase 0 | 9 | 1 (L1-D) | 3 | 27 | ~54 | **~81** |
-| Phase 1 | 6 | 8 | 3 | 144 | ~288 | **~432** |
-| Phase 2 (k=1) | 36 | 8 | 1 | 288 | ~576 | **~864** |
-| Phase 2 (k=3) | 36 | 8 | 3 | 864 | ~1728 | **~2592** |
+| Phase 1 | 6 | 4 | 3 | 72 | ~144 | **~216** |
+| Phase 2 (k=1) | 36 | 4 | 1 | 144 | ~288 | **~432** |
+| Phase 2 (k=3) | 36 | 4 | 3 | 432 | ~864 | **~1296** |
 | Pipeline | 36 | 1 | 1 | 0 (reuses L4-A) | ~36 | **~36** |
 
-Best case (k=1 after α≥0.85): ~1,413 total calls.
-Worst case (k=3 throughout): ~3,141 total calls.
+Best case (k=1 after α≥0.85): ~765 total calls.
+Worst case (k=3 throughout): ~1,629 total calls.
 
 ---
 
@@ -367,12 +370,11 @@ Worst case (k=3 throughout): ~3,141 total calls.
 Prior runs found these anti-patterns. Not hard rules, but documented traps:
 
 1. **Ceiling from easy Simpson's.** Textbook Simpson's scores 0.85–0.98 across all cells. Use multi-mediator variants.
-2. **Coarse rubric ceiling.** 5-binary-dim rubric clusters at top. The continuous dimensions (Precision, Completeness, Specificity) break this.
+2. **Coarse rubric ceiling.** 5-binary-dim rubric clusters at top. The continuous dimensions (Precision, Completeness, Specificity) break this. Decision Regret as primary metric avoids this entirely.
 3. **k=1 collapses variance.** Single-run cells → zero within-cell variance → degenerate ANOVA.
 4. **≤500 rows too easy.** Frontier LLMs scan 500×15 in one pass. Encoding advantage starts at ≥1500 rows.
 5. **Simple constraints trivially parsed.** 2-condition AND in one paragraph is extracted trivially. Need ≥3 conditions with nested disjunction across multiple paragraphs.
 6. **Empty L4 structured encoding.** Prior run: `_build_constraint_vectors()` rendered headers but no rules because `PolicyDocument.rules` was empty. The encoder then padded with 2000+ filler lines to meet character ratio. Result: L4-A ≈ L4-D + noise → sources degraded L4 performance. **This single bug killed the interaction effect.** Ensure scenario generator populates `PolicyDocument.rules` with actual `PolicyRule` objects and verify in Phase −1.
-7. **Sources hurt at L4.** Prior run Phase 1 showed L4-A (0.234) < L4-D (0.265). If persists after fixing #6: one knowledge source type is adding noise. The 2×4 design's source decomposition (DP vs DE vs A) now diagnoses this directly.
 
 ---
 
@@ -380,20 +382,19 @@ Prior runs found these anti-patterns. Not hard rules, but documented traps:
 
 | ID | Criterion | How measured |
 |----|-----------|-------------|
-| **SC1** | Encoding improves discovery | Encoding main p<0.0083, OR interaction p<0.0083, OR policy-integration interaction p<0.0083 |
-| **SC2** | Cross-source benefits from encoding | Interaction on cross-source MBRS significant. Source decomposition identifies *which* source drives it. |
-| **SC3** | Pipeline compression scales AND beats random | High-dim ≥100×. Pipeline recall > random recall (p<0.05 paired t-test). |
-| **SC4** | Three invariants + insufficiency argument | Logical argument in paper |
-| **SC5** | Paper compiles from actual data | Compilation + review |
-| **SC6** | Claims backed by effect sizes and CIs | Statistical reporting |
-| **SC7** | Pipeline architecture matches abstract | `pipeline_scores.json` with 5-dim gate |
-| **SC8** | Simpson's construction validated | Automated checks (Hard Rule 13) |
-| **SC9** | Design avoids ceiling AND floor | No cell SD=0; L1-D easy tier < 0.75; hard tier > 0.05 |
-| **SC10** | Interaction construction validated | Automated checks (Hard Rule 15) |
-| **SC11** | Deterministic metrics confirm MBRS pattern | Variable Recall and Direction Accuracy show same interaction direction as MBRS |
-| **SC12** | Dose-response on difficulty | Interaction d increases monotonically from easy → medium → hard tiers |
-| **SC13** | CDR decomposition for constraint-boundary | L4-A CDR conditions+threshold > L1-A CDR (p<0.05) |
-| **SC14** | All per-type interactions significant | Constraint-boundary, Simpson's, AND interaction effects each show significant encoding×sources interaction at corrected α |
+| **SC1** | Encoding reduces Decision Regret | Encoding main p<0.017 OR interaction p<0.017 on Decision Regret |
+| **SC2** | Encoding enables cross-source reasoning | Interaction on Decision Regret: source benefit larger at L4 than L1 |
+| **SC3** | Encoding reduces constraint violations | L4-A Constraint Violation Rate < L1-A (p<0.05) |
+| **SC4** | Pipeline compression scales AND beats random | High-dim ≥100×. Pipeline recall > random recall (p<0.05 paired t-test). |
+| **SC5** | Three invariants + insufficiency argument | Logical argument in paper |
+| **SC6** | Paper compiles from actual data | Compilation + review |
+| **SC7** | Claims backed by effect sizes and CIs | Statistical reporting |
+| **SC8** | Pipeline architecture matches abstract | `pipeline_scores.json` with 5-dim gate |
+| **SC9** | Simpson's construction validated | Automated checks (Hard Rule 13) |
+| **SC10** | Design avoids ceiling AND floor | No cell SD=0; difficulty tiers separate |
+| **SC11** | Interaction construction validated | Automated checks (Hard Rule 15) |
+| **SC12** | Encoding improves reliability | L4 cross-run σ < L1 cross-run σ; L4 failure rate < L1 failure rate |
+| **SC13** | Dose-response on difficulty | Interaction d increases monotonically from easy → medium → hard tiers |
 
 ---
 
@@ -402,13 +403,13 @@ Prior runs found these anti-patterns. Not hard rules, but documented traps:
 ```
 demos/coupled-decisions/
   output/
-    results.json            # Per-scenario per-cell per-run MBRS + ANOVA + per-type + per-tier
-    deterministic_metrics.json  # Variable Recall, Direction Accuracy, Rule Match, Scope Precision per cell
-    cdr_scores.json         # Constraint Detection Rate decomposition per cell
+    results.json            # Per-scenario per-cell per-run Decision Regret + Constraint Violation Rate + ANOVA
+    deterministic_metrics.json  # Variable Recall, Direction Accuracy, Rule Match, Scope Precision, Edge Recovery F1 per cell
+    reliability_metrics.json    # Cross-run σ, failure rate per cell
     pipeline_scores.json    # Pipeline + random baseline comparison
     encoding_hashes.json    # SHA-256 + char counts per encoding
     index.html              # Interactive webapp
-    data/                   # Synthetic data + ground_truth per scenario
+    data/                   # Synthetic data + ground_truth per scenario (includes DAG + SEM coefficients)
     paper/
       paper.tex + paper.pdf + figures/ + references.bib
   src/                      # All source code
@@ -425,12 +426,12 @@ When complete: delete agent branches, remove worktrees, kill tmux sessions.
 ## Completion Protocol
 
 **Do NOT write `.swarm/deliverable.md` until ALL of the following are true:**
-1. Phase 2 HARD GATE passed (at least one p<0.0083 among the six planned tests)
+1. Phase 2 HARD GATE passed (at least one p<0.017 among the three planned tests)
 2. E3 pipeline compression + random baseline results logged to `output/pipeline_scores.json`
 3. Paper compiles with all figures from actual experimental data
-4. `output/results.json` contains complete per-scenario per-cell per-run metrics + ANOVA results
-5. `output/deterministic_metrics.json` contains Variable Recall, Direction Accuracy, Rule Match, Scope Precision per cell
-6. `output/cdr_scores.json` contains Constraint Detection Rate decomposition per cell
-7. All 14 Success Criteria verified
+4. `output/results.json` contains complete per-scenario per-cell per-run Decision Regret + Constraint Violation Rate + ANOVA results
+5. `output/deterministic_metrics.json` contains Variable Recall, Direction Accuracy, Rule Match, Scope Precision, Edge Recovery F1 per cell
+6. `output/reliability_metrics.json` contains cross-run σ and failure rate per cell
+7. All 13 Success Criteria verified
 
 Writing `deliverable.md` prematurely will cause the server to mark this investigation as complete and kill all agents. The deliverable is the LAST file written, after everything else is done.

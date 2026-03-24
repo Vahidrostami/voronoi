@@ -1373,6 +1373,73 @@ class TestConvergenceSuccessCriteria:
 
 
 # ---------------------------------------------------------------------------
+# Convergence — Criteria override for scientific rigor
+# ---------------------------------------------------------------------------
+
+class TestConvergenceScientificCriteriaOverride:
+    """When eval_score is 0.50–0.75 but ALL success criteria are met and no
+    blockers, scientific rigor should allow convergence instead of looping."""
+
+    def _stub_helpers(self, monkeypatch):
+        """Remove science-specific blocker sources so we isolate the criteria override."""
+        monkeypatch.setattr("voronoi.science._helpers._fetch_tasks", lambda ws: [])
+        monkeypatch.setattr("voronoi.science._helpers._find_theories",
+                            lambda ws, tasks: [{"status": "refuted"}])
+        monkeypatch.setattr("voronoi.science._helpers._find_tested_predictions",
+                            lambda ws, tasks: [{"id": "pred-1"}])
+
+    def test_scientific_criteria_met_overrides_low_score(self, tmp_path, monkeypatch):
+        (tmp_path / ".swarm").mkdir()
+        save_success_criteria(tmp_path, [
+            {"id": "SC1", "description": "L4 > L1", "met": True},
+            {"id": "SC2", "description": "Pipeline 10x", "met": True},
+        ])
+        self._stub_helpers(monkeypatch)
+        # Provide a resolved belief map
+        from voronoi.science import BeliefMap, Hypothesis, save_belief_map
+        bm = BeliefMap(hypotheses=[
+            Hypothesis(id="H1", name="Encoding helps", prior=0.5,
+                       posterior=0.9, status="confirmed"),
+        ])
+        save_belief_map(tmp_path, bm)
+
+        result = check_convergence(tmp_path, "scientific", eval_score=0.65)
+        assert result.converged is True
+        assert "success criteria" in result.reason.lower()
+
+    def test_scientific_unmet_criteria_still_blocks(self, tmp_path, monkeypatch):
+        (tmp_path / ".swarm").mkdir()
+        save_success_criteria(tmp_path, [
+            {"id": "SC1", "description": "L4 > L1", "met": True},
+            {"id": "SC2", "description": "Pipeline 10x", "met": False},
+        ])
+        self._stub_helpers(monkeypatch)
+        from voronoi.science import BeliefMap, Hypothesis, save_belief_map
+        bm = BeliefMap(hypotheses=[
+            Hypothesis(id="H1", name="Encoding helps", prior=0.5,
+                       posterior=0.9, status="confirmed"),
+        ])
+        save_belief_map(tmp_path, bm)
+
+        result = check_convergence(tmp_path, "scientific", eval_score=0.65)
+        assert result.converged is False
+        assert any("SC2" in b for b in result.blockers)
+
+    def test_scientific_no_criteria_file_no_override(self, tmp_path, monkeypatch):
+        (tmp_path / ".swarm").mkdir()
+        self._stub_helpers(monkeypatch)
+        from voronoi.science import BeliefMap, Hypothesis, save_belief_map
+        bm = BeliefMap(hypotheses=[
+            Hypothesis(id="H1", name="H1", prior=0.5,
+                       posterior=0.9, status="confirmed"),
+        ])
+        save_belief_map(tmp_path, bm)
+
+        result = check_convergence(tmp_path, "scientific", eval_score=0.65)
+        assert result.converged is False
+
+
+# ---------------------------------------------------------------------------
 # Convergence — Hypothesis alignment blocking
 # ---------------------------------------------------------------------------
 
@@ -1635,3 +1702,63 @@ class TestOrchestratorCheckpoint:
         assert "ANOVA complete" in text
         assert "L2 gradient" in text
         assert "Dispatch critic" in text
+
+
+# ---------------------------------------------------------------------------
+# Convergence — All success criteria met override
+# ---------------------------------------------------------------------------
+
+class TestConvergenceSuccessCriteriaOverride:
+    """When eval_score is moderate (0.50–0.75) but ALL success criteria are met,
+    convergence should be allowed for adaptive rigor."""
+
+    def test_criteria_met_overrides_low_score(self, tmp_path):
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "deliverable.md").write_text("# Done")
+        save_success_criteria(tmp_path, [
+            {"id": "SC1", "description": "L4 > L1", "met": True},
+            {"id": "SC2", "description": "Pipeline 10x", "met": True},
+        ])
+        result = check_convergence(tmp_path, "adaptive", eval_score=0.65,
+                                    improvement_rounds=0)
+        assert result.converged is True
+        assert "success criteria" in result.reason.lower()
+
+    def test_unmet_criteria_still_blocks(self, tmp_path):
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "deliverable.md").write_text("# Done")
+        save_success_criteria(tmp_path, [
+            {"id": "SC1", "description": "L4 > L1", "met": True},
+            {"id": "SC2", "description": "Pipeline 10x", "met": False},
+        ])
+        result = check_convergence(tmp_path, "adaptive", eval_score=0.65,
+                                    improvement_rounds=0)
+        assert result.converged is False
+
+    def test_no_criteria_file_no_override(self, tmp_path):
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "deliverable.md").write_text("# Done")
+        result = check_convergence(tmp_path, "adaptive", eval_score=0.65,
+                                    improvement_rounds=0)
+        assert result.converged is False
+
+    def test_empty_criteria_no_override(self, tmp_path):
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "deliverable.md").write_text("# Done")
+        save_success_criteria(tmp_path, [])
+        result = check_convergence(tmp_path, "adaptive", eval_score=0.65,
+                                    improvement_rounds=0)
+        assert result.converged is False
+
+    def test_score_below_050_not_overridden(self, tmp_path):
+        """Even with all criteria met, score < 0.50 follows normal path."""
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "deliverable.md").write_text("# Done")
+        save_success_criteria(tmp_path, [
+            {"id": "SC1", "description": "L4 > L1", "met": True},
+        ])
+        # Score 0.40 doesn't enter the 0.50+ branch at all
+        result = check_convergence(tmp_path, "adaptive", eval_score=0.40,
+                                    improvement_rounds=0)
+        # Should still converge via final fallthrough ("All tasks complete")
+        assert result.converged is True

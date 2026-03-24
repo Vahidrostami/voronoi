@@ -248,14 +248,14 @@ class InvestigationDispatcher:
             mode=inv.mode,
             codename=inv.codename,
             chat_id=inv.chat_id,
-            rigor=getattr(inv, 'rigor', 'standard') or 'standard',
+            rigor=getattr(inv, 'rigor', 'scientific') or 'scientific',
         )
 
         logger.info("Investigation %s (#%d) LIVE in tmux=%s workspace=%s",
                     inv.codename, inv.id, tmux_session, workspace_path)
 
         label = inv.codename or f"#{inv.id}"
-        rigor = getattr(inv, 'rigor', 'standard') or 'standard'
+        rigor = getattr(inv, 'rigor', 'scientific') or 'scientific'
         self.send_message(format_launch(
             codename=label,
             mode=inv.mode,
@@ -266,7 +266,7 @@ class InvestigationDispatcher:
     def _build_prompt(self, inv, workspace_path: Path) -> str:
         from voronoi.server.prompt import build_orchestrator_prompt
 
-        rigor = getattr(inv, 'rigor', 'standard') or 'standard'
+        rigor = getattr(inv, 'rigor', 'scientific') or 'scientific'
         label = inv.codename or f"#{inv.id}"
 
         return build_orchestrator_prompt(
@@ -926,9 +926,18 @@ class InvestigationDispatcher:
                         data.get("status") in ("converged", "exhausted", "diminishing_returns")
                 except (json.JSONDecodeError, OSError):
                     pass
-            # Deliverable exists but no convergence signal — check if
-            # we should generate one
+            # Deliverable exists but no convergence signal — attempt to
+            # generate one and re-check immediately (so we don't need to
+            # wait for the next poll cycle, which may never come if the
+            # agent already exited normally).
             self._try_convergence_check(run)
+            if conv.exists():
+                try:
+                    data = json.loads(conv.read_text())
+                    return data.get("converged", False) or \
+                        data.get("status") in ("converged", "exhausted", "diminishing_returns")
+                except (json.JSONDecodeError, OSError):
+                    pass
             return False
         conv = run.workspace_path / ".swarm" / "convergence.json"
         if conv.exists():
@@ -1064,6 +1073,10 @@ class InvestigationDispatcher:
 
         Returns True if the agent was successfully restarted, False if
         retries are exhausted or the workspace is in an unrecoverable state.
+
+        On restart, appends a RESUME section to the orchestrator prompt with
+        checkpoint state so the new session can skip straight to remaining work
+        instead of re-discovering everything from scratch.
         """
         if run.retry_count >= self.config.max_retries:
             logger.warning("Investigation #%d exhausted %d retries — giving up",
@@ -1098,6 +1111,11 @@ class InvestigationDispatcher:
                          run.investigation_id)
             return False
 
+        # Inject resume context into prompt so the restarted agent skips
+        # ahead to remaining work (e.g., manuscript writing) rather than
+        # re-exploring from scratch and exhausting its context window again.
+        self._inject_resume_context(run, prompt_file)
+
         # Rotate the log file so the new session starts clean
         if run.log_path.exists():
             rotated = run.log_path.with_suffix(f".{run.retry_count}.log")
@@ -1129,6 +1147,86 @@ class InvestigationDispatcher:
         except Exception as e:
             logger.error("Failed to restart #%d: %s", run.investigation_id, e)
             return False
+
+    def _inject_resume_context(self, run: RunningInvestigation,
+                               prompt_file: Path) -> None:
+        """Append a RESUME section to the orchestrator prompt for restarts.
+
+        Reads the checkpoint, success criteria, and task snapshot to produce
+        a compact summary telling the new session exactly where things stand
+        and what remains.  This prevents the restarted agent from wasting its
+        full context window re-discovering completed work.
+        """
+        lines: list[str] = [
+            "\n\n## ⚠️  RESUME — THIS IS A RESTART (attempt "
+            f"{run.retry_count}/{self.config.max_retries})\n",
+            "The previous session crashed. All experimental work is preserved in the workspace.",
+            "**Do NOT re-run experiments or re-read all data.** Focus on remaining work.\n",
+        ]
+
+        # Checkpoint summary
+        cp_path = run.workspace_path / ".swarm" / "orchestrator-checkpoint.json"
+        if cp_path.exists():
+            try:
+                from voronoi.science.convergence import (
+                    load_checkpoint, format_checkpoint_for_prompt,
+                )
+                cp = load_checkpoint(run.workspace_path)
+                lines.append("### Last Checkpoint\n")
+                lines.append(format_checkpoint_for_prompt(cp))
+                lines.append("")
+            except Exception:
+                pass
+
+        # Success criteria status
+        sc_path = run.workspace_path / ".swarm" / "success-criteria.json"
+        if sc_path.exists():
+            try:
+                criteria = json.loads(sc_path.read_text())
+                if isinstance(criteria, list) and criteria:
+                    met = sum(1 for c in criteria if c.get("met"))
+                    lines.append(f"### Success Criteria: {met}/{len(criteria)} met\n")
+                    for c in criteria:
+                        status = "✅" if c.get("met") else "❌"
+                        lines.append(f"- {status} {c.get('id', '?')}: {c.get('description', '')}")
+                    lines.append("")
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        # Task summary from snapshot
+        if run.task_snapshot:
+            total = len(run.task_snapshot)
+            closed = sum(1 for t in run.task_snapshot.values() if t["status"] == "closed")
+            open_tasks = [t["title"] for t in run.task_snapshot.values() if t["status"] != "closed"]
+            lines.append(f"### Tasks: {closed}/{total} complete\n")
+            if open_tasks:
+                lines.append("**Remaining:**")
+                for title in open_tasks[:10]:
+                    lines.append(f"- {title}")
+            lines.append("")
+
+        # Eval score
+        if run.eval_score > 0:
+            lines.append(f"### Quality Score: {run.eval_score:.2f}\n")
+
+        # Directive
+        lines.append("### What To Do Now\n")
+        lines.append(
+            "1. Read `.swarm/orchestrator-checkpoint.json` for full state\n"
+            "2. Run `bd ready --json` to see remaining tasks\n"
+            "3. If all experiments are done, **dispatch a Scribe worker** for the manuscript\n"
+            "4. Do NOT re-read the entire PROMPT.md — work from the checkpoint\n"
+            "5. **Conserve context** — delegate writing to workers, keep your session lean\n"
+        )
+
+        try:
+            with open(prompt_file, "a") as f:
+                f.write("\n".join(lines))
+            logger.info("Injected resume context into prompt for #%d",
+                        run.investigation_id)
+        except OSError as e:
+            logger.warning("Failed to inject resume context for #%d: %s",
+                           run.investigation_id, e)
 
     def _cleanup_tmux(self, run: RunningInvestigation) -> None:
         """Kill all tmux sessions associated with this investigation."""

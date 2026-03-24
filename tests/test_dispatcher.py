@@ -635,3 +635,117 @@ class TestDesignInvalidHardGate:
         ]
         d._diff_tasks(run, tasks)
         assert "DESIGN_INVALID" in run.task_snapshot["bd-1"]["notes"]
+
+
+# ---------------------------------------------------------------------------
+# Resume context injection on restart
+# ---------------------------------------------------------------------------
+
+class TestResumeContextInjection:
+    def test_inject_resume_context_appends_to_prompt(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        run.retry_count = 1
+        run.eval_score = 0.65
+        run.task_snapshot = {
+            "bd-1": {"status": "closed", "title": "Task 1"},
+            "bd-2": {"status": "open", "title": "Write manuscript"},
+        }
+
+        prompt_file = tmp_path / ".swarm" / "orchestrator-prompt.txt"
+        prompt_file.parent.mkdir(parents=True, exist_ok=True)
+        prompt_file.write_text("Original prompt content")
+
+        d._inject_resume_context(run, prompt_file)
+
+        content = prompt_file.read_text()
+        assert "RESUME" in content
+        assert "Original prompt content" in content
+        assert "1/2" in content  # tasks complete
+        assert "Write manuscript" in content  # remaining task
+        assert "0.65" in content  # eval score
+
+    def test_inject_resume_context_includes_success_criteria(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        run.retry_count = 1
+
+        prompt_file = tmp_path / ".swarm" / "orchestrator-prompt.txt"
+        prompt_file.parent.mkdir(parents=True, exist_ok=True)
+        prompt_file.write_text("Original prompt")
+
+        sc_path = tmp_path / ".swarm" / "success-criteria.json"
+        sc_path.write_text(json.dumps([
+            {"id": "SC1", "description": "L4 > L1", "met": True},
+            {"id": "SC2", "description": "Pipeline 10x", "met": False},
+        ]))
+
+        d._inject_resume_context(run, prompt_file)
+
+        content = prompt_file.read_text()
+        assert "1/2 met" in content
+        assert "SC1" in content
+        assert "SC2" in content
+
+    def test_inject_resume_context_includes_checkpoint(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        run.retry_count = 1
+
+        prompt_file = tmp_path / ".swarm" / "orchestrator-prompt.txt"
+        prompt_file.parent.mkdir(parents=True, exist_ok=True)
+        prompt_file.write_text("Original prompt")
+
+        from voronoi.science.convergence import OrchestratorCheckpoint, save_checkpoint
+        cp = OrchestratorCheckpoint(
+            cycle=5, phase="writing", total_tasks=10, closed_tasks=8,
+            next_actions=["Dispatch scribe for manuscript"],
+        )
+        save_checkpoint(tmp_path, cp)
+
+        d._inject_resume_context(run, prompt_file)
+
+        content = prompt_file.read_text()
+        assert "cycle 5" in content
+        assert "writing" in content
+        assert "8/10" in content
+
+    def test_inject_resume_context_tolerates_missing_files(self, dispatcher_setup):
+        """Should not crash if checkpoint/criteria files are missing."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        run.retry_count = 1
+
+        prompt_file = tmp_path / ".swarm" / "orchestrator-prompt.txt"
+        prompt_file.parent.mkdir(parents=True, exist_ok=True)
+        prompt_file.write_text("Original prompt")
+
+        d._inject_resume_context(run, prompt_file)
+
+        content = prompt_file.read_text()
+        assert "RESUME" in content
+        assert "Scribe" in content

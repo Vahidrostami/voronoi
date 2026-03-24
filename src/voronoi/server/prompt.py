@@ -458,6 +458,26 @@ def build_orchestrator_prompt(
         "Keep it focused. ~200 words max.\n"
     )
 
+    # -- Manuscript delegation — MANDATORY ---------------------------------
+    sections.append(
+        "\n## Manuscript Writing — ALWAYS DELEGATE TO SCRIBE\n\n"
+        "**NEVER write the manuscript/paper/deliverable yourself in the orchestrator session.**\n"
+        "Manuscript writing is extremely context-heavy and WILL exhaust your context window "
+        "if attempted inline — leading to session termination before the deliverable is written.\n\n"
+        "**Mandatory workflow:**\n"
+        "1. When all experiments are complete and success criteria are met, dispatch a "
+        "**Scribe** worker (`task_type: \"scribe\"`) with a briefing that lists:\n"
+        "   - All completed findings and their locations\n"
+        "   - The success criteria status\n"
+        "   - The target structure (e.g., academic paper sections)\n"
+        "2. The Scribe writes the deliverable in its own worktree with a full context window\n"
+        "3. After merge, verify the deliverable exists and dispatch the Evaluator\n\n"
+        "**Why:** Your context is consumed by OODA cycles, experiment monitoring, and "
+        "findings synthesis after hours of orchestration. The Scribe starts fresh with "
+        "100% of its context available for writing — producing higher quality output "
+        "and preventing session crashes.\n"
+    )
+
     # -- Rules -------------------------------------------------------------
     sections.append(
         "\n## Rules\n\n"

@@ -232,6 +232,14 @@ def check_convergence(workspace: Path, rigor: str,
         # Adaptive rigor: basic convergence if eval score present, otherwise just deliverable
         if eval_score >= 0.75 and not blockers:
             return ConvergenceResult(True, "converged", "Evaluator PASS", score=eval_score)
+        # If score is moderate but ALL success criteria are met, allow convergence
+        # rather than blocking indefinitely for a higher score
+        if eval_score >= 0.50 and _all_criteria_met(workspace):
+            return ConvergenceResult(
+                True, "converged",
+                f"All success criteria met (score={eval_score:.2f})",
+                score=eval_score,
+            )
         if eval_score >= 0.50 and improvement_rounds < 2:
             return ConvergenceResult(False, "not_ready",
                                      f"Score {eval_score:.2f} — improvement round needed",
@@ -284,6 +292,15 @@ def check_convergence(workspace: Path, rigor: str,
 
     if eval_score >= 0.75 and not blockers:
         return ConvergenceResult(True, "converged", f"All criteria met (score={eval_score:.2f})", score=eval_score)
+    # If score is moderate but ALL success criteria are met and no other
+    # blockers, allow convergence — prevents agents from looping until
+    # context exhaustion when the actual investigation goals are satisfied.
+    if eval_score >= 0.50 and not blockers and _all_criteria_met(workspace):
+        return ConvergenceResult(
+            True, "converged",
+            f"All success criteria met (score={eval_score:.2f})",
+            score=eval_score,
+        )
     if improvement_rounds >= 2 and not blockers:
         return ConvergenceResult(True, "diminishing_returns", "Max improvement rounds, blockers cleared", score=eval_score)
     if blockers:
@@ -300,6 +317,20 @@ def write_convergence(workspace: Path, result: ConvergenceResult) -> Path:
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }, indent=2))
     return path
+
+
+def _all_criteria_met(workspace: Path) -> bool:
+    """Return True if success-criteria.json exists AND every criterion is met."""
+    path = workspace / ".swarm" / "success-criteria.json"
+    if not path.exists():
+        return False
+    try:
+        data = json.loads(path.read_text())
+        if not isinstance(data, list) or not data:
+            return False
+    except (json.JSONDecodeError, OSError):
+        return False
+    return all(c.get("met", False) for c in data if isinstance(c, dict))
 
 
 def _check_success_criteria(workspace: Path) -> list[str]:
