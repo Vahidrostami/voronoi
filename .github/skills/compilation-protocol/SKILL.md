@@ -174,7 +174,7 @@ echo "✓ PDF copied to .swarm/report.pdf"
 # 5. Commit
 git add "${TEX_STEM}.pdf" .swarm/report.pdf
 git commit -m "Compile final paper PDF"
-git push origin <branch>
+# If `origin` exists, also run: git push origin <branch>
 
 # 6. Update Beads
 bd update <task-id> --notes "COMPILATION:SUCCESS | PAGES:<N> | SIZE:<bytes>"

@@ -92,10 +92,11 @@ LOOP (max 3 iterations per experiment variant):
   1. Create/edit a file → `git add -A && git commit -m "feat: <what you did>"`
   2. Write a test → `git add -A && git commit -m "test: <what you tested>"`
   3. Before any long operation → commit what you have
-  4. Before closing the task → final commit + push
-- ALWAYS push before stopping: `git push origin <your-branch>`
+  4. Before closing the task → final commit; if `origin` exists, push it
+- If `origin` exists, push before stopping: `git push origin <your-branch>`
+- If this workspace has no remote, do NOT create one just to satisfy this rule. Keep the commits local and record `NO_REMOTE` in Beads.
 - If push fails, rebase and retry
-- **If you sense you're running low on context** (many tool calls spent), immediately commit and push what you have, then close the task with a note about remaining work.
+- **If you sense you're running low on context** (many tool calls spent), immediately commit what you have. Push it if `origin` exists; otherwise leave the commit local and close the task with a `NO_REMOTE` note.
 
 ### Quality
 - Write tests for everything you build

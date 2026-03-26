@@ -761,7 +761,7 @@ class TestCoupledDecisionsCrashFix:
         assert not any("Restarting" in m for m in msgs)
 
     def test_restart_injects_resume_context(self, dispatcher_setup):
-        """On restart, the prompt file should get resume context appended."""
+        """On restart, a NEW resume prompt file should be created (not appended to original)."""
         d, msgs, tmp_path = dispatcher_setup
         swarm = self._setup_workspace(tmp_path)
 
@@ -790,10 +790,17 @@ class TestCoupledDecisionsCrashFix:
         assert success is True
         assert run.retry_count == 1
 
-        prompt_content = (swarm / "orchestrator-prompt.txt").read_text()
-        assert "RESUME" in prompt_content
-        assert "Write manuscript" in prompt_content
-        assert "Compile paper" in prompt_content
-        assert "28/30" in prompt_content  # 28 closed, 2 open
-        assert "0.65" in prompt_content
-        assert "14/14 met" in prompt_content  # all criteria met
+        # Original prompt should NOT be modified
+        original_content = (swarm / "orchestrator-prompt.txt").read_text()
+        assert "RESTART" not in original_content
+
+        # Resume file should be a separate file with compact context
+        resume_file = swarm / "orchestrator-prompt-resume.txt"
+        assert resume_file.exists()
+        resume_content = resume_file.read_text()
+        assert "RESTART" in resume_content
+        assert "Write manuscript" in resume_content
+        assert "Compile paper" in resume_content
+        assert "28/30" in resume_content  # 28 closed, 2 open
+        assert "0.65" in resume_content
+        assert "14/14 met" in resume_content  # all criteria met

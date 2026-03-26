@@ -7,6 +7,7 @@ The dispatcher now only: dispatch_next() + poll_progress().
 import json
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -68,6 +69,37 @@ class TestDispatchNext:
 
         assert len(d.running) == 0
         mock_queue.fail.assert_called_once()
+
+    def test_recover_running_scientific_requires_completion_gate(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        mock_queue = MagicMock()
+        d._queue = mock_queue
+
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "deliverable.md").write_text("# Partial\n")
+
+        mock_queue.get_running.return_value = [
+            SimpleNamespace(
+                id=1,
+                workspace_path=str(tmp_path),
+                question="test",
+                mode="prove",
+                codename="Dopamine",
+                chat_id="123",
+                rigor="scientific",
+                started_at=time.time(),
+            )
+        ]
+
+        with patch("voronoi.server.dispatcher.subprocess.run", return_value=MagicMock(returncode=1)), \
+             patch.object(d, "_try_restart", return_value=False) as try_restart, \
+             patch.object(d, "_handle_completion") as handle_completion:
+            d._recover_running()
+
+        try_restart.assert_called_once()
+        assert handle_completion.call_count == 1
+        assert handle_completion.call_args.kwargs["failed"] is True
 
 
 class TestProgressMonitoring:
@@ -266,6 +298,44 @@ class TestProgressMonitoring:
 
         sent_events = send_batch.call_args.args[1]
         assert [event["type"] for event in sent_events] == ["task_new", "event_log"]
+
+    def test_poll_progress_reports_clean_exit_before_convergence(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        mock_queue = MagicMock()
+        d._queue = mock_queue
+
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "agent.log").write_text(
+            "Total usage est: 3 Premium requests\n"
+            "Total session time: 5m 43s\n"
+            "Breakdown by AI model:\n"
+            "logout\n"
+        )
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+            rigor="adaptive",
+        )
+        d.running[1] = run
+
+        with patch.object(d, "_check_abort_signal"), \
+             patch.object(d, "check_human_gates"), \
+             patch.object(d, "_refresh_eval_score"), \
+             patch.object(d, "_check_progress", return_value=[]), \
+             patch.object(d, "_check_event_log", return_value=[]), \
+             patch.object(d, "_try_restart", return_value=False), \
+             patch("voronoi.server.dispatcher.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1)
+            d.poll_progress()
+
+        failure_reason = mock_queue.fail.call_args.args[1]
+        assert "cleanly before convergence" in failure_reason
+        assert "no deliverable produced" in failure_reason.lower()
 
     def test_check_event_log_reads_worker_worktrees(self, dispatcher_setup):
         d, msgs, docs, tmp_path = dispatcher_setup
@@ -642,7 +712,7 @@ class TestDesignInvalidHardGate:
 # ---------------------------------------------------------------------------
 
 class TestResumeContextInjection:
-    def test_inject_resume_context_appends_to_prompt(self, dispatcher_setup):
+    def test_build_resume_prompt_creates_new_file(self, dispatcher_setup):
         d, msgs, docs, tmp_path = dispatcher_setup
         run = RunningInvestigation(
             investigation_id=1,
@@ -662,16 +732,20 @@ class TestResumeContextInjection:
         prompt_file.parent.mkdir(parents=True, exist_ok=True)
         prompt_file.write_text("Original prompt content")
 
-        d._inject_resume_context(run, prompt_file)
+        resume_file = d._build_resume_prompt(run)
 
-        content = prompt_file.read_text()
-        assert "RESUME" in content
-        assert "Original prompt content" in content
+        # Resume file should be a NEW file, not the original
+        assert resume_file != prompt_file
+        assert resume_file.exists()
+        content = resume_file.read_text()
+        assert "RESTART" in content
         assert "1/2" in content  # tasks complete
         assert "Write manuscript" in content  # remaining task
         assert "0.65" in content  # eval score
+        # Original prompt must NOT be modified
+        assert prompt_file.read_text() == "Original prompt content"
 
-    def test_inject_resume_context_includes_success_criteria(self, dispatcher_setup):
+    def test_build_resume_prompt_includes_success_criteria(self, dispatcher_setup):
         d, msgs, docs, tmp_path = dispatcher_setup
         run = RunningInvestigation(
             investigation_id=1,
@@ -692,14 +766,14 @@ class TestResumeContextInjection:
             {"id": "SC2", "description": "Pipeline 10x", "met": False},
         ]))
 
-        d._inject_resume_context(run, prompt_file)
+        resume_file = d._build_resume_prompt(run)
 
-        content = prompt_file.read_text()
+        content = resume_file.read_text()
         assert "1/2 met" in content
         assert "SC1" in content
         assert "SC2" in content
 
-    def test_inject_resume_context_includes_checkpoint(self, dispatcher_setup):
+    def test_build_resume_prompt_includes_checkpoint(self, dispatcher_setup):
         d, msgs, docs, tmp_path = dispatcher_setup
         run = RunningInvestigation(
             investigation_id=1,
@@ -721,14 +795,14 @@ class TestResumeContextInjection:
         )
         save_checkpoint(tmp_path, cp)
 
-        d._inject_resume_context(run, prompt_file)
+        resume_file = d._build_resume_prompt(run)
 
-        content = prompt_file.read_text()
+        content = resume_file.read_text()
         assert "cycle 5" in content
         assert "writing" in content
         assert "8/10" in content
 
-    def test_inject_resume_context_tolerates_missing_files(self, dispatcher_setup):
+    def test_build_resume_prompt_tolerates_missing_files(self, dispatcher_setup):
         """Should not crash if checkpoint/criteria files are missing."""
         d, msgs, docs, tmp_path = dispatcher_setup
         run = RunningInvestigation(
@@ -744,8 +818,232 @@ class TestResumeContextInjection:
         prompt_file.parent.mkdir(parents=True, exist_ok=True)
         prompt_file.write_text("Original prompt")
 
-        d._inject_resume_context(run, prompt_file)
+        resume_file = d._build_resume_prompt(run)
 
-        content = prompt_file.read_text()
-        assert "RESUME" in content
+        content = resume_file.read_text()
+        assert "RESTART" in content
         assert "Scribe" in content
+
+
+class TestLaunchInTmux:
+    def test_non_copilot_agent_skips_copilot_auth(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+
+        with patch.object(d, "_ensure_copilot_auth", side_effect=AssertionError("should not be called")), \
+             patch("voronoi.server.dispatcher.shutil.which", return_value="/bin/echo"), \
+             patch("voronoi.server.dispatcher.subprocess.run") as mock_run:
+            d._launch_in_tmux("test-session", tmp_path)
+
+        assert mock_run.call_count >= 3
+
+
+# ---------------------------------------------------------------------------
+# Workspace activity detection (Change 4)
+# ---------------------------------------------------------------------------
+
+class TestWorkspaceActivityDetection:
+    def test_has_activity_with_checkpoint(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True, exist_ok=True)
+        (swarm / "orchestrator-checkpoint.json").write_text(
+            json.dumps({"cycle": 2, "total_tasks": 5})
+        )
+        assert d._has_workspace_activity(run) is True
+
+    def test_has_activity_with_experiments(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True, exist_ok=True)
+        (swarm / "experiments.tsv").write_text(
+            "timestamp\ttask_id\tbranch\tmetric\tvalue\tstatus\tdesc\n"
+            "2026-03-26\tbd-1\tagent-pilot\tMBRS\t0.3\tkeep\tpilot\n"
+        )
+        assert d._has_workspace_activity(run) is True
+
+    def test_no_activity_with_empty_workspace(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        assert d._has_workspace_activity(run) is False
+
+    def test_no_activity_with_cycle_zero(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True, exist_ok=True)
+        (swarm / "orchestrator-checkpoint.json").write_text(
+            json.dumps({"cycle": 0, "total_tasks": 0})
+        )
+        assert d._has_workspace_activity(run) is False
+
+
+# ---------------------------------------------------------------------------
+# Context pressure directives (Changes 3, 6)
+# ---------------------------------------------------------------------------
+
+class TestContextPressure:
+    def test_advisory_directive_at_threshold(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        (tmp_path / ".swarm").mkdir(parents=True, exist_ok=True)
+
+        d._check_context_pressure(run, elapsed_hours=13)
+
+        directive_path = tmp_path / ".swarm" / "dispatcher-directive.json"
+        assert directive_path.exists()
+        data = json.loads(directive_path.read_text())
+        assert data["directive"] == "context_advisory"
+        assert run.context_directive_level == "context_advisory"
+
+    def test_warning_directive_escalates(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        (tmp_path / ".swarm").mkdir(parents=True, exist_ok=True)
+
+        d._check_context_pressure(run, elapsed_hours=21)
+
+        directive_path = tmp_path / ".swarm" / "dispatcher-directive.json"
+        data = json.loads(directive_path.read_text())
+        assert data["directive"] == "context_warning"
+        assert run.context_directive_level == "context_warning"
+
+    def test_critical_directive_from_checkpoint(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True, exist_ok=True)
+        (swarm / "orchestrator-checkpoint.json").write_text(
+            json.dumps({"context_window_remaining_pct": 0.12})
+        )
+
+        d._check_context_pressure(run, elapsed_hours=5)  # early, but self-reported
+
+        directive_path = swarm / "dispatcher-directive.json"
+        assert directive_path.exists()
+        data = json.loads(directive_path.read_text())
+        assert data["directive"] == "context_critical"
+
+    def test_no_duplicate_directives(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        (tmp_path / ".swarm").mkdir(parents=True, exist_ok=True)
+
+        d._check_context_pressure(run, elapsed_hours=13)
+        d._check_context_pressure(run, elapsed_hours=14)
+
+        # Should not re-write if same level
+        assert run.context_directive_level == "context_advisory"
+
+
+# ---------------------------------------------------------------------------
+# Workspace compaction (Change 5)
+# ---------------------------------------------------------------------------
+
+class TestWorkspaceCompaction:
+    def test_compact_experiments_archives_old_rows(self, dispatcher_setup):
+        from voronoi.server.compact import compact_workspace_state
+        d, msgs, docs, tmp_path = dispatcher_setup
+
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True, exist_ok=True)
+
+        header = "timestamp\ttask_id\tbranch\tmetric\tvalue\tstatus\tdesc"
+        rows = [f"2026-03-{i:02d}\tbd-{i}\tagent-{i}\tMBRS\t{i/100}\tkeep\trun {i}"
+                for i in range(1, 31)]
+        (swarm / "experiments.tsv").write_text(
+            header + "\n" + "\n".join(rows) + "\n"
+        )
+
+        compact_workspace_state(tmp_path)
+
+        # Active file should have header + 20 recent rows
+        active = (swarm / "experiments.tsv").read_text().strip().splitlines()
+        assert len(active) == 21  # header + 20
+
+        # Archive should have the 10 old rows
+        archive = (swarm / "experiments.archive.tsv").read_text().strip().splitlines()
+        assert len(archive) == 11  # header + 10
+
+    def test_compact_writes_state_digest(self, dispatcher_setup):
+        from voronoi.server.compact import compact_workspace_state
+        d, msgs, docs, tmp_path = dispatcher_setup
+
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True, exist_ok=True)
+        (swarm / "success-criteria.json").write_text(json.dumps([
+            {"id": "SC1", "description": "Test criterion", "met": True},
+        ]))
+
+        compact_workspace_state(tmp_path)
+
+        digest = (swarm / "state-digest.md").read_text()
+        assert "State Digest" in digest
+        assert "SC1" in digest
+        assert "1/1 met" in digest
+
+    def test_compact_recent_events_keeps_live_log(self, dispatcher_setup):
+        from voronoi.server.compact import compact_workspace_state
+
+        d, msgs, docs, tmp_path = dispatcher_setup
+        for i in range(60):
+            append_event(
+                tmp_path,
+                SwarmEvent(ts=time.time() - 60, agent="agent", event=f"event-{i}"),
+            )
+
+        changed = compact_workspace_state(tmp_path)
+
+        assert changed is False
+        events_file = tmp_path / ".swarm" / "events.jsonl"
+        assert len(events_file.read_text().strip().splitlines()) == 60
+        assert not (tmp_path / ".swarm" / "events.archive.jsonl").exists()

@@ -212,6 +212,33 @@ class WorkspaceManager:
         # wasn't available.  Run it explicitly as a safety net.
         self._ensure_beads(workspace_path)
 
+        # Re-copy AGENTS.md after beads init — bd init overwrites it with
+        # its own template containing a "Landing the Plane" section that
+        # mandates git push, which conflicts with Voronoi's local-only
+        # lab workspace policy.  The Voronoi template redirects to CLAUDE.md
+        # which has the correct nuanced git discipline.
+        self._restore_agents_md(workspace_path)
+
+    def _restore_agents_md(self, workspace_path: Path) -> None:
+        """Overwrite AGENTS.md with the Voronoi template after bd init.
+
+        bd init creates its own AGENTS.md with a 'Landing the Plane' section
+        that unconditionally mandates git push.  Lab workspaces have no remote,
+        so agents loop on push failure.  The Voronoi template redirects to
+        CLAUDE.md which has the correct policy (push if remote exists, otherwise
+        commit locally).
+        """
+        try:
+            from voronoi.cli import _resolve_templates_dir, find_data_dir
+
+            templates = _resolve_templates_dir(find_data_dir())
+            src = templates / "AGENTS.md"
+            dst = workspace_path / "AGENTS.md"
+            if src.is_file():
+                shutil.copy2(src, dst)
+        except Exception:
+            logger.debug("Failed to restore AGENTS.md in %s", workspace_path, exc_info=True)
+
     def _ensure_beads(self, workspace_path: Path) -> None:
         """Initialize Beads (bd) in a workspace if not already present."""
         beads_dir = workspace_path / ".beads"

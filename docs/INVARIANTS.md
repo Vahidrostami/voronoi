@@ -109,7 +109,7 @@ Workers MUST write observations to Beads notes as they occur, not only at task c
 ## 7. Git Invariants
 
 ### INV-25: Push Before Session End
-All work MUST be pushed to remote before ending a session. Unpushed work = lost work. NEVER say "ready to push when you are" — the agent pushes.
+If a remote named `origin` exists, work MUST be pushed before ending a session. If no remote exists, the agent MUST keep local commits and explicitly record `NO_REMOTE` rather than inventing a remote. NEVER say "ready to push when you are" — push when a remote exists, otherwise report the missing remote.
 
 ### INV-26: Worktree Isolation
 Each worker agent operates in its own git worktree. Workers MUST NOT modify files in other worktrees or in the main workspace.

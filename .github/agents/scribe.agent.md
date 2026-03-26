@@ -51,5 +51,6 @@ Max verify iterations: 5.
 
 ```bash
 bd close <task-id> --reason "Paper compiled: N pages, N figures, all stats verified"
-git add -A && git commit -m "paper: final compiled PDF" && git push origin <branch>
+git add -A && git commit -m "paper: final compiled PDF"
+# If `origin` exists, also run: git push origin <branch>
 ```

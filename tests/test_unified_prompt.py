@@ -41,10 +41,6 @@ class TestBuildOrchestratorPrompt:
         )
         # Must reference the orchestrator role file
         assert ".github/agents/swarm-orchestrator.agent.md" in prompt
-        # Must include the worker role mapping table
-        assert ".github/agents/worker-agent.agent.md" in prompt
-        assert ".github/agents/scout.agent.md" in prompt
-        assert ".github/agents/investigator.agent.md" in prompt
 
     def test_codename_in_prompt(self):
         prompt = build_orchestrator_prompt(
@@ -120,7 +116,6 @@ class TestScienceSections:
             question="test", mode="prove", rigor="scientific",
         )
         assert "Scout" in prompt
-        assert ".github/agents/scout.agent.md" in prompt
 
     def test_prove_scientific_has_hypotheses(self):
         prompt = build_orchestrator_prompt(
@@ -188,7 +183,6 @@ class TestCLIUsesSharedBuilder:
 
         # Must reference .github/agents files (from shared builder)
         assert ".github/agents/swarm-orchestrator.agent.md" in prompt
-        assert ".github/agents/worker-agent.agent.md" in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -214,7 +208,6 @@ class TestDispatcherUsesSharedBuilder:
         prompt = d._build_prompt(inv, tmp_path)
 
         assert ".github/agents/swarm-orchestrator.agent.md" in prompt
-        assert ".github/agents/scout.agent.md" in prompt
         assert "Dopamine" in prompt
 
     def test_dispatcher_and_cli_same_builder(self, tmp_path):
@@ -238,11 +231,6 @@ class TestDispatcherUsesSharedBuilder:
         call_kwargs = mock_build.call_args[1]
         assert call_kwargs["mode"] == "build"
         assert call_kwargs["rigor"] == "standard"
-
-
-# ---------------------------------------------------------------------------
-# Workspace .github/ provisioning
-# ---------------------------------------------------------------------------
 
 class TestWorkspaceGitHubProvisioning:
     """Verify that .github/ files are always present in provisioned workspaces."""
@@ -307,21 +295,27 @@ class TestWorkspaceGitHubProvisioning:
 # ---------------------------------------------------------------------------
 
 class TestRoleMapping:
-    """Verify all agent roles are referenced in the worker prompt instructions."""
+    """Verify agent roles are referenced in the role file (not duplicated in prompt)."""
 
-    EXPECTED_ROLES = [
-        "worker-agent", "scout", "investigator", "explorer",
-        "statistician", "critic", "theorist", "methodologist",
-        "synthesizer", "scribe", "evaluator",
-    ]
-
-    def test_all_roles_in_mapping_table(self):
+    def test_role_file_referenced_in_prompt(self):
         prompt = build_orchestrator_prompt(
             question="test", mode="discover", rigor="scientific",
         )
-        for role in self.EXPECTED_ROLES:
-            assert f".github/agents/{role}.agent.md" in prompt, \
-                f"Missing role {role} in prompt mapping table"
+        # The prompt must reference the orchestrator role file which contains
+        # the full role mapping table
+        assert ".github/agents/swarm-orchestrator.agent.md" in prompt
+
+    def test_role_map_keys_in_code(self):
+        """Verify the ROLE_MAP in prompt.py has all expected task types."""
+        from voronoi.server.prompt import ROLE_MAP
+        expected_types = [
+            "build", "scout", "investigation", "experiment",
+            "exploration", "review_stats", "review_critic",
+            "review_method", "theory", "synthesis", "evaluation",
+            "scribe", "paper", "compilation",
+        ]
+        for t in expected_types:
+            assert t in ROLE_MAP, f"Missing task type {t} in ROLE_MAP"
 
 
 # ---------------------------------------------------------------------------
@@ -352,11 +346,12 @@ class TestInvariantsInPrompt:
         )
         assert "Investigation Invariants" in prompt
 
-    def test_scribe_in_role_mapping(self):
+    def test_scribe_referenced_in_prompt(self):
         prompt = build_orchestrator_prompt(
             question="test", mode="discover", rigor="scientific",
         )
-        assert "scribe.agent.md" in prompt
+        assert "Scribe" in prompt
+        assert "scribe" in prompt.lower()
 
     def test_success_criteria_tracking_section(self):
         prompt = build_orchestrator_prompt(
@@ -406,3 +401,54 @@ class TestPhaseGateEnforcement:
         )
         assert "min_csv_rows" in prompt
         assert "convergence gate" in prompt.lower()
+
+
+# ---------------------------------------------------------------------------
+# Context engineering sections (Changes 1, 3, 7)
+# ---------------------------------------------------------------------------
+
+class TestContextEngineeringSections:
+    """Verify new context engineering sections in prompts."""
+
+    def test_brief_digest_protocol(self):
+        prompt = build_orchestrator_prompt(
+            question="test", mode="discover", rigor="adaptive",
+        )
+        assert "brief-digest.md" in prompt
+        assert "Brief-Digest Protocol" in prompt
+
+    def test_dispatcher_directives(self):
+        prompt = build_orchestrator_prompt(
+            question="test", mode="discover", rigor="adaptive",
+        )
+        assert "dispatcher-directive.json" in prompt
+        assert "context_advisory" in prompt
+        assert "context_warning" in prompt
+        assert "context_critical" in prompt
+
+    def test_context_management_is_compact(self):
+        """The context management section should be a compact reminder, not the full protocol."""
+        prompt = build_orchestrator_prompt(
+            question="test", mode="discover", rigor="adaptive",
+        )
+        assert "Context Management" in prompt
+        # Should reference the role file
+        assert "role file" in prompt.lower()
+        # Should NOT contain the full checkpoint code example (was removed)
+        assert "OrchestratorCheckpoint(" not in prompt
+
+    def test_no_duplicated_tools_section(self):
+        """Tools section should not be in the prompt (it's in the role file)."""
+        prompt = build_orchestrator_prompt(
+            question="test", mode="discover", rigor="adaptive",
+        )
+        # Should NOT contain the full tools listing (was removed)
+        assert "bd prime" not in prompt
+        assert "spawn-agent.sh" not in prompt or "spawn-agent.sh will REJECT" in prompt
+
+    def test_manuscript_delegation_still_present(self):
+        prompt = build_orchestrator_prompt(
+            question="test", mode="discover", rigor="adaptive",
+        )
+        assert "ALWAYS DELEGATE TO SCRIBE" in prompt
+        assert "NEVER write the manuscript" in prompt

@@ -18,7 +18,7 @@ import shutil
 import subprocess
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -46,6 +46,10 @@ class DispatcherConfig:
     timeout_hours: int = 48      # max hours before marking investigation exhausted
     max_retries: int = 2         # max times to restart a dead agent
     stall_minutes: int = 45      # warn/restart if 0 tasks after this long
+    context_advisory_hours: int = 12   # "prioritize convergence" directive
+    context_warning_hours: int = 20    # "delegate remaining work" directive
+    context_critical_hours: int = 28   # "dispatch Scribe NOW" directive
+    compact_interval_hours: int = 6    # workspace state compaction interval
 
 
 @dataclass
@@ -73,6 +77,8 @@ class RunningInvestigation:
     last_event_ts: float = 0  # For event log polling
     last_event_ts_by_path: dict[str, float] = field(default_factory=dict)
     last_digest_events: list[dict] = field(default_factory=list)  # For detail retrieval
+    last_compact_at: float = 0  # Last workspace compaction timestamp
+    context_directive_level: str = ""  # Last directive level sent
 
     @property
     def label(self) -> str:
@@ -194,7 +200,7 @@ class InvestigationDispatcher:
 
             if not session_alive:
                 # Check if it finished while we were down
-                if (workspace_path / ".swarm" / "deliverable.md").exists():
+                if self._is_complete(run):
                     logger.info("Recovered completed investigation #%d (%s)",
                                 inv.id, inv.codename)
                     self._handle_completion(run)
@@ -310,9 +316,8 @@ class InvestigationDispatcher:
             "or set GITHUB_TOKEN / COPILOT_GITHUB_TOKEN env var with a PAT for unattended use."
         )
 
-    def _launch_in_tmux(self, session: str, workspace_path: Path) -> None:
-        self._ensure_copilot_auth()
-
+    def _launch_in_tmux(self, session: str, workspace_path: Path,
+                        prompt_file: Path | None = None) -> None:
         agent_cmd = self.config.agent_command
         agent_flags = self.config.agent_flags
         parts = agent_cmd.split()
@@ -321,6 +326,8 @@ class InvestigationDispatcher:
         agent_bin = parts[0]
         if not shutil.which(agent_bin):
             raise RuntimeError(f"Agent CLI not found: {agent_bin}")
+        if agent_bin == "copilot":
+            self._ensure_copilot_auth()
 
         # Orchestrator gets its own model; workers use worker_model via spawn-agent.sh
         model_flag = ""
@@ -329,6 +336,10 @@ class InvestigationDispatcher:
 
         log_path = workspace_path / ".swarm" / "agent.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Use the provided prompt file, or fall back to the default
+        if prompt_file is None:
+            prompt_file = workspace_path / ".swarm" / "orchestrator-prompt.txt"
 
         subprocess.run(
             ["tmux", "new-session", "-d", "-s", session, "-c", str(workspace_path)],
@@ -346,6 +357,7 @@ class InvestigationDispatcher:
         safe_ws = shlex.quote(str(workspace_path))
         safe_cmd = agent_cmd
         safe_flags = agent_flags
+        safe_prompt = shlex.quote(str(prompt_file))
 
         # Inject auth-related env vars into the tmux shell.
         # tmux new-session starts a shell that inherits the tmux *server's*
@@ -361,7 +373,7 @@ class InvestigationDispatcher:
         subprocess.run(
             ["tmux", "send-keys", "-t", session,
              f'{env_exports}cd {safe_ws} && {safe_cmd} {safe_flags}{model_flag} '
-             f'-p "$(cat .swarm/orchestrator-prompt.txt)" ; exit',
+             f'-p "$(cat {safe_prompt})" ; exit',
              "Enter"],
             capture_output=True, timeout=10,
         )
@@ -420,18 +432,26 @@ class InvestigationDispatcher:
             effective_timeout = self._effective_timeout(run)
             timed_out = elapsed_hours >= effective_timeout
 
-            # Stall detection: warn if 0 tasks after stall_minutes
+            # Stall detection: use checkpoint + event log + branches, not just task_snapshot
             if (session_alive and not run.stall_warned
-                    and not run.task_snapshot
                     and elapsed_hours * 60 >= self.config.stall_minutes):
-                run.stall_warned = True
-                logger.warning("Investigation #%d stalled — 0 tasks after %.0fmin",
-                               inv_id, elapsed_hours * 60)
-                self.send_message(format_alert(
-                    run.label,
-                    f"No tasks created after {int(elapsed_hours * 60)}min. "
-                    f"The orchestrator may be stuck. Will auto-restart if the agent exits."
-                ))
+                if not self._has_workspace_activity(run):
+                    run.stall_warned = True
+                    logger.warning("Investigation #%d stalled — no activity after %.0fmin",
+                                   inv_id, elapsed_hours * 60)
+                    self.send_message(format_alert(
+                        run.label,
+                        f"No tasks created after {int(elapsed_hours * 60)}min. "
+                        f"The orchestrator may be stuck. Will auto-restart if the agent exits."
+                    ))
+
+            # Context pressure monitoring (Changes 3 + 6)
+            if session_alive:
+                self._check_context_pressure(run, elapsed_hours)
+
+            # Workspace state compaction (Change 5)
+            if session_alive:
+                self._maybe_compact_workspace(run)
 
             if not session_alive or self._is_complete(run) or timed_out:
                 if timed_out and not self._is_complete(run):
@@ -455,11 +475,11 @@ class InvestigationDispatcher:
                         logger.info("Investigation #%d restarted (attempt %d)",
                                     inv_id, run.retry_count)
                         continue  # don't add to completed_ids
-                    reason = "agent crashed"
-                    logger.warning("Investigation #%d agent exited without completing",
-                                   inv_id)
+                    reason = self._classify_incomplete_exit(run)
+                    logger.warning("Investigation #%d agent exited without completing: %s",
+                                   inv_id, reason)
                     self._handle_completion(run, failed=True,
-                                            failure_reason="Agent exited unexpectedly")
+                                            failure_reason=reason)
                 elif not session_alive:
                     reason = "agent exited (complete)"
                     self._handle_completion(run)
@@ -516,7 +536,6 @@ class InvestigationDispatcher:
         """Write convergence.json indicating timeout exhaustion."""
         conv_path = run.workspace_path / ".swarm" / "convergence.json"
         conv_path.parent.mkdir(parents=True, exist_ok=True)
-        from datetime import datetime, timezone
         effective = self._effective_timeout(run)
         data = {
             "status": "exhausted",
@@ -527,6 +546,167 @@ class InvestigationDispatcher:
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
         conv_path.write_text(json.dumps(data, indent=2))
+
+    # ------------------------------------------------------------------
+    # Context pressure, stall detection, and workspace compaction
+    # ------------------------------------------------------------------
+
+    def _has_workspace_activity(self, run: RunningInvestigation) -> bool:
+        """Check if the workspace shows signs of orchestrator activity.
+
+        Uses checkpoint, event log, and git branches instead of relying
+        solely on ``bd list --json`` (which may fail if bd is not on the
+        dispatcher's PATH).
+        """
+        swarm = run.workspace_path / ".swarm"
+
+        # Check checkpoint — if cycle > 0, orchestrator wrote state
+        cp_path = swarm / "orchestrator-checkpoint.json"
+        if cp_path.exists():
+            try:
+                cp = json.loads(cp_path.read_text())
+                if isinstance(cp, dict) and (cp.get("cycle", 0) > 0
+                                             or cp.get("total_tasks", 0) > 0):
+                    return True
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        # Check experiments.tsv — if rows exist, experiments are running
+        tsv = swarm / "experiments.tsv"
+        if tsv.exists():
+            try:
+                lines = tsv.read_text().strip().splitlines()
+                if len(lines) > 1:  # more than just header
+                    return True
+            except OSError:
+                pass
+
+        # Check event log
+        events_file = swarm / "events.jsonl"
+        if events_file.exists():
+            try:
+                if events_file.stat().st_size > 0:
+                    return True
+            except OSError:
+                pass
+
+        # Check git branches — if agent-* branches exist, workers were spawned
+        try:
+            result = subprocess.run(
+                ["git", "branch", "--list", "agent-*"],
+                capture_output=True, text=True, timeout=10,
+                cwd=str(run.workspace_path),
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return True
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            pass
+
+        # Fall back to task_snapshot (bd may have worked)
+        if run.task_snapshot:
+            return True
+
+        return False
+
+    def _write_directive(self, run: RunningInvestigation,
+                         level: str, message: str) -> None:
+        """Write a dispatcher directive file for the orchestrator to poll."""
+        directive_path = run.workspace_path / ".swarm" / "dispatcher-directive.json"
+        directive_path.parent.mkdir(parents=True, exist_ok=True)
+        elapsed_hours = (time.time() - run.started_at) / 3600
+        data = {
+            "directive": level,
+            "hours_elapsed": round(elapsed_hours, 1),
+            "message": message,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        try:
+            directive_path.write_text(json.dumps(data, indent=2))
+            logger.info("Wrote %s directive for %s", level, run.label)
+        except OSError as e:
+            logger.warning("Failed to write directive for %s: %s", run.label, e)
+
+    def _check_context_pressure(self, run: RunningInvestigation,
+                                elapsed_hours: float) -> None:
+        """Check time-based and self-reported context pressure."""
+        # Time-based thresholds (escalating)
+        if (elapsed_hours >= self.config.context_critical_hours
+                and run.context_directive_level != "context_critical"):
+            run.context_directive_level = "context_critical"
+            self._write_directive(run, "context_critical",
+                f"{int(elapsed_hours)}h elapsed. Write checkpoint and dispatch "
+                f"Scribe NOW or risk session loss.")
+            self.send_message(format_alert(
+                run.label,
+                f"Context critical — {int(elapsed_hours)}h elapsed. "
+                f"Directive sent to dispatch Scribe immediately."
+            ))
+        elif (elapsed_hours >= self.config.context_warning_hours
+              and run.context_directive_level not in ("context_warning", "context_critical")):
+            run.context_directive_level = "context_warning"
+            self._write_directive(run, "context_warning",
+                f"{int(elapsed_hours)}h elapsed. Delegate ALL remaining work "
+                f"to fresh agents.")
+            self.send_message(format_alert(
+                run.label,
+                f"Context warning — {int(elapsed_hours)}h elapsed. "
+                f"Directive sent to delegate remaining work."
+            ))
+        elif (elapsed_hours >= self.config.context_advisory_hours
+              and not run.context_directive_level):
+            run.context_directive_level = "context_advisory"
+            self._write_directive(run, "context_advisory",
+                f"{int(elapsed_hours)}h elapsed. Prioritize convergence.")
+
+        # Self-reported context pressure from checkpoint (Change 6)
+        self._check_token_budget(run)
+
+    def _check_token_budget(self, run: RunningInvestigation) -> None:
+        """Read checkpoint and enforce self-reported context pressure."""
+        cp_path = run.workspace_path / ".swarm" / "orchestrator-checkpoint.json"
+        if not cp_path.exists():
+            return
+        try:
+            cp = json.loads(cp_path.read_text())
+            if not isinstance(cp, dict):
+                return
+            remaining = cp.get("context_window_remaining_pct", 0)
+            if not remaining or remaining <= 0:
+                return  # orchestrator didn't report
+
+            if (remaining <= 0.15
+                    and run.context_directive_level != "context_critical"):
+                run.context_directive_level = "context_critical"
+                self._write_directive(run, "context_critical",
+                    "Context window nearly exhausted (self-reported). "
+                    "Dispatch Scribe and write checkpoint NOW.")
+                self.send_message(format_alert(
+                    run.label,
+                    f"Context critical — orchestrator reports {remaining:.0%} "
+                    f"window remaining. Directive sent."
+                ))
+            elif (remaining <= 0.30
+                  and run.context_directive_level not in ("context_warning", "context_critical")):
+                run.context_directive_level = "context_warning"
+                self._write_directive(run, "context_warning",
+                    "Context window below 30% (self-reported). "
+                    "Delegate remaining work to fresh agents.")
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    def _maybe_compact_workspace(self, run: RunningInvestigation) -> None:
+        """Periodically compact workspace state files."""
+        now = time.time()
+        interval = self.config.compact_interval_hours * 3600
+        if now - run.last_compact_at < interval:
+            return
+        run.last_compact_at = now
+        try:
+            from voronoi.server.compact import compact_workspace_state
+            if compact_workspace_state(run.workspace_path):
+                logger.info("Compacted workspace state for %s", run.label)
+        except Exception as e:
+            logger.debug("Workspace compaction failed for %s: %s", run.label, e)
 
     def _check_progress(self, run: RunningInvestigation) -> list[dict]:
         events: list[dict] = []
@@ -1068,15 +1248,79 @@ class InvestigationDispatcher:
 
         self._try_publish(run)
 
+    def _read_log_tail(self, run: RunningInvestigation, *, lines: int = 20) -> str:
+        """Return the last N log lines for diagnostics."""
+        if not run.log_path.exists():
+            return ""
+        try:
+            raw = run.log_path.read_text(errors="replace")
+        except OSError:
+            return ""
+        return "\n".join(raw.strip().splitlines()[-lines:])
+
+    def _looks_like_clean_agent_exit(self, log_tail: str) -> bool:
+        """Heuristically detect a normal Copilot CLI shutdown."""
+        if not log_tail:
+            return False
+        lowered = log_tail.lower()
+        markers = (
+            "logout",
+            "total session time:",
+            "total usage est:",
+            "breakdown by ai model:",
+        )
+        return sum(marker in lowered for marker in markers) >= 2
+
+    def _classify_incomplete_exit(self, run: RunningInvestigation) -> str:
+        """Describe why a dead agent session is incomplete."""
+        log_tail = self._read_log_tail(run)
+        if not self._looks_like_clean_agent_exit(log_tail):
+            return "Agent exited unexpectedly"
+
+        blockers: list[str] = []
+        deliverable = run.workspace_path / ".swarm" / "deliverable.md"
+        if not deliverable.exists():
+            blockers.append("no deliverable produced")
+
+        try:
+            from voronoi.science import check_convergence
+
+            result = check_convergence(
+                run.workspace_path,
+                run.rigor,
+                eval_score=run.eval_score,
+                improvement_rounds=run.improvement_rounds,
+            )
+            if result.reason:
+                blockers.append(result.reason)
+        except Exception as e:
+            logger.debug("Failed to classify incomplete exit for %s: %s",
+                         run.label, e)
+
+        unique_blockers: list[str] = []
+        seen: set[str] = set()
+        for blocker in blockers:
+            normalized = blocker.strip().rstrip(".")
+            if not normalized:
+                continue
+            key = normalized.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_blockers.append(normalized)
+
+        if unique_blockers:
+            return "Agent exited cleanly before convergence: " + "; ".join(unique_blockers)
+        return "Agent exited cleanly before completion"
+
     def _try_restart(self, run: RunningInvestigation) -> bool:
         """Attempt to restart a dead agent session.
 
         Returns True if the agent was successfully restarted, False if
         retries are exhausted or the workspace is in an unrecoverable state.
 
-        On restart, appends a RESUME section to the orchestrator prompt with
-        checkpoint state so the new session can skip straight to remaining work
-        instead of re-discovering everything from scratch.
+        On restart, writes a NEW minimal resume prompt instead of appending
+        to the original (which would keep growing with each restart).
         """
         if run.retry_count >= self.config.max_retries:
             logger.warning("Investigation #%d exhausted %d retries — giving up",
@@ -1086,13 +1330,7 @@ class InvestigationDispatcher:
         run.retry_count += 1
 
         # Extract the last lines from the agent log for diagnostics
-        tail = ""
-        if run.log_path.exists():
-            try:
-                raw = run.log_path.read_text(errors="replace")
-                tail = "\n".join(raw.strip().splitlines()[-20:])
-            except OSError:
-                pass
+        tail = self._read_log_tail(run)
 
         logger.info("Restarting investigation #%d (attempt %d/%d)",
                     run.investigation_id, run.retry_count, self.config.max_retries)
@@ -1104,17 +1342,15 @@ class InvestigationDispatcher:
             log_tail=tail,
         ))
 
-        # Ensure orchestrator prompt still exists
+        # Ensure original orchestrator prompt exists (needed as reference)
         prompt_file = run.workspace_path / ".swarm" / "orchestrator-prompt.txt"
         if not prompt_file.exists():
             logger.error("Prompt file missing for #%d — cannot restart",
                          run.investigation_id)
             return False
 
-        # Inject resume context into prompt so the restarted agent skips
-        # ahead to remaining work (e.g., manuscript writing) rather than
-        # re-exploring from scratch and exhausting its context window again.
-        self._inject_resume_context(run, prompt_file)
+        # Write a NEW minimal resume prompt (don't append to the old one)
+        resume_file = self._build_resume_prompt(run)
 
         # Rotate the log file so the new session starts clean
         if run.log_path.exists():
@@ -1125,15 +1361,16 @@ class InvestigationDispatcher:
                 pass
 
         try:
-            self._launch_in_tmux(run.tmux_session, run.workspace_path)
+            self._launch_in_tmux(run.tmux_session, run.workspace_path,
+                                 prompt_file=resume_file)
             run.stall_warned = False
+            run.context_directive_level = ""
             return True
         except RuntimeError as e:
             if "authentication" in str(e).lower():
-                # Auth failure — don't waste remaining retries on the same problem
                 logger.error("Auth expired for #%d — skipping remaining retries: %s",
                              run.investigation_id, e)
-                run.retry_count = self.config.max_retries  # exhaust retries
+                run.retry_count = self.config.max_retries
                 self.send_message(format_alert(
                     run.label,
                     "Copilot auth expired. SSH into the server and run:\n"
@@ -1148,20 +1385,26 @@ class InvestigationDispatcher:
             logger.error("Failed to restart #%d: %s", run.investigation_id, e)
             return False
 
-    def _inject_resume_context(self, run: RunningInvestigation,
-                               prompt_file: Path) -> None:
-        """Append a RESUME section to the orchestrator prompt for restarts.
+    def _build_resume_prompt(self, run: RunningInvestigation) -> Path:
+        """Build a minimal resume prompt for a restarted session.
 
-        Reads the checkpoint, success criteria, and task snapshot to produce
-        a compact summary telling the new session exactly where things stand
-        and what remains.  This prevents the restarted agent from wasting its
-        full context window re-discovering completed work.
+        Instead of appending to the original bloated prompt, writes a fresh
+        compact file (~100 lines) with identity, checkpoint state, remaining
+        tasks, and clear next actions.  The restarted agent starts with a
+        clean context window.
         """
         lines: list[str] = [
-            "\n\n## ⚠️  RESUME — THIS IS A RESTART (attempt "
-            f"{run.retry_count}/{self.config.max_retries})\n",
-            "The previous session crashed. All experimental work is preserved in the workspace.",
-            "**Do NOT re-run experiments or re-read all data.** Focus on remaining work.\n",
+            "You are the Voronoi swarm orchestrator. This is a RESTART "
+            f"(attempt {run.retry_count}/{self.config.max_retries}).\n",
+            f"**Codename:** {run.label}",
+            f"**Mode:** {run.mode} | **Rigor:** {run.rigor}\n",
+            "## Critical Rules for This Restart\n",
+            "- All previous experimental work is preserved in the workspace.",
+            "- Do NOT re-run experiments or re-read PROMPT.md in full.",
+            "- Do NOT re-read `.github/agents/swarm-orchestrator.agent.md` in full.",
+            "- Work from the checkpoint and state digest below.",
+            "- Poll `.swarm/dispatcher-directive.json` each OODA cycle.",
+            "- ALWAYS delegate manuscript writing to a Scribe worker.\n",
         ]
 
         # Checkpoint summary
@@ -1172,10 +1415,20 @@ class InvestigationDispatcher:
                     load_checkpoint, format_checkpoint_for_prompt,
                 )
                 cp = load_checkpoint(run.workspace_path)
-                lines.append("### Last Checkpoint\n")
+                lines.append("## Last Checkpoint\n")
                 lines.append(format_checkpoint_for_prompt(cp))
                 lines.append("")
             except Exception:
+                pass
+
+        # Brief digest (if compaction has run)
+        digest_path = run.workspace_path / ".swarm" / "state-digest.md"
+        if digest_path.exists():
+            try:
+                lines.append("## State Digest\n")
+                lines.append(digest_path.read_text().strip())
+                lines.append("")
+            except OSError:
                 pass
 
         # Success criteria status
@@ -1185,7 +1438,7 @@ class InvestigationDispatcher:
                 criteria = json.loads(sc_path.read_text())
                 if isinstance(criteria, list) and criteria:
                     met = sum(1 for c in criteria if c.get("met"))
-                    lines.append(f"### Success Criteria: {met}/{len(criteria)} met\n")
+                    lines.append(f"## Success Criteria: {met}/{len(criteria)} met\n")
                     for c in criteria:
                         status = "✅" if c.get("met") else "❌"
                         lines.append(f"- {status} {c.get('id', '?')}: {c.get('description', '')}")
@@ -1198,7 +1451,7 @@ class InvestigationDispatcher:
             total = len(run.task_snapshot)
             closed = sum(1 for t in run.task_snapshot.values() if t["status"] == "closed")
             open_tasks = [t["title"] for t in run.task_snapshot.values() if t["status"] != "closed"]
-            lines.append(f"### Tasks: {closed}/{total} complete\n")
+            lines.append(f"## Tasks: {closed}/{total} complete\n")
             if open_tasks:
                 lines.append("**Remaining:**")
                 for title in open_tasks[:10]:
@@ -1207,26 +1460,33 @@ class InvestigationDispatcher:
 
         # Eval score
         if run.eval_score > 0:
-            lines.append(f"### Quality Score: {run.eval_score:.2f}\n")
+            lines.append(f"## Quality Score: {run.eval_score:.2f}\n")
+
+        # Brief digest (if written by orchestrator at startup)
+        brief_path = run.workspace_path / ".swarm" / "brief-digest.md"
+        if brief_path.exists():
+            try:
+                lines.append("## Project Brief Digest\n")
+                lines.append(brief_path.read_text().strip())
+                lines.append("")
+            except OSError:
+                pass
 
         # Directive
-        lines.append("### What To Do Now\n")
+        lines.append("## What To Do Now\n")
         lines.append(
             "1. Read `.swarm/orchestrator-checkpoint.json` for full state\n"
             "2. Run `bd ready --json` to see remaining tasks\n"
             "3. If all experiments are done, **dispatch a Scribe worker** for the manuscript\n"
-            "4. Do NOT re-read the entire PROMPT.md — work from the checkpoint\n"
+            "4. If `.swarm/brief-digest.md` exists, read it for critical constraints\n"
             "5. **Conserve context** — delegate writing to workers, keep your session lean\n"
         )
 
-        try:
-            with open(prompt_file, "a") as f:
-                f.write("\n".join(lines))
-            logger.info("Injected resume context into prompt for #%d",
-                        run.investigation_id)
-        except OSError as e:
-            logger.warning("Failed to inject resume context for #%d: %s",
-                           run.investigation_id, e)
+        resume_file = run.workspace_path / ".swarm" / "orchestrator-prompt-resume.txt"
+        resume_file.write_text("\n".join(lines))
+        logger.info("Wrote minimal resume prompt for #%d (%d lines)",
+                    run.investigation_id, len(lines))
+        return resume_file
 
     def _cleanup_tmux(self, run: RunningInvestigation) -> None:
         """Kill all tmux sessions associated with this investigation."""

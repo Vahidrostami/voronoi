@@ -90,6 +90,22 @@ class TestBuildWorkerPrompt:
         assert "git push" in prompt
         assert "bd close bd-1" in prompt
 
+    def test_git_discipline_handles_local_only_workspace(self, tmp_path):
+        workspace = tmp_path / "local-only"
+        workspace.mkdir()
+
+        prompt = build_worker_prompt(
+            task_type="build",
+            task_id="bd-2",
+            branch="agent-local",
+            briefing="Test local-only git policy.",
+            workspace_path=str(workspace),
+        )
+
+        assert "If no remote exists in this workspace" in prompt
+        assert "NO_REMOTE" in prompt
+        assert "Do NOT create" in prompt
+
     def test_extra_instructions(self):
         prompt = build_worker_prompt(
             task_type="build",

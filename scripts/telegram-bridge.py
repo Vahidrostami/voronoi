@@ -316,6 +316,10 @@ def run_bot(config: dict) -> None:
                 agent_flags=sc.agent_flags,
                 orchestrator_model=sc.orchestrator_model,
                 worker_model=sc.worker_model,
+                context_advisory_hours=sc.context_advisory_hours,
+                context_warning_hours=sc.context_warning_hours,
+                context_critical_hours=sc.context_critical_hours,
+                compact_interval_hours=sc.compact_interval_hours,
             )
 
             chat_id_file = Path(project_dir) / ".telegram-chat-id"

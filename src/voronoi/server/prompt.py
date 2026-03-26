@@ -62,7 +62,6 @@ def build_orchestrator_prompt(
     }
     verb = _MODE_VERB.get(mode, mode.title())
     label = codename or "Voronoi"
-    safe_flag = "--safe " if safe else ""
 
     sections: list[str] = []
 
@@ -229,67 +228,69 @@ def build_orchestrator_prompt(
         "1. Dispatch a PILOT task (small N, quick run)\n"
         "2. Read pilot results — check CALIBRATION_TARGET vs CALIBRATION_ACTUAL\n"
         "3. If calibration fails, create a REVISE task with diagnosis\n"
-        "4. Only dispatch the full experiment after calibration passes\n"
+        "4. Only dispatch the full experiment after calibration passes\n\n"
+        "**Calibration iteration cap — HARD LIMIT:**\n"
+        "- Track calibration iteration count: `CALIBRATION_ITER:N` in Beads notes\n"
+        "- After **3 failed iterations**: STOP tweaking parameters. Write a root-cause\n"
+        "  diagnosis that explains WHY the calibration is failing (not just what failed).\n"
+        "  Common root causes:\n"
+        "  - LLMs use training priors, not statistics — varying noise/SNR may have\n"
+        "    no effect if the model relies on semantic priors rather than quantitative\n"
+        "    features in the input. Solution: scale the **signal** (e.g., coefficients,\n"
+        "    feature values), not just the noise.\n"
+        "  - Effect sizes too small relative to LLM output variance\n"
+        "  - Encoding/prompt design doesn't expose the manipulation to the model\n"
+        "  - Wrong metric — measuring something orthogonal to the manipulation\n"
+        "- After **5 failed iterations**: dispatch Methodologist for post-mortem.\n"
+        "  Flag `CALIBRATION_ESCALATED` in Beads. Do NOT continue tweaking.\n"
+        "- NEVER make >5 calibration attempts on the same design. Either the\n"
+        "  Methodologist redesigns the experiment or you report the calibration\n"
+        "  failure as a finding (it IS informative data).\n"
     )
 
     # -- Verify loop guidance (compact — details are in worker role files) ---
+    # Worker Self-Healing is fully covered in the orchestrator role file.
+    # Calibration workflow above provides the unique escalation protocol.
+
+    # -- Context management reminder (full protocol is in the role file) ----
     sections.append(
-        "\n## Worker Self-Healing\n\n"
-        "Workers retry against their own errors before escalating. "
-        "When a worker reports `VERIFY_EXHAUSTED`, check their notes before retrying. "
-        "When a worker reports `DESIGN_INVALID`, dispatch Methodologist for post-mortem.\n"
+        "\n## Context Management — Key Reminders\n\n"
+        "Your role file (`.github/agents/swarm-orchestrator.agent.md`) has the full "
+        "checkpoint-based OODA protocol, targeted query patterns, and context budget. "
+        "Key points:\n"
+        "- Write checkpoint after EVERY OODA cycle\n"
+        "- Read checkpoint at the START of each cycle\n"
+        "- Use targeted `bd query`, NEVER `bd list --json` in routine cycles\n"
+        "- Worker prompts are code-assembled via `build_worker_prompt()` (~200 tokens per dispatch)\n"
+        "- Read the project brief ONCE at startup, then work from checkpoint + brief-digest\n"
     )
 
-    # -- Checkpoint-based OODA (the core context management protocol) ------
+    # -- Brief-digest protocol (Change 7) ---------------------------------
     sections.append(
-        "\n## Context Management — CRITICAL FOR LONG RUNS\n\n"
-        "You have a finite context window. In 10+ hour runs, you WILL lose early "
-        "instructions if you're not disciplined. These rules prevent that:\n\n"
-        "**1. Write a checkpoint after EVERY OODA cycle:**\n"
-        "```bash\n"
-        "python3 -c \"\n"
-        "import json\n"
-        "from voronoi.science import OrchestratorCheckpoint, save_checkpoint\n"
-        "from pathlib import Path\n"
-        "cp = OrchestratorCheckpoint(\n"
-        "    cycle=N, phase='investigating', mode='discover', rigor='scientific',\n"
-        "    hypotheses_summary='H1:confirmed, H2:testing',\n"
-        "    total_tasks=50, closed_tasks=20,\n"
-        "    active_workers=['agent-pilot', 'agent-scenario-3'],\n"
-        "    recent_events=['Pilot passed MBRS gap 0.32', 'Scenario 3 complete'],\n"
-        "    recent_decisions=['Moved to full experiment after pilot passed'],\n"
-        "    dead_ends=['L2/L3 encoding too similar, skipped'],\n"
-        "    next_actions=['Wait for scenarios 4-6', 'Then dispatch ANOVA'],\n"
-        "    criteria_status={'SC1': False, 'SC2': False, 'SC3': False},\n"
-        "    eval_score=0.0, improvement_rounds=0,\n"
-        ")\n"
-        "save_checkpoint(Path('.'), cp)\n"
-        "\"\n"
-        "```\n\n"
-        "**2. Read checkpoint at the START of each OODA cycle** (before reading anything else):\n"
-        "```bash\n"
-        "cat .swarm/orchestrator-checkpoint.json\n"
-        "```\n"
-        "This reminds you of your own state if context has degraded.\n\n"
-        "**3. Use targeted Beads queries, NOT `bd list --json`:**\n"
-        "```bash\n"
-        '# Only tasks that changed recently\n'
-        'bd query "status!=closed AND updated>30m" --json\n\n'
-        '# Only findings\n'
-        'bd query "title=FINDING" --json\n\n'
-        '# Only open tasks with problems\n'
-        'bd query "notes=DESIGN_INVALID AND status!=closed" --json\n\n'
-        '# Ready work\n'
-        'bd ready --json\n'
-        "```\n"
-        "NEVER run `bd list --json` in a routine OODA cycle — it returns ALL tasks "
-        "and floods your context.\n\n"
-        "**4. Worker prompts are code-assembled.** You write a ~200 word briefing; "
-        "`build_worker_prompt()` adds the role file, git discipline, and skills. "
-        "This saves ~15K tokens per dispatch from your context.\n\n"
-        "**5. Read the project brief ONCE at startup.** After that, work from your "
-        "checkpoint + belief map. If you need to re-check a specific detail, "
-        "`grep` for it instead of re-reading the whole file.\n"
+        "\n## Brief-Digest Protocol — CRITICAL\n\n"
+        "After reading PROMPT.md at startup, extract critical constraints into "
+        "`.swarm/brief-digest.md` (~50 lines):\n"
+        "- Success criteria (verbatim)\n"
+        "- Experimental design summary (factors, N, metrics)\n"
+        "- Hard constraints (α thresholds, minimum effect sizes, mandatory controls)\n"
+        "- Mandated entry point / runner name\n\n"
+        "At the start of each OODA cycle, read `.swarm/brief-digest.md` (NOT the full "
+        "PROMPT.md) to refresh critical constraints. This prevents design violations "
+        "when your context degrades in long runs.\n"
+    )
+
+    # -- Dispatcher directive polling (Change 3) ---------------------------
+    sections.append(
+        "\n## Dispatcher Directives\n\n"
+        "The dispatcher monitors your session externally. It writes "
+        "`.swarm/dispatcher-directive.json` when it detects context pressure.\n\n"
+        "**Poll this file every OODA cycle.** If it exists, read and obey:\n"
+        "- `context_advisory`: Prioritize convergence. Investigation is getting long.\n"
+        "- `context_warning`: Delegate ALL remaining work to fresh agents immediately.\n"
+        "- `context_critical`: Write checkpoint and dispatch Scribe NOW or risk session loss.\n\n"
+        "These directives protect you from context exhaustion. Ignoring them risks "
+        "a session crash that loses all un-checkpointed progress.\n"
+        "After acting on a directive, delete the file.\n"
     )
 
     # -- Success criteria ---------------------------------------------------
@@ -370,93 +371,9 @@ def build_orchestrator_prompt(
         "7. If LaTeX: dispatch compilation agent per `.github/skills/compilation-protocol/SKILL.md`\n"
     )
 
-    # -- Tools -------------------------------------------------------------
-    sections.append(
-        "\n## Tools\n\n"
-        "Task tracking (Beads):\n"
-        "  bd prime                       # Load context at start\n"
-        '  bd create "title" -t task -p <1-3> --description "..." --json\n'
-        '  bd create "title" -t epic -p 1 --json\n'
-        "  bd dep add <child-id> <parent-id>\n"
-        "  bd ready --json                # Unblocked tasks\n"
-        '  bd update <id> --notes "PRODUCES:file1,file2"\n'
-        '  bd update <id> --notes "REQUIRES:file1,file2"\n'
-        '  bd close <id> --reason "summary"\n'
-        "  bd list --json / bd show <id> --json\n\n"
-        "Spawn a worker agent:\n"
-        "  1. Write the worker's prompt to a temp file, e.g. /tmp/prompt-<branch>.txt\n"
-        f"  2. Run: ./scripts/spawn-agent.sh {safe_flag}<task-id> <branch-name> /tmp/prompt-<branch>.txt\n"
-        "  NOTE: spawn-agent.sh enforces REQUIRES/GATE checks — dispatch will FAIL if\n"
-        "  required input artifacts are missing. This is intentional. Fix upstream first.\n\n"
-        "Merge completed work:\n"
-        "  ./scripts/merge-agent.sh <branch-name> <task-id>\n"
-        "  NOTE: merge-agent.sh enforces PRODUCES checks — merge will FAIL if the agent\n"
-        "  didn't create its declared output artifacts. Agent must fix and retry.\n\n"
-        "Validation hooks (called automatically by spawn/merge, but available standalone):\n"
-        "  ./scripts/figure-lint.sh <workspace>           # Verify all \\includegraphics refs resolve\n"
-        "  ./scripts/convergence-gate.sh <workspace> <rigor>  # Multi-signal convergence check\n\n"
-        "Monitor agents:\n"
-        "  bd show <id> --json                                    # Task status\n"
-        "  git log $(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##' || git rev-parse --abbrev-ref HEAD)..<branch> --oneline  # Commits\n"
-        "  tmux capture-pane -t $(jq -r .tmux_session .swarm-config.json):<branch>"
-        " -p 2>/dev/null | tail -20\n\n"
-        "Telegram notifications:\n"
-        "  source ./scripts/notify-telegram.sh\n"
-        '  notify_telegram "event_type" "your message"\n'
-    )
-
-    # -- Worker prompt instructions (code-assembled, not LLM-assembled) ------
-    sections.append(
-        "\n## Dispatching Workers — CONTEXT-EFFICIENT PROTOCOL\n\n"
-        "Worker prompts are assembled BY CODE, not by you. This saves your context "
-        "for reasoning instead of copying role files.\n\n"
-        "**To dispatch a worker, write a compact dispatch spec to a JSON file:**\n"
-        "```bash\n"
-        'echo \'{"task_type": "investigation", "task_id": "bd-42", "branch": "agent-pilot",\n'
-        '  "briefing": "Run the pilot experiment on scenarios 1-2...",\n'
-        '  "strategic_context": "This tests whether encoding helps discovery...",\n'
-        '  "produces": "output/pilot_results.json",\n'
-        '  "requires": "demos/coupled-decisions/PROMPT.md",\n'
-        '  "metric_contract": "PRIMARY=MBRS, higher_is_better, baseline=0.0",\n'
-        '  "prompt_sections": "[copy ONLY the 5-15 lines relevant to this task]"\n'
-        "}' > /tmp/dispatch-bd-42.json\n"
-        "```\n\n"
-        "Then run:\n"
-        "```bash\n"
-        "python3 -c \"\n"
-        "import json; from voronoi.server.prompt import build_worker_prompt\n"
-        "spec = json.load(open('/tmp/dispatch-bd-42.json'))\n"
-        "prompt = build_worker_prompt(**spec)\n"
-        "open('/tmp/prompt-agent-pilot.txt', 'w').write(prompt)\n"
-        "\"\n"
-        "./scripts/spawn-agent.sh bd-42 agent-pilot /tmp/prompt-agent-pilot.txt\n"
-        "```\n\n"
-        "**Task types** (determines which role file is loaded automatically):\n"
-        "  - build/implementation → `.github/agents/worker-agent.agent.md`\n"
-        "  - scout → `.github/agents/scout.agent.md`\n"
-        "  - investigation/experiment → `.github/agents/investigator.agent.md`\n"
-        "  - exploration/comparison → `.github/agents/explorer.agent.md`\n"
-        "  - review_stats → `.github/agents/statistician.agent.md`\n"
-        "  - review_critic → `.github/agents/critic.agent.md`\n"
-        "  - review_method → `.github/agents/methodologist.agent.md`\n"
-        "  - theory → `.github/agents/theorist.agent.md`\n"
-        "  - synthesis → `.github/agents/synthesizer.agent.md`\n"
-        "  - evaluation → `.github/agents/evaluator.agent.md`\n"
-        "  - scribe → `.github/agents/scribe.agent.md`\n"
-        "  - paper/compilation → `.github/agents/worker-agent.agent.md`\n\n"
-        "**What you put in the briefing** (5-20 lines):\n"
-        "- WHAT to do (specific, concrete)\n"
-        "- Acceptance criteria\n"
-        "- File scope (which directories/files the agent owns)\n"
-        "- Any special instructions\n\n"
-        "**What you do NOT need to include** (the code handles these):\n"
-        "- Role definition (loaded from .github/agents/ automatically)\n"
-        "- Full PROMPT.md content (agent is told to read relevant sections)\n"
-        "- Git discipline boilerplate (injected automatically)\n"
-        "- Skill file references (selected by task type automatically)\n\n"
-        "**The briefing is the ONLY thing that costs you context tokens.**\n"
-        "Keep it focused. ~200 words max.\n"
-    )
+    # -- Tools & dispatch protocol are fully covered in the role file ----
+    # The orchestrator role file has Tools & Systems, the full dispatch
+    # spec format, and task type → role mapping.  No duplication here.
 
     # -- Manuscript delegation — MANDATORY ---------------------------------
     sections.append(
@@ -488,6 +405,12 @@ def build_orchestrator_prompt(
         "- Diagnose failures (check git log, tmux output) before retrying\n"
         "- Push all completed work to remote when done\n"
         f"- Max concurrent agents: {max_agents}\n"
+    )
+    if safe:
+        sections.append(
+            "- **Safe mode active**: spawn workers with `./scripts/spawn-agent.sh --safe`\n"
+        )
+    sections.append(
         "- EVERY task MUST declare PRODUCES and REQUIRES in Beads notes\n"
         "- For investigation epics, create a BASELINE task as the FIRST subtask \u2014 "
         "all experimental tasks depend on it\n"
@@ -706,7 +629,8 @@ def build_worker_prompt(
         "1. All PRODUCES artifacts exist and are non-empty\n"
         "2. Reported metrics match the actual data (re-read your output files)\n"
         "3. No hardcoded test values or simulated data\n"
-        "4. All commits are pushed to your branch\n\n"
+        "4. If a remote named `origin` exists, all commits are pushed to your branch. "
+        "If no remote exists in this workspace, keep the commits local and report `NO_REMOTE` in Beads instead of inventing a remote.\n\n"
         "If any check fails, fix it now — do NOT close the task.\n\n"
         "**Step 3: Incremental findings commit**\n"
         "If you discovered findings during your work, ensure they are recorded "
@@ -722,8 +646,12 @@ def build_worker_prompt(
         "\n## Git Discipline — CRITICAL\n\n"
         "Commit after every meaningful unit of work — a new file, a completed function, "
         "a passing test. Do NOT wait until everything is done.\n"
-        f"After each milestone: `git add -A && git commit -m '[msg]' && git push origin {branch}`\n"
-        f"When done: `bd close {task_id} --reason '...'` then `git push origin {branch}`\n"
+        f"After each milestone: `git add -A && git commit -m '[msg]'`\n"
+        f"If `origin` exists: `git push origin {branch}`\n"
+        "If no `origin` exists: keep the commit local, Do NOT create a remote just to satisfy this rule, "
+        f"and record `NO_REMOTE` in `bd update {task_id} --notes 'NO_REMOTE: local-only workspace'`.\n"
+        f"When done: `bd close {task_id} --reason '...'`\n"
+        f"If `origin` exists: `git push origin {branch}`\n"
     )
 
     return "\n".join(sections)

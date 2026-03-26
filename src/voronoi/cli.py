@@ -190,6 +190,14 @@ def cmd_init(args: argparse.Namespace) -> None:
         print("\nRunning swarm-init.sh...")
         subprocess.run(["bash", str(init_script)], cwd=str(target))
 
+    # Re-copy AGENTS.md after swarm-init.sh — bd init overwrites it with
+    # its own template that unconditionally mandates git push. The Voronoi
+    # template redirects to CLAUDE.md which has the correct policy.
+    agents_src = templates_dir / "AGENTS.md"
+    agents_dst = target / "AGENTS.md"
+    if agents_src.is_file():
+        shutil.copy2(agents_src, agents_dst)
+
     print("\nDone! Next steps:")
     print("  voronoi demo list            # see available demos")
     print("  voronoi demo run <name>      # run a demo")

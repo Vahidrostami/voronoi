@@ -398,7 +398,7 @@ producing zero usable output. This is the #1 cause of swarm failure.
 4. Dispatch subtasks — NEVER dispatch the epic directly to a worker
 
 **Commit checkpoints in prompts:** When writing worker prompts, include explicit commit instructions:
-> "After completing [milestone], run `git add -A && git commit -m '[message]' && git push origin [branch]` BEFORE continuing."
+> "After completing [milestone], run `git add -A && git commit -m '[message]'`. If `origin` exists, also run `git push origin [branch]`. If no remote exists, keep the commit local and note `NO_REMOTE`."
 
 This ensures partial progress is preserved even if the agent's context fills up.
 
@@ -410,7 +410,7 @@ This ensures partial progress is preserved even if the agent's context fills up.
 - ALWAYS set dependencies before dispatching
 - ALWAYS verify `bd ready` before spawning (don't spawn blocked tasks)
 - ALWAYS verify artifact contracts before dispatching: check that all `REQUIRES` files exist and `GATE` files pass
-- ALWAYS include commit checkpoint instructions in every worker prompt (at minimum: "commit and push after each file you create")
+- ALWAYS include commit checkpoint instructions in every worker prompt, but make push conditional on an existing remote
 - Each task description MUST specify which files/directories the agent owns
 - Each task MUST declare `PRODUCES` (output files) and `REQUIRES` (input files) in Beads notes
 - Tasks that consume outputs of other tasks MUST have the producing task's output in their `REQUIRES`
