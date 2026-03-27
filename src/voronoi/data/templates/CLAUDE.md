@@ -57,10 +57,16 @@ LLMs can unintentionally fabricate plausible-looking results. These rules preven
 
 When experiments need programmatic LLM calls (e.g., discovery, judge), use:
 ```bash
-copilot -p "<prompt>" -s --no-color --allow-all
+# Read configured model from workspace config
+LLM_MODEL=$(jq -r '.worker_model // ""' .swarm-config.json 2>/dev/null)
+MODEL_FLAG=""
+if [[ -n "$LLM_MODEL" ]]; then MODEL_FLAG="--model $LLM_MODEL"; fi
+
+copilot $MODEL_FLAG -p "<prompt>" -s --no-color --allow-all
 ```
 - Pass the prompt as a **direct argument** to `-p`, NOT via stdin.
 - **NEVER** use `echo "..." | copilot -p -` or pipe/stdin patterns — they produce empty/generic responses.
+- **ALWAYS** include the `--model` flag from `.swarm-config.json` — without it, copilot uses its default model, not the one configured for this investigation.
 - Cache responses by SHA-256 hash of the prompt text.
 - The prompt MUST be a single shell-quoted string argument to `-p`.
 

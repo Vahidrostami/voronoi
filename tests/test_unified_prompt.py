@@ -338,7 +338,7 @@ class TestInvariantsInPrompt:
         )
         assert "REVISE" in prompt
         assert "REVISE_OF" in prompt
-        assert "CALIBRATION" in prompt
+        assert "revise-calibration" in prompt
 
     def test_invariants_in_build_mode_too(self):
         prompt = build_orchestrator_prompt(
@@ -415,7 +415,6 @@ class TestContextEngineeringSections:
             question="test", mode="discover", rigor="adaptive",
         )
         assert "brief-digest.md" in prompt
-        assert "Brief-Digest Protocol" in prompt
 
     def test_dispatcher_directives(self):
         prompt = build_orchestrator_prompt(
@@ -431,7 +430,7 @@ class TestContextEngineeringSections:
         prompt = build_orchestrator_prompt(
             question="test", mode="discover", rigor="adaptive",
         )
-        assert "Context Management" in prompt
+        assert "OODA Protocol" in prompt
         # Should reference the role file
         assert "role file" in prompt.lower()
         # Should NOT contain the full checkpoint code example (was removed)

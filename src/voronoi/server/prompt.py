@@ -209,88 +209,33 @@ def build_orchestrator_prompt(
         "data size.\n"
     )
 
-    # -- REVISE task support -----------------------------------------------
+    # -- REVISE task support (details in skill) ----------------------------
     sections.append(
-        "\n## REVISE Tasks (Iterative Experiment Design)\n\n"
-        "When a pilot experiment fails calibration or results are unexpected, "
-        "create a REVISE task instead of a fresh task.  REVISE tasks carry "
-        "forward context from the previous attempt:\n\n"
-        "```bash\n"
-        "bd create \"REVISE: <description>\" -t task -p 1 --json\n"
-        "bd update <id> --notes \"REVISE_OF:<previous-task-id>\"\n"
-        "bd update <id> --notes \"PRIOR_RESULT:<what happened>\"\n"
-        "bd update <id> --notes \"FAILURE_DIAGNOSIS:<why it failed>\"\n"
-        "bd update <id> --notes \"REVISED_PARAMS:<what changed>\"\n"
-        "```\n\n"
-        "The worker receiving a REVISE task gets the full context of what was "
-        "tried and why it failed.  Include ALL revise context in the worker prompt.\n\n"
-        "**Calibration workflow:**\n"
-        "1. Dispatch a PILOT task (small N, quick run)\n"
-        "2. Read pilot results — check CALIBRATION_TARGET vs CALIBRATION_ACTUAL\n"
-        "3. If calibration fails, create a REVISE task with diagnosis\n"
-        "4. Only dispatch the full experiment after calibration passes\n\n"
-        "**Calibration iteration cap — HARD LIMIT:**\n"
-        "- Track calibration iteration count: `CALIBRATION_ITER:N` in Beads notes\n"
-        "- After **3 failed iterations**: STOP tweaking parameters. Write a root-cause\n"
-        "  diagnosis that explains WHY the calibration is failing (not just what failed).\n"
-        "  Common root causes:\n"
-        "  - LLMs use training priors, not statistics — varying noise/SNR may have\n"
-        "    no effect if the model relies on semantic priors rather than quantitative\n"
-        "    features in the input. Solution: scale the **signal** (e.g., coefficients,\n"
-        "    feature values), not just the noise.\n"
-        "  - Effect sizes too small relative to LLM output variance\n"
-        "  - Encoding/prompt design doesn't expose the manipulation to the model\n"
-        "  - Wrong metric — measuring something orthogonal to the manipulation\n"
-        "- After **5 failed iterations**: dispatch Methodologist for post-mortem.\n"
-        "  Flag `CALIBRATION_ESCALATED` in Beads. Do NOT continue tweaking.\n"
-        "- NEVER make >5 calibration attempts on the same design. Either the\n"
-        "  Methodologist redesigns the experiment or you report the calibration\n"
-        "  failure as a finding (it IS informative data).\n"
+        "\n## REVISE Tasks & Calibration\n\n"
+        "When a pilot experiment fails calibration, create a REVISE task (not a fresh task) "
+        "that carries forward `REVISE_OF`, `PRIOR_RESULT`, `FAILURE_DIAGNOSIS`, and `REVISED_PARAMS`.\n"
+        "Read `.github/skills/revise-calibration/SKILL.md` for the full protocol and "
+        "calibration iteration caps.\n"
     )
 
-    # -- Verify loop guidance (compact — details are in worker role files) ---
-    # Worker Self-Healing is fully covered in the orchestrator role file.
-    # Calibration workflow above provides the unique escalation protocol.
-
-    # -- Context management reminder (full protocol is in the role file) ----
+    # -- OODA Protocol (collapsed from 4 sections) ------------------------
     sections.append(
-        "\n## Context Management — Key Reminders\n\n"
+        "\n## OODA Protocol\n\n"
         "Your role file (`.github/agents/swarm-orchestrator.agent.md`) has the full "
-        "checkpoint-based OODA protocol, targeted query patterns, and context budget. "
-        "Key points:\n"
-        "- Write checkpoint after EVERY OODA cycle\n"
-        "- Read checkpoint at the START of each cycle\n"
-        "- Use targeted `bd query`, NEVER `bd list --json` in routine cycles\n"
-        "- Worker prompts are code-assembled via `build_worker_prompt()` (~200 tokens per dispatch)\n"
-        "- Read the project brief ONCE at startup, then work from checkpoint + brief-digest\n"
-    )
-
-    # -- Brief-digest protocol (Change 7) ---------------------------------
-    sections.append(
-        "\n## Brief-Digest Protocol — CRITICAL\n\n"
-        "After reading PROMPT.md at startup, extract critical constraints into "
-        "`.swarm/brief-digest.md` (~50 lines):\n"
-        "- Success criteria (verbatim)\n"
-        "- Experimental design summary (factors, N, metrics)\n"
-        "- Hard constraints (α thresholds, minimum effect sizes, mandatory controls)\n"
-        "- Mandated entry point / runner name\n\n"
-        "At the start of each OODA cycle, read `.swarm/brief-digest.md` (NOT the full "
-        "PROMPT.md) to refresh critical constraints. This prevents design violations "
-        "when your context degrades in long runs.\n"
-    )
-
-    # -- Dispatcher directive polling (Change 3) ---------------------------
-    sections.append(
-        "\n## Dispatcher Directives\n\n"
-        "The dispatcher monitors your session externally. It writes "
-        "`.swarm/dispatcher-directive.json` when it detects context pressure.\n\n"
-        "**Poll this file every OODA cycle.** If it exists, read and obey:\n"
-        "- `context_advisory`: Prioritize convergence. Investigation is getting long.\n"
-        "- `context_warning`: Delegate ALL remaining work to fresh agents immediately.\n"
-        "- `context_critical`: Write checkpoint and dispatch Scribe NOW or risk session loss.\n\n"
-        "These directives protect you from context exhaustion. Ignoring them risks "
-        "a session crash that loses all un-checkpointed progress.\n"
-        "After acting on a directive, delete the file.\n"
+        "checkpoint-based OODA protocol, targeted query patterns, and context budget.\n\n"
+        "**Each cycle:**\n"
+        f"1. Read checkpoint + `.swarm/brief-digest.md` (NOT the full `{prompt_path}`)\n"
+        "2. Read `.swarm/dispatcher-directive.json` if it exists — obey it:\n"
+        "   - `context_advisory`: prioritize convergence\n"
+        "   - `context_warning`: delegate ALL remaining work to fresh agents\n"
+        "   - `context_critical`: write checkpoint and dispatch Scribe NOW\n"
+        "3. Run targeted `bd query` (NEVER `bd list --json` in routine cycles)\n"
+        "4. Orient → Decide → Act\n"
+        "5. Write checkpoint, update belief map\n\n"
+        "**At startup only:** Read `{prompt_path}` completely, then extract critical "
+        "constraints into `.swarm/brief-digest.md` (~50 lines): success criteria, "
+        "experimental design, hard constraints, mandated entry point. After that, "
+        "work from checkpoint + brief-digest.\n"
     )
 
     # -- Success criteria ---------------------------------------------------
@@ -341,10 +286,18 @@ def build_orchestrator_prompt(
         "\n## LLM Calls via Copilot CLI — MANDATORY\n\n"
         "When experiments need programmatic LLM calls (discovery, judge, etc.), "
         "agents MUST use:\n"
-        "```bash\ncopilot -p \"<prompt>\" -s --no-color --allow-all\n```\n"
+        "```bash\n"
+        "# Read configured model from workspace config\n"
+        "LLM_MODEL=$(jq -r '.worker_model // \"\"' .swarm-config.json 2>/dev/null)\n"
+        "MODEL_FLAG=\"\"\n"
+        "if [[ -n \"$LLM_MODEL\" ]]; then MODEL_FLAG=\"--model $LLM_MODEL\"; fi\n\n"
+        "copilot $MODEL_FLAG -p \"<prompt>\" -s --no-color --allow-all\n"
+        "```\n"
         "- Pass the prompt as a **direct argument** to `-p`, NOT via stdin.\n"
         "- **NEVER** use `echo \"...\" | copilot -p -` or pipe/stdin patterns — "
         "they produce empty/generic responses and silently break experiments.\n"
+        "- **ALWAYS** include the `--model` flag from `.swarm-config.json` — without it, "
+        "copilot uses its default model, not the one configured for this investigation.\n"
         "- Cache responses by SHA-256 hash of the prompt text.\n\n"
         "\n## Anti-Simulation — HARD GATE\n\n"
         "**NEVER create simulation/mock/fake files that replace real LLM calls.** "
@@ -365,18 +318,6 @@ def build_orchestrator_prompt(
         "**Provenance requirement:** Every `results.json` MUST include a `runner` field "
         "naming the script that produced it (e.g., `\"runner\": \"run_experiments.py\"`). "
         "The mandated entry point declared in PROMPT.md is the ONLY valid runner.\n"
-    )
-
-    # -- Workflow ----------------------------------------------------------
-    sections.append(
-        "\n## Workflow\n\n"
-        f"1. Read `{prompt_path}` completely\n"
-        "2. Read `.github/agents/swarm-orchestrator.agent.md` for your full protocol\n"
-        "3. Follow the OODA loop defined in your role file\n"
-        "4. Write `.swarm/orchestrator-checkpoint.json` after every cycle\n"
-        "5. Synthesizer produces `.swarm/claim-evidence.json`\n"
-        "6. Write `.swarm/deliverable.md` and push\n"
-        "7. If LaTeX: dispatch compilation agent per `.github/skills/compilation-protocol/SKILL.md`\n"
     )
 
     # -- Tools & dispatch protocol are fully covered in the role file ----
@@ -436,28 +377,13 @@ def build_orchestrator_prompt(
 
     # -- Eval score (for dispatcher convergence tracking) ------------------
     sections.append(
-            "\n## Evaluator Score Output — STRUCTURED FEEDBACK\n\n"
-            "When the Evaluator scores the deliverable, write the result to "
-            "`.swarm/eval-score.json` with **section-level feedback**:\n"
-            "```json\n"
-            '{"score": 0.82, "rounds": 1,\n'
-            ' "dimensions": {\n'
-            '   "completeness": {"score": 0.85, "note": "Missing sensitivity analysis on param K"},\n'
-            '   "coherence": {"score": 0.75, "note": "Section 3 contradicts Section 5 on direction"},\n'
-            '   "strength": {"score": 0.70, "note": "Finding bd-43 has N=12, too small for claimed effect"},\n'
-            '   "actionability": {"score": 0.90, "note": "Good — concrete parameter ranges provided"}\n'
-            ' },\n'
-            ' "remediations": [\n'
-            '   "Run sensitivity analysis varying K from 0.1 to 1.0",\n'
-            '   "Resolve Section 3 vs Section 5 contradiction",\n'
-            '   "Increase sample size for bd-43 or downgrade confidence"\n'
-            ' ]\n'
-            '}\n'
-            "```\n"
-            "This file is read by the progress monitor to track convergence.\n\n"
-            "**The remediations list is critical** — when the orchestrator creates "
-            "improvement tasks, it uses these specific remediations as task briefs "
-            "instead of guessing what needs to improve.  Be concrete and actionable.\n"
+            "\n## Evaluator Score Output\n\n"
+            "After the Evaluator scores the deliverable, write `.swarm/eval-score.json` "
+            "with fields: `score` (0-1), `rounds`, `dimensions` (per-dimension scores "
+            "and notes for completeness/coherence/strength/actionability), and "
+            "`remediations` (list of concrete improvement actions).\n\n"
+            "The `remediations` list is critical — improvement tasks use these as briefs. "
+            "See `.github/agents/evaluator.agent.md` for the full evaluation protocol.\n"
         )
 
     return "".join(sections)
