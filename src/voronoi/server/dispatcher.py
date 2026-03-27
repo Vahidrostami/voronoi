@@ -1145,8 +1145,8 @@ class InvestigationDispatcher:
                 # Run convergence-gate.sh for additional validation
                 gate_script = run.workspace_path / "scripts" / "convergence-gate.sh"
                 if not gate_script.exists():
-                    # Try project-level scripts directory
-                    gate_script = Path(__file__).resolve().parent.parent.parent.parent / "scripts" / "convergence-gate.sh"
+                    # Try package data directory
+                    gate_script = Path(__file__).resolve().parent.parent / "data" / "scripts" / "convergence-gate.sh"
                 if gate_script.exists() and gate_script.stat().st_mode & 0o111:
                     try:
                         gate_result = subprocess.run(

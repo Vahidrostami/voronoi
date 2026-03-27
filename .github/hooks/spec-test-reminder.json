@@ -1,0 +1,11 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "type": "command",
+        "command": ".github/hooks/spec-test-reminder.sh",
+        "timeout": 5
+      }
+    ]
+  }
+}

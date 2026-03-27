@@ -466,8 +466,8 @@ def handle_health(project_dir: str) -> str:
     import subprocess
     script = Path(project_dir) / "scripts" / "health-check.sh"
     if not script.exists():
-        # Try the repo checkout layout (project_dir may be a workspace)
-        script = Path(__file__).resolve().parent.parent.parent.parent / "scripts" / "health-check.sh"
+        # Try the package data directory
+        script = Path(__file__).resolve().parent.parent / "data" / "scripts" / "health-check.sh"
     if not script.exists():
         return "❌ `health-check.sh` not found"
     try:

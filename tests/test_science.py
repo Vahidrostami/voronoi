@@ -1751,14 +1751,14 @@ class TestConvergenceSuccessCriteriaOverride:
         assert result.converged is False
 
     def test_score_below_050_not_overridden(self, tmp_path):
-        """Even with all criteria met, score < 0.50 follows normal path."""
+        """Score < 0.50 with improvement rounds remaining should request improvement."""
         (tmp_path / ".swarm").mkdir()
         (tmp_path / ".swarm" / "deliverable.md").write_text("# Done")
         save_success_criteria(tmp_path, [
             {"id": "SC1", "description": "L4 > L1", "met": True},
         ])
-        # Score 0.40 doesn't enter the 0.50+ branch at all
+        # Score 0.40 with rounds remaining should NOT converge
         result = check_convergence(tmp_path, "adaptive", eval_score=0.40,
                                     improvement_rounds=0)
-        # Should still converge via final fallthrough ("All tasks complete")
-        assert result.converged is True
+        assert result.converged is False
+        assert result.status == "not_ready"

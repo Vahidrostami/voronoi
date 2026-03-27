@@ -40,12 +40,10 @@ def test_cli_help():
 
 
 def testfind_data_dir():
-    """find_data_dir locates repo root in editable install."""
+    """find_data_dir locates the data directory with agents."""
     data_dir = find_data_dir()
-    # In editable mode, should return the repo root
-    assert (data_dir / "scripts").is_dir()
-    assert (data_dir / ".github" / "agents").is_dir()
-    assert (data_dir / "pyproject.toml").is_file()
+    # Should return the data/ directory containing agents (canonical location)
+    assert (data_dir / "agents").is_dir()
 
 
 def test_init_creates_files():

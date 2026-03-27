@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "health-check.sh"
+SCRIPT = Path(__file__).resolve().parent.parent / "src" / "voronoi" / "data" / "scripts" / "health-check.sh"
 
 
 def run_health(args=None, config=None, env_extra=None, cwd=None):

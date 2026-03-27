@@ -348,7 +348,7 @@ def build_orchestrator_prompt(
 
 | # | Section | Content |
 |---|---------|---------|
-| 1 | Identity | Role protocol → `.github/agents/swarm-orchestrator.agent.md` |
+| 1 | Identity | Role protocol → `.github/agents/swarm-orchestrator.agent.md` (in target workspace) |
 | 2 | Mission | Mode/rigor, workspace, project brief path |
 | 3 | Personality | Excitement, brain metaphors, factual focus |
 | 4 | Science | Mode + rigor-aware sections |
@@ -367,7 +367,7 @@ def build_orchestrator_prompt(
 
 ### Key Design Principle
 
-The prompt **references** `.github/agents/*.agent.md` files. It tells the orchestrator: "Read this file NOW — it contains your complete role definition." Role definitions are NEVER duplicated in Python code.
+The prompt **references** `.github/agents/*.agent.md` files in the target workspace. It tells the orchestrator: "Read this file NOW — it contains your complete role definition." Role definitions live canonically in `src/voronoi/data/agents/` and are copied to `.github/agents/` in investigation workspaces. They are NEVER duplicated in Python code.
 
 ---
 

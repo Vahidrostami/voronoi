@@ -58,7 +58,11 @@ pip install voronoi
 voronoi server init
 # Edit ~/.voronoi/.env with your VORONOI_TG_BOT_TOKEN
 voronoi server start
+# On a remote host or over SSH, prefer:
+# voronoi server start --daemon
 ```
+
+`voronoi server start` runs in the foreground. Use `--daemon` on remote hosts so the bridge survives shell disconnects.
 
 **CLI** — work inside a project:
 
@@ -259,9 +263,9 @@ src/voronoi/
     prompt.py  dispatcher.py  queue.py  workspace.py
     sandbox.py  publisher.py  runner.py  events.py
   data/                   # Runtime files (shipped with pip install)
-    agents/               # Role definitions (from .github/agents/)
-    skills/               # Skill definitions (from .github/skills/)
-    prompts/              # Invocable prompts (from .github/prompts/)
+    agents/               # Role definitions — canonical location
+    skills/               # Skill definitions — canonical location
+    prompts/              # Invocable prompts — canonical location
     scripts/              # Runtime scripts (spawn, merge, etc.)
     templates/            # CLAUDE.md + AGENTS.md for investigation workspaces
 ```

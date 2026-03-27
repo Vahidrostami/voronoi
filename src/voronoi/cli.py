@@ -18,7 +18,7 @@ FRAMEWORK_DIRS = ["scripts"]
 # Top-level template files (written from data/templates/)
 TEMPLATE_FILES = ["CLAUDE.md", "AGENTS.md"]
 
-# .github/ subdirectories to copy (agent definitions, prompts, skills)
+# Runtime subdirectories to copy into target .github/ (agent definitions, prompts, skills)
 GITHUB_SUBDIRS = ["agents", "prompts", "skills"]
 
 # Files that should never be overwritten during upgrade
@@ -28,57 +28,29 @@ USER_OWNED = {"CLAUDE.md", "AGENTS.md"}
 def find_data_dir() -> Path:
     """Locate the framework data files.
 
-    Works for both editable installs (repo root) and normal pip installs
-    (bundled in package data).
-
-    For editable installs, .github/ and scripts/ live at the repo root.
-    For packaged installs, they live under src/voronoi/data/.
+    All runtime content (agents, prompts, skills, scripts, demos, templates)
+    lives under src/voronoi/data/ — the single canonical location for both
+    editable and packaged installs.
     """
-    # Normal install: data bundled inside the package
     bundled = Path(__file__).resolve().parent / "data"
     if bundled.is_dir() and (bundled / "agents").is_dir():
         return bundled
 
-    # Editable install: data lives at repo root
-    repo_root = Path(__file__).resolve().parent.parent.parent
-    if (repo_root / "scripts").is_dir() and (repo_root / "pyproject.toml").is_file():
-        return repo_root
-
     print("Error: cannot find voronoi framework files.", file=sys.stderr)
-    print("  If you installed with pip, rebuild with: ./scripts/sync-package-data.sh && pip install .", file=sys.stderr)
+    print("  Ensure src/voronoi/data/ contains agents/, scripts/, demos/.", file=sys.stderr)
     sys.exit(1)
 
 
 def _resolve_github_src(data: Path) -> Path:
-    """Resolve the .github/ source directory.
-
-    For editable installs: repo_root/.github/
-    For packaged installs: data/ contains agents/, prompts/, skills/ directly.
-    """
-    # Packaged install: agents/ lives directly under data/
-    if (data / "agents").is_dir():
-        return data
-    # Editable install: .github/ at repo root
-    github = data / ".github"
-    if github.is_dir():
-        return github
+    """Resolve the source directory for runtime agents/prompts/skills."""
     return data
 
 
 def _resolve_templates_dir(data: Path) -> Path:
-    """Resolve the templates directory for CLAUDE.md and AGENTS.md.
-
-    For editable installs: src/voronoi/data/templates/
-    For packaged installs: data/templates/
-    """
-    # Packaged install
+    """Resolve the templates directory for CLAUDE.md and AGENTS.md."""
     templates = data / "templates"
     if templates.is_dir():
         return templates
-    # Editable install: look inside the package
-    pkg_templates = Path(__file__).resolve().parent / "data" / "templates"
-    if pkg_templates.is_dir():
-        return pkg_templates
     return data  # fallback
 
 
@@ -159,7 +131,7 @@ def cmd_init(args: argparse.Namespace) -> None:
             _ensure_executable(target / dirname)
             print(f"  ✓ {dirname}/")
 
-    # Copy .github/ subdirectories (agents, prompts, skills)
+    # Copy runtime agents/prompts/skills into target's .github/
     github_src = _resolve_github_src(data)
     github_dst = target / ".github"
     github_dst.mkdir(exist_ok=True)
@@ -223,7 +195,7 @@ def cmd_upgrade(args: argparse.Namespace) -> None:
             _ensure_executable(target / dirname)
             print(f"  ✓ {dirname}/ (replaced)")
 
-    # Overwrite .github/ subdirectories (agents, prompts, skills)
+    # Overwrite runtime agents/prompts/skills in target's .github/
     github_src = _resolve_github_src(data)
     github_dst = target / ".github"
     github_dst.mkdir(exist_ok=True)
@@ -677,21 +649,51 @@ def _server_start(args: argparse.Namespace) -> None:
     env.setdefault("VORONOI_LOG_LEVEL", log_level)
 
     try:
-        subprocess.run(
-            [sys.executable, str(bridge_script), "--config", str(server_swarm_config)],
+        bridge_cmd = [sys.executable, str(bridge_script), "--config", str(server_swarm_config)]
+        if getattr(args, "daemon", False):
+            logs_dir = config.base_dir / "logs"
+            logs_dir.mkdir(parents=True, exist_ok=True)
+            log_path = Path(args.log_file).expanduser() if getattr(args, "log_file", None) else logs_dir / "telegram-bridge.log"
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with log_path.open("ab") as log_handle:
+                proc = subprocess.Popen(
+                    bridge_cmd,
+                    cwd=str(config.base_dir),
+                    env=env,
+                    stdin=subprocess.DEVNULL,
+                    stdout=log_handle,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+            time.sleep(2)
+            return_code = proc.poll()
+            if return_code is not None:
+                print("Error: Telegram bridge exited immediately.", file=sys.stderr)
+                print(f"  Check logs: {log_path}", file=sys.stderr)
+                sys.exit(return_code or 1)
+            print("Telegram bridge started in background.")
+            print(f"  PID: {proc.pid}")
+            print(f"  Logs: {log_path}")
+            return
+
+        result = subprocess.run(
+            bridge_cmd,
             cwd=str(config.base_dir),
             env=env,
         )
     except KeyboardInterrupt:
         print("\nTelegram bridge stopped.")
+        return
+
+    if result.returncode != 0:
+        sys.exit(result.returncode)
 
 
 def _find_bridge_script() -> Path | None:
-    """Locate telegram-bridge.py in data dir or repo."""
+    """Locate telegram-bridge.py in data dir."""
     data = find_data_dir()
     candidates = [
         data / "scripts" / "telegram-bridge.py",
-        Path(__file__).resolve().parent.parent.parent / "scripts" / "telegram-bridge.py",
     ]
     for c in candidates:
         if c.is_file():
@@ -874,7 +876,9 @@ def main() -> None:
     server_sub = server_parser.add_subparsers(dest="server_action")
     server_init = server_sub.add_parser("init", help="Initialize server at ~/.voronoi/")
     server_init.add_argument("--base-dir", dest="base_dir", help="Custom base directory")
-    server_sub.add_parser("start", help="Start Telegram bridge")
+    server_start = server_sub.add_parser("start", help="Start Telegram bridge")
+    server_start.add_argument("--daemon", action="store_true", help="Run the Telegram bridge in the background")
+    server_start.add_argument("--log-file", help="Path to the bridge log file when using --daemon")
     server_sub.add_parser("status", help="Show server status")
     server_prune = server_sub.add_parser("prune", help="Clean up old workspaces")
     server_prune.add_argument("--force", action="store_true", help="Actually remove workspaces")

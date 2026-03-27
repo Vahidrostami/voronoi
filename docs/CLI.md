@@ -71,8 +71,8 @@ Files in `USER_OWNED = {"CLAUDE.md", "AGENTS.md"}` are NEVER overwritten on upgr
 ### Data Directory Resolution
 
 `_find_data_dir()` locates framework files:
-1. **Editable install** — looks for repo root (parent dirs until `pyproject.toml` found)
-2. **Pip install** — looks in `src/voronoi/data/` (bundled by `sync-package-data.sh`)
+1. **Editable install** — `find_data_dir()` returns `src/voronoi/data/` (canonical location)
+2. **Pip install** — `find_data_dir()` returns bundled `data/` inside the installed package
 
 ---
 
@@ -84,7 +84,7 @@ Updates framework files while preserving user edits.
 
 ### Behavior
 
-1. Copies `.github/{agents,prompts,skills}/` — overwrites with latest
+1. Copies runtime agents/prompts/skills from package data → project `.github/` — overwrites with latest
 2. Copies `scripts/` — overwrites with latest
 3. Skips user-owned files (`CLAUDE.md`, `AGENTS.md`)
 
@@ -137,6 +137,10 @@ Removes demo artifacts from the current directory.
 2. Loads `.env` for bot token
 3. Starts Telegram bridge (`telegram-bridge.py`) if token present
 4. Starts dispatcher loop (10s poll interval)
+
+By default this runs in the foreground. Use `voronoi server start --daemon` on remote hosts or SSH sessions to detach the bridge and write logs to `~/.voronoi/logs/telegram-bridge.log`.
+
+The bridge now auto-restarts after unexpected transient polling failures with exponential backoff. Fatal configuration errors such as invalid bot tokens still fail fast.
 
 ### `voronoi server status`
 

@@ -10,7 +10,7 @@
 `prompt.py` is the ONLY module that builds orchestrator prompts. CLI and Telegram MUST both call `build_orchestrator_prompt()`. No other module may construct prompts.
 
 ### INV-02: Role Files Are Source of Truth
-Agent role definitions live ONLY in `.github/agents/*.agent.md`. The prompt builder REFERENCES these files (tells orchestrator "read this file"). Python code MUST NOT duplicate or inline role definitions.
+Agent role definitions live ONLY in `src/voronoi/data/agents/*.agent.md` (copied to `.github/agents/` in investigation workspaces). The prompt builder REFERENCES these files (tells orchestrator "read this file"). Python code MUST NOT duplicate or inline role definitions.
 
 ### INV-03: Orchestrator Never Enters Worktrees
 The orchestrator dispatches and monitors. It MUST NOT modify files in a worker's git worktree. If an agent fails, dispatch a new agent or a Methodologist — never fix the code directly.

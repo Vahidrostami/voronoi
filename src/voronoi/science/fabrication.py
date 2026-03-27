@@ -206,7 +206,18 @@ def verify_finding_against_data(
         result.passed = False
         return result
 
-    data_path = workspace / data_file_str.strip()
+    data_path = (workspace / data_file_str.strip()).resolve()
+    # Guard against path traversal — data must stay inside the workspace
+    try:
+        data_path.relative_to(workspace.resolve())
+    except ValueError:
+        result.flags.append(FabricationFlag(
+            severity="critical", category="path_traversal",
+            message=f"DATA_FILE '{data_file_str}' resolves outside workspace — rejected",
+            finding_id=finding_id,
+        ))
+        result.passed = False
+        return result
     result.data_file_exists = data_path.exists()
     if not result.data_file_exists:
         result.flags.append(FabricationFlag(

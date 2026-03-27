@@ -8,7 +8,7 @@ A production-ready system for orchestrating multiple AI agents in parallel. Scie
 
 ## 1. Architecture
 
-Two entry points, one execution path. Every copilot instance — CLI or Telegram — gets the same prompt, the same `.github/agents/` role definitions, and the same science gates.
+Two entry points, one execution path. Every copilot instance — CLI or Telegram — gets the same prompt, the same `src/voronoi/data/agents/` role definitions, and the same science gates.
 
 ```mermaid
 flowchart TB
@@ -102,7 +102,7 @@ flowchart LR
 | Capability | CLI | Telegram |
 |-----------|-----|----------|
 | Demo files copied | ✅ `cmd_demo()` | ✅ `_copy_demo_files()` |
-| `.github/` agents/skills | ✅ `voronoi init` | ✅ `_ensure_github_files()` fallback |
+| Runtime agents/skills | ✅ `voronoi init` | ✅ `_ensure_github_files()` fallback |
 | Prompt builder | ✅ `prompt.py` | ✅ `prompt.py` (same function) |
 | Progress updates | stdout | Telegram messages every 30s |
 | Timeout detection | KeyboardInterrupt | Configurable (default 8h) |
@@ -119,21 +119,21 @@ Voronoi strictly separates files by audience:
 | `CLAUDE.md` (repo root) | Developers working ON Voronoi | No |
 | `docs/*.md` | Developers working ON Voronoi | No |
 | `src/voronoi/data/templates/CLAUDE.md` | Investigation agents working WITH Voronoi | Yes |
-| `src/voronoi/data/agents/` | Investigation agents (also Copilot during dev via `.github/` symlink) | Yes |
+| `src/voronoi/data/agents/` | Investigation agents (runtime role definitions) | Yes |
 | `src/voronoi/data/scripts/` | Runtime scripts (spawn, merge, convergence) | Yes |
-| `scripts/` (repo root) | Dev-only scripts (sync, dashboard, health-check) | No |
+| `scripts/` (repo root) | Dev-only build tool (`sync-package-data.sh`) | No |
 
-`sync-package-data.sh` copies `.github/{agents,skills,prompts}` → `src/voronoi/data/` before `pip install .`.
-Editable installs (`pip install -e .`) read from the repo root directly.
+All runtime content lives in `src/voronoi/data/` — the single canonical location.
+`sync-package-data.sh` only copies `.env.example` into `data/` before `pip install .`.
 
 ---
 
-## 4. `.github/` — Agent Roles, Prompts, and Skills
+## 4. Agent Roles, Prompts, and Skills — `src/voronoi/data/`
 
-Copilot auto-discovers these files. They are the **real** role definitions — the prompt builder *references* them, never duplicates.
+The canonical location for all runtime content is `src/voronoi/data/`. The prompt builder *references* these files, never duplicates.
 
 ```
-.github/
+src/voronoi/data/
 ├── agents/                          # Role definitions (12 roles)
 │   ├── swarm-orchestrator.agent.md  # OODA loop, convergence, paradigm checks
 │   ├── worker-agent.agent.md        # Build tasks, artifact contracts
@@ -153,23 +153,25 @@ Copilot auto-discovers these files. They are the **real** role definitions — t
 │   ├── standup.prompt.md            # /standup — cross-agent status
 │   ├── progress.prompt.md           # /progress — progress check
 │   └── teardown.prompt.md           # /teardown — cleanup
-└── skills/                          # Domain knowledge (9 skills)
-    ├── beads-tracking/              # bd commands, task lifecycle
-    ├── git-worktree-management/     # Worktree create/merge/cleanup
-    ├── branch-merging/              # Safe merge protocol
-    ├── task-planning/               # Epic decomposition
-    ├── artifact-gates/              # PRODUCES/REQUIRES/GATE contracts
-    ├── evidence-system/             # Findings, belief maps, journal
-    ├── investigation-protocol/      # Hypothesis → experiment → finding
-    ├── strategic-context/           # Decision rationale across cycles
-    └── agent-standup/               # Cross-agent progress aggregation
+├── skills/                          # Domain knowledge (9 skills)
+│   ├── beads-tracking/              # bd commands, task lifecycle
+│   ├── git-worktree-management/     # Worktree create/merge/cleanup
+│   ├── branch-merging/              # Safe merge protocol
+│   ├── task-planning/               # Epic decomposition
+│   ├── artifact-gates/              # PRODUCES/REQUIRES/GATE contracts
+│   ├── evidence-system/             # Findings, belief maps, journal
+│   ├── investigation-protocol/      # Hypothesis → experiment → finding
+│   ├── strategic-context/           # Decision rationale across cycles
+│   └── agent-standup/               # Cross-agent progress aggregation
+├── scripts/                         # Runtime shell scripts
+├── demos/                           # Demo investigations
+└── templates/                       # CLAUDE.md + AGENTS.md for workspaces
 ```
 
-The prompt builder tells the orchestrator:
+During `voronoi init`, agents/prompts/skills are copied to `.github/` in the target workspace. The prompt builder tells the orchestrator:
 > *"Read `.github/agents/swarm-orchestrator.agent.md` NOW — it contains your complete role definition."*
 
-And for each worker:
-> *"Prepend the content of `.github/agents/<role>.agent.md` to every worker prompt."*
+And for each worker, `build_worker_prompt()` reads the role file from `data/agents/` and prepends it to the prompt.
 
 ---
 

@@ -175,8 +175,9 @@ class KnowledgeStore:
                     rows.append((tid, content))
                 conn.executemany("INSERT INTO findings(tid, content) VALUES (?, ?)", rows)
 
-                # Escape query for FTS5 — wrap each word in double quotes
-                escaped_query = " ".join(f'"{w}"' for w in query.split() if w)
+                # Escape query for FTS5 — strip double quotes, then wrap each word
+                words = [w.replace('"', '') for w in query.split() if w.replace('"', '')]
+                escaped_query = " ".join(f'"{w}"' for w in words)
                 if not escaped_query:
                     return {}
 

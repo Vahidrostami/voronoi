@@ -1,10 +1,10 @@
-"""Tests for the unified prompt builder and workspace .github/ provisioning.
+"""Tests for the unified prompt builder and workspace provisioning.
 
 Verifies that:
 1. Both CLI and Telegram paths produce prompts from the same builder
-2. Prompts reference .github/agents/*.agent.md role files
+2. Prompts reference .github/agents/*.agent.md role files (in target workspaces)
 3. Mode/rigor combinations produce correct science sections
-4. Workspace provisioning always copies .github/ files
+4. Workspace provisioning copies runtime agents/prompts/skills from data/
 """
 
 import json
@@ -233,7 +233,7 @@ class TestDispatcherUsesSharedBuilder:
         assert call_kwargs["rigor"] == "standard"
 
 class TestWorkspaceGitHubProvisioning:
-    """Verify that .github/ files are always present in provisioned workspaces."""
+    """Verify that runtime agents/prompts/skills are copied into provisioned workspaces."""
 
     def test_ensure_github_files_copies_when_missing(self, tmp_path):
         from voronoi.server.workspace import WorkspaceManager
@@ -242,10 +242,10 @@ class TestWorkspaceGitHubProvisioning:
         workspace = tmp_path / "workspace"
         workspace.mkdir()
 
-        # Create fake source data
+        # Create fake source data (agents/prompts/skills directly under data/)
         data_dir = tmp_path / "data"
         for subdir in ("agents", "prompts", "skills"):
-            d = data_dir / ".github" / subdir
+            d = data_dir / subdir
             d.mkdir(parents=True)
             (d / f"test.{subdir[:-1]}.md").write_text(f"# {subdir}")
 

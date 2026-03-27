@@ -338,6 +338,14 @@ def build_orchestrator_prompt(
 
     # -- Anti-simulation enforcement (expanded — this is critical) ----------
     sections.append(
+        "\n## LLM Calls via Copilot CLI — MANDATORY\n\n"
+        "When experiments need programmatic LLM calls (discovery, judge, etc.), "
+        "agents MUST use:\n"
+        "```bash\ncopilot -p \"<prompt>\" -s --no-color --allow-all\n```\n"
+        "- Pass the prompt as a **direct argument** to `-p`, NOT via stdin.\n"
+        "- **NEVER** use `echo \"...\" | copilot -p -` or pipe/stdin patterns — "
+        "they produce empty/generic responses and silently break experiments.\n"
+        "- Cache responses by SHA-256 hash of the prompt text.\n\n"
         "\n## Anti-Simulation — HARD GATE\n\n"
         "**NEVER create simulation/mock/fake files that replace real LLM calls.** "
         "This is a convergence-blocking violation.\n\n"
@@ -658,13 +666,18 @@ def build_worker_prompt(
 
 
 def _read_role_file(filename: str, workspace_path: str = "") -> str:
-    """Read a role definition file from .github/agents/."""
+    """Read a role definition file from the agents directory.
+
+    Searches:
+    1. workspace_path/.github/agents/ (runtime investigation workspace)
+    2. src/voronoi/data/agents/ (canonical source in this package)
+    """
     candidates = []
     if workspace_path:
         candidates.append(Path(workspace_path) / ".github" / "agents" / filename)
-    # Also try relative to this file (for editable installs)
-    pkg_root = Path(__file__).resolve().parent.parent.parent.parent
-    candidates.append(pkg_root / ".github" / "agents" / filename)
+    # Package data directory (canonical location for both editable and packaged installs)
+    pkg_data = Path(__file__).resolve().parent.parent / "data"
+    candidates.append(pkg_data / "agents" / filename)
 
     for p in candidates:
         if p.exists():

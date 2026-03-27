@@ -21,8 +21,11 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import logging.handlers
+import os
 import socket
 import sys
+import time
 from pathlib import Path
 
 logger = logging.getLogger("voronoi.bridge")
@@ -429,6 +432,35 @@ def run_bot(config: dict) -> None:
     app.run_polling(drop_pending_updates=True)
 
 
+def _is_fatal_bridge_error(exc: BaseException) -> bool:
+    """Return True when restart loops would just mask a configuration error."""
+    return exc.__class__.__name__ in {"InvalidToken", "Unauthorized"}
+
+
+def run_bot_forever(config: dict, restart_delay: int = 5, max_delay: int = 60) -> None:
+    """Keep the Telegram bridge alive across transient failures."""
+    delay = max(1, restart_delay)
+    ceiling = max(delay, max_delay)
+
+    while True:
+        try:
+            run_bot(config)
+            return
+        except KeyboardInterrupt:
+            logger.info("Telegram bridge stopped.")
+            return
+        except SystemExit:
+            raise
+        except Exception as exc:
+            if _is_fatal_bridge_error(exc):
+                logger.error("Fatal Telegram bridge error: %s", exc, exc_info=True)
+                raise
+            logger.error("Telegram bridge crashed: %s", exc, exc_info=True)
+            logger.info("Restarting Telegram bridge in %ss", delay)
+            time.sleep(delay)
+            delay = min(delay * 2, ceiling)
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -437,14 +469,32 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Voronoi ↔ Telegram bridge")
     parser.add_argument("--config", default=".swarm-config.json", help="Path to .swarm-config.json")
     args = parser.parse_args()
-    import os
     log_level = os.environ.get("VORONOI_LOG_LEVEL", "INFO").upper()
-    logging.basicConfig(
-        level=getattr(logging, log_level, logging.INFO),
-        format="%(asctime)s %(levelname)-8s [%(name)s] %(message)s",
+    log_fmt = logging.Formatter(
+        "%(asctime)s %(levelname)-8s [%(name)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
-        stream=sys.stdout,
     )
+
+    # Console handler (existing behaviour)
+    console = logging.StreamHandler(sys.stdout)
+    console.setFormatter(log_fmt)
+
+    # Rotating file handler: 3 × 5 MB = 15 MB max on disk
+    log_dir = Path(os.environ.get("VORONOI_LOG_DIR", Path.home() / ".voronoi"))
+    log_dir.mkdir(parents=True, exist_ok=True)
+    file_handler = logging.handlers.RotatingFileHandler(
+        log_dir / "bridge.log",
+        maxBytes=5 * 1024 * 1024,
+        backupCount=2,
+        encoding="utf-8",
+    )
+    file_handler.setFormatter(log_fmt)
+
+    root = logging.getLogger()
+    root.setLevel(getattr(logging, log_level, logging.INFO))
+    root.addHandler(console)
+    root.addHandler(file_handler)
+
     # Keep noisy libs at WARNING
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("telegram").setLevel(logging.WARNING)
@@ -471,7 +521,9 @@ def main() -> None:
               f"for this bot token (lock port: {lock_port})", file=sys.stderr)
         sys.exit(1)
 
-    run_bot(config)
+    restart_delay = int(os.environ.get("VORONOI_BRIDGE_RESTART_DELAY_SECONDS", "5"))
+    max_delay = int(os.environ.get("VORONOI_BRIDGE_MAX_RESTART_DELAY_SECONDS", "60"))
+    run_bot_forever(config, restart_delay=restart_delay, max_delay=max_delay)
 
 
 if __name__ == "__main__":

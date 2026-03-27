@@ -33,7 +33,7 @@ from voronoi.gateway.router import (
 
 
 def _load_bridge_module():
-    bridge_path = Path(__file__).resolve().parent.parent / "scripts" / "telegram-bridge.py"
+    bridge_path = Path(__file__).resolve().parent.parent / "src" / "voronoi" / "data" / "scripts" / "telegram-bridge.py"
     spec = importlib.util.spec_from_file_location("voronoi_telegram_bridge", bridge_path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -72,6 +72,45 @@ class TestConfig:
         chat_file = tmp_path / ".telegram-chat-id"
         assert chat_file.exists()
         assert chat_file.read_text().strip() == "12345"
+
+
+class TestBridgeSupervision:
+    def test_run_bot_forever_retries_transient_errors(self, monkeypatch):
+        module = _load_bridge_module()
+        calls = {"count": 0}
+        sleeps = []
+
+        def fake_run_bot(config):
+            calls["count"] += 1
+            if calls["count"] < 3:
+                raise RuntimeError("temporary failure")
+            raise KeyboardInterrupt()
+
+        monkeypatch.setattr(module, "run_bot", fake_run_bot)
+        monkeypatch.setattr(module.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+        module.run_bot_forever({"bot_token": "test"}, restart_delay=2, max_delay=10)
+
+        assert calls["count"] == 3
+        assert sleeps == [2, 4]
+
+    def test_run_bot_forever_fails_fast_on_invalid_token(self, monkeypatch):
+        module = _load_bridge_module()
+        sleeps = []
+
+        class InvalidToken(Exception):
+            pass
+
+        def fake_run_bot(config):
+            raise InvalidToken("bad token")
+
+        monkeypatch.setattr(module, "run_bot", fake_run_bot)
+        monkeypatch.setattr(module.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+        with pytest.raises(InvalidToken):
+            module.run_bot_forever({"bot_token": "test"}, restart_delay=2, max_delay=10)
+
+        assert sleeps == []
 
 
 # ---------------------------------------------------------------------------

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -257,19 +258,18 @@ class WorkspaceManager:
             logger.debug("voronoi init failed in %s", workspace_path, exc_info=True)
 
     def _ensure_github_files(self, workspace_path: Path) -> None:
-        """Copy .github/{agents,prompts,skills}, scripts/, and runtime CLAUDE.md if missing."""
+        """Copy runtime agents/prompts/skills to .github/ in the workspace, plus scripts/ and templates."""
         try:
-            from voronoi.cli import find_data_dir, _resolve_github_src, _resolve_templates_dir
+            from voronoi.cli import find_data_dir, _resolve_templates_dir
 
             data = find_data_dir()
 
-            # Copy .github/ subdirectories if missing
+            # Copy agents/prompts/skills into workspace's .github/ if missing
             github_dst = workspace_path / ".github"
             if not (github_dst / "agents").is_dir():
-                github_src = _resolve_github_src(data)
                 github_dst.mkdir(exist_ok=True)
                 for subdir in ("agents", "prompts", "skills"):
-                    src = github_src / subdir
+                    src = data / subdir
                     dst = github_dst / subdir
                     if src.is_dir() and not dst.is_dir():
                         shutil.copytree(src, dst)
@@ -314,16 +314,38 @@ class WorkspaceManager:
         name: str,
         timeout: float = 120.0,
         poll_interval: float = 0.1,
+        stale_threshold: float = 600.0,
     ):
-        """Acquire a best-effort inter-process lock using an atomic lock directory."""
+        """Acquire a best-effort inter-process lock using an atomic lock directory.
+
+        If a lock directory is older than *stale_threshold* seconds it is
+        assumed to be left over from a crashed process and is removed
+        automatically.
+        """
         lock_dir = self.locks_dir / f"{name}.lock"
         deadline = time.monotonic() + timeout
 
         while True:
             try:
                 lock_dir.mkdir()
+                # Write PID for diagnostics
+                try:
+                    (lock_dir / "pid").write_text(str(os.getpid()))
+                except OSError:
+                    pass
                 break
             except FileExistsError:
+                # Check for stale lock
+                try:
+                    lock_age = time.time() - lock_dir.stat().st_mtime
+                    if lock_age > stale_threshold:
+                        logger.warning(
+                            "Removing stale lock '%s' (age=%.0fs)", name, lock_age
+                        )
+                        shutil.rmtree(lock_dir, ignore_errors=True)
+                        continue
+                except OSError:
+                    pass
                 if time.monotonic() >= deadline:
                     raise TimeoutError(f"Timed out waiting for lock: {name}")
                 time.sleep(poll_interval)
