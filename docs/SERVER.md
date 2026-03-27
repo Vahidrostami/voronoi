@@ -191,6 +191,7 @@ class RunningInvestigation:
     eval_score: float         # Latest evaluator score
     retry_count: int
     stall_warned: bool
+    status_message_id: int | None  # Telegram message ID for edit-in-place
 ```
 
 ### InvestigationDispatcher API
@@ -199,7 +200,8 @@ class RunningInvestigation:
 class InvestigationDispatcher:
     def __init__(self, config: DispatcherConfig,
                  send_message: Callable,
-                 send_document: Callable | None = None): ...
+                 send_document: Callable | None = None,
+                 edit_message: Callable | None = None): ...
 
     @property
     def queue(self) -> InvestigationQueue: ...       # Lazy init
@@ -258,9 +260,18 @@ The dispatcher reads `.swarm/events.jsonl` (written by workers and orchestrator)
 
 See `src/voronoi/server/events.py` for the `SwarmEvent` dataclass and convenience loggers.
 
-### Event-Driven Digests
+### Event-Driven Digests (Two-Tier Delivery)
 
-The dispatcher batches events since last update into a single `build_digest()` call rather than sending per-event messages. This produces a narrative update every ~30s with sections: what happened, where we are, track assessment, what's next.
+The dispatcher batches events since last update into a single `build_digest()` call, which returns `(text, message_type)`. The message_type determines delivery:
+
+| Type | Delivery | Notification? | Triggers |
+|------|----------|:---:|----------|
+| `MSG_TYPE_STATUS` | Edit existing message | No | Task changes, progress |
+| `MSG_TYPE_MILESTONE` | New message | Yes | Findings, design_invalid |
+
+The dispatcher tracks `status_message_id` per investigation. Status updates silently edit the last status message. Milestones always send a new message (clearing the tracked ID so the next status creates a fresh one). When `edit_message` callback is not available (e.g., non-Telegram frontends), all messages are sent as new messages.
+
+Narrative content is synthesized from workspace artifacts (experiments.tsv, success-criteria.json, belief-map.json) via `_synthesize_narrative()`, with VOICE variant fallback when artifacts are thin.
 
 ### Phase Detection
 

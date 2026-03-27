@@ -226,6 +226,7 @@ class RunningInvestigation:
     stall_warned: bool
     notified_design_invalid: set
     last_event_ts: float          # For event log polling
+    status_message_id: int | None # Telegram message ID for edit-in-place
 ```
 
 ### WorkspaceInfo (`server/workspace.py`)

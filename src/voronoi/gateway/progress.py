@@ -4,13 +4,19 @@ The actual progress *polling* lives in ``voronoi.server.dispatcher``
 (single source of truth).  This module provides the formatting functions
 used by the router, dispatcher, and tests.
 
-Design philosophy: messages should read like a teammate giving you an
-update over chat — conversational, informative, and forward-looking.
-Minimal emoji. Narrative over data dumps.
+Design philosophy: messages should read like a sharp research lab manager
+giving a brief, confident update — milestone-driven, phase-aware, and
+adaptive to the time horizon. Early updates set expectations. Mid-run
+updates highlight achievements and findings. Late updates focus on
+convergence. Never dump raw data. Never alarm for normal states.
+
+Voice: confident, concise, occasionally wry. Celebrates real milestones.
+Speaks in terms of scientific progress, not task management.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from pathlib import Path
@@ -37,7 +43,72 @@ MODE_VERB: dict[str, str] = {
     "prove": "proof",
 }
 
-# Buddy-style phase descriptions — conversational, not labels
+# ---------------------------------------------------------------------------
+# VOICE — Voronoi's personality for Telegram updates.
+#
+# Inspired by OpenClaw's SOUL.md concept, adapted for a science-discovery
+# assistant.  The voice is a sharp lab manager: confident, concise, and
+# research-aware.  Each phase has multiple variants that rotate by
+# codename hash so repeated polls don't feel copy-pasted.
+# ---------------------------------------------------------------------------
+
+VOICE_PHASE_VARIANTS: dict[str, list[str]] = {
+    "starting": [
+        "Warming up the lab...",
+        "Getting everything in order...",
+        "Setting up the workspace...",
+    ],
+    "scouting": [
+        "Reading up on prior work.",
+        "Surveying the literature first.",
+        "Checking what's already known.",
+    ],
+    "planning": [
+        "Forming hypotheses and designing experiments.",
+        "Turning the question into a research plan.",
+        "Breaking this into testable pieces.",
+    ],
+    "investigating": [
+        "Experiments underway — agents deep in it.",
+        "The team's running experiments now.",
+        "Multiple experiments running in parallel.",
+    ],
+    "reviewing": [
+        "Cross-checking the numbers.",
+        "Statistical audit in progress.",
+        "Making sure the results hold up under scrutiny.",
+    ],
+    "synthesizing": [
+        "Connecting the dots across experiments.",
+        "Pulling findings together into a coherent picture.",
+        "Seeing how all the pieces fit.",
+    ],
+    "converging": [
+        "Finish line in sight — final quality checks.",
+        "Nearly there — running last evaluations.",
+        "Almost done — making sure it's solid.",
+    ],
+    "complete": [
+        "Writing it up.",
+        "Putting the final document together.",
+        "Drafting the report.",
+    ],
+}
+
+VOICE_CRITERIA_CONTEXT: dict[str, str] = {
+    "zero": "early days",
+    "some": "making progress",
+    "most": "getting close",
+    "all": "all met",
+}
+
+VOICE_QUALITY_LABELS: dict[str, str] = {
+    "high": "solid",
+    "ok": "improving",
+    "low": "needs work",
+}
+
+# Legacy static descriptions — kept for backward compat and fallback
 PHASE_DESCRIPTIONS: dict[str, dict[str, str]] = {
     "discover": {
         "starting": "Setting things up...",
@@ -60,6 +131,17 @@ PHASE_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "complete": "Writing the manuscript.",
     },
 }
+
+# Ordered phase list for journey position display
+PHASE_ORDER: list[str] = [
+    "starting", "scouting", "planning", "investigating",
+    "reviewing", "synthesizing", "converging", "complete",
+]
+
+# Message type constants — used by dispatcher to tell the bridge
+# what kind of message this is (for button selection and edit-vs-send).
+MSG_TYPE_STATUS = "status"           # live status (edit in place)
+MSG_TYPE_MILESTONE = "milestone"     # new finding, phase change (new msg)
 
 
 # ---------------------------------------------------------------------------
@@ -101,21 +183,31 @@ def estimate_remaining(elapsed_sec: float, done: int, total: int) -> str:
     return f"~{format_duration(remaining_sec)} left"
 
 
-def phase_description(mode: str, phase: str) -> str:
-    """Return the conversational phase description."""
+def phase_description(mode: str, phase: str, codename: str = "") -> str:
+    """Return a conversational phase description.
+
+    If *codename* is provided, uses VOICE_PHASE_VARIANTS with deterministic
+    rotation so the same investigation always picks the same variant for a
+    given phase, but different investigations get different wording.
+    Falls back to the static PHASE_DESCRIPTIONS when no variant matches.
+    """
+    if codename and phase in VOICE_PHASE_VARIANTS:
+        variants = VOICE_PHASE_VARIANTS[phase]
+        idx = int(hashlib.md5(f"{codename}:{phase}".encode()).hexdigest(), 16)
+        return variants[idx % len(variants)]
     descs = PHASE_DESCRIPTIONS.get(mode, PHASE_DESCRIPTIONS["discover"])
     return descs.get(phase, phase)
 
 
-# Keep old API alive
-def voronoi_header(inv_id: int, mode: str, suffix: str = "",
-                   codename: str = "") -> str:
-    """Build a simple header: Codename — Xh Ymin"""
-    label = codename or f"#{inv_id}"
-    parts = [f"*{label}*"]
-    if suffix:
-        parts[0] += f" — {suffix}"
-    return parts[0]
+def phase_position(phase: str) -> tuple[int, int]:
+    """Return (current_step, total_steps) for journey display.
+
+    Returns 1-based step number. Unknown phases return (0, total).
+    """
+    total = len(PHASE_ORDER)
+    if phase in PHASE_ORDER:
+        return PHASE_ORDER.index(phase) + 1, total
+    return 0, total
 
 
 # ---------------------------------------------------------------------------
@@ -264,12 +356,111 @@ def assess_track_status(
     # Default: if things are moving, we're on track
     total = len(task_snapshot)
     if total == 0:
-        return "watch", "No tasks created yet."
+        return "watch", "No tasks created yet — still setting up."
     closed = sum(1 for t in task_snapshot.values() if t.get("status") == "closed")
     in_progress = sum(1 for t in task_snapshot.values() if t.get("status") == "in_progress")
     if in_progress > 0 or closed > 0:
         return "on_track", "Work is progressing normally."
-    return "watch", "Tasks exist but nothing started yet."
+    return "watch", "Tasks queued, waiting for agents to pick them up."
+
+
+# ---------------------------------------------------------------------------
+# Narrative synthesis — build context-aware descriptions from artifacts
+# ---------------------------------------------------------------------------
+
+def _synthesize_narrative(
+    workspace: Path,
+    phase: str,
+    task_snapshot: dict,
+    elapsed_sec: float,
+) -> str:
+    """Synthesize a 1-2 sentence narrative from workspace artifacts.
+
+    Reads existing files (experiments.tsv, success-criteria.json,
+    belief-map.json) to produce a context-aware description of what's
+    happening.  Returns '' if not enough data for a meaningful narrative.
+
+    This replaces static phase descriptions with research-aware text —
+    no LLM needed, just smart synthesis from what the agents already wrote.
+    """
+    parts: list[str] = []
+
+    # Experiment results
+    rows = _read_all_experiment_rows(workspace)
+    keep = sum(1 for r in rows if r.get("status") == "keep")
+    discard = sum(1 for r in rows if r.get("status") == "discard")
+    total_exp = len(rows)
+
+    # Success criteria
+    criteria_data = _read_json(workspace / ".swarm" / "success-criteria.json")
+    criteria_met = 0
+    criteria_total = 0
+    if isinstance(criteria_data, list) and criteria_data:
+        criteria_total = len(criteria_data)
+        criteria_met = sum(1 for c in criteria_data if c.get("met"))
+
+    # Belief map — leading hypothesis
+    leading_hyp = ""
+    belief_data = _read_json(workspace / ".swarm" / "belief-map.json")
+    if isinstance(belief_data, dict):
+        hyps = belief_data.get("hypotheses", [])
+        if isinstance(hyps, dict):
+            hyps = list(hyps.values())
+        if isinstance(hyps, list):
+            best = None
+            best_conf = -1.0
+            for h in hyps:
+                if isinstance(h, dict):
+                    conf = float(h.get("posterior", h.get("prior", 0)))
+                    if conf > best_conf:
+                        best_conf = conf
+                        best = h
+            if best and best_conf > 0:
+                name = best.get("name", best.get("label", ""))
+                if name:
+                    leading_hyp = f"{name} (P={best_conf:.2f})"
+
+    # Task counts
+    total_tasks = len(task_snapshot)
+    closed = sum(1 for t in task_snapshot.values() if t.get("status") == "closed")
+
+    # Build narrative based on what artifacts exist
+    if phase in ("investigating", "reviewing", "synthesizing") and total_exp > 0:
+        if keep > 0 and discard > 0:
+            parts.append(f"{keep}/{total_exp} experiments passed, {discard} discarded")
+        elif keep > 0:
+            parts.append(f"{keep}/{total_exp} experiments passed")
+        elif total_exp > 0:
+            parts.append(f"{total_exp} experiments run so far")
+
+        if criteria_met > 0 and criteria_total > 0:
+            ctx = VOICE_CRITERIA_CONTEXT.get(
+                "all" if criteria_met == criteria_total
+                else "most" if criteria_met / criteria_total > 0.6
+                else "some" if criteria_met > 0 else "zero"
+            )
+            parts.append(f"{criteria_met}/{criteria_total} criteria met — {ctx}")
+
+        if leading_hyp:
+            parts.append(f"leading hypothesis: {leading_hyp}")
+
+    elif phase == "converging":
+        if criteria_met > 0 and criteria_total > 0:
+            parts.append(f"{criteria_met}/{criteria_total} criteria met")
+        if leading_hyp:
+            parts.append(f"leading hypothesis: {leading_hyp}")
+        if total_exp > 0:
+            parts.append(f"{total_exp} experiments completed")
+
+    elif phase == "planning" and total_tasks > 0:
+        parts.append(f"{total_tasks} experiments designed")
+        if criteria_total > 0:
+            parts.append(f"{criteria_total} success criteria defined")
+
+    if not parts:
+        return ""
+
+    return ". ".join(p.capitalize() if i == 0 else p for i, p in enumerate(parts)) + "."
 
 
 def build_digest(
@@ -283,14 +474,20 @@ def build_digest(
     events_since_last: list[dict],
     eval_score: float = 0.0,
     compact: bool = False,
-) -> str:
-    """Build a conversational narrative digest message.
+) -> tuple[str, str]:
+    """Build a phase-aware, milestone-driven digest message.
 
-    This replaces the old per-event ``_send_progress_batch`` with a single
-    buddy-style message that covers: what happened, where we are, what's next.
+    Returns (message_text, message_type) where message_type is one of
+    the MSG_TYPE_* constants, allowing the delivery layer to decide
+    whether to edit-in-place or send a new message.
 
-    compact=True produces a shorter message suitable for periodic updates:
-    findings as one-liners, criteria as count only, no artifact details.
+    Adapts structure and detail level to the current phase and elapsed time:
+    - Early (setup/planning): set expectations, no empty progress bars
+    - Active (investigating): highlight achievements, show pace + ETA
+    - Late (reviewing/converging): focus on quality and criteria
+    - Complete: celebrate, summarize
+
+    compact=True produces a shorter message suitable for periodic updates.
     compact=False produces the full detailed view (for /details command).
     """
     elapsed_str = format_duration(elapsed_sec)
@@ -302,25 +499,37 @@ def build_digest(
     # Categorize recent events
     completed = [e for e in events_since_last if e.get("type") == "task_done"]
     findings = [e for e in events_since_last if e.get("type") == "finding"]
-    started = [e for e in events_since_last if e.get("type") == "task_started"]
     new_tasks = [e for e in events_since_last if e.get("type") == "task_new"]
     design_invalids = [e for e in events_since_last if e.get("type") == "design_invalid"]
-    phase_changes = [e for e in events_since_last if e.get("type") == "phase"]
+
+    # Determine if this update contains a milestone worth a new notification
+    has_milestone = bool(findings or design_invalids)
 
     lines: list[str] = []
 
-    # Header — codename + time only
-    lines.append(f"*{codename}* — {elapsed_str}\n")
+    # ── Header: codename · elapsed · phase label ──
+    step, total_steps = phase_position(phase)
+    if step > 0:
+        lines.append(f"*{codename}* · {elapsed_str} · Phase {step}/{total_steps}")
+    else:
+        lines.append(f"*{codename}* · {elapsed_str}")
 
-    # What happened since last update
-    happened: list[str] = []
+    # ── Phase narrative: prefer synthesized narrative, fall back to voice ──
+    narrative = _synthesize_narrative(workspace, phase, task_snapshot, elapsed_sec)
+    if narrative:
+        lines.append(narrative)
+    else:
+        lines.append(phase_description(mode, phase, codename=codename))
+
+    # ── What happened since last update (achievements, not raw events) ──
+    milestones: list[str] = []
     if completed:
         titles = [_extract_task_title(e) for e in completed[:5]]
         if len(completed) <= 3:
             for t in titles:
-                happened.append(f"Finished: {t}")
+                milestones.append(f"✓ {t}")
         else:
-            happened.append(f"Finished {len(completed)} tasks")
+            milestones.append(f"✓ Completed {len(completed)} tasks")
     if findings:
         for f in findings:
             raw = f.get("msg", "")
@@ -328,71 +537,83 @@ def build_digest(
                 title = _compact_finding_line(raw)
             else:
                 title = raw.replace("🔬 *NEW FINDING*\n", "").strip()
-            happened.append(f"New finding: {title}")
+            milestones.append(f"★ {title}")
     if design_invalids:
         for d in design_invalids:
-            happened.append(f"Problem: {_extract_task_title(d)}")
+            milestones.append(f"⚠ {_extract_task_title(d)}")
     if new_tasks and not completed and not findings:
-        happened.append(f"{len(new_tasks)} new tasks created")
+        milestones.append(f"Planned {len(new_tasks)} new tasks")
 
-    if happened:
-        for h in happened:
-            lines.append(f"• {h}")
+    if milestones:
         lines.append("")
+        for m in milestones:
+            lines.append(m)
 
-    # Where we are — phase + narrative
-    phase_desc = phase_description(mode, phase)
-    lines.append(phase_desc)
+    # ── Progress: adaptive to phase ──
+    is_early = phase in ("starting", "scouting", "planning")
 
-    # Progress numbers woven into a sentence
-    if total > 0:
+    if total > 0 and closed > 0:
+        # Show progress bar only when there's actual completion
         bar = progress_bar(closed, total)
-        status_parts = [f"{closed} done"]
-        if in_progress > 0:
-            status_parts.append(f"{in_progress} active")
-        remaining = total - closed - in_progress
-        if remaining > 0:
-            status_parts.append(f"{remaining} queued")
-        lines.append(f"{bar}  ({' · '.join(status_parts)} of {total})")
+        lines.append(f"\n{bar}  {closed}/{total} tasks")
         eta = estimate_remaining(elapsed_sec, closed, total)
         if eta:
-            lines.append(f"Estimated: {eta}")
+            lines.append(f"⏱ {eta}")
+    elif total > 0 and is_early:
+        # Early phase: mention task count without an empty progress bar
+        lines.append(f"\n{total} tasks planned · agents getting started")
+    elif total > 0:
+        # Work hasn't started completing yet — brief status
+        agent_note = f" · {in_progress} active" if in_progress > 0 else ""
+        lines.append(f"\n{total} tasks in pipeline{agent_note}")
 
-    # Experiment progress (if experiments.tsv exists)
+    # ── Experiments (if any) ──
     exp_summary = _experiment_summary(workspace)
     if exp_summary:
-        lines.append("")
         lines.append(exp_summary)
 
+    # ── Artifacts (detail view only) ──
     if not compact:
         artifact_summary = _artifact_progress_summary(workspace)
         if artifact_summary:
-            lines.append("")
             lines.append(artifact_summary)
 
-    # Success criteria check
-    criteria_summary = _criteria_summary(workspace, compact=compact)
+    # ── Success criteria: adaptive display ──
+    criteria_summary = _criteria_summary(
+        workspace, compact=compact, phase=phase,
+        events_since_last=events_since_last,
+    )
     if criteria_summary:
-        lines.append("")
-        lines.append(criteria_summary)
+        lines.append(f"\n{criteria_summary}")
 
-    # Eval score if available
+    # ── Quality score (when available) ──
     if eval_score > 0:
-        lines.append(f"\nQuality score: {eval_score:.2f}" +
-                      (" — looks good" if eval_score >= 0.75 else " — needs work"))
+        label = VOICE_QUALITY_LABELS["high"] if eval_score >= 0.75 else (
+            VOICE_QUALITY_LABELS["ok"] if eval_score >= 0.50
+            else VOICE_QUALITY_LABELS["low"]
+        )
+        lines.append(f"Quality: {eval_score:.2f} — {label}")
 
-    # Track assessment
+    # ── Track assessment: only surface real problems ──
     track_status, track_reason = assess_track_status(workspace, task_snapshot, eval_score)
     if track_status == "off_track":
         lines.append(f"\n⚠️ {track_reason}")
-    elif track_status == "watch":
-        lines.append(f"\nHeads up: {track_reason}")
+    elif track_status == "watch" and not is_early:
+        # Don't show "watch" warnings during early phases — it's normal
+        lines.append(f"\n{track_reason}")
 
-    # What's next — agents working
+    # ── Agent activity (brief) ──
     if in_progress > 0:
-        lines.append(f"\n{in_progress} {'agent' if in_progress == 1 else 'agents'} working right now.")
+        lines.append(f"\n{in_progress} {'agent' if in_progress == 1 else 'agents'} active")
 
-    return "\n".join(lines)
+    # ── Pace info for long-running investigations ──
+    if compact and elapsed_sec > 3600 and closed > 0:
+        pace_min = (elapsed_sec / 60) / closed
+        if pace_min >= 60:
+            lines.append(f"Averaging {format_duration(pace_min * 60)} per task")
+
+    msg_type = MSG_TYPE_MILESTONE if has_milestone else MSG_TYPE_STATUS
+    return "\n".join(lines), msg_type
 
 
 def build_digest_whatsup(
@@ -420,35 +641,39 @@ def build_digest_whatsup(
         total = inv.get("total_tasks", 0)
         closed = inv.get("closed_tasks", 0)
         in_prog = inv.get("in_progress_tasks", 0)
-        ready = inv.get("ready_tasks", 0)
         phase = inv.get("phase", "")
         mode = inv.get("mode", "discover")
         healthy = inv.get("agents_healthy", 0)
         stuck = inv.get("agents_stuck", 0)
         question = inv.get("question", "")[:80]
 
-        lines.append(f"*{label}* is running — started {elapsed} ago.")
+        # Header with phase position
+        step, total_steps = phase_position(phase)
+        if step > 0:
+            lines.append(f"*{label}* · {elapsed} · Phase {step}/{total_steps}")
+        else:
+            lines.append(f"*{label}* · running for {elapsed}")
         if question:
             preview = _clean_question_preview(question, 80)
-            lines.append(f"_{preview}_\n")
+            lines.append(f"_{preview}_")
 
-        if total > 0:
-            lines.append(f"{closed}/{total} tasks done, {in_prog} in progress, {ready} ready to go.")
+        # Phase description
+        if phase:
+            lines.append(phase_description(mode, phase, codename=label))
+
+        # Progress — adaptive
+        if total > 0 and closed > 0:
+            bar = progress_bar(closed, total)
+            lines.append(f"{bar}  {closed}/{total} tasks")
+        elif total > 0:
+            agent_note = f" · {in_prog} active" if in_prog > 0 else ""
+            lines.append(f"{total} tasks planned{agent_note}")
         else:
-            lines.append("Setting up — no tasks created yet.")
+            lines.append("Setting up — planning tasks")
 
-        # Agent health in one line
-        agent_parts: list[str] = []
-        if healthy > 0:
-            agent_parts.append(f"{healthy} healthy")
+        # Agent health (only mention problems)
         if stuck > 0:
-            agent_parts.append(f"{stuck} stuck")
-        if agent_parts:
-            lines.append(f"Agents: {', '.join(agent_parts)}.")
-
-        # Skip "Setting things up..." when we already said no tasks created yet
-        if phase and not (phase == "starting" and total == 0):
-            lines.append(f"\n{phase_description(mode, phase)}")
+            lines.append(f"⚠️ {stuck} agent{'s' if stuck > 1 else ''} stuck")
 
         lines.append("")  # blank line between investigations
 
@@ -511,10 +736,17 @@ def _experiment_summary(workspace: Path) -> str:
     return "Experiments: " + " ".join(parts)
 
 
-def _criteria_summary(workspace: Path, compact: bool = False) -> str:
-    """Read success-criteria.json and return a summary.
+def _criteria_summary(workspace: Path, compact: bool = False,
+                      phase: str = "", events_since_last: list[dict] | None = None) -> str:
+    """Read success-criteria.json and return an adaptive summary.
 
-    compact=True: one-line count only (for periodic digests).
+    Display strategy:
+    - Early phases (compact): just count ("13 criteria defined")
+    - Mid phases (compact): count with met ratio ("3/13 criteria met")
+    - Late phases / detail view: full list with per-criterion status
+    - When criteria are newly met: highlight them specifically
+
+    compact=True: brief count suitable for periodic digests.
     compact=False: full list with per-criterion status.
     """
     path = workspace / ".swarm" / "success-criteria.json"
@@ -528,9 +760,20 @@ def _criteria_summary(workspace: Path, compact: bool = False) -> str:
         return ""
     met = sum(1 for c in data if c.get("met"))
     total = len(data)
-    header = f"Success criteria: {met}/{total} met"
+
     if compact:
-        return header
+        is_early = phase in ("starting", "scouting", "planning", "")
+        if is_early and met == 0:
+            return f"{total} success criteria defined"
+        ctx = VOICE_CRITERIA_CONTEXT.get(
+            "all" if met == total
+            else "most" if total > 0 and met / total > 0.6
+            else "some" if met > 0 else "zero"
+        )
+        return f"Criteria: {met}/{total} — {ctx}"
+
+    # Full view: show all criteria
+    header = f"Success criteria: {met}/{total} met"
     summaries: list[str] = []
     for c in data:
         cid = c.get("id", "?")

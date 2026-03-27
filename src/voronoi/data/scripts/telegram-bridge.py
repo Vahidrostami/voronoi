@@ -330,7 +330,33 @@ def run_bot(config: dict) -> None:
             # running in executor threads can schedule coroutines safely.
             _main_loop = asyncio.get_event_loop()
 
-            def _send(text: str) -> None:
+            # ── Message ID tracking for edit-in-place ──
+            # Stores the returned Telegram message_id from send_message()
+            # so the dispatcher can pass it back via edit_message().
+            _last_sent_msg_id: dict[str, int | None] = {"value": None}
+
+            def _send(text: str) -> int | None:
+                """Send a new Telegram message. Returns the message_id."""
+                if not chat_id_file.exists():
+                    return None
+                cid = chat_id_file.read_text().strip()
+                if not cid:
+                    return None
+                # Use a Future to get the message_id back from the async call
+                fut: asyncio.Future = asyncio.Future()
+                try:
+                    _main_loop.call_soon_threadsafe(
+                        asyncio.ensure_future, _async_send(cid, text, fut)
+                    )
+                except Exception:
+                    logger.debug("Failed to schedule message send", exc_info=True)
+                    return None
+                # Best-effort: return cached message_id (available on next poll)
+                result = _last_sent_msg_id.get("value")
+                return result
+
+            def _edit(text: str, message_id: int) -> None:
+                """Edit an existing Telegram message (silent, no notification)."""
                 if not chat_id_file.exists():
                     return
                 cid = chat_id_file.read_text().strip()
@@ -338,13 +364,23 @@ def run_bot(config: dict) -> None:
                     return
                 try:
                     _main_loop.call_soon_threadsafe(
-                        asyncio.ensure_future, _async_send(cid, text)
+                        asyncio.ensure_future, _async_edit(cid, text, message_id)
                     )
                 except Exception:
-                    logger.debug("Failed to schedule message send", exc_info=True)
+                    logger.debug("Failed to schedule message edit", exc_info=True)
 
-            async def _async_send(cid: str, text: str) -> None:
-                # Add contextual inline buttons based on message content
+            async def _async_send(cid: str, text: str,
+                                   fut: asyncio.Future | None = None) -> None:
+                # Typing indicator before milestone messages
+                is_milestone = any(marker in text for marker in ("★ ", "⚠ ", "is done", "failed"))
+                if is_milestone:
+                    try:
+                        await app.bot.send_chat_action(chat_id=cid, action="typing")
+                        await asyncio.sleep(1.0)
+                    except Exception:
+                        pass
+
+                # Select inline buttons based on content
                 reply_markup = None
                 try:
                     if "is live" in text.lower():
@@ -352,8 +388,14 @@ def run_bot(config: dict) -> None:
                             [InlineKeyboardButton("📊 Status", callback_data="status"),
                              InlineKeyboardButton("🛑 Abort", callback_data="abort")],
                         ])
-                    elif any(k in text for k in ("tasks)", "Estimated:", "working right now")):
-                        # Digest update — compact view, offer Details for full view
+                    elif "★ " in text:
+                        # Finding milestone
+                        reply_markup = InlineKeyboardMarkup([
+                            [InlineKeyboardButton("📋 Details", callback_data="details"),
+                             InlineKeyboardButton("🧠 Belief Map", callback_data="belief")],
+                        ])
+                    elif any(k in text for k in ("tasks", "Phase ", "agents active", "criteria")):
+                        # Status/digest update
                         reply_markup = InlineKeyboardMarkup([
                             [InlineKeyboardButton("📋 Details", callback_data="details"),
                              InlineKeyboardButton("💬 Guide", callback_data="guide_prompt"),
@@ -364,18 +406,57 @@ def run_bot(config: dict) -> None:
                             [InlineKeyboardButton("📋 Details", callback_data="details"),
                              InlineKeyboardButton("🧠 Belief Map", callback_data="belief")],
                         ])
+                    elif "failed" in text.lower():
+                        reply_markup = InlineKeyboardMarkup([
+                            [InlineKeyboardButton("📋 Details", callback_data="details"),
+                             InlineKeyboardButton("🛑 Abort", callback_data="abort")],
+                        ])
                 except Exception:
                     pass  # buttons are best-effort
 
+                msg_id = None
                 try:
-                    await app.bot.send_message(chat_id=cid, text=text, parse_mode="Markdown",
-                                               disable_web_page_preview=True, reply_markup=reply_markup)
+                    result = await app.bot.send_message(
+                        chat_id=cid, text=text, parse_mode="Markdown",
+                        disable_web_page_preview=True, reply_markup=reply_markup,
+                        disable_notification=not is_milestone,
+                    )
+                    msg_id = result.message_id if result else None
                 except Exception:
                     try:
-                        await app.bot.send_message(chat_id=cid, text=text,
-                                                   disable_web_page_preview=True, reply_markup=reply_markup)
+                        result = await app.bot.send_message(
+                            chat_id=cid, text=text,
+                            disable_web_page_preview=True, reply_markup=reply_markup,
+                        )
+                        msg_id = result.message_id if result else None
                     except Exception:
                         pass
+
+                _last_sent_msg_id["value"] = msg_id
+                if fut and not fut.done():
+                    fut.set_result(msg_id)
+
+            async def _async_edit(cid: str, text: str, message_id: int) -> None:
+                """Edit an existing message — used for silent status updates."""
+                reply_markup = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📋 Details", callback_data="details"),
+                     InlineKeyboardButton("💬 Guide", callback_data="guide_prompt"),
+                     InlineKeyboardButton("🛑 Abort", callback_data="abort")],
+                ])
+                try:
+                    await app.bot.edit_message_text(
+                        chat_id=cid, message_id=message_id, text=text,
+                        parse_mode="Markdown", disable_web_page_preview=True,
+                        reply_markup=reply_markup,
+                    )
+                except Exception:
+                    try:
+                        await app.bot.edit_message_text(
+                            chat_id=cid, message_id=message_id, text=text,
+                            disable_web_page_preview=True, reply_markup=reply_markup,
+                        )
+                    except Exception:
+                        pass  # edit failed — next poll will send a fresh message
 
             def _send_document(cid: str, file_path: Path, caption: str = "") -> None:
                 try:
@@ -392,7 +473,7 @@ def run_bot(config: dict) -> None:
                 except Exception:
                     pass
 
-            _dispatcher_instance[0] = InvestigationDispatcher(dc, _send, _send_document)
+            _dispatcher_instance[0] = InvestigationDispatcher(dc, _send, _send_document, _edit)
             logger.info("Investigation dispatcher initialized")
         except Exception as e:
             logger.warning("Dispatcher not available: %s", e)

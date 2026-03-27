@@ -947,7 +947,7 @@ def handle_details(project_dir: str) -> str:
         pass
 
     elapsed_sec = (time.time() - (inv.started_at or time.time()))
-    return build_digest(
+    text, _ = build_digest(
         codename=inv.codename or f"#{inv.id}",
         mode=inv.mode or "discover",
         phase="investigating",
@@ -957,6 +957,7 @@ def handle_details(project_dir: str) -> str:
         events_since_last=[],
         compact=False,
     )
+    return text
 
 
 def handle_results(project_dir: str, inv_id_str: str = "") -> str:

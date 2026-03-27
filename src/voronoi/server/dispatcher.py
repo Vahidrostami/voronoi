@@ -24,6 +24,7 @@ from typing import Callable, Optional
 
 from voronoi.gateway.progress import (
     MODE_EMOJI, MODE_VERB,
+    MSG_TYPE_MILESTONE, MSG_TYPE_STATUS,
     format_launch, format_complete, format_failure, format_alert,
     format_restart, format_duration, phase_description,
     build_digest,
@@ -79,6 +80,7 @@ class RunningInvestigation:
     last_digest_events: list[dict] = field(default_factory=list)  # For detail retrieval
     last_compact_at: float = 0  # Last workspace compaction timestamp
     context_directive_level: str = ""  # Last directive level sent
+    status_message_id: int | None = None  # Telegram message ID for edit-in-place
 
     @property
     def label(self) -> str:
@@ -102,10 +104,12 @@ class InvestigationDispatcher:
         config: DispatcherConfig,
         send_message: Callable[[str], None],
         send_document: Callable[[str, Path, str], None] | None = None,
+        edit_message: Callable[[str, int], None] | None = None,
     ):
         self.config = config
         self.send_message = send_message
         self.send_document = send_document or (lambda *a: None)
+        self.edit_message = edit_message
         self.running: dict[int, RunningInvestigation] = {}
         self._queue = None
         self._workspace_mgr = None
@@ -1042,7 +1046,7 @@ class InvestigationDispatcher:
 
     def _send_progress_batch(self, run: RunningInvestigation, events: list[dict]) -> None:
         run.last_digest_events = events  # store for detail retrieval
-        msg = build_digest(
+        msg, msg_type = build_digest(
             codename=run.label,
             mode=run.mode,
             phase=run.phase,
@@ -1053,7 +1057,18 @@ class InvestigationDispatcher:
             eval_score=run.eval_score,
             compact=True,
         )
-        self.send_message(msg)
+        if msg_type == MSG_TYPE_MILESTONE:
+            # Milestone: finding, design_invalid — send new message (triggers notification)
+            run.status_message_id = None  # next status will be a fresh message
+            self.send_message(msg)
+        elif self.edit_message and run.status_message_id is not None:
+            # Status update: edit existing message (silent, no notification)
+            self.edit_message(msg, run.status_message_id)
+        else:
+            # First status or no edit support: send new message, capture ID
+            msg_id = self.send_message(msg)
+            if msg_id is not None:
+                run.status_message_id = msg_id
 
     def get_detail(self, inv_id: int | None = None) -> str:
         """Return a detailed (non-compact) digest for a running investigation."""
@@ -1065,7 +1080,7 @@ class InvestigationDispatcher:
             return "No investigation is running right now."
         if run is None:
             return f"Investigation #{inv_id} is not currently running."
-        return build_digest(
+        text, _ = build_digest(
             codename=run.label,
             mode=run.mode,
             phase=run.phase,
@@ -1076,6 +1091,7 @@ class InvestigationDispatcher:
             eval_score=run.eval_score,
             compact=False,
         )
+        return text
 
     def _has_open_design_invalid(self, run: RunningInvestigation) -> bool:
         """Check if any open tasks have DESIGN_INVALID flag.
