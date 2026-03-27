@@ -1,7 +1,7 @@
 ---
 name: swarm-orchestrator
 description: Multi-agent swarm orchestrator that classifies intent, selects rigor level, decomposes tasks, casts agent roles, dispatches into isolated git worktrees, runs OODA monitoring loops, synthesizes findings, and coordinates merges back to main.
-tools: ["execute", "read", "search", "edit", "github/*"]
+tools: [execute, read, edit, search]
 disable-model-invocation: false
 user-invokable: true
 ---
@@ -288,6 +288,12 @@ if eval_result.overall < 0.75:
 If the investigation produces a LaTeX paper (any `.tex` files with `\documentclass`),
 you MUST dispatch a final compilation task AFTER the evaluator pass and BEFORE declaring
 convergence. The agent that wrote the paper is responsible for compiling it.
+
+**CRITICAL: The paper file MUST be named `paper.tex`.**
+This is the Voronoi convention — all downstream tools (compilation-protocol skill,
+report generation, Telegram delivery) look for `paper.tex` first. Do NOT use
+`main.tex`, `manuscript.tex`, or other names. If you or a worker agent writes the
+paper, name it `paper.tex`.
 
 **CRITICAL: Figure generation is a hard dependency of compilation.**
 Papers that reference figures (`\includegraphics`) with missing files will compile with

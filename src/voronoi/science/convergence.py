@@ -83,6 +83,9 @@ def load_belief_map(workspace: Path) -> BeliefMap:
         return BeliefMap()
     try:
         data = json.loads(path.read_text())
+        if not isinstance(data, dict):
+            logger.warning("belief-map.json is not a dict in %s", workspace)
+            return BeliefMap()
         bm = BeliefMap(cycle=data.get("cycle", 0), last_updated=data.get("last_updated", ""))
         for h in data.get("hypotheses", []):
             bm.hypotheses.append(Hypothesis(
@@ -92,7 +95,7 @@ def load_belief_map(workspace: Path) -> BeliefMap:
                 testability=h.get("testability", 0.5), impact=h.get("impact", 0.5),
             ))
         return bm
-    except (json.JSONDecodeError, OSError) as e:
+    except (json.JSONDecodeError, OSError, AttributeError, TypeError) as e:
         logger.warning("Failed to load belief map: %s", e)
         return BeliefMap()
 

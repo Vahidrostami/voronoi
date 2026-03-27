@@ -1102,8 +1102,9 @@ class InvestigationDispatcher:
             if conv.exists():
                 try:
                     data = json.loads(conv.read_text())
-                    return data.get("converged", False) or \
-                        data.get("status") in ("converged", "exhausted", "diminishing_returns")
+                    if isinstance(data, dict):
+                        return data.get("converged", False) or \
+                            data.get("status") in ("converged", "exhausted", "diminishing_returns")
                 except (json.JSONDecodeError, OSError):
                     pass
             # Deliverable exists but no convergence signal — attempt to
@@ -1114,8 +1115,9 @@ class InvestigationDispatcher:
             if conv.exists():
                 try:
                     data = json.loads(conv.read_text())
-                    return data.get("converged", False) or \
-                        data.get("status") in ("converged", "exhausted", "diminishing_returns")
+                    if isinstance(data, dict):
+                        return data.get("converged", False) or \
+                            data.get("status") in ("converged", "exhausted", "diminishing_returns")
                 except (json.JSONDecodeError, OSError):
                     pass
             return False
@@ -1123,7 +1125,8 @@ class InvestigationDispatcher:
         if conv.exists():
             try:
                 data = json.loads(conv.read_text())
-                return data.get("status") in ("converged", "exhausted", "diminishing_returns")
+                if isinstance(data, dict):
+                    return data.get("status") in ("converged", "exhausted", "diminishing_returns")
             except (json.JSONDecodeError, OSError):
                 pass
         return False
@@ -1437,9 +1440,10 @@ class InvestigationDispatcher:
             try:
                 criteria = json.loads(sc_path.read_text())
                 if isinstance(criteria, list) and criteria:
-                    met = sum(1 for c in criteria if c.get("met"))
-                    lines.append(f"## Success Criteria: {met}/{len(criteria)} met\n")
-                    for c in criteria:
+                    dicts = [c for c in criteria if isinstance(c, dict)]
+                    met = sum(1 for c in dicts if c.get("met"))
+                    lines.append(f"## Success Criteria: {met}/{len(dicts)} met\n")
+                    for c in dicts:
                         status = "✅" if c.get("met") else "❌"
                         lines.append(f"- {status} {c.get('id', '?')}: {c.get('description', '')}")
                     lines.append("")

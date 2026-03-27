@@ -638,6 +638,25 @@ class TestDesignInvalidHardGate:
         }
         assert d._is_complete(run) is True
 
+    def test_is_complete_string_convergence_json(self, dispatcher_setup):
+        """convergence.json containing a string must not crash _is_complete."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+            rigor="scientific",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "deliverable.md").write_text("# Results\n")
+        # Write convergence.json as a bare string (not a dict)
+        (swarm / "convergence.json").write_text('"approved"')
+        # Should return False (not recognized) but must NOT raise AttributeError
+        assert d._is_complete(run) is False
+
     def test_handle_completion_blocked_by_design_invalid(self, dispatcher_setup):
         """_handle_completion should refuse success when DESIGN_INVALID is open."""
         d, msgs, docs, tmp_path = dispatcher_setup

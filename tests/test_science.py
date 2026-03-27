@@ -49,6 +49,27 @@ from voronoi.science import (
     save_checkpoint,
     format_checkpoint_for_prompt,
 )
+from voronoi.science._helpers import _fetch_tasks
+
+
+# ---------------------------------------------------------------------------
+# _fetch_tasks filtering
+# ---------------------------------------------------------------------------
+
+class TestFetchTasksFiltering:
+    def test_filters_non_dict_elements(self, monkeypatch):
+        """_fetch_tasks should filter out non-dict elements to prevent AttributeError."""
+        monkeypatch.setattr("voronoi.science._helpers._run_bd",
+                            lambda *a, **kw: (0, json.dumps([{"id": "1"}, "string_item", 42])))
+        result = _fetch_tasks(Path("/fake"))
+        assert result == [{"id": "1"}]
+
+    def test_returns_none_for_all_strings(self, monkeypatch):
+        """_fetch_tasks returns None when filtering leaves no dicts."""
+        monkeypatch.setattr("voronoi.science._helpers._run_bd",
+                            lambda *a, **kw: (0, json.dumps(["a", "b", "c"])))
+        result = _fetch_tasks(Path("/fake"))
+        assert result is None
 
 
 # ---------------------------------------------------------------------------
@@ -212,6 +233,20 @@ class TestBeliefMap:
     def test_load_corrupt(self, tmp_path):
         (tmp_path / ".swarm").mkdir()
         (tmp_path / ".swarm" / "belief-map.json").write_text("not json{")
+        bm = load_belief_map(tmp_path)
+        assert bm.hypotheses == []
+
+    def test_load_string_data(self, tmp_path):
+        """belief-map.json containing a JSON string must not crash."""
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "belief-map.json").write_text('"approved"')
+        bm = load_belief_map(tmp_path)
+        assert bm.hypotheses == []
+
+    def test_load_list_data(self, tmp_path):
+        """belief-map.json containing a JSON list must not crash."""
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "belief-map.json").write_text('[1, 2, 3]')
         bm = load_belief_map(tmp_path)
         assert bm.hypotheses == []
 

@@ -36,7 +36,8 @@ def _fetch_tasks(workspace: Path) -> list[dict] | None:
         if not isinstance(data, list):
             logger.warning("bd list --json returned non-list: %s", type(data).__name__)
             return None
-        return data
+        # Filter out non-dict elements to prevent AttributeError on .get()
+        return [item for item in data if isinstance(item, dict)] or None
     except (json.JSONDecodeError, ValueError) as e:
         logger.warning("bd list --json returned invalid JSON in %s: %s", workspace, e)
         return None
