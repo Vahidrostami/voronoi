@@ -5,8 +5,10 @@ logic.  The bridge script is a thin Telegram I/O layer that delegates
 to these modules — it is not tested directly here.
 """
 
+import asyncio
 import importlib.util
 import json
+import threading
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -76,6 +78,43 @@ class TestConfig:
 
 
 class TestBridgeSupervision:
+    def test_run_coro_threadsafe_returns_result_without_worker_event_loop(self):
+        module = _load_bridge_module()
+        loop = asyncio.new_event_loop()
+        loop_ready = threading.Event()
+
+        def run_loop() -> None:
+            asyncio.set_event_loop(loop)
+            loop_ready.set()
+            loop.run_forever()
+
+        loop_thread = threading.Thread(target=run_loop)
+        loop_thread.start()
+        loop_ready.wait(timeout=1)
+
+        result_holder: dict[str, int] = {}
+        error_holder: dict[str, BaseException] = {}
+
+        async def sample() -> int:
+            return 42
+
+        def worker() -> None:
+            try:
+                result_holder["value"] = module._run_coro_threadsafe(loop, sample(), timeout=1.0)
+            except BaseException as exc:
+                error_holder["error"] = exc
+
+        worker_thread = threading.Thread(target=worker)
+        worker_thread.start()
+        worker_thread.join(timeout=1)
+
+        loop.call_soon_threadsafe(loop.stop)
+        loop_thread.join(timeout=1)
+        loop.close()
+
+        assert "error" not in error_holder
+        assert result_holder["value"] == 42
+
     def test_run_bot_forever_retries_transient_errors(self, monkeypatch):
         module = _load_bridge_module()
         calls = {"count": 0}

@@ -27,6 +27,7 @@ import socket
 import sys
 import time
 from pathlib import Path
+from typing import Any, Coroutine, TypeVar
 
 logger = logging.getLogger("voronoi.bridge")
 
@@ -37,6 +38,28 @@ if _src_dir.is_dir() and str(_src_dir) not in sys.path:
 
 from voronoi.gateway.config import load_config, save_chat_id  # noqa: E402
 from voronoi.gateway.router import CommandRouter  # noqa: E402
+
+
+_T = TypeVar("_T")
+
+
+def _run_coro_threadsafe(
+    loop: asyncio.AbstractEventLoop,
+    coro: Coroutine[Any, Any, _T],
+    *,
+    timeout: float | None = None,
+) -> _T | None:
+    """Schedule a coroutine on the Telegram loop from any thread."""
+    try:
+        future = asyncio.run_coroutine_threadsafe(coro, loop)
+    except Exception:
+        coro.close()
+        raise
+
+    if timeout is None:
+        return None
+
+    return future.result(timeout=timeout)
 
 
 def format_human_gate_command_reply(action: str, args: list[str], dispatcher) -> str:
@@ -328,7 +351,7 @@ def run_bot(config: dict) -> None:
             chat_id_file = Path(project_dir) / ".telegram-chat-id"
             # Capture the main thread's event loop now so callbacks
             # running in executor threads can schedule coroutines safely.
-            _main_loop = asyncio.get_event_loop()
+            _main_loop = asyncio.get_running_loop()
 
             # ── Message ID tracking for edit-in-place ──
             # Stores the returned Telegram message_id from send_message()
@@ -342,18 +365,17 @@ def run_bot(config: dict) -> None:
                 cid = chat_id_file.read_text().strip()
                 if not cid:
                     return None
-                # Use a Future to get the message_id back from the async call
-                fut: asyncio.Future = asyncio.Future()
                 try:
-                    _main_loop.call_soon_threadsafe(
-                        asyncio.ensure_future, _async_send(cid, text, fut)
+                    msg_id = _run_coro_threadsafe(
+                        _main_loop,
+                        _async_send(cid, text),
+                        timeout=10.0,
                     )
                 except Exception:
                     logger.debug("Failed to schedule message send", exc_info=True)
-                    return None
-                # Best-effort: return cached message_id (available on next poll)
-                result = _last_sent_msg_id.get("value")
-                return result
+                    return _last_sent_msg_id.get("value")
+                _last_sent_msg_id["value"] = msg_id
+                return msg_id
 
             def _edit(text: str, message_id: int) -> None:
                 """Edit an existing Telegram message (silent, no notification)."""
@@ -363,14 +385,11 @@ def run_bot(config: dict) -> None:
                 if not cid:
                     return
                 try:
-                    _main_loop.call_soon_threadsafe(
-                        asyncio.ensure_future, _async_edit(cid, text, message_id)
-                    )
+                    _run_coro_threadsafe(_main_loop, _async_edit(cid, text, message_id))
                 except Exception:
                     logger.debug("Failed to schedule message edit", exc_info=True)
 
-            async def _async_send(cid: str, text: str,
-                                   fut: asyncio.Future | None = None) -> None:
+            async def _async_send(cid: str, text: str) -> int | None:
                 # Typing indicator before milestone messages
                 is_milestone = any(marker in text for marker in ("★ ", "⚠ ", "is done", "failed"))
                 if is_milestone:
@@ -432,9 +451,7 @@ def run_bot(config: dict) -> None:
                     except Exception:
                         pass
 
-                _last_sent_msg_id["value"] = msg_id
-                if fut and not fut.done():
-                    fut.set_result(msg_id)
+                return msg_id
 
             async def _async_edit(cid: str, text: str, message_id: int) -> None:
                 """Edit an existing message — used for silent status updates."""
@@ -460,9 +477,7 @@ def run_bot(config: dict) -> None:
 
             def _send_document(cid: str, file_path: Path, caption: str = "") -> None:
                 try:
-                    _main_loop.call_soon_threadsafe(
-                        asyncio.ensure_future, _async_send_doc(cid, file_path, caption)
-                    )
+                    _run_coro_threadsafe(_main_loop, _async_send_doc(cid, file_path, caption))
                 except Exception:
                     logger.debug("Failed to schedule document send", exc_info=True)
 
