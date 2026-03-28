@@ -12,6 +12,7 @@ requires-python = ">=3.10"
 keywords = ["ai", "agents", "swarm", "copilot", "claude", "science"]
 
 [project.optional-dependencies]
+dev = ["pytest>=7.0"]
 dashboard = ["rich>=13.0"]
 telegram = ["python-telegram-bot[job-queue]>=20.0"]
 report = ["fpdf2>=2.7", "pypandoc_binary>=1.13"]

@@ -19,6 +19,8 @@ Key specs by file:
 - `runner.py` → SERVER.md §7
 - `publisher.py` → SERVER.md §8
 - `events.py` → CONTEXT-MANAGEMENT.md §10
+- `repo_url.py` → SERVER.md §9
+- `compact.py` → CONTEXT-MANAGEMENT.md §12
 
 Critical invariants:
 - `prompt.py` is the SOLE prompt builder — INV-01 in INVARIANTS.md

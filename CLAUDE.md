@@ -20,6 +20,7 @@ src/voronoi/           # Package code
 ├── gateway/           # Intent classification, routing, memory, knowledge, reporting
 ├── server/            # Queue, dispatcher, prompt builder, workspace, events
 ├── science/           # Gates, convergence, fabrication, belief maps
+├── mcp/               # MCP server — validated tool interface for Beads + .swarm/ state
 └── data/              # Runtime files — canonical location, shipped with pip install
     ├── templates/     # CLAUDE.md + AGENTS.md for investigation workspaces
     ├── agents/        # .agent.md role definitions
@@ -74,6 +75,7 @@ After any change that affects the public surface, behaviour, or architecture, yo
 | Science gates, rigor levels | `docs/SCIENCE.md` |
 | Server loop, dispatcher, workspace | `docs/SERVER.md` |
 | Workflows, OODA, agent lifecycle | `docs/WORKFLOWS.md` |
+| MCP tools, validation, schemas | `docs/ARCHITECTURE.md` §8 |
 
 If a change does **not** affect any documented surface, no doc update is needed — but when in doubt, update.
 

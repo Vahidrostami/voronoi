@@ -260,9 +260,13 @@ src/voronoi/
   gateway/                # Telegram interface
     config.py  router.py  report.py  intent.py
     memory.py  knowledge.py  handoff.py  progress.py
+    codename.py  literature.py
   server/
     prompt.py  dispatcher.py  queue.py  workspace.py
     sandbox.py  publisher.py  runner.py  events.py
+    compact.py  repo_url.py
+  mcp/                    # MCP server — validated tool interface
+    server.py  tools_beads.py  tools_swarm.py  validators.py
   data/                   # Runtime files (shipped with pip install)
     agents/               # Role definitions — canonical location
     skills/               # Skill definitions — canonical location
@@ -332,7 +336,7 @@ pip install voronoi[report]  # optional: PDF generation
 
 ```bash
 git clone https://github.com/Vahidrostami/voronoi && cd voronoi
-pip install -e . && pytest   # 642 tests
+pip install -e . && pytest   # 829 tests
 ```
 
 See [DESIGN.md](DESIGN.md) for the full design philosophy.
