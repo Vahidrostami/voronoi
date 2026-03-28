@@ -8,7 +8,7 @@ A production-ready system for orchestrating multiple AI agents in parallel. Scie
 
 ## 1. Architecture
 
-Two entry points, one execution path. Every copilot instance — CLI or Telegram — gets the same prompt, the same `.github/agents/` role definitions, and the same science gates.
+Two entry points, one execution path. Every copilot instance — CLI or Telegram — gets the same prompt, the same `src/voronoi/data/agents/` role definitions, and the same science gates.
 
 ```mermaid
 flowchart TB
@@ -102,7 +102,7 @@ flowchart LR
 | Capability | CLI | Telegram |
 |-----------|-----|----------|
 | Demo files copied | ✅ `cmd_demo()` | ✅ `_copy_demo_files()` |
-| `.github/` agents/skills | ✅ `voronoi init` | ✅ `_ensure_github_files()` fallback |
+| Runtime agents/skills | ✅ `voronoi init` | ✅ `_ensure_github_files()` fallback |
 | Prompt builder | ✅ `prompt.py` | ✅ `prompt.py` (same function) |
 | Progress updates | stdout | Telegram messages every 30s |
 | Timeout detection | KeyboardInterrupt | Configurable (default 8h) |
@@ -119,21 +119,21 @@ Voronoi strictly separates files by audience:
 | `CLAUDE.md` (repo root) | Developers working ON Voronoi | No |
 | `docs/*.md` | Developers working ON Voronoi | No |
 | `src/voronoi/data/templates/CLAUDE.md` | Investigation agents working WITH Voronoi | Yes |
-| `src/voronoi/data/agents/` | Investigation agents (also Copilot during dev via `.github/` symlink) | Yes |
+| `src/voronoi/data/agents/` | Investigation agents (runtime role definitions) | Yes |
 | `src/voronoi/data/scripts/` | Runtime scripts (spawn, merge, convergence) | Yes |
-| `scripts/` (repo root) | Dev-only scripts (sync, dashboard, health-check) | No |
+| `scripts/` (repo root) | Dev-only build tool (`sync-package-data.sh`) | No |
 
-`sync-package-data.sh` copies `.github/{agents,skills,prompts}` → `src/voronoi/data/` before `pip install .`.
-Editable installs (`pip install -e .`) read from the repo root directly.
+All runtime content lives in `src/voronoi/data/` — the single canonical location.
+`sync-package-data.sh` only copies `.env.example` into `data/` before `pip install .`.
 
 ---
 
-## 4. `.github/` — Agent Roles, Prompts, and Skills
+## 4. Agent Roles, Prompts, and Skills — `src/voronoi/data/`
 
-Copilot auto-discovers these files. They are the **real** role definitions — the prompt builder *references* them, never duplicates.
+The canonical location for all runtime content is `src/voronoi/data/`. The prompt builder *references* these files, never duplicates.
 
 ```
-.github/
+src/voronoi/data/
 ├── agents/                          # Role definitions (12 roles)
 │   ├── swarm-orchestrator.agent.md  # OODA loop, convergence, paradigm checks
 │   ├── worker-agent.agent.md        # Build tasks, artifact contracts
@@ -153,67 +153,85 @@ Copilot auto-discovers these files. They are the **real** role definitions — t
 │   ├── standup.prompt.md            # /standup — cross-agent status
 │   ├── progress.prompt.md           # /progress — progress check
 │   └── teardown.prompt.md           # /teardown — cleanup
-└── skills/                          # Domain knowledge (9 skills)
-    ├── beads-tracking/              # bd commands, task lifecycle
-    ├── git-worktree-management/     # Worktree create/merge/cleanup
-    ├── branch-merging/              # Safe merge protocol
-    ├── task-planning/               # Epic decomposition
-    ├── artifact-gates/              # PRODUCES/REQUIRES/GATE contracts
-    ├── evidence-system/             # Findings, belief maps, journal
-    ├── investigation-protocol/      # Hypothesis → experiment → finding
-    ├── strategic-context/           # Decision rationale across cycles
-    └── agent-standup/               # Cross-agent progress aggregation
+├── skills/                          # Domain knowledge (9 skills)
+│   ├── beads-tracking/              # bd commands, task lifecycle
+│   ├── git-worktree-management/     # Worktree create/merge/cleanup
+│   ├── branch-merging/              # Safe merge protocol
+│   ├── task-planning/               # Epic decomposition
+│   ├── artifact-gates/              # PRODUCES/REQUIRES/GATE contracts
+│   ├── evidence-system/             # Findings, belief maps, journal
+│   ├── investigation-protocol/      # Hypothesis → experiment → finding
+│   ├── strategic-context/           # Decision rationale across cycles
+│   └── agent-standup/               # Cross-agent progress aggregation
+├── scripts/                         # Runtime shell scripts
+├── demos/                           # Demo investigations
+└── templates/                       # CLAUDE.md + AGENTS.md for workspaces
 ```
 
-The prompt builder tells the orchestrator:
+During `voronoi init`, agents/prompts/skills are copied to `.github/` in the target workspace. The prompt builder tells the orchestrator:
 > *"Read `.github/agents/swarm-orchestrator.agent.md` NOW — it contains your complete role definition."*
 
-And for each worker:
-> *"Prepend the content of `.github/agents/<role>.agent.md` to every worker prompt."*
+And for each worker, `build_worker_prompt()` reads the role file from `data/agents/` and prepends it to the prompt.
 
 ---
 
-## 4. Classifier
+## 4. Two Science Modes: DISCOVER and PROVE
+
+Voronoi has two science modes and three meta modes. The old seven-mode × four-rigor matrix (BUILD, INVESTIGATE, EXPLORE, HYBRID × STANDARD/ANALYTICAL/SCIENTIFIC/EXPERIMENTAL) is replaced by two intent-driven modes with **adaptive rigor**.
 
 ```mermaid
 flowchart LR
     INPUT["User message"] --> CLASSIFY["intent.py\nPattern matching"]
     CLASSIFY --> MODE{"Mode"}
-    MODE -->|"build, create, ship"| BUILD["Build - Standard"]
-    MODE -->|"why, investigate"| INV["Investigate - Scientific"]
-    MODE -->|"compare, evaluate"| EXP["Explore - Analytical"]
-    MODE -->|"figure out and fix"| HYB["Hybrid - Scientific"]
-    MODE -->|"paper, manuscript"| HYB
-    MODE -->|"test whether"| EXPT["Investigate - Experimental"]
+    MODE -->|"open question, why, compare, explore"| DISCOVER["DISCOVER\nAdaptive rigor"]
+    MODE -->|"detailed hypothesis, prove, PROMPT.md"| PROVE["PROVE\nScientific rigor"]
+    MODE -->|"status, recall, guide"| META["Meta handlers"]
 ```
 
-| Mode | Rigor | Roles activated |
-|------|-------|----------------|
-| **Build** | Standard | Builder, Critic (inline) |
-| **Explore** | Analytical | + Scout, Statistician, Explorer, Synthesizer, Evaluator |
-| **Investigate** | Scientific | + Methodologist, Theorist, all gates |
-| **Investigate** | Experimental | Full pipeline + replication |
+| Mode | User gives | Rigor | How it works |
+|------|-----------|-------|--------------|
+| **DISCOVER** | An open question — "go figure this out" | Adaptive — starts analytical, escalates to scientific when hypotheses crystallize | Free exploration. Scout first, form hypotheses, pursue multiple paths in parallel. Agents explore creatively. Orchestrator casts roles dynamically based on what it finds. |
+| **PROVE** | A specific hypothesis or detailed PROMPT.md | Scientific/Experimental — full gates from the start | Structured hypothesis testing. Pre-registration, controlled experiments, statistical validation, replication for high-impact findings. |
+| **STATUS** | (meta) | — | Query swarm state |
+| **RECALL** | (meta) | — | Search knowledge store |
+| **GUIDE** | (meta) | — | Operator guidance |
 
-When in doubt, classify higher — gates can be skipped but not added retroactively.
+### Why two modes?
+
+- **BUILD, INVESTIGATE, EXPLORE, HYBRID were artificial distinctions.** When someone says "figure out why X is slow," they want discovery — whether that involves building test harnesses, exploring alternatives, or investigating causally. The orchestrator decides the approach, not the classifier.
+- **Adaptive rigor in DISCOVER mirrors real science.** You don't pre-register before you even know what you're looking at. Start with Scout + exploration; when real hypotheses emerge, engage Methodologist + Statistician.
+- **PROVE is for when the user has already done the discovery mentally.** Detailed PROMPT.md files (like coupled-decisions) skip exploration and go straight to rigorous testing.
+
+### Creative Freedom Protocol (DISCOVER mode)
+
+- No rigid "Scout first → plan → dispatch by role" sequence
+- Orchestrator casts roles dynamically based on what it finds
+- Multiple agents can pursue different hypotheses simultaneously
+- `SERENDIPITY` events — when an agent finds something unexpected, the orchestrator can pivot the entire investigation
+- Rigor escalates automatically: if belief map shows testable hypotheses, engage pre-registration and review gates
 
 ---
 
 ## 5. Role Registry
 
-| Role | File | Activated at | Key responsibility |
-|------|------|-------------|-------------------|
-| Builder 🔨 | `worker-agent.agent.md` | Standard+ | Implements code in isolated worktree |
-| Scout 🔍 | `scout.agent.md` | Analytical+ | Prior knowledge research, SOTA anchoring |
-| Investigator 🔬 | `investigator.agent.md` | Analytical+ | Pre-registered experiments, raw data + SHA-256 |
-| Explorer 🧭 | `explorer.agent.md` | Analytical+ | Option evaluation with comparison matrices |
-| Statistician 📊 | `statistician.agent.md` | Analytical+ | CI, effect sizes, data integrity, p-hacking flags |
-| Critic ⚖️ | `critic.agent.md` | Standard+ | Adversarial review; partially blinded at Scientific+ |
-| Synthesizer 🧩 | `synthesizer.agent.md` | Analytical+ | Consistency checks, deliverable, journal |
-| Evaluator 🎯 | `evaluator.agent.md` | Analytical+ | Scores deliverable: Completeness·Coherence·Strength·Actionability |
-| Theorist 🧬 | `theorist.agent.md` | Scientific+ | Causal models, competing theories, paradigm stress |
-| Methodologist 📐 | `methodologist.agent.md` | Scientific+ | Experimental design review, power analysis |
-| Scribe ✍️ | `scribe.agent.md` | Any | LaTeX compilation, figure generation |
-| Worker | `worker-agent.agent.md` | Standard+ | Generic tasks |
+All 12 roles are available in both DISCOVER and PROVE modes. The difference is **when** they activate:
+- **PROVE**: Full role set from the start (pre-registration, methodologist review, etc.)
+- **DISCOVER**: Orchestrator casts roles dynamically as the investigation evolves
+
+| Role | File | DISCOVER | PROVE | Key responsibility |
+|------|------|----------|-------|-------------------|
+| Builder 🔨 | `worker-agent.agent.md` | On demand | On demand | Implements code in isolated worktree |
+| Scout 🔍 | `scout.agent.md` | Always first | Always first | Prior knowledge research, SOTA anchoring |
+| Investigator 🔬 | `investigator.agent.md` | When hypotheses emerge | From start | Pre-registered experiments, raw data + SHA-256 |
+| Explorer 🧭 | `explorer.agent.md` | When comparing options | When comparing options | Option evaluation with comparison matrices |
+| Statistician 📊 | `statistician.agent.md` | When rigor escalates | From start | CI, effect sizes, data integrity, p-hacking flags |
+| Critic ⚖️ | `critic.agent.md` | On demand | From start | Adversarial review; partially blinded at high rigor |
+| Synthesizer 🧩 | `synthesizer.agent.md` | At convergence | Before convergence | Consistency checks, deliverable, journal |
+| Evaluator 🎯 | `evaluator.agent.md` | At convergence | Before convergence | Scores deliverable: Completeness·Coherence·Strength·Actionability |
+| Theorist 🧬 | `theorist.agent.md` | When hypotheses emerge | From start | Causal models, competing theories, paradigm stress |
+| Methodologist 📐 | `methodologist.agent.md` | When rigor escalates | From start (mandatory) | Experimental design review, power analysis |
+| Scribe ✍️ | `scribe.agent.md` | On demand | On demand | LaTeX compilation, figure generation |
+| Worker | `worker-agent.agent.md` | On demand | On demand | Generic tasks |
 
 ---
 

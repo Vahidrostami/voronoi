@@ -25,7 +25,7 @@ class Investigation:
     repo: Optional[str] = None        # owner/repo if repo-bound
     question: str = ""
     slug: str = ""
-    mode: str = "investigate"         # investigate | explore | build | experiment
+    mode: str = "discover"         # discover | prove
     rigor: str = "scientific"
     codename: str = ""               # brain-themed codename (e.g. "Dopamine")
     workspace_path: Optional[str] = None
@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS investigations (
     repo              TEXT,
     question          TEXT NOT NULL,
     slug              TEXT NOT NULL,
-    mode              TEXT NOT NULL DEFAULT 'investigate',
+    mode              TEXT NOT NULL DEFAULT 'discover',
     rigor             TEXT NOT NULL DEFAULT 'scientific',
     codename          TEXT NOT NULL DEFAULT '',
     workspace_path    TEXT,

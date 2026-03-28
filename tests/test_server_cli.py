@@ -38,3 +38,13 @@ def test_server_status_before_init(tmp_path):
     )
     # Should fail with message about not initialized
     assert result.returncode != 0 or "not initialized" in result.stderr + result.stdout
+
+
+def test_server_start_help_mentions_daemon():
+    """voronoi server start documents background mode."""
+    result = subprocess.run(
+        [sys.executable, "-m", "voronoi.cli", "server", "start", "--help"],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0
+    assert "--daemon" in result.stdout

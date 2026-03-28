@@ -10,23 +10,20 @@
 
 ```python
 class WorkflowMode(Enum):
-    BUILD = "build"
-    INVESTIGATE = "investigate"
-    EXPLORE = "explore"
-    HYBRID = "hybrid"
-    STATUS = "status"
-    RECALL = "recall"
-    GUIDE = "guide"
+    DISCOVER = "discover"     # Open question — adaptive rigor, creative exploration
+    PROVE = "prove"           # Specific hypothesis — full science gates
+    STATUS = "status"         # Meta: query swarm state
+    RECALL = "recall"         # Meta: search knowledge store
+    GUIDE = "guide"           # Meta: operator guidance
 ```
 
 ### RigorLevel (`gateway/intent.py`)
 
 ```python
 class RigorLevel(Enum):
-    STANDARD = "standard"
-    ANALYTICAL = "analytical"
-    SCIENTIFIC = "scientific"
-    EXPERIMENTAL = "experimental"
+    ADAPTIVE = "adaptive"           # DISCOVER mode — starts analytical, escalates dynamically
+    SCIENTIFIC = "scientific"       # PROVE mode — full gates from the start
+    EXPERIMENTAL = "experimental"   # PROVE mode + replication
 ```
 
 ---
@@ -45,9 +42,9 @@ class ClassifiedIntent:
     original_text: str       # Unmodified user input
 
     @property
-    def is_science(self) -> bool: ...   # INVESTIGATE | EXPLORE | HYBRID
+    def is_science(self) -> bool: ...   # DISCOVER | PROVE
     @property
-    def is_meta(self) -> bool: ...      # STATUS | RECALL
+    def is_meta(self) -> bool: ...      # STATUS | RECALL | GUIDE
 ```
 
 ### ClassifiedPhase (`gateway/intent.py`)
@@ -229,6 +226,7 @@ class RunningInvestigation:
     stall_warned: bool
     notified_design_invalid: set
     last_event_ts: float          # For event log polling
+    status_message_id: int | None # Telegram message ID for edit-in-place
 ```
 
 ### WorkspaceInfo (`server/workspace.py`)
@@ -385,8 +383,8 @@ CREATE TABLE investigations (
     repo TEXT,
     question TEXT NOT NULL,
     slug TEXT NOT NULL,
-    mode TEXT NOT NULL DEFAULT 'investigate',
-    rigor TEXT NOT NULL DEFAULT 'scientific',
+    mode TEXT NOT NULL DEFAULT 'discover',
+    rigor TEXT NOT NULL DEFAULT 'adaptive',
     codename TEXT NOT NULL DEFAULT '',
     workspace_path TEXT,
     sandbox_id TEXT,

@@ -12,19 +12,52 @@ TMUX_SESSION=$(echo "$CONFIG" | jq -r '.tmux_session')
 
 WORKTREE_PATH="${SWARM_DIR}/${BRANCH_NAME}"
 
+resolve_default_branch() {
+    local branch
+    branch=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##') || true
+    if [[ -n "$branch" ]]; then
+        echo "$branch"
+        return
+    fi
+    branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || true
+    if [[ -n "$branch" && "$branch" != "HEAD" ]]; then
+        echo "$branch"
+        return
+    fi
+    if git show-ref --verify --quiet refs/heads/main; then
+        echo "main"
+        return
+    fi
+    if git show-ref --verify --quiet refs/heads/master; then
+        echo "master"
+        return
+    fi
+    echo "main"
+}
+
+has_origin_remote() {
+    git remote get-url origin >/dev/null 2>&1
+}
+
 cd "$PROJECT_DIR"
+
+MAIN_BRANCH=$(resolve_default_branch)
 
 echo "--- Merging agent: $BRANCH_NAME ---"
 
 # 0. Safety: push agent branch to remote first (code survives even if merge fails)
 echo "  Pushing $BRANCH_NAME to remote (safety net)..."
-if [[ -d "$WORKTREE_PATH" ]]; then
-    (cd "$WORKTREE_PATH" && git push origin "$BRANCH_NAME" 2>/dev/null) || \
+if has_origin_remote; then
+    if [[ -d "$WORKTREE_PATH" ]]; then
+        (cd "$WORKTREE_PATH" && git push origin "$BRANCH_NAME" 2>/dev/null) || \
+            git push origin "$BRANCH_NAME" 2>/dev/null || \
+            echo "  ⚠ Could not push $BRANCH_NAME to remote (may already be there)"
+    else
         git push origin "$BRANCH_NAME" 2>/dev/null || \
-        echo "  ⚠ Could not push $BRANCH_NAME to remote (may already be there)"
+            echo "  ⚠ Could not push $BRANCH_NAME to remote (may already be there)"
+    fi
 else
-    git push origin "$BRANCH_NAME" 2>/dev/null || \
-        echo "  ⚠ Could not push $BRANCH_NAME to remote (may already be there)"
+    echo "  No origin remote configured — skipping safety push"
 fi
 
 # Load Telegram notifications (fire-and-forget, never fails the merge)
@@ -91,9 +124,13 @@ except Exception:
     echo "✓ Pre-merge validation complete"
 fi
 
-# 1. Ensure we're on main
-git checkout main
-git pull --rebase
+# 1. Ensure we're on the repository default branch
+git checkout "$MAIN_BRANCH"
+if has_origin_remote; then
+    git pull --rebase origin "$MAIN_BRANCH"
+else
+    echo "  No origin remote configured — skipping pull"
+fi
 
 # 2. Merge the agent branch
 if git merge "$BRANCH_NAME" --no-ff -m "Merge $BRANCH_NAME: agent work complete"; then
@@ -105,16 +142,20 @@ else
     exit 1
 fi
 
-# 3. Push main
-git push origin main
-echo "✓ Pushed to main"
+# 3. Push default branch when a remote exists
+if has_origin_remote; then
+    git push origin "$MAIN_BRANCH"
+    echo "✓ Pushed to $MAIN_BRANCH"
+else
+    echo "✓ Merge completed locally on $MAIN_BRANCH"
+fi
 
 # 4. Close the Beads task if provided (and not already closed)
 if [ -n "$TASK_ID" ]; then
     if bd show "$TASK_ID" --json 2>/dev/null | jq -e '.status == "closed"' >/dev/null 2>&1; then
         echo "✓ Beads task $TASK_ID already closed"
     else
-        bd close "$TASK_ID" --reason "Merged to main from $BRANCH_NAME"
+        bd close "$TASK_ID" --reason "Merged to $MAIN_BRANCH from $BRANCH_NAME"
         echo "✓ Beads task $TASK_ID closed"
     fi
 fi
@@ -160,8 +201,11 @@ fi
 # 7. Clean up worktree (code is safely on main now)
 git worktree remove "$WORKTREE_PATH" 2>/dev/null || rm -rf "$WORKTREE_PATH" 2>/dev/null || true
 git branch -d "$BRANCH_NAME" 2>/dev/null || true
+git worktree prune >/dev/null 2>&1 || true
 # Clean remote branch too
-git push origin --delete "$BRANCH_NAME" 2>/dev/null || true
+if has_origin_remote; then
+    git push origin --delete "$BRANCH_NAME" 2>/dev/null || true
+fi
 echo "✓ Worktree and branch cleaned up"
 
 # 8. Kill tmux window if it exists

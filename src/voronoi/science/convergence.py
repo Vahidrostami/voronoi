@@ -83,8 +83,30 @@ def load_belief_map(workspace: Path) -> BeliefMap:
         return BeliefMap()
     try:
         data = json.loads(path.read_text())
+        if not isinstance(data, dict):
+            logger.warning("belief-map.json is not a dict in %s", workspace)
+            return BeliefMap()
         bm = BeliefMap(cycle=data.get("cycle", 0), last_updated=data.get("last_updated", ""))
-        for h in data.get("hypotheses", []):
+        raw_hyps = data.get("hypotheses", [])
+        # Schema migration: accept both list-of-objects (canonical) and
+        # dict-keyed-by-id (legacy/malformed).  See INV-33.
+        if isinstance(raw_hyps, dict):
+            logger.warning("belief-map.json has dict-keyed hypotheses in %s — migrating to list", workspace)
+            items: list[dict] = []
+            for key, val in raw_hyps.items():
+                if isinstance(val, dict):
+                    if "id" not in val:
+                        val["id"] = key
+                    items.append(val)
+                elif isinstance(val, str):
+                    items.append({"id": key, "name": val})
+            raw_hyps = items
+        if not isinstance(raw_hyps, list):
+            logger.warning("belief-map.json hypotheses is not a list or dict in %s", workspace)
+            raw_hyps = []
+        for h in raw_hyps:
+            if not isinstance(h, dict):
+                continue
             bm.hypotheses.append(Hypothesis(
                 id=h.get("id", ""), name=h.get("name", ""),
                 prior=h.get("prior", 0.5), posterior=h.get("posterior", h.get("prior", 0.5)),
@@ -92,7 +114,7 @@ def load_belief_map(workspace: Path) -> BeliefMap:
                 testability=h.get("testability", 0.5), impact=h.get("impact", 0.5),
             ))
         return bm
-    except (json.JSONDecodeError, OSError) as e:
+    except (json.JSONDecodeError, OSError, AttributeError, TypeError) as e:
         logger.warning("Failed to load belief map: %s", e)
         return BeliefMap()
 
@@ -115,8 +137,8 @@ def save_belief_map(workspace: Path, bm: BeliefMap) -> None:
 class OrchestratorCheckpoint:
     cycle: int = 0
     phase: str = "starting"
-    mode: str = "investigate"
-    rigor: str = "standard"
+    mode: str = "discover"
+    rigor: str = "adaptive"
     hypotheses_summary: str = ""
     total_tasks: int = 0
     closed_tasks: int = 0
@@ -145,7 +167,7 @@ def load_checkpoint(workspace: Path) -> OrchestratorCheckpoint:
             return OrchestratorCheckpoint()
         return OrchestratorCheckpoint(
             cycle=d.get("cycle", 0), phase=d.get("phase", "starting"),
-            mode=d.get("mode", "investigate"), rigor=d.get("rigor", "standard"),
+            mode=d.get("mode", "discover"), rigor=d.get("rigor", "adaptive"),
             hypotheses_summary=d.get("hypotheses_summary", ""),
             total_tasks=d.get("total_tasks", 0), closed_tasks=d.get("closed_tasks", 0),
             active_workers=d.get("active_workers", []),
@@ -224,13 +246,40 @@ def check_convergence(workspace: Path, rigor: str,
     blockers: list[str] = []
     swarm = workspace / ".swarm"
 
-    if rigor == "standard":
+    if rigor == "adaptive":
         if not (swarm / "deliverable.md").exists():
             blockers.append("No deliverable produced")
         if blockers:
             return ConvergenceResult(False, "not_ready", "; ".join(blockers), blockers=blockers)
-        return ConvergenceResult(True, "converged", "All build tasks complete")
+        # Adaptive rigor: basic convergence if eval score present, otherwise just deliverable
+        if eval_score >= 0.75 and not blockers:
+            return ConvergenceResult(True, "converged", "Evaluator PASS", score=eval_score)
+        # If score is moderate but ALL success criteria are met, allow convergence
+        # rather than blocking indefinitely for a higher score
+        if eval_score >= 0.50 and _all_criteria_met(workspace):
+            return ConvergenceResult(
+                True, "converged",
+                f"All success criteria met (score={eval_score:.2f})",
+                score=eval_score,
+            )
+        if eval_score >= 0.50 and improvement_rounds < 2:
+            return ConvergenceResult(False, "not_ready",
+                                     f"Score {eval_score:.2f} — improvement round needed",
+                                     score=eval_score, blockers=blockers)
+        if eval_score <= 0.0:
+            return ConvergenceResult(True, "converged", "All tasks complete")
+        # Score in (0.0, 0.50): needs improvement if rounds remain
+        if eval_score < 0.50 and improvement_rounds < 2:
+            return ConvergenceResult(False, "not_ready",
+                                     f"Score {eval_score:.2f} — improvement round needed",
+                                     score=eval_score, blockers=blockers)
+        if improvement_rounds >= 2:
+            return ConvergenceResult(True, "diminishing_returns",
+                                     f"Max improvement rounds reached (score={eval_score:.2f})",
+                                     score=eval_score)
+        return ConvergenceResult(True, "converged", "All tasks complete")
 
+    # For scientific/experimental rigor: full convergence checks
     if eval_score <= 0.0:
         blockers.append("No evaluator score yet")
 
@@ -246,18 +295,6 @@ def check_convergence(workspace: Path, rigor: str,
     contested = _helpers._find_contested_findings(workspace, tasks)
     if contested:
         blockers.append(f"{len(contested)} contested findings")
-
-    if rigor == "analytical":
-        if eval_score >= 0.75 and not blockers:
-            return ConvergenceResult(True, "converged", "Evaluator PASS", score=eval_score)
-        if eval_score >= 0.50 and improvement_rounds < 2:
-            return ConvergenceResult(False, "not_ready",
-                                     f"Score {eval_score:.2f} — improvement round needed",
-                                     score=eval_score, blockers=blockers)
-        if improvement_rounds >= 2:
-            return ConvergenceResult(True, "diminishing_returns",
-                                     f"Max improvement rounds reached (score={eval_score:.2f})",
-                                     score=eval_score)
 
     if rigor in ("scientific", "experimental"):
         bm = load_belief_map(workspace)
@@ -282,9 +319,38 @@ def check_convergence(workspace: Path, rigor: str,
 
     if eval_score >= 0.75 and not blockers:
         return ConvergenceResult(True, "converged", f"All criteria met (score={eval_score:.2f})", score=eval_score)
+    # If score is moderate but ALL success criteria are met and no other
+    # blockers, allow convergence — prevents agents from looping until
+    # context exhaustion when the actual investigation goals are satisfied.
+    if eval_score >= 0.50 and not blockers and _all_criteria_met(workspace):
+        return ConvergenceResult(
+            True, "converged",
+            f"All success criteria met (score={eval_score:.2f})",
+            score=eval_score,
+        )
     if improvement_rounds >= 2 and not blockers:
         return ConvergenceResult(True, "diminishing_returns", "Max improvement rounds, blockers cleared", score=eval_score)
     if blockers:
+        # Check for valid negative result: deliverable exists, experiments ran,
+        # but hypothesis was falsified (criteria unmet by design, not by bug).
+        has_deliverable = (swarm / "deliverable.md").exists()
+        has_contradiction = any("RESULT_CONTRADICTS_HYPOTHESIS" in b for b in blockers)
+        # Also check task notes for contradictions (closed tasks don't produce blockers)
+        if not has_contradiction and tasks:
+            has_contradiction = any(
+                "RESULT_CONTRADICTS_HYPOTHESIS" in t.get("notes", "")
+                for t in tasks if isinstance(t, dict)
+            )
+        # A negative result needs: deliverable + eval score + no DESIGN_INVALID
+        no_design_invalid = not any("DESIGN_INVALID" in b for b in blockers)
+        if (has_deliverable and eval_score >= 0.50 and no_design_invalid
+                and has_contradiction and improvement_rounds >= 1):
+            return ConvergenceResult(
+                True, "negative_result",
+                f"Valid negative result — hypothesis falsified (score={eval_score:.2f})",
+                score=eval_score,
+                blockers=blockers,
+            )
         return ConvergenceResult(False, "blocked", "; ".join(blockers), score=eval_score, blockers=blockers)
     return ConvergenceResult(False, "not_ready", "Evaluation in progress", score=eval_score)
 
@@ -298,6 +364,20 @@ def write_convergence(workspace: Path, result: ConvergenceResult) -> Path:
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }, indent=2))
     return path
+
+
+def _all_criteria_met(workspace: Path) -> bool:
+    """Return True if success-criteria.json exists AND every criterion is met."""
+    path = workspace / ".swarm" / "success-criteria.json"
+    if not path.exists():
+        return False
+    try:
+        data = json.loads(path.read_text())
+        if not isinstance(data, list) or not data:
+            return False
+    except (json.JSONDecodeError, OSError):
+        return False
+    return all(c.get("met", False) for c in data if isinstance(c, dict))
 
 
 def _check_success_criteria(workspace: Path) -> list[str]:

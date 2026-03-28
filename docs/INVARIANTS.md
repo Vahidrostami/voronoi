@@ -10,7 +10,7 @@
 `prompt.py` is the ONLY module that builds orchestrator prompts. CLI and Telegram MUST both call `build_orchestrator_prompt()`. No other module may construct prompts.
 
 ### INV-02: Role Files Are Source of Truth
-Agent role definitions live ONLY in `.github/agents/*.agent.md`. The prompt builder REFERENCES these files (tells orchestrator "read this file"). Python code MUST NOT duplicate or inline role definitions.
+Agent role definitions live ONLY in `src/voronoi/data/agents/*.agent.md` (copied to `.github/agents/` in investigation workspaces). The prompt builder REFERENCES these files (tells orchestrator "read this file"). Python code MUST NOT duplicate or inline role definitions.
 
 ### INV-03: Orchestrator Never Enters Worktrees
 The orchestrator dispatches and monitors. It MUST NOT modify files in a worker's git worktree. If an agent fails, dispatch a new agent or a Methodologist — never fix the code directly.
@@ -35,8 +35,8 @@ Investigations MUST follow the state machine: `queued → running → {complete 
 
 ## 3. Science Invariants
 
-### INV-08: Rigor Only Escalates
-Once classified, rigor level can be escalated (standard → analytical) but MUST NOT be downgraded. Gates cannot be added retroactively, so initial classification should err higher.
+### INV-08: Adaptive Rigor (DISCOVER) / Fixed Rigor (PROVE)
+In DISCOVER mode, rigor starts at analytical level and escalates dynamically when testable hypotheses emerge. The orchestrator CAN escalate rigor (analytical → scientific) but MUST NOT downgrade it once escalated. In PROVE mode, rigor is scientific or experimental from the start and MUST NOT be downgraded.
 
 ### INV-09: Baseline-First
 Every investigation epic's first subtask MUST be a baseline measurement. All experimental tasks MUST be blocked until the baseline completes. No exceptions.
@@ -109,7 +109,7 @@ Workers MUST write observations to Beads notes as they occur, not only at task c
 ## 7. Git Invariants
 
 ### INV-25: Push Before Session End
-All work MUST be pushed to remote before ending a session. Unpushed work = lost work. NEVER say "ready to push when you are" — the agent pushes.
+If a remote named `origin` exists, work MUST be pushed before ending a session. If no remote exists, the agent MUST keep local commits and explicitly record `NO_REMOTE` rather than inventing a remote. NEVER say "ready to push when you are" — push when a remote exists, otherwise report the missing remote.
 
 ### INV-26: Worktree Isolation
 Each worker agent operates in its own git worktree. Workers MUST NOT modify files in other worktrees or in the main workspace.
@@ -137,3 +137,15 @@ Bot tokens, API keys, and other secrets MUST NOT be included in orchestrator or 
 
 ### INV-30: Sandbox Resource Limits
 When Docker sandbox is enabled, containers MUST have CPU, memory, and timeout limits. Network isolation MUST be configurable.
+
+### INV-31: No Secrets in Logs
+Auth tokens (GH_TOKEN, GITHUB_TOKEN, COPILOT_GITHUB_TOKEN) MUST NOT appear in tmux pane logs or agent log files. Token injection into tmux shells MUST use environment file mechanisms (`tmux set-environment`) instead of inline `export VAR=value` in send-keys commands that are captured by `pipe-pane` logging.
+
+### INV-32: Human Gate Pause Enforcement
+When a human gate is pending (`.swarm/human-gate.json` with `status: "pending"`), the dispatcher MUST kill the tmux session to halt the agent. A gate-pending dead session MUST NOT be routed through crash-retry logic. The agent resumes only after the gate is approved or revised.
+
+### INV-33: Belief Map Schema
+`.swarm/belief-map.json` MUST store `hypotheses` as a JSON array of objects (not an object map keyed by ID). Both the Python loader (`load_belief_map`) and the shell convergence gate MUST validate the schema on load and migrate non-conforming data.
+
+### INV-34: Negative-Result Completion
+An investigation that produces valid experimental results that falsify the hypothesis is a completed investigation, not a failed one. The convergence system MUST support a `negative_result` status distinct from `failed` and `exhausted`.

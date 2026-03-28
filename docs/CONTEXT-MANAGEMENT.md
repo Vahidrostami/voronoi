@@ -240,7 +240,7 @@ When `context_window_remaining_pct` drops below 20%, the orchestrator should:
 2. Switch to more aggressive targeted Beads queries
 3. Avoid re-reading large files
 
-This prevents surprise context overflow in long-running investigations.
+This is now **enforced structurally** by the dispatcher via context pressure directives (see §11).
 
 ## 10. Structured Event Log
 
@@ -261,7 +261,106 @@ The dispatcher reads these events during progress polling for:
 
 Convenience functions: `log_tool_call()`, `log_finding()`, `log_test_result()`, `log_verify_step()`.
 
-## 8. Context Pressure Estimation
+## 11. Context Pressure & Dispatcher Directives
+
+**Code**: `src/voronoi/server/dispatcher.py` — `_check_context_pressure()`, `_write_directive()`
+
+The dispatcher monitors session age and self-reported context pressure. When thresholds are crossed, it writes `.swarm/dispatcher-directive.json` for the orchestrator to poll.
+
+### Time-Based Directives
+
+| Hours Elapsed | Directive | Action |
+|---|---|---|
+| `context_advisory_hours` (default 12) | `context_advisory` | Prioritize convergence |
+| `context_warning_hours` (default 20) | `context_warning` | Delegate ALL remaining work to fresh agents |
+| `context_critical_hours` (default 28) | `context_critical` | Write checkpoint and dispatch Scribe NOW |
+
+### Self-Reported Context Pressure
+
+If the orchestrator writes `context_window_remaining_pct` in the checkpoint:
+- ≤ 30%: dispatcher sends `context_warning`
+- ≤ 15%: dispatcher sends `context_critical`
+
+Self-reported pressure can trigger directives earlier than the time thresholds.
+
+### Configuration
+
+All thresholds are configurable via `~/.voronoi/config.json` or environment variables:
+
+```json
+{"server": {"context_advisory_hours": 12, "context_warning_hours": 20,
+            "context_critical_hours": 28, "compact_interval_hours": 6}}
+```
+
+Environment: `VORONOI_CONTEXT_ADVISORY_HOURS`, `VORONOI_CONTEXT_WARNING_HOURS`, `VORONOI_CONTEXT_CRITICAL_HOURS`, `VORONOI_COMPACT_INTERVAL_HOURS`.
+
+## 12. Workspace State Compaction
+
+**Code**: `src/voronoi/server/compact.py`
+
+Called periodically by the dispatcher (default every 6 hours). Prevents workspace state files from growing unboundedly in long investigations.
+
+### What Gets Compacted
+
+| File | Action |
+|---|---|
+| `.swarm/experiments.tsv` | Keep last 20 rows, archive rest to `experiments.archive.tsv` |
+| `.swarm/events.jsonl` | Keep last 2 hours, archive rest to `events.archive.jsonl` |
+| `.swarm/state-digest.md` | Written fresh — compact summary of all state for OODA reads |
+
+### State Digest
+
+The `state-digest.md` is a compact summary (~50 lines) containing:
+- Success criteria status
+- Experiment counts (keep/crash/discard)
+- Active agent branches
+- Checkpoint summary with dead ends
+
+The orchestrator reads this instead of querying each file individually.
+
+## 13. Brief-Digest Protocol
+
+At startup, after reading `PROMPT.md` once, the orchestrator extracts critical constraints into `.swarm/brief-digest.md`:
+- Success criteria (verbatim)
+- Experimental design summary
+- Hard constraints (α thresholds, minimum effect sizes)
+- Mandated entry point
+
+This digest is re-read at each OODA cycle start, preventing design violations when context degrades. Unlike the full PROMPT.md (~8K+ tokens), the digest is ~50 lines.
+
+## 14. Restart Recovery — Minimal Resume Prompt
+
+**Code**: `src/voronoi/server/dispatcher.py` — `_build_resume_prompt()`
+
+When the agent crashes and is restarted, the dispatcher writes a **new** minimal prompt (`orchestrator-prompt-resume.txt`) instead of appending to the original:
+
+| Old approach | New approach |
+|---|---|
+| Append resume section to original prompt | Write fresh ~100 line resume file |
+| Original grows with each restart | Original untouched |
+| Agent re-reads role file + PROMPT.md | Agent works from checkpoint + digest |
+
+The resume prompt contains:
+1. Identity + mode/rigor (10 lines)
+2. Checkpoint summary inline
+3. State digest inline (if available)
+4. Success criteria status
+5. Remaining tasks
+6. Exact next actions
+
+## 15. Stall Detection
+
+The dispatcher detects stalled investigations using **multiple signals** (not just `bd list --json`):
+
+1. `.swarm/orchestrator-checkpoint.json` — cycle > 0 or total_tasks > 0
+2. `.swarm/experiments.tsv` — data rows exist
+3. `.swarm/events.jsonl` — non-empty
+4. `git branch --list agent-*` — worker branches exist
+5. `task_snapshot` — fallback from `bd list --json`
+
+If ALL signals are absent after `stall_minutes`, the stall warning fires. This eliminates false alarms from `bd` not being on the dispatcher's PATH.
+
+## 16. Context Pressure Estimation
 
 For a 10-hour investigation pipeline:
 

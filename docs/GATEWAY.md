@@ -131,10 +131,8 @@ Central dispatch point for all user actions. Every Telegram command and programm
 
 | Function | Mode | Rigor |
 |----------|------|-------|
-| `handle_investigate(project_dir, question, chat_id) -> str` | INVESTIGATE | SCIENTIFIC |
-| `handle_explore(project_dir, question, chat_id) -> str` | EXPLORE | ANALYTICAL |
-| `handle_build(project_dir, question, chat_id) -> str` | BUILD | STANDARD |
-| `handle_experiment(project_dir, question, chat_id) -> str` | INVESTIGATE | EXPERIMENTAL |
+| `handle_discover(project_dir, question, chat_id) -> str` | DISCOVER | ADAPTIVE |
+| `handle_prove(project_dir, hypothesis, chat_id) -> str` | PROVE | SCIENTIFIC |
 | `handle_demo(project_dir, demo_name, chat_id, dry_run, safe) -> str` | (from demo) | (from demo) |
 
 ### Internal Helpers
@@ -326,42 +324,97 @@ def format_literature_brief(papers: list[Paper]) -> str: ...
 
 ### Purpose
 
-Assembles narrative digest updates for Telegram. Replaces per-event streaming with batched, contextual messages every ~30 seconds.
+Assembles phase-aware, milestone-driven digest updates for Telegram. Adapts message structure, detail level, and tone to the current investigation phase and elapsed time. Uses a **two-tier delivery model** (edit-in-place for status, new messages for milestones) to avoid notification flood during long-running investigations.
+
+### Voice System (inspired by OpenClaw's SOUL.md)
+
+Voronoi has a personality layer defined in `VOICE_PHASE_VARIANTS` — a dictionary of 2-3 variant phrases per phase that rotate deterministically by codename hash. This ensures different investigations get different wording while the same investigation stays consistent.
+
+Voice tone: **sharp research lab manager** — confident, concise, research-aware. Speaks in terms of scientific progress, not task management.
+
+### Design Philosophy
+
+Messages adapt to the user's needs at each stage of a long-running investigation:
+
+| Phase | Strategy | Rationale |
+|-------|----------|-----------|
+| Early (setup/planning) | Set expectations, no empty bars | 0% progress is demoralizing and misleading |
+| Active (investigating) | Highlight achievements, show ETA | Users need pace and milestones |
+| Late (reviewing/converging) | Focus on quality and criteria | Users want to know "how good" |
+| Complete | Celebrate, summarize | Users want the outcome |
+
+Key rules:
+- **Two-tier delivery**: Status updates edit in place (silent); findings/phase changes send new messages (notification)
+- **No empty progress bars**: Show bar only when at least 1 task is completed
+- **Narrative synthesis**: Phase descriptions generated from workspace artifacts (experiments, criteria, beliefs) — not static templates
+- **Don't alarm for normal states**: "watch" status suppressed during early phases
+- **Milestone markers**: `✓` for completions, `★` for findings, `⚠` for problems
+- **Phase position**: Header shows "Phase X/Y" journey indicator
+- **Adaptive criteria display**: Early → just count; mid → ratio with context ("getting close"); late/detail → full list
+- **Typing indicator**: Sent before milestone notifications for natural feel
 
 ### Constants
 
 | Constant | Type | Description |
 |----------|------|-------------|
-| `MODE_EMOJI` | `dict[str, str]` | `{"investigate": "🔬", "explore": "🧭", "build": "🔨"}` |
+| `MODE_EMOJI` | `dict[str, str]` | `{"discover": "🔬", "prove": "🧪"}` |
 | `RIGOR_DESCRIPTIONS` | `dict[str, str]` | Human labels per rigor level |
-| `MODE_VERB` | `dict[str, str]` | `{"investigate": "Investigation"}` |
-| `PHASE_DESCRIPTIONS` | `dict[str, dict]` | Mode-specific conversational descriptions per phase |
+| `MODE_VERB` | `dict[str, str]` | `{"discover": "discovery"}` |
+| `VOICE_PHASE_VARIANTS` | `dict[str, list[str]]` | Per-phase rotating variant phrases |
+| `VOICE_CRITERIA_CONTEXT` | `dict[str, str]` | Context labels: "early days", "getting close" |
+| `VOICE_QUALITY_LABELS` | `dict[str, str]` | Quality labels: "solid", "improving" |
+| `PHASE_DESCRIPTIONS` | `dict[str, dict]` | Mode-specific static descriptions (fallback) |
+| `PHASE_ORDER` | `list[str]` | Ordered phase list for journey position |
+| `MSG_TYPE_*` | `str` | Message type constants for delivery routing |
+
+### Message Types (for two-tier delivery)
+
+| Constant | Value | Delivery | Notification? |
+|----------|-------|----------|:---:|
+| `MSG_TYPE_STATUS` | `"status"` | Edit in place | No |
+| `MSG_TYPE_MILESTONE` | `"milestone"` | New message | Yes |
+
+Launch, completion, failure, alert, and restart messages always send as new messages (via their dedicated `format_*` functions). The `MSG_TYPE_*` constants are only needed for `build_digest()` return values.
 
 ### Phase Names
 
 `starting` → `scouting` → `planning` → `investigating` → `reviewing` → `synthesizing` → `converging` → `complete`
 
-Each phase has unique conversational text per mode (e.g., "Setting things up..." vs "Doing some background research first.").
+Each phase has unique conversational text per mode, plus rotating VOICE variants per codename.
+
+### Narrative Synthesis
+
+```python
+def _synthesize_narrative(workspace: Path, phase: str, task_snapshot: dict, elapsed_sec: float) -> str
+```
+
+Reads workspace artifacts (experiments.tsv, success-criteria.json, belief-map.json) and produces a context-aware 1-2 sentence description. Returns `''` when artifacts are insufficient, allowing fallback to VOICE variants. Examples:
+- "3/8 experiments passed, 2 discarded. 4/13 criteria met — making progress."
+- "Leading hypothesis: GABA encoding (P=0.85)."
 
 ### Core Digest Builder
 
 ```python
 def build_digest(
     *, codename: str, mode: str, phase: str, elapsed_sec: float,
-    task_snapshot: dict, workspace: str, events_since_last: list[dict],
-    eval_score: float = 0.0
-) -> str
+    task_snapshot: dict, workspace: Path, events_since_last: list[dict],
+    eval_score: float = 0.0, compact: bool = False,
+) -> tuple[str, str]
 ```
 
-Produces a single narrative message with sections:
-1. **Header**: `*Codename* — 2h 15min`
-2. **What happened**: Completed tasks, findings, design invalids, new tasks (up to 5)
-3. **Where we are**: Phase description + progress bar + ETA
-4. **Experiment summary**: From `.swarm/experiments.tsv`
-5. **Success criteria**: Met/total with descriptions
-6. **Eval score**: Quality score if > 0
-7. **Track assessment**: Warning if off-track or on-watch
-8. **What's next**: "N agents working right now"
+Returns `(message_text, message_type)`. The message_type tells the delivery layer whether to edit-in-place (`MSG_TYPE_STATUS`) or send a new message (`MSG_TYPE_MILESTONE`).
+
+Produces a phase-aware message with adaptive sections:
+1. **Header**: `*Codename* · 2h 15min · Phase 4/8`
+2. **Narrative**: Synthesized from artifacts, or VOICE variant fallback
+3. **Milestones**: `✓` completions, `★` findings, `⚠` problems (since last update)
+4. **Progress**: Bar only when `closed > 0`; task count only during early phases
+5. **Experiments**: From `.swarm/experiments.tsv`
+6. **Criteria**: Adaptive — count with context label mid-run, full list in detail view
+7. **Quality**: Score with voice label ("solid" vs "improving")
+8. **Track assessment**: Only `off_track` always shown; `watch` suppressed in early phases
+9. **Agent count**: Brief "N agents active"
+10. **Pace info**: "Averaging Xh per task" for long-running investigations
 
 ### "What's Up" Digest
 
@@ -369,15 +422,23 @@ Produces a single narrative message with sections:
 def build_digest_whatsup(*, running_investigations: list, queued: int) -> str
 ```
 
-Multi-investigation overview: per-investigation codename, elapsed, task breakdown, phase, agent health.
+Multi-investigation overview with phase position, VOICE-rotated descriptions, adaptive progress. Only surfaces agent health problems (stuck agents), not "healthy" counts.
 
 ### Track Assessment
 
 ```python
-def assess_track_status(workspace: str, task_snapshot: dict, eval_score: float) -> tuple[str, str]
+def assess_track_status(workspace: Path, task_snapshot: dict, eval_score: float) -> tuple[str, str]
 ```
 
-Returns `(status, reason)` where status is `on_track`, `watch`, or `off_track`. Checks for DESIGN_INVALID, success criteria progress, eval score thresholds, and task pacing.
+Returns `(status, reason)` where status is `on_track`, `watch`, or `off_track`. Watch messages use non-alarming language for normal early states.
+
+### Journey Position
+
+```python
+def phase_position(phase: str) -> tuple[int, int]
+```
+
+Returns `(current_step, total_steps)` for phase journey display. 1-based.
 
 ### Message Formatters
 
@@ -397,16 +458,8 @@ def format_restart(codename: str, attempt: int, max_retries: int, log_tail: str)
 def progress_bar(done: int, total: int, width: int = 20) -> str
 def format_duration(seconds: float) -> str         # "45min" or "2h 15min"
 def estimate_remaining(elapsed_sec: float, done: int, total: int) -> str
-def phase_description(mode: str, phase: str) -> str  # Conversational text
-def voronoi_header(inv_id: int, mode: str, suffix: str = "", codename: str = "") -> str
-```
-
-### Backward-Compatible Wrappers
-
-```python
-def phase_label(mode: str, phase: str) -> str          # Calls phase_description()
-def format_workflow_start(mode: str, rigor: str, summary: str) -> str
-def format_workflow_complete(mode: str, total_tasks: int, findings: int, duration_min: float) -> str
+def phase_description(mode: str, phase: str, codename: str = "") -> str  # VOICE-rotated or static
+def phase_position(phase: str) -> tuple[int, int]     # Journey position (step, total)
 ```
 
 ---

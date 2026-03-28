@@ -2,7 +2,7 @@
 
 > 12 agent roles, activation rules, verify loops, role interactions.
 
-**TL;DR**: 12 roles: Orchestrator (always), Builder+Critic (Standard+), Scout+Investigator+Explorer+Statistician+Synthesizer+Evaluator (Analytical+), Theorist+Methodologist (Scientific+), Scribe (LaTeX compilation). Each worker has a verify loop (test→retry→escalate). Roles defined in `.github/agents/*.agent.md`, never in Python.
+**TL;DR**: 12 roles: Orchestrator (always), Builder+Critic (Standard+), Scout+Investigator+Explorer+Statistician+Synthesizer+Evaluator (Analytical+), Theorist+Methodologist (Scientific+), Scribe (LaTeX compilation). Each worker has a verify loop (test→retry→escalate). Roles defined in `src/voronoi/data/agents/*.agent.md`, never in Python.
 
 ## 1. Role Registry
 
@@ -35,7 +35,7 @@ The orchestrator selects roles based on the classified rigor level. Roles CANNOT
 
 ### 3.1 Orchestrator
 
-**File**: `.github/agents/swarm-orchestrator.agent.md`
+**File**: `src/voronoi/data/agents/swarm-orchestrator.agent.md`
 
 **Always active.** The orchestrator is the only agent that runs in the main workspace. All other agents run in git worktrees.
 
@@ -55,7 +55,7 @@ The orchestrator selects roles based on the classified rigor level. Roles CANNOT
 
 ### 3.2 Builder
 
-**File**: `.github/agents/worker-agent.agent.md`
+**File**: `src/voronoi/data/agents/worker-agent.agent.md`
 
 **Standard+ activation.** Implements code in isolated git worktree.
 
@@ -71,7 +71,7 @@ The orchestrator selects roles based on the classified rigor level. Roles CANNOT
 
 ### 3.3 Scout
 
-**File**: `.github/agents/scout.agent.md`
+**File**: `src/voronoi/data/agents/scout.agent.md`
 
 **Analytical+ activation.** Researches existing knowledge and SOTA before investigation begins.
 
@@ -87,7 +87,7 @@ The orchestrator selects roles based on the classified rigor level. Roles CANNOT
 
 ### 3.4 Investigator
 
-**File**: `.github/agents/investigator.agent.md`
+**File**: `src/voronoi/data/agents/investigator.agent.md`
 
 **Analytical+ activation.** Runs pre-registered experiments with raw data preservation.
 
@@ -107,7 +107,7 @@ The orchestrator selects roles based on the classified rigor level. Roles CANNOT
 
 ### 3.5 Explorer
 
-**File**: `.github/agents/explorer.agent.md`
+**File**: `src/voronoi/data/agents/explorer.agent.md`
 
 **Analytical+ activation.** Evaluates options systematically.
 
@@ -118,7 +118,7 @@ The orchestrator selects roles based on the classified rigor level. Roles CANNOT
 
 ### 3.6 Statistician
 
-**File**: `.github/agents/statistician.agent.md`
+**File**: `src/voronoi/data/agents/statistician.agent.md`
 
 **Analytical+ activation.** Reviews all quantitative claims.
 
@@ -136,7 +136,7 @@ The orchestrator selects roles based on the classified rigor level. Roles CANNOT
 
 ### 3.7 Critic
 
-**File**: `.github/agents/critic.agent.md`
+**File**: `src/voronoi/data/agents/critic.agent.md`
 
 **Standard+ activation.** Adversarial review with 5-check checklist.
 
@@ -149,7 +149,7 @@ The orchestrator selects roles based on the classified rigor level. Roles CANNOT
 
 ### 3.8 Synthesizer
 
-**File**: `.github/agents/synthesizer.agent.md`
+**File**: `src/voronoi/data/agents/synthesizer.agent.md`
 
 **Analytical+ activation.** Assembles final deliverable.
 
@@ -164,7 +164,7 @@ The orchestrator selects roles based on the classified rigor level. Roles CANNOT
 
 ### 3.9 Evaluator
 
-**File**: `.github/agents/evaluator.agent.md`
+**File**: `src/voronoi/data/agents/evaluator.agent.md`
 
 **Analytical+ activation.** Scores the deliverable using CCSA formula.
 
@@ -183,7 +183,7 @@ Score output: `.swarm/eval-score.json`
 
 ### 3.10 Theorist
 
-**File**: `.github/agents/theorist.agent.md`
+**File**: `src/voronoi/data/agents/theorist.agent.md`
 
 **Scientific+ activation.** Maintains causal models and competing theories.
 
@@ -195,7 +195,7 @@ Score output: `.swarm/eval-score.json`
 
 ### 3.11 Methodologist
 
-**File**: `.github/agents/methodologist.agent.md`
+**File**: `src/voronoi/data/agents/methodologist.agent.md`
 
 **Scientific+ activation.** Reviews experimental designs.
 
@@ -282,7 +282,7 @@ Orchestrator
 
 When the orchestrator dispatches a worker, the prompt includes:
 
-1. Role file content from `.github/agents/<role>.agent.md`
+1. Role file content from `src/voronoi/data/agents/<role>.agent.md` (copied to `src/voronoi/data/agents/` in investigation workspaces)
 2. Task description from Beads
 3. Metric contract (if investigation)
 4. Strategic context

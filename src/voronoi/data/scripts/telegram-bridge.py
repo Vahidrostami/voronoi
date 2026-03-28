@@ -21,9 +21,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import logging.handlers
+import os
 import socket
 import sys
+import time
 from pathlib import Path
+from typing import Any, Coroutine, TypeVar
 
 logger = logging.getLogger("voronoi.bridge")
 
@@ -34,6 +38,28 @@ if _src_dir.is_dir() and str(_src_dir) not in sys.path:
 
 from voronoi.gateway.config import load_config, save_chat_id  # noqa: E402
 from voronoi.gateway.router import CommandRouter  # noqa: E402
+
+
+_T = TypeVar("_T")
+
+
+def _run_coro_threadsafe(
+    loop: asyncio.AbstractEventLoop,
+    coro: Coroutine[Any, Any, _T],
+    *,
+    timeout: float | None = None,
+) -> _T | None:
+    """Schedule a coroutine on the Telegram loop from any thread."""
+    try:
+        future = asyncio.run_coroutine_threadsafe(coro, loop)
+    except Exception:
+        coro.close()
+        raise
+
+    if timeout is None:
+        return None
+
+    return future.result(timeout=timeout)
 
 
 def format_human_gate_command_reply(action: str, args: list[str], dispatcher) -> str:
@@ -267,6 +293,8 @@ def run_bot(config: dict) -> None:
             reply_text, _ = router.route("tasks", [], chat_id)
         elif data == "progress":
             reply_text, _ = router.route("progress", [], chat_id)
+        elif data == "details":
+            reply_text, _ = router.route("details", [], chat_id)
         elif data == "abort":
             reply_text, _ = router.route("abort", [], chat_id)
         elif data == "belief":
@@ -314,65 +342,142 @@ def run_bot(config: dict) -> None:
                 agent_flags=sc.agent_flags,
                 orchestrator_model=sc.orchestrator_model,
                 worker_model=sc.worker_model,
+                context_advisory_hours=sc.context_advisory_hours,
+                context_warning_hours=sc.context_warning_hours,
+                context_critical_hours=sc.context_critical_hours,
+                compact_interval_hours=sc.compact_interval_hours,
             )
 
             chat_id_file = Path(project_dir) / ".telegram-chat-id"
             # Capture the main thread's event loop now so callbacks
             # running in executor threads can schedule coroutines safely.
-            _main_loop = asyncio.get_event_loop()
+            _main_loop = asyncio.get_running_loop()
 
-            def _send(text: str) -> None:
+            # ── Message ID tracking for edit-in-place ──
+            # Stores the returned Telegram message_id from send_message()
+            # so the dispatcher can pass it back via edit_message().
+            _last_sent_msg_id: dict[str, int | None] = {"value": None}
+
+            def _send(text: str) -> int | None:
+                """Send a new Telegram message. Returns the message_id."""
+                if not chat_id_file.exists():
+                    return None
+                cid = chat_id_file.read_text().strip()
+                if not cid:
+                    return None
+                try:
+                    msg_id = _run_coro_threadsafe(
+                        _main_loop,
+                        _async_send(cid, text),
+                        timeout=10.0,
+                    )
+                except Exception:
+                    logger.debug("Failed to schedule message send", exc_info=True)
+                    return _last_sent_msg_id.get("value")
+                _last_sent_msg_id["value"] = msg_id
+                return msg_id
+
+            def _edit(text: str, message_id: int) -> None:
+                """Edit an existing Telegram message (silent, no notification)."""
                 if not chat_id_file.exists():
                     return
                 cid = chat_id_file.read_text().strip()
                 if not cid:
                     return
                 try:
-                    _main_loop.call_soon_threadsafe(
-                        asyncio.ensure_future, _async_send(cid, text)
-                    )
+                    _run_coro_threadsafe(_main_loop, _async_edit(cid, text, message_id))
                 except Exception:
-                    logger.debug("Failed to schedule message send", exc_info=True)
+                    logger.debug("Failed to schedule message edit", exc_info=True)
 
-            async def _async_send(cid: str, text: str) -> None:
-                # Add contextual inline buttons based on message content
+            async def _async_send(cid: str, text: str) -> int | None:
+                # Typing indicator before milestone messages
+                is_milestone = any(marker in text for marker in ("★ ", "⚠ ", "is done", "failed"))
+                if is_milestone:
+                    try:
+                        await app.bot.send_chat_action(chat_id=cid, action="typing")
+                        await asyncio.sleep(1.0)
+                    except Exception:
+                        pass
+
+                # Select inline buttons based on content
                 reply_markup = None
                 try:
                     if "is live" in text.lower():
                         reply_markup = InlineKeyboardMarkup([
-                            [InlineKeyboardButton("Status", callback_data="status"),
-                             InlineKeyboardButton("Abort", callback_data="abort")],
+                            [InlineKeyboardButton("📊 Status", callback_data="status"),
+                             InlineKeyboardButton("🛑 Abort", callback_data="abort")],
                         ])
-                    elif any(k in text for k in ("tasks)", "Estimated:", "working right now")):
-                        # Digest update
+                    elif "★ " in text:
+                        # Finding milestone
                         reply_markup = InlineKeyboardMarkup([
-                            [InlineKeyboardButton("Progress", callback_data="progress"),
-                             InlineKeyboardButton("Guide", callback_data="guide_prompt"),
-                             InlineKeyboardButton("Abort", callback_data="abort")],
+                            [InlineKeyboardButton("📋 Details", callback_data="details"),
+                             InlineKeyboardButton("🧠 Belief Map", callback_data="belief")],
+                        ])
+                    elif any(k in text for k in ("tasks", "Phase ", "agents active", "criteria")):
+                        # Status/digest update
+                        reply_markup = InlineKeyboardMarkup([
+                            [InlineKeyboardButton("📋 Details", callback_data="details"),
+                             InlineKeyboardButton("💬 Guide", callback_data="guide_prompt"),
+                             InlineKeyboardButton("🛑 Abort", callback_data="abort")],
                         ])
                     elif "is done" in text.lower():
                         reply_markup = InlineKeyboardMarkup([
-                            [InlineKeyboardButton("Details", callback_data="progress"),
-                             InlineKeyboardButton("Belief Map", callback_data="belief")],
+                            [InlineKeyboardButton("📋 Details", callback_data="details"),
+                             InlineKeyboardButton("🧠 Belief Map", callback_data="belief")],
+                        ])
+                    elif "failed" in text.lower():
+                        reply_markup = InlineKeyboardMarkup([
+                            [InlineKeyboardButton("📋 Details", callback_data="details"),
+                             InlineKeyboardButton("🛑 Abort", callback_data="abort")],
                         ])
                 except Exception:
                     pass  # buttons are best-effort
 
+                msg_id = None
                 try:
-                    await app.bot.send_message(chat_id=cid, text=text, parse_mode="Markdown",
-                                               disable_web_page_preview=True, reply_markup=reply_markup)
+                    result = await app.bot.send_message(
+                        chat_id=cid, text=text, parse_mode="Markdown",
+                        disable_web_page_preview=True, reply_markup=reply_markup,
+                        disable_notification=not is_milestone,
+                    )
+                    msg_id = result.message_id if result else None
                 except Exception:
                     try:
-                        await app.bot.send_message(chat_id=cid, text=text,
-                                                   disable_web_page_preview=True, reply_markup=reply_markup)
+                        result = await app.bot.send_message(
+                            chat_id=cid, text=text,
+                            disable_web_page_preview=True, reply_markup=reply_markup,
+                        )
+                        msg_id = result.message_id if result else None
                     except Exception:
                         pass
 
+                return msg_id
+
+            async def _async_edit(cid: str, text: str, message_id: int) -> None:
+                """Edit an existing message — used for silent status updates."""
+                reply_markup = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📋 Details", callback_data="details"),
+                     InlineKeyboardButton("💬 Guide", callback_data="guide_prompt"),
+                     InlineKeyboardButton("🛑 Abort", callback_data="abort")],
+                ])
+                try:
+                    await app.bot.edit_message_text(
+                        chat_id=cid, message_id=message_id, text=text,
+                        parse_mode="Markdown", disable_web_page_preview=True,
+                        reply_markup=reply_markup,
+                    )
+                except Exception:
+                    try:
+                        await app.bot.edit_message_text(
+                            chat_id=cid, message_id=message_id, text=text,
+                            disable_web_page_preview=True, reply_markup=reply_markup,
+                        )
+                    except Exception:
+                        pass  # edit failed — next poll will send a fresh message
+
             def _send_document(cid: str, file_path: Path, caption: str = "") -> None:
                 try:
-                    _main_loop.call_soon_threadsafe(
-                        asyncio.ensure_future, _async_send_doc(cid, file_path, caption)
-                    )
+                    _run_coro_threadsafe(_main_loop, _async_send_doc(cid, file_path, caption))
                 except Exception:
                     logger.debug("Failed to schedule document send", exc_info=True)
 
@@ -383,7 +488,7 @@ def run_bot(config: dict) -> None:
                 except Exception:
                     pass
 
-            _dispatcher_instance[0] = InvestigationDispatcher(dc, _send, _send_document)
+            _dispatcher_instance[0] = InvestigationDispatcher(dc, _send, _send_document, _edit)
             logger.info("Investigation dispatcher initialized")
         except Exception as e:
             logger.warning("Dispatcher not available: %s", e)
@@ -423,6 +528,35 @@ def run_bot(config: dict) -> None:
     app.run_polling(drop_pending_updates=True)
 
 
+def _is_fatal_bridge_error(exc: BaseException) -> bool:
+    """Return True when restart loops would just mask a configuration error."""
+    return exc.__class__.__name__ in {"InvalidToken", "Unauthorized"}
+
+
+def run_bot_forever(config: dict, restart_delay: int = 5, max_delay: int = 60) -> None:
+    """Keep the Telegram bridge alive across transient failures."""
+    delay = max(1, restart_delay)
+    ceiling = max(delay, max_delay)
+
+    while True:
+        try:
+            run_bot(config)
+            return
+        except KeyboardInterrupt:
+            logger.info("Telegram bridge stopped.")
+            return
+        except SystemExit:
+            raise
+        except Exception as exc:
+            if _is_fatal_bridge_error(exc):
+                logger.error("Fatal Telegram bridge error: %s", exc, exc_info=True)
+                raise
+            logger.error("Telegram bridge crashed: %s", exc, exc_info=True)
+            logger.info("Restarting Telegram bridge in %ss", delay)
+            time.sleep(delay)
+            delay = min(delay * 2, ceiling)
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -431,14 +565,32 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Voronoi ↔ Telegram bridge")
     parser.add_argument("--config", default=".swarm-config.json", help="Path to .swarm-config.json")
     args = parser.parse_args()
-    import os
     log_level = os.environ.get("VORONOI_LOG_LEVEL", "INFO").upper()
-    logging.basicConfig(
-        level=getattr(logging, log_level, logging.INFO),
-        format="%(asctime)s %(levelname)-8s [%(name)s] %(message)s",
+    log_fmt = logging.Formatter(
+        "%(asctime)s %(levelname)-8s [%(name)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
-        stream=sys.stdout,
     )
+
+    # Console handler (existing behaviour)
+    console = logging.StreamHandler(sys.stdout)
+    console.setFormatter(log_fmt)
+
+    # Rotating file handler: 3 × 5 MB = 15 MB max on disk
+    log_dir = Path(os.environ.get("VORONOI_LOG_DIR", Path.home() / ".voronoi"))
+    log_dir.mkdir(parents=True, exist_ok=True)
+    file_handler = logging.handlers.RotatingFileHandler(
+        log_dir / "bridge.log",
+        maxBytes=5 * 1024 * 1024,
+        backupCount=2,
+        encoding="utf-8",
+    )
+    file_handler.setFormatter(log_fmt)
+
+    root = logging.getLogger()
+    root.setLevel(getattr(logging, log_level, logging.INFO))
+    root.addHandler(console)
+    root.addHandler(file_handler)
+
     # Keep noisy libs at WARNING
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("telegram").setLevel(logging.WARNING)
@@ -465,7 +617,9 @@ def main() -> None:
               f"for this bot token (lock port: {lock_port})", file=sys.stderr)
         sys.exit(1)
 
-    run_bot(config)
+    restart_delay = int(os.environ.get("VORONOI_BRIDGE_RESTART_DELAY_SECONDS", "5"))
+    max_delay = int(os.environ.get("VORONOI_BRIDGE_MAX_RESTART_DELAY_SECONDS", "60"))
+    run_bot_forever(config, restart_delay=restart_delay, max_delay=max_delay)
 
 
 if __name__ == "__main__":

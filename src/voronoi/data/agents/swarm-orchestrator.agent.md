@@ -1,7 +1,7 @@
 ---
 name: swarm-orchestrator
 description: Multi-agent swarm orchestrator that classifies intent, selects rigor level, decomposes tasks, casts agent roles, dispatches into isolated git worktrees, runs OODA monitoring loops, synthesizes findings, and coordinates merges back to main.
-tools: ["execute", "read", "search", "edit", "github/*"]
+tools: [execute, read, edit, search]
 disable-model-invocation: false
 user-invokable: true
 ---
@@ -289,6 +289,12 @@ If the investigation produces a LaTeX paper (any `.tex` files with `\documentcla
 you MUST dispatch a final compilation task AFTER the evaluator pass and BEFORE declaring
 convergence. The agent that wrote the paper is responsible for compiling it.
 
+**CRITICAL: The paper file MUST be named `paper.tex`.**
+This is the Voronoi convention — all downstream tools (compilation-protocol skill,
+report generation, Telegram delivery) look for `paper.tex` first. Do NOT use
+`main.tex`, `manuscript.tex`, or other names. If you or a worker agent writes the
+paper, name it `paper.tex`.
+
 **CRITICAL: Figure generation is a hard dependency of compilation.**
 Papers that reference figures (`\includegraphics`) with missing files will compile with
 blank spaces or errors. The compilation agent MUST generate ALL referenced figures
@@ -398,7 +404,7 @@ producing zero usable output. This is the #1 cause of swarm failure.
 4. Dispatch subtasks — NEVER dispatch the epic directly to a worker
 
 **Commit checkpoints in prompts:** When writing worker prompts, include explicit commit instructions:
-> "After completing [milestone], run `git add -A && git commit -m '[message]' && git push origin [branch]` BEFORE continuing."
+> "After completing [milestone], run `git add -A && git commit -m '[message]'`. If `origin` exists, also run `git push origin [branch]`. If no remote exists, keep the commit local and note `NO_REMOTE`."
 
 This ensures partial progress is preserved even if the agent's context fills up.
 
@@ -410,7 +416,7 @@ This ensures partial progress is preserved even if the agent's context fills up.
 - ALWAYS set dependencies before dispatching
 - ALWAYS verify `bd ready` before spawning (don't spawn blocked tasks)
 - ALWAYS verify artifact contracts before dispatching: check that all `REQUIRES` files exist and `GATE` files pass
-- ALWAYS include commit checkpoint instructions in every worker prompt (at minimum: "commit and push after each file you create")
+- ALWAYS include commit checkpoint instructions in every worker prompt, but make push conditional on an existing remote
 - Each task description MUST specify which files/directories the agent owns
 - Each task MUST declare `PRODUCES` (output files) and `REQUIRES` (input files) in Beads notes
 - Tasks that consume outputs of other tasks MUST have the producing task's output in their `REQUIRES`

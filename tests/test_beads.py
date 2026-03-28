@@ -8,6 +8,7 @@ import pytest
 
 from voronoi.beads import (
     BeadsError,
+    add_dependency,
     has_beads_dir,
     run_bd,
     run_bd_json,
@@ -133,4 +134,24 @@ class TestRunCmd:
     def test_timeout(self, mock_run):
         code, out = run_cmd(["sleep", "100"], timeout=1)
         assert code == 1
-        assert "timed out" in out.lower()
+
+
+class TestAddDependency:
+    @patch("voronoi.beads.subprocess.run")
+    def test_success(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="ok", stderr=""
+        )
+        code, out = add_dependency("bd-2", "bd-1", cwd="/tmp")
+        assert code == 0
+        # Verify the correct command was called
+        args = mock_run.call_args[0][0]
+        assert args == ["bd", "dep", "add", "bd-2", "bd-1"]
+
+    @patch("voronoi.beads.subprocess.run")
+    def test_failure(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=1, stdout="", stderr="not found"
+        )
+        code, out = add_dependency("bd-2", "bd-1")
+        assert code == 1

@@ -8,9 +8,12 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import re
 import shutil
 import subprocess
 import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -18,6 +21,7 @@ from typing import Optional
 logger = logging.getLogger("voronoi.workspace")
 
 from voronoi.server.repo_url import RepoRef
+from voronoi.utils import git_init_main
 
 
 @dataclass
@@ -49,8 +53,10 @@ class WorkspaceManager:
         self.base_dir = Path(base_dir)
         self.objects_dir = self.base_dir / "objects"
         self.active_dir = self.base_dir / "active"
+        self.locks_dir = self.base_dir / ".locks"
         self.objects_dir.mkdir(parents=True, exist_ok=True)
         self.active_dir.mkdir(parents=True, exist_ok=True)
+        self.locks_dir.mkdir(parents=True, exist_ok=True)
 
     def provision_repo(
         self, investigation_id: int, repo: RepoRef, slug: str,
@@ -62,27 +68,30 @@ class WorkspaceManager:
         """
         bare_path = self.objects_dir / f"{repo.slug}.git"
         workspace_path = self.active_dir / f"inv-{investigation_id}-{slug}"
+        repo_lock = self._lock_name("repo", repo.slug)
+        workspace_lock = self._lock_name("workspace", workspace_path.name)
 
-        # 1. Ensure bare repo exists (shared object store)
-        if not bare_path.exists():
-            self._run_git(
-                ["git", "clone", "--bare", repo.clone_url, str(bare_path)],
-                cwd=str(self.base_dir),
-            )
-        else:
-            # Update existing bare repo
-            self._run_git(["git", "fetch", "--all"], cwd=str(bare_path))
+        with self._exclusive_lock(repo_lock), self._exclusive_lock(workspace_lock):
+            # 1. Ensure bare repo exists (shared object store)
+            if not bare_path.exists():
+                self._run_git(
+                    ["git", "clone", "--bare", repo.clone_url, str(bare_path)],
+                    cwd=str(self.base_dir),
+                )
+            else:
+                # Update existing bare repo
+                self._run_git(["git", "fetch", "--all"], cwd=str(bare_path))
 
-        # 2. Clone with --reference for deduplication
-        if workspace_path.exists():
-            shutil.rmtree(workspace_path)
+            # 2. Clone with --reference for deduplication
+            if workspace_path.exists():
+                shutil.rmtree(workspace_path)
 
-        self._run_git([
-            "git", "clone",
-            "--reference", str(bare_path),
-            repo.clone_url,
-            str(workspace_path),
-        ], cwd=str(self.base_dir))
+            self._run_git([
+                "git", "clone",
+                "--reference", str(bare_path),
+                repo.clone_url,
+                str(workspace_path),
+            ], cwd=str(self.base_dir))
 
         # 3. Run voronoi init in the workspace
         self._voronoi_init(workspace_path)
@@ -100,27 +109,29 @@ class WorkspaceManager:
     ) -> WorkspaceInfo:
         """Provision a fresh workspace for pure science (no existing repo)."""
         workspace_path = self.active_dir / f"inv-{investigation_id}-{slug}"
+        workspace_lock = self._lock_name("workspace", workspace_path.name)
 
-        if workspace_path.exists():
-            shutil.rmtree(workspace_path)
+        with self._exclusive_lock(workspace_lock):
+            if workspace_path.exists():
+                shutil.rmtree(workspace_path)
 
-        workspace_path.mkdir(parents=True)
+            workspace_path.mkdir(parents=True)
 
-        # 1. git init + initial commit
-        self._run_git(["git", "init"], cwd=str(workspace_path))
-        self._run_git(
-            ["git", "commit", "--allow-empty", "-m", "voronoi: lab workspace"],
-            cwd=str(workspace_path),
-        )
+            # 1. git init + initial commit
+            git_init_main(workspace_path)
+            self._run_git(
+                ["git", "commit", "--allow-empty", "-m", "voronoi: lab workspace"],
+                cwd=str(workspace_path),
+            )
 
-        # 2. Write the question as PROMPT.md
-        prompt_path = workspace_path / "PROMPT.md"
-        prompt_path.write_text(f"# Investigation\n\n{question}\n")
-        self._run_git(["git", "add", "PROMPT.md"], cwd=str(workspace_path))
-        self._run_git(
-            ["git", "commit", "-m", "voronoi: investigation prompt"],
-            cwd=str(workspace_path),
-        )
+            # 2. Write the question as PROMPT.md
+            prompt_path = workspace_path / "PROMPT.md"
+            prompt_path.write_text(f"# Investigation\n\n{question}\n")
+            self._run_git(["git", "add", "PROMPT.md"], cwd=str(workspace_path))
+            self._run_git(
+                ["git", "commit", "-m", "voronoi: investigation prompt"],
+                cwd=str(workspace_path),
+            )
 
         # 3. voronoi init
         self._voronoi_init(workspace_path)
@@ -143,11 +154,30 @@ class WorkspaceManager:
         """Remove a workspace and its worktrees."""
         workspace_path = self.active_dir / f"inv-{investigation_id}-{slug}"
         swarm_path = self.active_dir / f"inv-{investigation_id}-{slug}-swarm"
+        workspace_lock = self._lock_name("workspace", workspace_path.name)
 
         removed = False
-        for p in [swarm_path, workspace_path]:
-            if p.exists():
-                shutil.rmtree(p)
+        with self._exclusive_lock(workspace_lock):
+            if swarm_path.exists():
+                for worktree in sorted(swarm_path.glob("agent-*")):
+                    if worktree.is_dir():
+                        subprocess.run(
+                            ["git", "worktree", "remove", str(worktree), "--force"],
+                            cwd=str(workspace_path if workspace_path.exists() else swarm_path.parent),
+                            capture_output=True,
+                            text=True,
+                        )
+                subprocess.run(
+                    ["git", "worktree", "prune"],
+                    cwd=str(workspace_path if workspace_path.exists() else swarm_path.parent),
+                    capture_output=True,
+                    text=True,
+                )
+                shutil.rmtree(swarm_path, ignore_errors=True)
+                removed = True
+
+            if workspace_path.exists():
+                shutil.rmtree(workspace_path)
                 removed = True
         return removed
 
@@ -183,6 +213,33 @@ class WorkspaceManager:
         # wasn't available.  Run it explicitly as a safety net.
         self._ensure_beads(workspace_path)
 
+        # Re-copy AGENTS.md after beads init — bd init overwrites it with
+        # its own template containing a "Landing the Plane" section that
+        # mandates git push, which conflicts with Voronoi's local-only
+        # lab workspace policy.  The Voronoi template redirects to CLAUDE.md
+        # which has the correct nuanced git discipline.
+        self._restore_agents_md(workspace_path)
+
+    def _restore_agents_md(self, workspace_path: Path) -> None:
+        """Overwrite AGENTS.md with the Voronoi template after bd init.
+
+        bd init creates its own AGENTS.md with a 'Landing the Plane' section
+        that unconditionally mandates git push.  Lab workspaces have no remote,
+        so agents loop on push failure.  The Voronoi template redirects to
+        CLAUDE.md which has the correct policy (push if remote exists, otherwise
+        commit locally).
+        """
+        try:
+            from voronoi.cli import _resolve_templates_dir, find_data_dir
+
+            templates = _resolve_templates_dir(find_data_dir())
+            src = templates / "AGENTS.md"
+            dst = workspace_path / "AGENTS.md"
+            if src.is_file():
+                shutil.copy2(src, dst)
+        except Exception:
+            logger.debug("Failed to restore AGENTS.md in %s", workspace_path, exc_info=True)
+
     def _ensure_beads(self, workspace_path: Path) -> None:
         """Initialize Beads (bd) in a workspace if not already present."""
         beads_dir = workspace_path / ".beads"
@@ -201,19 +258,18 @@ class WorkspaceManager:
             logger.debug("voronoi init failed in %s", workspace_path, exc_info=True)
 
     def _ensure_github_files(self, workspace_path: Path) -> None:
-        """Copy .github/{agents,prompts,skills}, scripts/, and runtime CLAUDE.md if missing."""
+        """Copy runtime agents/prompts/skills to .github/ in the workspace, plus scripts/ and templates."""
         try:
-            from voronoi.cli import find_data_dir, _resolve_github_src, _resolve_templates_dir
+            from voronoi.cli import find_data_dir, _resolve_templates_dir
 
             data = find_data_dir()
 
-            # Copy .github/ subdirectories if missing
+            # Copy agents/prompts/skills into workspace's .github/ if missing
             github_dst = workspace_path / ".github"
             if not (github_dst / "agents").is_dir():
-                github_src = _resolve_github_src(data)
                 github_dst.mkdir(exist_ok=True)
                 for subdir in ("agents", "prompts", "skills"):
-                    src = github_src / subdir
+                    src = data / subdir
                     dst = github_dst / subdir
                     if src.is_dir() and not dst.is_dir():
                         shutil.copytree(src, dst)
@@ -239,7 +295,62 @@ class WorkspaceManager:
             logger.debug("Failed to copy framework files to %s", workspace_path, exc_info=True)
 
     def _run_git(self, cmd: list[str], cwd: str) -> subprocess.CompletedProcess:
-        """Run a git command."""
-        return subprocess.run(
+        """Run a git command and check for failure."""
+        result = subprocess.run(
             cmd, capture_output=True, text=True, timeout=300, cwd=cwd
         )
+        if result.returncode != 0:
+            logger.error("git command failed: %s\nstderr: %s", cmd, result.stderr)
+            raise RuntimeError(f"git command failed: {' '.join(cmd)}\n{result.stderr}")
+        return result
+
+    def _lock_name(self, prefix: str, raw: str) -> str:
+        sanitized = re.sub(r"[^A-Za-z0-9._-]+", "-", raw).strip("-")
+        return f"{prefix}-{sanitized or 'lock'}"
+
+    @contextmanager
+    def _exclusive_lock(
+        self,
+        name: str,
+        timeout: float = 120.0,
+        poll_interval: float = 0.1,
+        stale_threshold: float = 600.0,
+    ):
+        """Acquire a best-effort inter-process lock using an atomic lock directory.
+
+        If a lock directory is older than *stale_threshold* seconds it is
+        assumed to be left over from a crashed process and is removed
+        automatically.
+        """
+        lock_dir = self.locks_dir / f"{name}.lock"
+        deadline = time.monotonic() + timeout
+
+        while True:
+            try:
+                lock_dir.mkdir()
+                # Write PID for diagnostics
+                try:
+                    (lock_dir / "pid").write_text(str(os.getpid()))
+                except OSError:
+                    pass
+                break
+            except FileExistsError:
+                # Check for stale lock
+                try:
+                    lock_age = time.time() - lock_dir.stat().st_mtime
+                    if lock_age > stale_threshold:
+                        logger.warning(
+                            "Removing stale lock '%s' (age=%.0fs)", name, lock_age
+                        )
+                        shutil.rmtree(lock_dir, ignore_errors=True)
+                        continue
+                except OSError:
+                    pass
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(f"Timed out waiting for lock: {name}")
+                time.sleep(poll_interval)
+
+        try:
+            yield
+        finally:
+            shutil.rmtree(lock_dir, ignore_errors=True)

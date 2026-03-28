@@ -89,7 +89,7 @@ ls -la figures/ablation.pdf
 # 5. Commit immediately (preserves progress on context overflow)
 git add figures/ablation.pdf scripts/plot_ablation.py
 git commit -m "Add figure: ablation comparison"
-git push origin <branch>
+# If `origin` exists, also run: git push origin <branch>
 ```
 
 **CRITICAL**: Commit after EACH figure. If your context window runs out mid-task,

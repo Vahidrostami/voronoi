@@ -143,7 +143,13 @@ import json, sys
 try:
     data = json.load(open('$BM_FILE'))
     hyps = data.get('hypotheses', [])
-    unresolved = [h['name'] for h in hyps if h.get('status') in ('untested', 'testing')]
+    # Schema migration: handle dict-keyed hypotheses (INV-33)
+    if isinstance(hyps, dict):
+        hyps = [v if isinstance(v, dict) else {'id': k, 'name': v} for k, v in hyps.items()]
+    if not isinstance(hyps, list):
+        hyps = []
+    hyps = [h for h in hyps if isinstance(h, dict)]
+    unresolved = [h.get('name', h.get('id', '?')) for h in hyps if h.get('status') in ('untested', 'testing')]
     if unresolved:
         print('UNRESOLVED:' + '; '.join(unresolved[:3]))
     else:

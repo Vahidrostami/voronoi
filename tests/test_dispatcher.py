@@ -7,6 +7,7 @@ The dispatcher now only: dispatch_next() + poll_progress().
 import json
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -16,6 +17,7 @@ from voronoi.server.dispatcher import (
     InvestigationDispatcher,
     RunningInvestigation,
 )
+from voronoi.server.events import SwarmEvent, append_event
 
 
 @pytest.fixture
@@ -59,7 +61,7 @@ class TestDispatchNext:
             workspace_path=tmp_path / "ws",
             tmux_session="test-session",
             question="test",
-            mode="investigate",
+            mode="discover",
         )
 
         with patch("subprocess.run"):
@@ -67,6 +69,37 @@ class TestDispatchNext:
 
         assert len(d.running) == 0
         mock_queue.fail.assert_called_once()
+
+    def test_recover_running_scientific_requires_completion_gate(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        mock_queue = MagicMock()
+        d._queue = mock_queue
+
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "deliverable.md").write_text("# Partial\n")
+
+        mock_queue.get_running.return_value = [
+            SimpleNamespace(
+                id=1,
+                workspace_path=str(tmp_path),
+                question="test",
+                mode="prove",
+                codename="Dopamine",
+                chat_id="123",
+                rigor="scientific",
+                started_at=time.time(),
+            )
+        ]
+
+        with patch("voronoi.server.dispatcher.subprocess.run", return_value=MagicMock(returncode=1)), \
+             patch.object(d, "_try_restart", return_value=False) as try_restart, \
+             patch.object(d, "_handle_completion") as handle_completion:
+            d._recover_running()
+
+        try_restart.assert_called_once()
+        assert handle_completion.call_count == 1
+        assert handle_completion.call_args.kwargs["failed"] is True
 
 
 class TestProgressMonitoring:
@@ -77,7 +110,7 @@ class TestProgressMonitoring:
             workspace_path=tmp_path,
             tmux_session="test",
             question="test",
-            mode="investigate",
+            mode="discover",
         )
         run.task_snapshot = {
             "bd-1": {"status": "in_progress", "title": "Task 1"},
@@ -101,7 +134,7 @@ class TestProgressMonitoring:
             workspace_path=tmp_path,
             tmux_session="test",
             question="test",
-            mode="investigate",
+            mode="discover",
             phase="starting",
         )
         run.task_snapshot = {"bd-1": {"status": "open", "title": "Task 1"}}
@@ -117,7 +150,7 @@ class TestProgressMonitoring:
             workspace_path=tmp_path,
             tmux_session="test",
             question="test",
-            mode="investigate",
+            mode="discover",
         )
         (tmp_path / ".swarm").mkdir()
         (tmp_path / ".swarm" / "deliverable.md").write_text("# Results\n")
@@ -131,7 +164,7 @@ class TestProgressMonitoring:
             workspace_path=tmp_path,
             tmux_session="test",
             question="test",
-            mode="investigate",
+            mode="discover",
         )
 
         with patch("subprocess.run") as mock_run:
@@ -155,7 +188,7 @@ class TestProgressMonitoring:
             workspace_path=tmp_path,
             tmux_session="test",
             question="test",
-            mode="investigate",
+            mode="discover",
         )
         run.task_snapshot = {"bd-1": {"status": "open", "title": "Old"}}
 
@@ -182,7 +215,7 @@ class TestProgressMonitoring:
             workspace_path=tmp_path,
             tmux_session="test",
             question="Why is model degrading?",
-            mode="investigate",
+            mode="discover",
         )
         run.task_snapshot = {"bd-1": {"status": "closed", "title": "Done"}}
 
@@ -204,7 +237,7 @@ class TestProgressMonitoring:
             workspace_path=tmp_path,
             tmux_session="test",
             question="Why is model degrading?",
-            mode="investigate",
+            mode="discover",
         )
         run.task_snapshot = {"bd-1": {"status": "open", "title": "Incomplete"}}
 
@@ -229,7 +262,7 @@ class TestProgressMonitoring:
             workspace_path=tmp_path,
             tmux_session="test",
             question="Test question",
-            mode="build",
+            mode="discover",
             chat_id="12345",
         )
         run.task_snapshot = {"bd-1": {"status": "closed", "title": "Done"}}
@@ -240,6 +273,91 @@ class TestProgressMonitoring:
         # If a document was sent, it should use the per-investigation chat_id
         for doc in docs:
             assert doc[0] == "12345", f"Expected chat_id '12345', got '{doc[0]}'"
+
+    def test_poll_progress_includes_event_log_alerts(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        d.running[1] = run
+
+        with patch.object(d, "_check_abort_signal"), \
+             patch.object(d, "check_human_gates"), \
+             patch.object(d, "_refresh_eval_score"), \
+             patch.object(d, "_check_progress", return_value=[{"type": "task_new", "msg": "task"}]), \
+             patch.object(d, "_check_event_log", return_value=[{"type": "event_log", "msg": "event"}]), \
+             patch.object(d, "_is_complete", return_value=False), \
+             patch.object(d, "_send_progress_batch") as send_batch, \
+             patch("voronoi.server.dispatcher.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            d.poll_progress()
+
+        sent_events = send_batch.call_args.args[1]
+        assert [event["type"] for event in sent_events] == ["task_new", "event_log"]
+
+    def test_poll_progress_reports_clean_exit_before_convergence(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        mock_queue = MagicMock()
+        d._queue = mock_queue
+
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "agent.log").write_text(
+            "Total usage est: 3 Premium requests\n"
+            "Total session time: 5m 43s\n"
+            "Breakdown by AI model:\n"
+            "logout\n"
+        )
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+            rigor="adaptive",
+        )
+        d.running[1] = run
+
+        with patch.object(d, "_check_abort_signal"), \
+             patch.object(d, "check_human_gates"), \
+             patch.object(d, "_refresh_eval_score"), \
+             patch.object(d, "_check_progress", return_value=[]), \
+             patch.object(d, "_check_event_log", return_value=[]), \
+             patch.object(d, "_try_restart", return_value=False), \
+             patch("voronoi.server.dispatcher.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1)
+            d.poll_progress()
+
+        failure_reason = mock_queue.fail.call_args.args[1]
+        assert "cleanly before convergence" in failure_reason
+        assert "no deliverable produced" in failure_reason.lower()
+
+    def test_check_event_log_reads_worker_worktrees(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+
+        swarm_dir = tmp_path / "investigation-swarm"
+        worker = swarm_dir / "agent-1"
+        worker.mkdir(parents=True)
+        (tmp_path / ".swarm-config.json").write_text(json.dumps({"swarm_dir": str(swarm_dir)}))
+        append_event(worker, SwarmEvent(agent="agent-1", event="tool_call", status="fail"))
+
+        events = d._check_event_log(run)
+
+        assert len(events) == 1
+        assert events[0]["type"] == "event_log"
+        assert "1 failures" in events[0]["msg"]
 
 
 class TestAbortSignal:
@@ -258,7 +376,7 @@ class TestAbortSignal:
             workspace_path=ws,
             tmux_session="test-session",
             question="test",
-            mode="investigate",
+            mode="discover",
         )
 
         with patch("subprocess.run"):
@@ -281,7 +399,7 @@ class TestAbortSignal:
             workspace_path=ws,
             tmux_session="test-session",
             question="test",
-            mode="investigate",
+            mode="discover",
         )
 
         d._check_abort_signal()
@@ -301,7 +419,7 @@ class TestHeartbeatStallDetection:
             workspace_path=tmp_path,
             tmux_session="test",
             question="test",
-            mode="investigate",
+            mode="discover",
         )
         events = d._check_heartbeat_stalls(run)
         assert events == []
@@ -313,7 +431,7 @@ class TestHeartbeatStallDetection:
             workspace_path=tmp_path,
             tmux_session="test",
             question="test",
-            mode="investigate",
+            mode="discover",
         )
         # Create a stalled heartbeat file
         from datetime import datetime, timezone, timedelta
@@ -333,6 +451,32 @@ class TestHeartbeatStallDetection:
         assert len(events) == 1
         assert "stuck" in events[0]["msg"]
 
+    def test_check_progress_does_not_emit_heartbeat_events_by_default(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        run.task_snapshot = {"bd-1": {"status": "in_progress", "title": "Task 1", "notes": ""}}
+
+        with patch.object(d, "_check_findings", return_value=[]), \
+             patch.object(d, "_check_design_invalid", return_value=[]), \
+             patch.object(d, "_check_event_log", return_value=[]), \
+             patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout=json.dumps([
+                    {"id": "bd-1", "status": "in_progress", "title": "Task 1", "notes": ""},
+                ]),
+                stderr="",
+            )
+            events = d._check_progress(run)
+
+        assert all(event["type"] != "heartbeat_stall" for event in events)
+
 
 # ---------------------------------------------------------------------------
 # DESIGN_INVALID detection
@@ -346,7 +490,7 @@ class TestDesignInvalidDetection:
             workspace_path=tmp_path,
             tmux_session="test",
             question="test",
-            mode="investigate",
+            mode="discover",
         )
         tasks = [
             {"id": "bd-5", "title": "Test encoding ablation", "status": "open",
@@ -364,7 +508,7 @@ class TestDesignInvalidDetection:
             workspace_path=tmp_path,
             tmux_session="test",
             question="test",
-            mode="investigate",
+            mode="discover",
         )
         tasks = [
             {"id": "bd-5", "title": "Test encoding", "status": "closed",
@@ -380,7 +524,7 @@ class TestDesignInvalidDetection:
             workspace_path=tmp_path,
             tmux_session="test",
             question="test",
-            mode="investigate",
+            mode="discover",
         )
         tasks = [
             {"id": "bd-5", "title": "Test", "status": "open",
@@ -406,7 +550,7 @@ class TestDesignInvalidHardGate:
             workspace_path=tmp_path,
             tmux_session="test",
             question="test",
-            mode="investigate",
+            mode="discover",
         )
         run.task_snapshot = {
             "bd-1": {"status": "open", "title": "Experiment",
@@ -421,7 +565,7 @@ class TestDesignInvalidHardGate:
             workspace_path=tmp_path,
             tmux_session="test",
             question="test",
-            mode="investigate",
+            mode="discover",
         )
         run.task_snapshot = {
             "bd-1": {"status": "closed", "title": "Experiment",
@@ -436,7 +580,7 @@ class TestDesignInvalidHardGate:
             workspace_path=tmp_path,
             tmux_session="test",
             question="test",
-            mode="investigate",
+            mode="discover",
         )
         run.task_snapshot = {
             "bd-1": {"status": "open", "title": "Task", "notes": ""},
@@ -451,7 +595,7 @@ class TestDesignInvalidHardGate:
             workspace_path=tmp_path,
             tmux_session="test",
             question="test",
-            mode="investigate",
+            mode="discover",
         )
         run.task_snapshot = {
             "bd-1": {"status": "open", "title": "Task"},
@@ -466,7 +610,7 @@ class TestDesignInvalidHardGate:
             workspace_path=tmp_path,
             tmux_session="test",
             question="test",
-            mode="investigate",
+            mode="discover",
         )
         (tmp_path / ".swarm").mkdir(parents=True)
         (tmp_path / ".swarm" / "deliverable.md").write_text("# Results\n")
@@ -484,7 +628,7 @@ class TestDesignInvalidHardGate:
             workspace_path=tmp_path,
             tmux_session="test",
             question="test",
-            mode="investigate",
+            mode="discover",
         )
         (tmp_path / ".swarm").mkdir(parents=True)
         (tmp_path / ".swarm" / "deliverable.md").write_text("# Results\n")
@@ -493,6 +637,25 @@ class TestDesignInvalidHardGate:
                      "notes": "DESIGN_INVALID: was fixed"},
         }
         assert d._is_complete(run) is True
+
+    def test_is_complete_string_convergence_json(self, dispatcher_setup):
+        """convergence.json containing a string must not crash _is_complete."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+            rigor="scientific",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "deliverable.md").write_text("# Results\n")
+        # Write convergence.json as a bare string (not a dict)
+        (swarm / "convergence.json").write_text('"approved"')
+        # Should return False (not recognized) but must NOT raise AttributeError
+        assert d._is_complete(run) is False
 
     def test_handle_completion_blocked_by_design_invalid(self, dispatcher_setup):
         """_handle_completion should refuse success when DESIGN_INVALID is open."""
@@ -505,7 +668,7 @@ class TestDesignInvalidHardGate:
             workspace_path=tmp_path,
             tmux_session="test",
             question="test",
-            mode="investigate",
+            mode="discover",
         )
         run.task_snapshot = {
             "bd-1": {"status": "open", "title": "Experiment",
@@ -531,7 +694,7 @@ class TestDesignInvalidHardGate:
             workspace_path=tmp_path,
             tmux_session="test",
             question="test",
-            mode="investigate",
+            mode="discover",
         )
         run.task_snapshot = {
             "bd-1": {"status": "open", "title": "Experiment",
@@ -551,7 +714,7 @@ class TestDesignInvalidHardGate:
             workspace_path=tmp_path,
             tmux_session="test",
             question="test",
-            mode="investigate",
+            mode="discover",
         )
         run.task_snapshot = {}
 
@@ -561,3 +724,520 @@ class TestDesignInvalidHardGate:
         ]
         d._diff_tasks(run, tasks)
         assert "DESIGN_INVALID" in run.task_snapshot["bd-1"]["notes"]
+
+
+# ---------------------------------------------------------------------------
+# Resume context injection on restart
+# ---------------------------------------------------------------------------
+
+class TestResumeContextInjection:
+    def test_build_resume_prompt_creates_new_file(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        run.retry_count = 1
+        run.eval_score = 0.65
+        run.task_snapshot = {
+            "bd-1": {"status": "closed", "title": "Task 1"},
+            "bd-2": {"status": "open", "title": "Write manuscript"},
+        }
+
+        prompt_file = tmp_path / ".swarm" / "orchestrator-prompt.txt"
+        prompt_file.parent.mkdir(parents=True, exist_ok=True)
+        prompt_file.write_text("Original prompt content")
+
+        resume_file = d._build_resume_prompt(run)
+
+        # Resume file should be a NEW file, not the original
+        assert resume_file != prompt_file
+        assert resume_file.exists()
+        content = resume_file.read_text()
+        assert "RESTART" in content
+        assert "1/2" in content  # tasks complete
+        assert "Write manuscript" in content  # remaining task
+        assert "0.65" in content  # eval score
+        # Original prompt must NOT be modified
+        assert prompt_file.read_text() == "Original prompt content"
+
+    def test_build_resume_prompt_includes_success_criteria(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        run.retry_count = 1
+
+        prompt_file = tmp_path / ".swarm" / "orchestrator-prompt.txt"
+        prompt_file.parent.mkdir(parents=True, exist_ok=True)
+        prompt_file.write_text("Original prompt")
+
+        sc_path = tmp_path / ".swarm" / "success-criteria.json"
+        sc_path.write_text(json.dumps([
+            {"id": "SC1", "description": "L4 > L1", "met": True},
+            {"id": "SC2", "description": "Pipeline 10x", "met": False},
+        ]))
+
+        resume_file = d._build_resume_prompt(run)
+
+        content = resume_file.read_text()
+        assert "1/2 met" in content
+        assert "SC1" in content
+        assert "SC2" in content
+
+    def test_build_resume_prompt_includes_checkpoint(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        run.retry_count = 1
+
+        prompt_file = tmp_path / ".swarm" / "orchestrator-prompt.txt"
+        prompt_file.parent.mkdir(parents=True, exist_ok=True)
+        prompt_file.write_text("Original prompt")
+
+        from voronoi.science.convergence import OrchestratorCheckpoint, save_checkpoint
+        cp = OrchestratorCheckpoint(
+            cycle=5, phase="writing", total_tasks=10, closed_tasks=8,
+            next_actions=["Dispatch scribe for manuscript"],
+        )
+        save_checkpoint(tmp_path, cp)
+
+        resume_file = d._build_resume_prompt(run)
+
+        content = resume_file.read_text()
+        assert "cycle 5" in content
+        assert "writing" in content
+        assert "8/10" in content
+
+    def test_build_resume_prompt_tolerates_missing_files(self, dispatcher_setup):
+        """Should not crash if checkpoint/criteria files are missing."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        run.retry_count = 1
+
+        prompt_file = tmp_path / ".swarm" / "orchestrator-prompt.txt"
+        prompt_file.parent.mkdir(parents=True, exist_ok=True)
+        prompt_file.write_text("Original prompt")
+
+        resume_file = d._build_resume_prompt(run)
+
+        content = resume_file.read_text()
+        assert "RESTART" in content
+        assert "Scribe" in content
+
+
+class TestLaunchInTmux:
+    def test_non_copilot_agent_skips_copilot_auth(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+
+        with patch.object(d, "_ensure_copilot_auth", side_effect=AssertionError("should not be called")), \
+             patch("voronoi.server.dispatcher.shutil.which", return_value="/bin/echo"), \
+             patch("voronoi.server.dispatcher.subprocess.run") as mock_run:
+            d._launch_in_tmux("test-session", tmp_path)
+
+        assert mock_run.call_count >= 3
+
+
+# ---------------------------------------------------------------------------
+# Workspace activity detection (Change 4)
+# ---------------------------------------------------------------------------
+
+class TestWorkspaceActivityDetection:
+    def test_has_activity_with_checkpoint(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True, exist_ok=True)
+        (swarm / "orchestrator-checkpoint.json").write_text(
+            json.dumps({"cycle": 2, "total_tasks": 5})
+        )
+        assert d._has_workspace_activity(run) is True
+
+    def test_has_activity_with_experiments(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True, exist_ok=True)
+        (swarm / "experiments.tsv").write_text(
+            "timestamp\ttask_id\tbranch\tmetric\tvalue\tstatus\tdesc\n"
+            "2026-03-26\tbd-1\tagent-pilot\tMBRS\t0.3\tkeep\tpilot\n"
+        )
+        assert d._has_workspace_activity(run) is True
+
+    def test_no_activity_with_empty_workspace(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        assert d._has_workspace_activity(run) is False
+
+    def test_no_activity_with_cycle_zero(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True, exist_ok=True)
+        (swarm / "orchestrator-checkpoint.json").write_text(
+            json.dumps({"cycle": 0, "total_tasks": 0})
+        )
+        assert d._has_workspace_activity(run) is False
+
+
+# ---------------------------------------------------------------------------
+# Context pressure directives (Changes 3, 6)
+# ---------------------------------------------------------------------------
+
+class TestContextPressure:
+    def test_advisory_directive_at_threshold(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        (tmp_path / ".swarm").mkdir(parents=True, exist_ok=True)
+
+        d._check_context_pressure(run, elapsed_hours=7)
+
+        directive_path = tmp_path / ".swarm" / "dispatcher-directive.json"
+        assert directive_path.exists()
+        data = json.loads(directive_path.read_text())
+        assert data["directive"] == "context_advisory"
+        assert run.context_directive_level == "context_advisory"
+
+    def test_warning_directive_escalates(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        (tmp_path / ".swarm").mkdir(parents=True, exist_ok=True)
+
+        d._check_context_pressure(run, elapsed_hours=11)
+
+        directive_path = tmp_path / ".swarm" / "dispatcher-directive.json"
+        data = json.loads(directive_path.read_text())
+        assert data["directive"] == "context_warning"
+        assert run.context_directive_level == "context_warning"
+
+    def test_critical_directive_from_checkpoint(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True, exist_ok=True)
+        (swarm / "orchestrator-checkpoint.json").write_text(
+            json.dumps({"context_window_remaining_pct": 0.12})
+        )
+
+        d._check_context_pressure(run, elapsed_hours=5)  # early, but self-reported
+
+        directive_path = swarm / "dispatcher-directive.json"
+        assert directive_path.exists()
+        data = json.loads(directive_path.read_text())
+        assert data["directive"] == "context_critical"
+
+    def test_no_duplicate_directives(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        (tmp_path / ".swarm").mkdir(parents=True, exist_ok=True)
+
+        d._check_context_pressure(run, elapsed_hours=7)
+        d._check_context_pressure(run, elapsed_hours=8)
+
+        # Should not re-write if same level
+        assert run.context_directive_level == "context_advisory"
+
+
+# ---------------------------------------------------------------------------
+# Workspace compaction (Change 5)
+# ---------------------------------------------------------------------------
+
+class TestWorkspaceCompaction:
+    def test_compact_experiments_archives_old_rows(self, dispatcher_setup):
+        from voronoi.server.compact import compact_workspace_state
+        d, msgs, docs, tmp_path = dispatcher_setup
+
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True, exist_ok=True)
+
+        header = "timestamp\ttask_id\tbranch\tmetric\tvalue\tstatus\tdesc"
+        rows = [f"2026-03-{i:02d}\tbd-{i}\tagent-{i}\tMBRS\t{i/100}\tkeep\trun {i}"
+                for i in range(1, 31)]
+        (swarm / "experiments.tsv").write_text(
+            header + "\n" + "\n".join(rows) + "\n"
+        )
+
+        compact_workspace_state(tmp_path)
+
+        # Active file should have header + 20 recent rows
+        active = (swarm / "experiments.tsv").read_text().strip().splitlines()
+        assert len(active) == 21  # header + 20
+
+        # Archive should have the 10 old rows
+        archive = (swarm / "experiments.archive.tsv").read_text().strip().splitlines()
+        assert len(archive) == 11  # header + 10
+
+    def test_compact_writes_state_digest(self, dispatcher_setup):
+        from voronoi.server.compact import compact_workspace_state
+        d, msgs, docs, tmp_path = dispatcher_setup
+
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True, exist_ok=True)
+        (swarm / "success-criteria.json").write_text(json.dumps([
+            {"id": "SC1", "description": "Test criterion", "met": True},
+        ]))
+
+        compact_workspace_state(tmp_path)
+
+        digest = (swarm / "state-digest.md").read_text()
+        assert "State Digest" in digest
+        assert "SC1" in digest
+        assert "1/1 met" in digest
+
+    def test_compact_recent_events_keeps_live_log(self, dispatcher_setup):
+        from voronoi.server.compact import compact_workspace_state
+
+        d, msgs, docs, tmp_path = dispatcher_setup
+        for i in range(60):
+            append_event(
+                tmp_path,
+                SwarmEvent(ts=time.time() - 60, agent="agent", event=f"event-{i}"),
+            )
+
+        changed = compact_workspace_state(tmp_path)
+
+        assert changed is False
+        events_file = tmp_path / ".swarm" / "events.jsonl"
+        assert len(events_file.read_text().strip().splitlines()) == 60
+        assert not (tmp_path / ".swarm" / "events.archive.jsonl").exists()
+
+    def test_compact_calls_bd_compact(self, dispatcher_setup):
+        """compact_workspace_state should call bd compact when .beads/ exists."""
+        from voronoi.server.compact import compact_workspace_state
+
+        d, msgs, docs, tmp_path = dispatcher_setup
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True, exist_ok=True)
+        (tmp_path / ".beads").mkdir()
+
+        with patch("voronoi.beads.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0, stdout="", stderr=""
+            )
+            changed = compact_workspace_state(tmp_path)
+
+        assert changed is True
+        # Verify bd compact was called
+        calls = mock_run.call_args_list
+        assert any(
+            call[0][0] == ["bd", "compact"] for call in calls
+        )
+
+
+# ---------------------------------------------------------------------------
+# New tests for reliability fixes
+# ---------------------------------------------------------------------------
+
+class TestReliabilityFixes:
+    def test_resume_prompt_includes_question(self, dispatcher_setup):
+        """Resume prompt must include the original investigation question."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="Does structured encoding improve decision quality?",
+            mode="discover",
+        )
+        run.retry_count = 1
+        prompt_file = tmp_path / ".swarm" / "orchestrator-prompt.txt"
+        prompt_file.parent.mkdir(parents=True, exist_ok=True)
+        prompt_file.write_text("Original prompt")
+
+        resume_file = d._build_resume_prompt(run)
+        content = resume_file.read_text()
+        assert "structured encoding" in content
+        assert "Investigation Question" in content
+
+    def test_resume_prompt_includes_protocol_reference(self, dispatcher_setup):
+        """Resume prompt must reference the orchestrator role file."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test question",
+            mode="discover",
+        )
+        run.retry_count = 1
+        prompt_file = tmp_path / ".swarm" / "orchestrator-prompt.txt"
+        prompt_file.parent.mkdir(parents=True, exist_ok=True)
+        prompt_file.write_text("Original prompt")
+
+        resume_file = d._build_resume_prompt(run)
+        content = resume_file.read_text()
+        assert "swarm-orchestrator.agent.md" in content
+        assert "spawn-agent.sh" in content
+
+    def test_has_pending_human_gate(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        assert d._has_pending_human_gate(run) is False
+
+        gate_path = tmp_path / ".swarm" / "human-gate.json"
+        gate_path.parent.mkdir(parents=True, exist_ok=True)
+        gate_path.write_text(json.dumps({"status": "pending", "gate": "convergence"}))
+        assert d._has_pending_human_gate(run) is True
+
+        gate_path.write_text(json.dumps({"status": "notified", "gate": "convergence"}))
+        assert d._has_pending_human_gate(run) is True
+
+        gate_path.write_text(json.dumps({"status": "approved"}))
+        assert d._has_pending_human_gate(run) is False
+
+    def test_restore_task_snapshot(self, dispatcher_setup):
+        """_restore_task_snapshot should populate task_snapshot from Beads."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        assert run.task_snapshot == {}
+
+        with patch("voronoi.beads.run_bd") as mock_bd:
+            mock_bd.return_value = (0, json.dumps([
+                {"id": "bd-1", "status": "closed", "title": "Task 1", "notes": ""},
+                {"id": "bd-2", "status": "open", "title": "Task 2", "notes": ""},
+            ]))
+            d._restore_task_snapshot(run)
+
+        assert len(run.task_snapshot) == 2
+        assert run.task_snapshot["bd-1"]["status"] == "closed"
+        assert run.task_snapshot["bd-2"]["status"] == "open"
+
+    def test_is_complete_accepts_negative_result(self, dispatcher_setup):
+        """_is_complete should accept negative_result convergence status."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+            rigor="scientific",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True, exist_ok=True)
+        (swarm / "deliverable.md").write_text("# Results")
+        (swarm / "convergence.json").write_text(json.dumps({
+            "status": "negative_result",
+            "converged": True,
+            "reason": "Valid negative result",
+        }))
+
+        assert d._is_complete(run) is True
+
+    def test_check_criteria_progress_alerts_zero(self, dispatcher_setup):
+        """Should alert when zero criteria met after 4+ hours."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True, exist_ok=True)
+        (swarm / "success-criteria.json").write_text(json.dumps([
+            {"id": "SC1", "description": "test", "met": False},
+            {"id": "SC2", "description": "test", "met": False},
+        ]))
+
+        d._check_criteria_progress(run, elapsed_hours=5.0)
+        assert any("0/2 success criteria met" in m for m in msgs)
+
+    def test_check_criteria_progress_no_alert_when_met(self, dispatcher_setup):
+        """Should not alert when some criteria are met."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True, exist_ok=True)
+        (swarm / "success-criteria.json").write_text(json.dumps([
+            {"id": "SC1", "description": "test", "met": True},
+            {"id": "SC2", "description": "test", "met": False},
+        ]))
+
+        d._check_criteria_progress(run, elapsed_hours=5.0)
+        assert not any("success criteria met" in m for m in msgs)

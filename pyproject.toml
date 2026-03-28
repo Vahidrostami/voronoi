@@ -25,7 +25,6 @@ where = ["src"]
 [tool.setuptools.package-data]
 voronoi = ["data/**/*"]
 
-# NOTE: Before building a distributable package (pip install . / python -m build),
-# run: ./scripts/sync-package-data.sh
-# This copies scripts/, demos/, .github/, CLAUDE.md, AGENTS.md into src/voronoi/data/.
-# Editable installs (pip install -e .) don't need this — the CLI finds the repo root.
+# NOTE: All runtime content (agents, prompts, skills, scripts, demos, templates)
+# lives in src/voronoi/data/ — the canonical location tracked in git.
+# Only .env.example needs syncing: ./scripts/sync-package-data.sh

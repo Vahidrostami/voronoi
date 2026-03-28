@@ -36,7 +36,8 @@ def _fetch_tasks(workspace: Path) -> list[dict] | None:
         if not isinstance(data, list):
             logger.warning("bd list --json returned non-list: %s", type(data).__name__)
             return None
-        return data
+        # Filter out non-dict elements to prevent AttributeError on .get()
+        return [item for item in data if isinstance(item, dict)] or None
     except (json.JSONDecodeError, ValueError) as e:
         logger.warning("bd list --json returned invalid JSON in %s: %s", workspace, e)
         return None
@@ -66,7 +67,7 @@ def _find_contested_findings(workspace: Path, tasks: list[dict] | None = None) -
     if not tasks:
         return []
     return [t.get("id", "") for t in tasks
-            if "ADVERSARIAL_RESULT: CONTESTED" in t.get("notes", "")]
+            if extract_field(t.get("notes", ""), "ADVERSARIAL_RESULT").upper() == "CONTESTED"]
 
 
 def _find_theories(workspace: Path, tasks: list[dict] | None = None) -> list[dict]:
@@ -75,7 +76,7 @@ def _find_theories(workspace: Path, tasks: list[dict] | None = None) -> list[dic
     if not tasks:
         return []
     return [{"id": t.get("id", ""), "status": extract_field(t.get("notes", ""), "STATUS")}
-            for t in tasks if "TYPE:theory" in t.get("notes", "")]
+            for t in tasks if extract_field(t.get("notes", ""), "TYPE").lower() == "theory"]
 
 
 def _find_tested_predictions(workspace: Path, tasks: list[dict] | None = None) -> list[str]:
@@ -93,7 +94,8 @@ def _find_undocumented_fragile(workspace: Path, tasks: list[dict] | None = None)
     if not tasks:
         return []
     return [t.get("id", "") for t in tasks
-            if "ROBUST:no" in t.get("notes", "").lower() and "CONDITIONS:" not in t.get("notes", "")]
+            if extract_field(t.get("notes", ""), "ROBUST").lower() == "no"
+            and not extract_field(t.get("notes", ""), "CONDITIONS")]
 
 
 def _find_unreplicated_high_impact(workspace: Path, tasks: list[dict] | None = None) -> list[str]:
@@ -103,7 +105,7 @@ def _find_unreplicated_high_impact(workspace: Path, tasks: list[dict] | None = N
         return []
     return [t.get("id", "") for t in tasks
             if "FINDING" in t.get("title", "").upper() and t.get("priority", 9) <= 1
-            and ("replicated:no" in t.get("notes", "").lower() or "replicated" not in t.get("notes", "").lower())]
+            and extract_field(t.get("notes", ""), "REPLICATED").lower() != "yes"]
 
 
 def _find_design_invalid(workspace: Path, tasks: list[dict] | None = None) -> list[str]:
@@ -130,7 +132,7 @@ class ConsistencyConflict:
 def check_consistency(findings: list[dict]) -> list[ConsistencyConflict]:
     """Pairwise consistency check across validated findings."""
     conflicts: list[ConsistencyConflict] = []
-    validated = [f for f in findings if "STAT_REVIEW: APPROVED" in f.get("notes", "")]
+    validated = [f for f in findings if extract_field(f.get("notes", ""), "STAT_REVIEW").upper() == "APPROVED"]
     for i, a in enumerate(validated):
         for b in validated[i + 1:]:
             c = _check_pair_consistency(a, b)
@@ -180,7 +182,7 @@ def _tokenize_title(title: str) -> set[str]:
 def check_consistency_enhanced(findings: list[dict]) -> list[ConsistencyConflict]:
     """Enhanced pairwise check with stemming + magnitude comparison."""
     conflicts: list[ConsistencyConflict] = []
-    validated = [f for f in findings if "STAT_REVIEW: APPROVED" in f.get("notes", "")]
+    validated = [f for f in findings if extract_field(f.get("notes", ""), "STAT_REVIEW").upper() == "APPROVED"]
     for i, a in enumerate(validated):
         for b in validated[i + 1:]:
             c = _check_pair_enhanced(a, b)

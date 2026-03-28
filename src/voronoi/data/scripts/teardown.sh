@@ -15,6 +15,31 @@ fi
 
 cd "$PROJECT_DIR"
 
+resolve_default_branch() {
+    local branch
+    branch=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##') || true
+    if [[ -n "$branch" ]]; then
+        echo "$branch"
+        return
+    fi
+    branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || true
+    if [[ -n "$branch" && "$branch" != "HEAD" ]]; then
+        echo "$branch"
+        return
+    fi
+    if git show-ref --verify --quiet refs/heads/main; then
+        echo "main"
+        return
+    fi
+    if git show-ref --verify --quiet refs/heads/master; then
+        echo "master"
+        return
+    fi
+    echo "main"
+}
+
+MAIN_BRANCH=$(resolve_default_branch)
+
 echo "=== TEARDOWN: Removing agent worktrees and sessions ==="
 echo ""
 
@@ -30,7 +55,7 @@ for worktree in "$SWARM_DIR"/agent-*; do
         # Force mode: destroy everything
         git worktree remove "$worktree" --force 2>/dev/null || rm -rf "$worktree"
         echo "✓ Removed worktree: $BRANCH (forced)"
-    elif git branch --merged main 2>/dev/null | grep -q "$BRANCH"; then
+    elif git branch --merged "$MAIN_BRANCH" 2>/dev/null | grep -q "$BRANCH"; then
         # Safe mode: only remove if merged to main
         git worktree remove "$worktree" --force 2>/dev/null || rm -rf "$worktree"
         echo "✓ Removed merged worktree: $BRANCH"
@@ -47,7 +72,7 @@ for branch in $(git branch --list "agent-*" 2>/dev/null); do
     if [[ "$FORCE" == "true" ]]; then
         git branch -D "$branch" 2>/dev/null || true
         echo "✓ Deleted local branch: $branch (forced)"
-    elif git branch --merged main 2>/dev/null | grep -q "$branch"; then
+    elif git branch --merged "$MAIN_BRANCH" 2>/dev/null | grep -q "$branch"; then
         git branch -d "$branch" 2>/dev/null || true
         echo "✓ Deleted merged local branch: $branch"
     else
@@ -63,7 +88,7 @@ for remote_branch in $(git branch -r --list 'origin/agent-*' 2>/dev/null); do
     if [[ "$FORCE" == "true" ]]; then
         git push origin --delete "$local_name" 2>/dev/null || true
         echo "✓ Deleted remote branch: $local_name (forced)"
-    elif git branch --merged main 2>/dev/null | grep -q "$local_name"; then
+    elif git branch --merged "$MAIN_BRANCH" 2>/dev/null | grep -q "$local_name"; then
         git push origin --delete "$local_name" 2>/dev/null || true
         echo "✓ Deleted merged remote branch: $local_name"
     else

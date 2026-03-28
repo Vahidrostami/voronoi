@@ -92,6 +92,15 @@ def has_beads_dir(cwd: str | None) -> bool:
     return False
 
 
+def add_dependency(child: str, parent: str, *,
+                   cwd: str | None = None) -> tuple[int, str]:
+    """Add a Beads dependency link: *child* is blocked by *parent*.
+
+    Wraps ``bd dep add <child> <parent>``.
+    """
+    return run_bd("dep", "add", child, parent, cwd=cwd)
+
+
 def run_cmd(cmd: list[str], cwd: str | None = None,
             timeout: int = 30) -> tuple[int, str]:
     """Run an arbitrary command with ``BEADS_DIR`` set if applicable.

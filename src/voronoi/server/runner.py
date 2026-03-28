@@ -42,6 +42,10 @@ class ServerConfig:
         self.orchestrator_model = ""  # e.g. "claude-opus-4.6"
         self.worker_model = ""        # e.g. "claude-sonnet-4.6"
         self.workspace_retention_days = 30
+        self.context_advisory_hours = 6
+        self.context_warning_hours = 10
+        self.context_critical_hours = 14
+        self.compact_interval_hours = 6
         self.github_lab_org = "voronoi-lab"
         self.github_visibility = "private"
         self.github_auto_publish = True
@@ -67,6 +71,19 @@ class ServerConfig:
                 )
                 self.workspace_retention_days = data.get("server", {}).get(
                     "workspace_retention_days", self.workspace_retention_days
+                )
+                srv = data.get("server", {})
+                self.context_advisory_hours = srv.get(
+                    "context_advisory_hours", self.context_advisory_hours
+                )
+                self.context_warning_hours = srv.get(
+                    "context_warning_hours", self.context_warning_hours
+                )
+                self.context_critical_hours = srv.get(
+                    "context_critical_hours", self.context_critical_hours
+                )
+                self.compact_interval_hours = srv.get(
+                    "compact_interval_hours", self.compact_interval_hours
                 )
                 gh = data.get("github", {})
                 self.github_lab_org = gh.get("lab_org", self.github_lab_org)
@@ -105,6 +122,10 @@ class ServerConfig:
             ("max_concurrent", "VORONOI_MAX_CONCURRENT"),
             ("max_agents_per_investigation", "VORONOI_MAX_AGENTS"),
             ("workspace_retention_days", "VORONOI_WORKSPACE_RETENTION_DAYS"),
+            ("context_advisory_hours", "VORONOI_CONTEXT_ADVISORY_HOURS"),
+            ("context_warning_hours", "VORONOI_CONTEXT_WARNING_HOURS"),
+            ("context_critical_hours", "VORONOI_CONTEXT_CRITICAL_HOURS"),
+            ("compact_interval_hours", "VORONOI_COMPACT_INTERVAL_HOURS"),
         ]:
             val = env(var)
             if val:
@@ -153,6 +174,10 @@ class ServerConfig:
                 "orchestrator_model": self.orchestrator_model,
                 "worker_model": self.worker_model,
                 "workspace_retention_days": self.workspace_retention_days,
+                "context_advisory_hours": self.context_advisory_hours,
+                "context_warning_hours": self.context_warning_hours,
+                "context_critical_hours": self.context_critical_hours,
+                "compact_interval_hours": self.compact_interval_hours,
             },
             "github": {
                 "lab_org": self.github_lab_org,
@@ -173,7 +198,7 @@ class ServerConfig:
 
 
 def create_investigation_from_text(
-    text: str, chat_id: str, mode: str = "investigate", rigor: str = "scientific",
+    text: str, chat_id: str, mode: str = "discover", rigor: str = "adaptive",
 ) -> Investigation:
     """Parse user text into an Investigation, extracting repo URL if present."""
     repo_ref = extract_repo_url(text)

@@ -7,43 +7,23 @@ in test_dispatcher.py.  These tests cover the formatting functions only.
 from pathlib import Path
 
 from voronoi.gateway.progress import (
-    format_workflow_start, format_workflow_complete,
     format_launch, format_complete, format_failure, format_alert,
     format_restart, format_duration, progress_bar, estimate_remaining,
     build_digest, build_digest_whatsup, assess_track_status,
-    phase_description,
+    phase_description, phase_position, _synthesize_narrative,
+    VOICE_PHASE_VARIANTS, MSG_TYPE_MILESTONE, MSG_TYPE_STATUS,
 )
-
-
-class TestFormatting:
-    def test_format_workflow_start(self):
-        msg = format_workflow_start("investigate", "scientific", "Why is latency high?")
-        assert "investigate" in msg.lower()
-        assert "scientific" in msg.lower() or "hypothesis" in msg.lower()
-        assert "Why is latency high?" in msg
-
-    def test_format_workflow_start_explore(self):
-        msg = format_workflow_start("explore", "analytical", "Redis vs Memcached")
-        assert "Redis vs Memcached" in msg
-
-    def test_format_workflow_start_build(self):
-        msg = format_workflow_start("build", "standard", "Build REST API")
-        assert "Build REST API" in msg
-
-    def test_format_workflow_complete(self):
-        msg = format_workflow_complete("investigate", 12, 3, 15.5)
-        assert "12" in msg
 
 
 class TestBuddyFormatters:
     def test_format_launch(self):
-        msg = format_launch("Synapse", "investigate", "scientific", "Why is latency high?")
+        msg = format_launch("Synapse", "discover", "adaptive", "Why is latency high?")
         assert "Synapse" in msg
         assert "is live" in msg
         assert "latency" in msg
 
     def test_format_complete(self):
-        msg = format_complete("Synapse", "investigate", 20, 18, 3600)
+        msg = format_complete("Synapse", "discover", 20, 18, 3600)
         assert "Synapse" in msg
         assert "done" in msg.lower()
         assert "18" in msg
@@ -63,6 +43,16 @@ class TestBuddyFormatters:
         msg = format_restart("Synapse", 1, 2, log_tail="last line")
         assert "Synapse" in msg
         assert "1/2" in msg
+        assert "crashed" in msg
+
+    def test_format_restart_clean_exit(self):
+        msg = format_restart("Synapse", 1, 2, clean_exit=True)
+        assert "exited early" in msg
+        assert "crashed" not in msg
+
+    def test_format_restart_crash(self):
+        msg = format_restart("Synapse", 1, 2, clean_exit=False)
+        assert "crashed" in msg
 
     def test_format_duration(self):
         assert format_duration(300) == "5min"
@@ -133,9 +123,9 @@ class TestBuildDigest:
             "t2": {"status": "in_progress", "notes": ""},
             "t3": {"status": "open", "notes": ""},
         }
-        msg = build_digest(
+        msg, msg_type = build_digest(
             codename="Synapse",
-            mode="investigate",
+            mode="discover",
             phase="investigating",
             elapsed_sec=3600,
             task_snapshot=snapshot,
@@ -146,13 +136,14 @@ class TestBuildDigest:
         )
         assert "Synapse" in msg
         assert "1h" in msg
-        assert "Finished" in msg
+        assert "✓" in msg or "Completed" in msg
         assert "33%" in msg or "1/3" in msg
+        assert msg_type == MSG_TYPE_STATUS
 
     def test_digest_with_findings(self, tmp_path):
-        msg = build_digest(
+        msg, msg_type = build_digest(
             codename="Synapse",
-            mode="investigate",
+            mode="discover",
             phase="reviewing",
             elapsed_sec=7200,
             task_snapshot={"t1": {"status": "closed", "notes": ""}},
@@ -161,8 +152,9 @@ class TestBuildDigest:
                 {"type": "finding", "msg": "🔬 *NEW FINDING*\nSimpson's paradox detected"},
             ],
         )
-        assert "finding" in msg.lower()
         assert "Simpson" in msg
+        assert "★" in msg
+        assert msg_type == MSG_TYPE_MILESTONE
 
     def test_digest_with_experiments_tsv(self, tmp_path):
         (tmp_path / ".swarm").mkdir()
@@ -171,9 +163,9 @@ class TestBuildDigest:
             "2026-01-01\tbd-1\tagent-1\tmbrs\t0.5\tkeep\tscenario 1\n"
             "2026-01-01\tbd-2\tagent-1\tmbrs\t0.3\tdiscard\tscenario 2\n"
         )
-        msg = build_digest(
+        msg, _ = build_digest(
             codename="Synapse",
-            mode="investigate",
+            mode="discover",
             phase="investigating",
             elapsed_sec=3600,
             task_snapshot={"t1": {"status": "in_progress", "notes": ""}},
@@ -183,6 +175,35 @@ class TestBuildDigest:
         assert "Experiment" in msg
         assert "1 good" in msg
         assert "1 discard" in msg
+
+    def test_digest_merges_worker_ledgers_and_artifacts(self, tmp_path):
+        (tmp_path / ".swarm").mkdir()
+        swarm_dir = tmp_path.parent / f"{tmp_path.name}-swarm"
+        agent_dir = swarm_dir / "agent-phase2"
+        (agent_dir / ".swarm").mkdir(parents=True)
+        (agent_dir / "demos" / "demo-a" / "output").mkdir(parents=True)
+        (tmp_path / ".swarm-config.json").write_text(
+            '{"swarm_dir": "%s"}' % str(swarm_dir)
+        )
+        (agent_dir / ".swarm" / "experiments.tsv").write_text(
+            "timestamp\ttask_id\tbranch\tmetric_name\tmetric_value\tstatus\tdescription\n"
+            "2026-01-01\tbd-9\tagent-phase2\tmbrs\t0.7\tkeep\tscenario 9\n"
+        )
+        (agent_dir / "demos" / "demo-a" / "output" / "pilot_results.json").write_text("{}")
+
+        msg, _ = build_digest(
+            codename="Synapse",
+            mode="discover",
+            phase="investigating",
+            elapsed_sec=3600,
+            task_snapshot={"t1": {"status": "in_progress", "notes": ""}},
+            workspace=tmp_path,
+            events_since_last=[],
+        )
+
+        assert "Experiment" in msg
+        assert "1 good" in msg
+        assert "Observed artifacts" in msg
 
 
 class TestBuildDigestWhatsup:
@@ -209,5 +230,136 @@ class TestBuildDigestWhatsup:
         )
         assert "Synapse" in msg
         assert "1h" in msg
-        assert "8/20" in msg
+        assert "8/20" in msg or "Phase" in msg
         assert "accuracy" in msg.lower()
+
+
+class TestVoiceRotation:
+    def test_voice_variants_exist_for_all_phases(self):
+        from voronoi.gateway.progress import PHASE_ORDER
+        for phase in PHASE_ORDER:
+            assert phase in VOICE_PHASE_VARIANTS
+            assert len(VOICE_PHASE_VARIANTS[phase]) >= 2
+
+    def test_phase_description_rotates_by_codename(self):
+        desc_a = phase_description("discover", "investigating", codename="Synapse")
+        desc_b = phase_description("discover", "investigating", codename="Dopamine")
+        # Both should be valid variant strings (not fallback)
+        assert desc_a in VOICE_PHASE_VARIANTS["investigating"]
+        assert desc_b in VOICE_PHASE_VARIANTS["investigating"]
+
+    def test_phase_description_deterministic(self):
+        d1 = phase_description("discover", "investigating", codename="Synapse")
+        d2 = phase_description("discover", "investigating", codename="Synapse")
+        assert d1 == d2
+
+    def test_phase_description_fallback_without_codename(self):
+        desc = phase_description("discover", "investigating")
+        assert "experiment" in desc.lower() or "parallel" in desc.lower()
+
+    def test_phase_position(self):
+        step, total = phase_position("investigating")
+        assert step == 4
+        assert total == 8
+
+    def test_phase_position_unknown(self):
+        step, total = phase_position("unknown")
+        assert step == 0
+        assert total == 8
+
+
+class TestNarrativeSynthesis:
+    def test_empty_workspace_returns_empty(self, tmp_path):
+        result = _synthesize_narrative(tmp_path, "investigating", {}, 3600)
+        assert result == ""
+
+    def test_with_experiments(self, tmp_path):
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "experiments.tsv").write_text(
+            "timestamp\ttask_id\tbranch\tmetric_name\tmetric_value\tstatus\tdescription\n"
+            "2026-01-01\tbd-1\tagent-1\tmbrs\t0.5\tkeep\tscenario 1\n"
+            "2026-01-01\tbd-2\tagent-1\tmbrs\t0.3\tdiscard\tscenario 2\n"
+        )
+        result = _synthesize_narrative(tmp_path, "investigating", {}, 3600)
+        assert "1/2" in result
+        assert "passed" in result
+        assert "discarded" in result
+
+    def test_with_criteria(self, tmp_path):
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "experiments.tsv").write_text(
+            "timestamp\ttask_id\tbranch\tmetric_name\tmetric_value\tstatus\tdescription\n"
+            "2026-01-01\tbd-1\tagent-1\tmbrs\t0.5\tkeep\tscenario 1\n"
+        )
+        (tmp_path / ".swarm" / "success-criteria.json").write_text(
+            '[{"id": "SC1", "met": true}, {"id": "SC2", "met": false}]'
+        )
+        result = _synthesize_narrative(tmp_path, "investigating", {}, 3600)
+        assert "1/2 criteria met" in result
+
+    def test_with_belief_map(self, tmp_path):
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "experiments.tsv").write_text(
+            "timestamp\ttask_id\tbranch\tmetric_name\tmetric_value\tstatus\tdescription\n"
+            "2026-01-01\tbd-1\tagent-1\tmbrs\t0.5\tkeep\tscenario 1\n"
+        )
+        (tmp_path / ".swarm" / "belief-map.json").write_text(
+            '{"hypotheses": [{"name": "GABA encoding", "posterior": 0.85}]}'
+        )
+        result = _synthesize_narrative(tmp_path, "investigating", {}, 3600)
+        assert "GABA encoding" in result
+        assert "P=0.85" in result
+
+    def test_planning_phase_shows_task_count(self, tmp_path):
+        snapshot = {"t1": {"status": "open"}, "t2": {"status": "open"}}
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "success-criteria.json").write_text(
+            '[{"id": "SC1", "met": false}]'
+        )
+        result = _synthesize_narrative(tmp_path, "planning", snapshot, 300)
+        assert "2 experiments" in result
+        assert "1 success criteria" in result
+
+
+class TestMessageTypes:
+    def test_finding_returns_milestone_type(self, tmp_path):
+        _, msg_type = build_digest(
+            codename="Synapse",
+            mode="discover",
+            phase="investigating",
+            elapsed_sec=3600,
+            task_snapshot={"t1": {"status": "closed", "notes": ""}},
+            workspace=tmp_path,
+            events_since_last=[
+                {"type": "finding", "msg": "🔬 *NEW FINDING*\neffect found"},
+            ],
+        )
+        assert msg_type == MSG_TYPE_MILESTONE
+
+    def test_design_invalid_returns_milestone_type(self, tmp_path):
+        _, msg_type = build_digest(
+            codename="Synapse",
+            mode="discover",
+            phase="investigating",
+            elapsed_sec=3600,
+            task_snapshot={"t1": {"status": "open", "notes": ""}},
+            workspace=tmp_path,
+            events_since_last=[
+                {"type": "design_invalid", "msg": "🚨 bad design"},
+            ],
+        )
+        assert msg_type == MSG_TYPE_MILESTONE
+
+    def test_status_update_returns_status_type(self, tmp_path):
+        _, msg_type = build_digest(
+            codename="Synapse",
+            mode="discover",
+            phase="investigating",
+            elapsed_sec=3600,
+            task_snapshot={"t1": {"status": "in_progress", "notes": ""}},
+            workspace=tmp_path,
+            events_since_last=[
+                {"type": "task_new", "msg": "📋 New: *task 1*"},
+            ],
+        )
+        assert msg_type == MSG_TYPE_STATUS

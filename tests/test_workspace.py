@@ -1,5 +1,6 @@
 """Tests for voronoi.server.workspace — Workspace Manager."""
 
+from contextlib import contextmanager
 import subprocess
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -32,11 +33,36 @@ class TestProvisionLab:
         info = wm.provision_lab(1, "test", "question")
         assert (Path(info.path) / ".git").exists()
 
+    def test_uses_main_as_default_branch(self, wm):
+        info = wm.provision_lab(1, "branch-test", "question")
+        result = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=info.path,
+            capture_output=True,
+            text=True,
+        )
+        assert result.stdout.strip() == "main"
+
     def test_overwrites_existing(self, wm):
         wm.provision_lab(1, "test", "question 1")
         info = wm.provision_lab(1, "test", "question 2")
         prompt = Path(info.path) / "PROMPT.md"
         assert "question 2" in prompt.read_text()
+
+    @patch.object(WorkspaceManager, "_voronoi_init")
+    def test_uses_workspace_lock(self, mock_init, wm):
+        entered: list[str] = []
+
+        @contextmanager
+        def fake_lock(name, timeout=120.0, poll_interval=0.1):
+            entered.append(name)
+            yield
+
+        with patch.object(wm, "_exclusive_lock", side_effect=fake_lock):
+            wm.provision_lab(1, "test", "question")
+
+        assert len(entered) == 1
+        assert entered[0].startswith("workspace-")
 
 
 class TestProvisionRepo:
@@ -60,6 +86,26 @@ class TestProvisionRepo:
         calls = mock_git.call_args_list
         clone_calls = [c for c in calls if "--reference" in str(c)]
         assert len(clone_calls) > 0
+
+    @patch.object(WorkspaceManager, "_run_git")
+    @patch.object(WorkspaceManager, "_voronoi_init")
+    def test_uses_repo_and_workspace_locks(self, mock_init, mock_git, wm):
+        entered: list[str] = []
+
+        @contextmanager
+        def fake_lock(name, timeout=120.0, poll_interval=0.1):
+            entered.append(name)
+            yield
+
+        mock_git.return_value = subprocess.CompletedProcess([], 0)
+        repo = RepoRef(owner="acme", name="api")
+
+        with patch.object(wm, "_exclusive_lock", side_effect=fake_lock):
+            wm.provision_repo(1, repo, "test")
+
+        assert len(entered) == 2
+        assert entered[0].startswith("repo-")
+        assert entered[1].startswith("workspace-")
 
 
 class TestWorkspaceManagement:

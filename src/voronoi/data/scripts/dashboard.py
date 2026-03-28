@@ -89,6 +89,25 @@ def get_agent_branches(config):
     project_dir = config["project_dir"]
     agents = []
 
+    def default_branch() -> str:
+        branch = run_cmd(
+            f"cd {project_dir} && git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##'"
+        )
+        if branch:
+            return branch.strip()
+        branch = run_cmd(
+            f"cd {project_dir} && git rev-parse --abbrev-ref HEAD 2>/dev/null"
+        )
+        if branch and branch.strip() != "HEAD":
+            return branch.strip()
+        if run_cmd(f"cd {project_dir} && git show-ref --verify --quiet refs/heads/main && echo main"):
+            return "main"
+        if run_cmd(f"cd {project_dir} && git show-ref --verify --quiet refs/heads/master && echo master"):
+            return "master"
+        return "main"
+
+    main_branch = default_branch()
+
     if not swarm_dir.exists():
         return agents
 
@@ -100,7 +119,7 @@ def get_agent_branches(config):
 
         # Get commit count and last commit
         commits = run_cmd(
-            f"cd {project_dir} && git log main..{branch} --oneline 2>/dev/null"
+            f"cd {project_dir} && git log {main_branch}..{branch} --oneline 2>/dev/null"
         )
         commit_count = len(commits.splitlines()) if commits else 0
 
@@ -111,7 +130,7 @@ def get_agent_branches(config):
 
         # Get diff stats
         stat = run_cmd(
-            f"cd {project_dir} && git diff main..{branch} --stat 2>/dev/null | tail -1"
+            f"cd {project_dir} && git diff {main_branch}..{branch} --stat 2>/dev/null | tail -1"
         )
 
         # Check tmux window

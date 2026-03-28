@@ -18,7 +18,8 @@ Science is a superset of engineering — the system is designed for science and 
 | Single prompt builder | CLI and Telegram produce identical orchestrator behavior via `prompt.py`. |
 | `.github/` as source of truth | Agent roles live in files Copilot auto-discovers — never duplicated in Python code. |
 | Prompt references, not duplicates | Orchestrator is told "read the file" — roles stay in sync automatically. |
-| Auto-classified rigor | Users don't configure rigor. System infers and can escalate, never downgrade. |
+| Two science modes | DISCOVER (adaptive rigor, creative exploration) and PROVE (full gates, structured validation). |
+| Adaptive rigor | DISCOVER starts light and escalates when hypotheses crystallize. PROVE starts at full scientific rigor. |
 | OODA over linear pipeline | Investigations are iterative — hypothesis revision needs loops, not waterfalls. |
 | Simplicity criterion | All else equal, simpler is better. Small improvement + big complexity = reject. |
 
@@ -71,7 +72,7 @@ The system is organized into four layers, each with clear responsibilities and b
 | From → To | Contract |
 |-----------|----------|
 | Entry → Gateway | Free-text string + chat_id |
-| Gateway → Server | `Investigation` object with mode, rigor, question, repo |
+| Gateway → Server | `Investigation` object with mode (discover/prove), question, repo |
 | Server → Execution | Orchestrator prompt (string) + workspace path + tmux session |
 | Execution → Science | `.swarm/` files: belief-map.json, findings in Beads, raw data |
 | Science → Execution | Convergence result, paradigm stress flags, gate pass/fail |
@@ -163,18 +164,18 @@ Voronoi strictly separates dev files from runtime files:
 
 ### How files are sourced
 
-- **Editable install** (`pip install -e .`): `find_data_dir()` returns repo root. Agent roles read from `.github/agents/`, templates from `src/voronoi/data/templates/`.
-- **Packaged install** (`pip install voronoi`): `find_data_dir()` returns `src/voronoi/data/`. Agent roles read from `data/agents/`. Templates from `data/templates/`.
-- **`voronoi init`**: Copies runtime `CLAUDE.md` from templates (NOT the dev CLAUDE.md). Copies agents/skills/prompts from package data.
-- **`sync-package-data.sh`**: Run before `pip install .` to copy `.github/` → `src/voronoi/data/`.
+- **Editable install** (`pip install -e .`): `find_data_dir()` returns `src/voronoi/data/`. Agent roles read from `data/agents/`, templates from `data/templates/`.
+- **Packaged install** (`pip install voronoi`): `find_data_dir()` returns bundled `data/` inside the installed package.
+- **`voronoi init`**: Copies runtime `CLAUDE.md` from templates (NOT the dev CLAUDE.md). Copies agents/skills/prompts from package data into target `.github/`.
+- **`sync-package-data.sh`**: Copies only `.env.example` into `data/`. Agent roles, scripts, and skills are maintained in-tree under `src/voronoi/data/`.
 
-## 6. `.github/` Structure
+## 6. Runtime Agent Roles, Prompts, and Skills
 
-Copilot auto-discovers these files. They are the **real** role definitions.
+The canonical location for all runtime content is `src/voronoi/data/`. During `voronoi init`, these are copied to the target workspace's `.github/` directory.
 
 ```
-.github/
-├── agents/                          # 12 role definitions
+src/voronoi/data/
+├── agents/                          # 12 role definitions (canonical)
 │   ├── swarm-orchestrator.agent.md
 │   ├── worker-agent.agent.md
 │   ├── scout.agent.md
@@ -220,7 +221,7 @@ Pure plumbing — no decision logic. The orchestrator makes all decisions.
 | `notify-telegram.sh` | Source + call `notify_telegram "event" "msg"` | merge-agent.sh, spawn-agent.sh |
 | `figure-lint.sh` | Verify all `\includegraphics` refs resolve | convergence-gate.sh, merge-agent.sh |
 | `teardown.sh` | Kill tmux, prune worktrees/branches | User or orchestrator at session end |
-| `sync-package-data.sh` | Copy framework files for pip build | Developer workflow |
+| `sync-package-data.sh` | Copy `.env.example` for pip build | Developer workflow |
 | `dashboard.py` | Rich terminal dashboard (optional) | Manual monitoring |
 
 ## 7. Deployment Topology

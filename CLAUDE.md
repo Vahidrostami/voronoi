@@ -20,20 +20,22 @@ src/voronoi/           # Package code
 ├── gateway/           # Intent classification, routing, memory, knowledge, reporting
 ├── server/            # Queue, dispatcher, prompt builder, workspace, events
 ├── science/           # Gates, convergence, fabrication, belief maps
-└── data/              # Runtime files shipped with pip install
+└── data/              # Runtime files — canonical location, shipped with pip install
     ├── templates/     # CLAUDE.md + AGENTS.md for investigation workspaces
-    ├── agents/        # .agent.md role definitions (synced from .github/agents/)
-    ├── skills/        # SKILL.md files (synced from .github/skills/)
-    ├── prompts/       # .prompt.md files (synced from .github/prompts/)
-    └── scripts/       # Runtime shell scripts (spawn, merge, convergence gate)
+    ├── agents/        # .agent.md role definitions
+    ├── skills/        # SKILL.md files
+    ├── prompts/       # .prompt.md files
+    ├── scripts/       # Runtime shell scripts (spawn, merge, convergence gate)
+    └── demos/         # Demo investigations
 ```
 
 ## Key Architecture Rules
 
 - `prompt.py` is the SOLE prompt builder — CLI and Telegram both call `build_orchestrator_prompt()`
-- Agent roles live in `.github/agents/*.agent.md` — prompt builder references, never duplicates
-- `sync-package-data.sh` copies `.github/` → `src/voronoi/data/` before `pip install .`
-- Editable installs (`pip install -e .`) read from repo root; packaged installs read from `data/`
+- Agent roles live in `src/voronoi/data/agents/*.agent.md` — prompt builder references, never duplicates
+- `.github/` is for **development only** (CI workflows, Copilot dev agents/prompts)
+- All runtime content lives in `src/voronoi/data/` — the single canonical location
+- `scripts/sync-package-data.sh` at repo root is a dev-only build tool (copies `.env.example`)
 
 ## File Audience Separation
 
@@ -41,8 +43,9 @@ src/voronoi/           # Package code
 |-------|----------|:-:|
 | `CLAUDE.md` (this file) | Developers working ON Voronoi | No |
 | `docs/*.md` | Developers working ON Voronoi | No |
+| `.github/` | Dev tooling (CI, Copilot agents/prompts) | No |
 | `src/voronoi/data/templates/CLAUDE.md` | Investigation agents working WITH Voronoi | Yes |
-| `src/voronoi/data/agents/` | Investigation agents (and Copilot during dev via `.github/` symlink) | Yes |
+| `src/voronoi/data/agents/` | Investigation agents (runtime role definitions) | Yes |
 
 ## Specs — Developer Reference
 

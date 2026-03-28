@@ -49,6 +49,27 @@ from voronoi.science import (
     save_checkpoint,
     format_checkpoint_for_prompt,
 )
+from voronoi.science._helpers import _fetch_tasks
+
+
+# ---------------------------------------------------------------------------
+# _fetch_tasks filtering
+# ---------------------------------------------------------------------------
+
+class TestFetchTasksFiltering:
+    def test_filters_non_dict_elements(self, monkeypatch):
+        """_fetch_tasks should filter out non-dict elements to prevent AttributeError."""
+        monkeypatch.setattr("voronoi.science._helpers._run_bd",
+                            lambda *a, **kw: (0, json.dumps([{"id": "1"}, "string_item", 42])))
+        result = _fetch_tasks(Path("/fake"))
+        assert result == [{"id": "1"}]
+
+    def test_returns_none_for_all_strings(self, monkeypatch):
+        """_fetch_tasks returns None when filtering leaves no dicts."""
+        monkeypatch.setattr("voronoi.science._helpers._run_bd",
+                            lambda *a, **kw: (0, json.dumps(["a", "b", "c"])))
+        result = _fetch_tasks(Path("/fake"))
+        assert result is None
 
 
 # ---------------------------------------------------------------------------
@@ -95,7 +116,7 @@ class TestPreRegistration:
             "PRE_REG: HYPOTHESIS=[h] | METHOD=[m] | CONTROLS=[c] | "
             "EXPECTED_RESULT=[e] | CONFOUNDS=[cf] | STAT_TEST=[t] | SAMPLE_SIZE=[10]"
         )
-        valid, missing = validate_pre_registration(notes, "analytical")
+        valid, missing = validate_pre_registration(notes, "adaptive")
         assert valid is True
         assert missing == []
 
@@ -110,7 +131,7 @@ class TestPreRegistration:
         assert "SENSITIVITY_PLAN" in missing
 
     def test_validate_empty(self):
-        valid, missing = validate_pre_registration("", "analytical")
+        valid, missing = validate_pre_registration("", "adaptive")
         assert valid is False
         assert len(missing) > 0
 
@@ -215,6 +236,20 @@ class TestBeliefMap:
         bm = load_belief_map(tmp_path)
         assert bm.hypotheses == []
 
+    def test_load_string_data(self, tmp_path):
+        """belief-map.json containing a JSON string must not crash."""
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "belief-map.json").write_text('"approved"')
+        bm = load_belief_map(tmp_path)
+        assert bm.hypotheses == []
+
+    def test_load_list_data(self, tmp_path):
+        """belief-map.json containing a JSON list must not crash."""
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "belief-map.json").write_text('[1, 2, 3]')
+        bm = load_belief_map(tmp_path)
+        assert bm.hypotheses == []
+
     def test_summary(self):
         bm = BeliefMap(cycle=2)
         bm.add_hypothesis(Hypothesis(id="H1", name="a", prior=0.5, posterior=0.9,
@@ -226,6 +261,52 @@ class TestBeliefMap:
         assert s["by_status"]["confirmed"] == 1
         assert s["by_status"]["refuted"] == 1
 
+    def test_load_dict_keyed_hypotheses(self, tmp_path):
+        """belief-map.json with dict-keyed hypotheses should be migrated to list."""
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "belief-map.json").write_text(json.dumps({
+            "cycle": 2,
+            "hypotheses": {
+                "H1": {"name": "Encoding helps", "prior": 0.6, "posterior": 0.8, "status": "confirmed"},
+                "H2": {"name": "No effect", "prior": 0.4, "posterior": 0.2, "status": "refuted"},
+            },
+        }))
+        bm = load_belief_map(tmp_path)
+        assert len(bm.hypotheses) == 2
+        ids = {h.id for h in bm.hypotheses}
+        assert "H1" in ids
+        assert "H2" in ids
+        assert bm.cycle == 2
+
+    def test_load_dict_keyed_string_values(self, tmp_path):
+        """belief-map.json with string-valued dict hypotheses should be handled."""
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "belief-map.json").write_text(json.dumps({
+            "cycle": 1,
+            "hypotheses": {
+                "H1": "Encoding helps",
+                "H2": "No effect",
+            },
+        }))
+        bm = load_belief_map(tmp_path)
+        assert len(bm.hypotheses) == 2
+        assert bm.hypotheses[0].name == "Encoding helps"
+
+    def test_load_hypotheses_with_non_dict_items(self, tmp_path):
+        """Entries that are not dicts should be skipped."""
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "belief-map.json").write_text(json.dumps({
+            "cycle": 1,
+            "hypotheses": [
+                {"id": "H1", "name": "Good", "prior": 0.5, "posterior": 0.5},
+                "bad entry",
+                42,
+            ],
+        }))
+        bm = load_belief_map(tmp_path)
+        assert len(bm.hypotheses) == 1
+        assert bm.hypotheses[0].id == "H1"
+
 
 # ---------------------------------------------------------------------------
 # Convergence
@@ -235,30 +316,33 @@ class TestConvergence:
     def test_standard_with_deliverable(self, tmp_path):
         (tmp_path / ".swarm").mkdir()
         (tmp_path / ".swarm" / "deliverable.md").write_text("# Done")
-        result = check_convergence(tmp_path, "standard")
+        result = check_convergence(tmp_path, "adaptive")
         assert result.converged is True
         assert result.status == "converged"
 
     def test_standard_no_deliverable(self, tmp_path):
         (tmp_path / ".swarm").mkdir()
-        result = check_convergence(tmp_path, "standard")
+        result = check_convergence(tmp_path, "adaptive")
         assert result.converged is False
 
-    def test_analytical_high_score(self, tmp_path):
+    def test_adaptive_high_score(self, tmp_path):
         (tmp_path / ".swarm").mkdir()
-        result = check_convergence(tmp_path, "analytical", eval_score=0.80)
+        (tmp_path / ".swarm" / "deliverable.md").write_text("# Done")
+        result = check_convergence(tmp_path, "adaptive", eval_score=0.80)
         assert result.converged is True
 
-    def test_analytical_low_score_needs_improvement(self, tmp_path):
+    def test_adaptive_low_score_needs_improvement(self, tmp_path):
         (tmp_path / ".swarm").mkdir()
-        result = check_convergence(tmp_path, "analytical", eval_score=0.60,
+        (tmp_path / ".swarm" / "deliverable.md").write_text("# Done")
+        result = check_convergence(tmp_path, "adaptive", eval_score=0.60,
                                     improvement_rounds=0)
         assert result.converged is False
         assert result.status == "not_ready"
 
-    def test_analytical_max_improvement_rounds(self, tmp_path):
+    def test_adaptive_max_improvement_rounds(self, tmp_path):
         (tmp_path / ".swarm").mkdir()
-        result = check_convergence(tmp_path, "analytical", eval_score=0.60,
+        (tmp_path / ".swarm" / "deliverable.md").write_text("# Done")
+        result = check_convergence(tmp_path, "adaptive", eval_score=0.60,
                                     improvement_rounds=2)
         assert result.converged is True
         assert result.status == "diminishing_returns"
@@ -372,13 +456,13 @@ class TestDataIntegrity:
 class TestDispatchGates:
     def test_no_gates(self, tmp_path):
         task = {"notes": "", "title": "Build something"}
-        ok, blockers = check_dispatch_gates(task, tmp_path, "standard")
+        ok, blockers = check_dispatch_gates(task, tmp_path, "adaptive")
         assert ok is True
         assert blockers == []
 
     def test_requires_file_missing(self, tmp_path):
         task = {"notes": "REQUIRES:data/input.csv", "title": "Process data"}
-        ok, blockers = check_dispatch_gates(task, tmp_path, "standard")
+        ok, blockers = check_dispatch_gates(task, tmp_path, "adaptive")
         assert ok is False
         assert any("REQUIRES missing" in b for b in blockers)
 
@@ -386,12 +470,12 @@ class TestDispatchGates:
         (tmp_path / "data").mkdir()
         (tmp_path / "data" / "input.csv").write_text("data")
         task = {"notes": "REQUIRES:data/input.csv", "title": "Process data"}
-        ok, blockers = check_dispatch_gates(task, tmp_path, "standard")
+        ok, blockers = check_dispatch_gates(task, tmp_path, "adaptive")
         assert ok is True
 
     def test_gate_file_missing(self, tmp_path):
         task = {"notes": "GATE:.swarm/validation_report.json", "title": "Write paper"}
-        ok, blockers = check_dispatch_gates(task, tmp_path, "standard")
+        ok, blockers = check_dispatch_gates(task, tmp_path, "adaptive")
         assert ok is False
         assert any("GATE file missing" in b for b in blockers)
 
@@ -400,7 +484,7 @@ class TestDispatchGates:
         (tmp_path / ".swarm" / "validation_report.json").write_text(
             json.dumps({"status": "failed"}))
         task = {"notes": "GATE:.swarm/validation_report.json", "title": "Write paper"}
-        ok, blockers = check_dispatch_gates(task, tmp_path, "standard")
+        ok, blockers = check_dispatch_gates(task, tmp_path, "adaptive")
         assert ok is False
         assert any("GATE not passing" in b for b in blockers)
 
@@ -409,7 +493,7 @@ class TestDispatchGates:
         (tmp_path / ".swarm" / "validation_report.json").write_text(
             json.dumps({"status": "pass", "converged": True}))
         task = {"notes": "GATE:.swarm/validation_report.json", "title": "Write paper"}
-        ok, blockers = check_dispatch_gates(task, tmp_path, "standard")
+        ok, blockers = check_dispatch_gates(task, tmp_path, "adaptive")
         assert ok is True
 
     def test_scientific_investigation_needs_methodologist(self, tmp_path):
@@ -441,12 +525,12 @@ class TestDispatchGates:
 class TestMergeGates:
     def test_no_gates(self, tmp_path):
         task = {"notes": "", "title": "Build something"}
-        ok, blockers = check_merge_gates(task, tmp_path, "standard")
+        ok, blockers = check_merge_gates(task, tmp_path, "adaptive")
         assert ok is True
 
     def test_produces_missing(self, tmp_path):
         task = {"notes": "PRODUCES:output/results.json", "title": "Run experiments"}
-        ok, blockers = check_merge_gates(task, tmp_path, "standard")
+        ok, blockers = check_merge_gates(task, tmp_path, "adaptive")
         assert ok is False
         assert any("PRODUCES missing" in b for b in blockers)
 
@@ -454,12 +538,12 @@ class TestMergeGates:
         (tmp_path / "output").mkdir()
         (tmp_path / "output" / "results.json").write_text("{}")
         task = {"notes": "PRODUCES:output/results.json", "title": "Run experiments"}
-        ok, blockers = check_merge_gates(task, tmp_path, "standard")
+        ok, blockers = check_merge_gates(task, tmp_path, "adaptive")
         assert ok is True
 
     def test_finding_needs_stat_review(self, tmp_path):
         task = {"notes": "TYPE:finding", "title": "FINDING: encoding helps"}
-        ok, blockers = check_merge_gates(task, tmp_path, "analytical")
+        ok, blockers = check_merge_gates(task, tmp_path, "adaptive")
         assert ok is False
         assert any("Statistician" in b for b in blockers)
 
@@ -481,7 +565,7 @@ class TestMergeGates:
             ),
             "title": "FINDING: encoding helps",
         }
-        ok, blockers = check_merge_gates(task, tmp_path, "analytical")
+        ok, blockers = check_merge_gates(task, tmp_path, "adaptive")
         assert ok is True
 
     def test_finding_needs_critic_at_scientific(self, tmp_path):
@@ -987,7 +1071,7 @@ class TestMergeGateAntiFabrication:
             "title": "FINDING: something discovered",
             "notes": "TYPE:finding\nEFFECT_SIZE:0.5\nSTAT_REVIEW: APPROVED\nCRITIC_REVIEW: APPROVED\n",
         }
-        can_merge, blockers = check_merge_gates(task, tmp_path, "analytical")
+        can_merge, blockers = check_merge_gates(task, tmp_path, "adaptive")
         assert not can_merge
         assert any("FABRICATION_CHECK" in b for b in blockers)
 
@@ -1320,7 +1404,7 @@ class TestConvergenceDesignInvalid:
                  "notes": "DESIGN_INVALID: L1 beats L4, encoding broken"},
             ],
         )
-        result = check_convergence(tmp_path, "analytical", eval_score=0.80)
+        result = check_convergence(tmp_path, "scientific", eval_score=0.80)
         assert result.converged is False
         assert any("DESIGN_INVALID" in b for b in result.blockers)
 
@@ -1333,7 +1417,7 @@ class TestConvergenceDesignInvalid:
                  "notes": "DESIGN_INVALID: was broken, now fixed"},
             ],
         )
-        result = check_convergence(tmp_path, "analytical", eval_score=0.80)
+        result = check_convergence(tmp_path, "scientific", eval_score=0.80)
         assert not any("DESIGN_INVALID" in b for b in result.blockers)
 
 
@@ -1348,7 +1432,7 @@ class TestConvergenceSuccessCriteria:
             {"id": "SC1", "description": "L4 > L1", "met": False},
         ])
         monkeypatch.setattr("voronoi.science._helpers._fetch_tasks", lambda ws: [])
-        result = check_convergence(tmp_path, "analytical", eval_score=0.80)
+        result = check_convergence(tmp_path, "scientific", eval_score=0.80)
         assert result.converged is False
         assert any("SC1" in b for b in result.blockers)
 
@@ -1359,14 +1443,81 @@ class TestConvergenceSuccessCriteria:
             {"id": "SC2", "description": "Pipeline 10x", "met": True},
         ])
         monkeypatch.setattr("voronoi.science._helpers._fetch_tasks", lambda ws: [])
-        result = check_convergence(tmp_path, "analytical", eval_score=0.80)
+        result = check_convergence(tmp_path, "scientific", eval_score=0.80)
         assert not any("Success criterion" in b for b in result.blockers)
 
     def test_no_criteria_file_does_not_block(self, tmp_path, monkeypatch):
         (tmp_path / ".swarm").mkdir()
         monkeypatch.setattr("voronoi.science._helpers._fetch_tasks", lambda ws: [])
-        result = check_convergence(tmp_path, "analytical", eval_score=0.80)
+        result = check_convergence(tmp_path, "scientific", eval_score=0.80)
         assert not any("Success criterion" in b for b in result.blockers)
+
+
+# ---------------------------------------------------------------------------
+# Convergence — Criteria override for scientific rigor
+# ---------------------------------------------------------------------------
+
+class TestConvergenceScientificCriteriaOverride:
+    """When eval_score is 0.50–0.75 but ALL success criteria are met and no
+    blockers, scientific rigor should allow convergence instead of looping."""
+
+    def _stub_helpers(self, monkeypatch):
+        """Remove science-specific blocker sources so we isolate the criteria override."""
+        monkeypatch.setattr("voronoi.science._helpers._fetch_tasks", lambda ws: [])
+        monkeypatch.setattr("voronoi.science._helpers._find_theories",
+                            lambda ws, tasks: [{"status": "refuted"}])
+        monkeypatch.setattr("voronoi.science._helpers._find_tested_predictions",
+                            lambda ws, tasks: [{"id": "pred-1"}])
+
+    def test_scientific_criteria_met_overrides_low_score(self, tmp_path, monkeypatch):
+        (tmp_path / ".swarm").mkdir()
+        save_success_criteria(tmp_path, [
+            {"id": "SC1", "description": "L4 > L1", "met": True},
+            {"id": "SC2", "description": "Pipeline 10x", "met": True},
+        ])
+        self._stub_helpers(monkeypatch)
+        # Provide a resolved belief map
+        from voronoi.science import BeliefMap, Hypothesis, save_belief_map
+        bm = BeliefMap(hypotheses=[
+            Hypothesis(id="H1", name="Encoding helps", prior=0.5,
+                       posterior=0.9, status="confirmed"),
+        ])
+        save_belief_map(tmp_path, bm)
+
+        result = check_convergence(tmp_path, "scientific", eval_score=0.65)
+        assert result.converged is True
+        assert "success criteria" in result.reason.lower()
+
+    def test_scientific_unmet_criteria_still_blocks(self, tmp_path, monkeypatch):
+        (tmp_path / ".swarm").mkdir()
+        save_success_criteria(tmp_path, [
+            {"id": "SC1", "description": "L4 > L1", "met": True},
+            {"id": "SC2", "description": "Pipeline 10x", "met": False},
+        ])
+        self._stub_helpers(monkeypatch)
+        from voronoi.science import BeliefMap, Hypothesis, save_belief_map
+        bm = BeliefMap(hypotheses=[
+            Hypothesis(id="H1", name="Encoding helps", prior=0.5,
+                       posterior=0.9, status="confirmed"),
+        ])
+        save_belief_map(tmp_path, bm)
+
+        result = check_convergence(tmp_path, "scientific", eval_score=0.65)
+        assert result.converged is False
+        assert any("SC2" in b for b in result.blockers)
+
+    def test_scientific_no_criteria_file_no_override(self, tmp_path, monkeypatch):
+        (tmp_path / ".swarm").mkdir()
+        self._stub_helpers(monkeypatch)
+        from voronoi.science import BeliefMap, Hypothesis, save_belief_map
+        bm = BeliefMap(hypotheses=[
+            Hypothesis(id="H1", name="H1", prior=0.5,
+                       posterior=0.9, status="confirmed"),
+        ])
+        save_belief_map(tmp_path, bm)
+
+        result = check_convergence(tmp_path, "scientific", eval_score=0.65)
+        assert result.converged is False
 
 
 # ---------------------------------------------------------------------------
@@ -1383,7 +1534,7 @@ class TestConvergenceHypothesisAlignment:
                  "notes": "RESULT_CONTRADICTS_HYPOTHESIS:Expected L4>L1 but observed L1>L4"},
             ],
         )
-        result = check_convergence(tmp_path, "analytical", eval_score=0.80)
+        result = check_convergence(tmp_path, "scientific", eval_score=0.80)
         assert result.converged is False
         assert any("contradicts hypothesis" in b.lower() for b in result.blockers)
 
@@ -1396,7 +1547,7 @@ class TestConvergenceHypothesisAlignment:
                  "notes": "RESULT_CONTRADICTS_HYPOTHESIS:Was broken, redesigned"},
             ],
         )
-        result = check_convergence(tmp_path, "analytical", eval_score=0.80)
+        result = check_convergence(tmp_path, "scientific", eval_score=0.80)
         assert not any("contradicts hypothesis" in b.lower() for b in result.blockers)
 
 
@@ -1410,7 +1561,7 @@ class TestMergeGateEVA:
             "title": "FINDING: encoding helps",
             "notes": "TASK_TYPE:investigation\nSTAT_REVIEW: APPROVED",
         }
-        ok, blockers = check_merge_gates(task, tmp_path, "analytical")
+        ok, blockers = check_merge_gates(task, tmp_path, "adaptive")
         assert ok is False
         assert any("EVA" in b for b in blockers)
 
@@ -1432,7 +1583,7 @@ class TestMergeGateEVA:
                 f"DATA_FILE:data/raw/r.csv\nDATA_HASH:{h}\nN:3\n"
             ),
         }
-        ok, blockers = check_merge_gates(task, tmp_path, "analytical")
+        ok, blockers = check_merge_gates(task, tmp_path, "adaptive")
         assert ok is True
 
     def test_investigation_with_eva_fail_blocked(self, tmp_path):
@@ -1440,13 +1591,13 @@ class TestMergeGateEVA:
             "title": "FINDING: encoding helps",
             "notes": "TASK_TYPE:investigation\nSTAT_REVIEW: APPROVED\nEVA: FAIL | CHECK:manipulation",
         }
-        ok, blockers = check_merge_gates(task, tmp_path, "analytical")
+        ok, blockers = check_merge_gates(task, tmp_path, "adaptive")
         assert ok is False
         assert any("EVA FAILED" in b for b in blockers)
 
     def test_non_investigation_no_eva_required(self, tmp_path):
         task = {"title": "Build encoder", "notes": "TASK_TYPE:build"}
-        ok, blockers = check_merge_gates(task, tmp_path, "analytical")
+        ok, blockers = check_merge_gates(task, tmp_path, "adaptive")
         assert ok is True
 
 
@@ -1562,7 +1713,7 @@ class TestOrchestratorCheckpoint:
         cp = OrchestratorCheckpoint(
             cycle=5,
             phase="investigating",
-            mode="investigate",
+            mode="discover",
             rigor="experimental",
             hypotheses_summary="H1:confirmed, H2:testing",
             total_tasks=30,
@@ -1611,7 +1762,7 @@ class TestOrchestratorCheckpoint:
 
     def test_format_for_prompt(self):
         cp = OrchestratorCheckpoint(
-            cycle=10, phase="reviewing", mode="investigate", rigor="scientific",
+            cycle=10, phase="reviewing", mode="discover", rigor="scientific",
             hypotheses_summary="H1:confirmed, H2:refuted",
             total_tasks=40, closed_tasks=30,
             active_workers=["agent-stats"],
@@ -1632,3 +1783,109 @@ class TestOrchestratorCheckpoint:
         assert "ANOVA complete" in text
         assert "L2 gradient" in text
         assert "Dispatch critic" in text
+
+
+# ---------------------------------------------------------------------------
+# Convergence — All success criteria met override
+# ---------------------------------------------------------------------------
+
+class TestConvergenceSuccessCriteriaOverride:
+    """When eval_score is moderate (0.50–0.75) but ALL success criteria are met,
+    convergence should be allowed for adaptive rigor."""
+
+    def test_criteria_met_overrides_low_score(self, tmp_path):
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "deliverable.md").write_text("# Done")
+        save_success_criteria(tmp_path, [
+            {"id": "SC1", "description": "L4 > L1", "met": True},
+            {"id": "SC2", "description": "Pipeline 10x", "met": True},
+        ])
+        result = check_convergence(tmp_path, "adaptive", eval_score=0.65,
+                                    improvement_rounds=0)
+        assert result.converged is True
+        assert "success criteria" in result.reason.lower()
+
+    def test_unmet_criteria_still_blocks(self, tmp_path):
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "deliverable.md").write_text("# Done")
+        save_success_criteria(tmp_path, [
+            {"id": "SC1", "description": "L4 > L1", "met": True},
+            {"id": "SC2", "description": "Pipeline 10x", "met": False},
+        ])
+        result = check_convergence(tmp_path, "adaptive", eval_score=0.65,
+                                    improvement_rounds=0)
+        assert result.converged is False
+
+    def test_no_criteria_file_no_override(self, tmp_path):
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "deliverable.md").write_text("# Done")
+        result = check_convergence(tmp_path, "adaptive", eval_score=0.65,
+                                    improvement_rounds=0)
+        assert result.converged is False
+
+    def test_empty_criteria_no_override(self, tmp_path):
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "deliverable.md").write_text("# Done")
+        save_success_criteria(tmp_path, [])
+        result = check_convergence(tmp_path, "adaptive", eval_score=0.65,
+                                    improvement_rounds=0)
+        assert result.converged is False
+
+    def test_score_below_050_not_overridden(self, tmp_path):
+        """Score < 0.50 with improvement rounds remaining should request improvement."""
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "deliverable.md").write_text("# Done")
+        save_success_criteria(tmp_path, [
+            {"id": "SC1", "description": "L4 > L1", "met": True},
+        ])
+        # Score 0.40 with rounds remaining should NOT converge
+        result = check_convergence(tmp_path, "adaptive", eval_score=0.40,
+                                    improvement_rounds=0)
+        assert result.converged is False
+        assert result.status == "not_ready"
+
+
+class TestNegativeResultConvergence:
+    def test_negative_result_with_contradiction(self, tmp_path, monkeypatch):
+        """Valid negative result: hypothesis falsified, deliverable exists, no design invalid."""
+        monkeypatch.setattr("voronoi.science._helpers._fetch_tasks", lambda w: [
+            {"id": "bd-1", "status": "closed", "title": "Experiment",
+             "notes": "RESULT_CONTRADICTS_HYPOTHESIS:Expected L4>L1 but L1>L4"},
+        ])
+        monkeypatch.setattr("voronoi.science._helpers._find_theories",
+            lambda w, t=None: [{"id": "T1", "status": "refuted"}])
+        monkeypatch.setattr("voronoi.science._helpers._find_tested_predictions",
+            lambda w, t=None: ["P1"])
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "deliverable.md").write_text("# Negative result")
+        (swarm / "success-criteria.json").write_text(json.dumps([
+            {"id": "SC1", "description": "L4 > L1", "met": False},
+        ]))
+        (swarm / "belief-map.json").write_text(json.dumps({
+            "hypotheses": [
+                {"id": "H1", "name": "Encoding helps", "prior": 0.7,
+                 "posterior": 0.2, "status": "refuted"},
+            ],
+        }))
+        # Valid negative: deliver + eval score + contradiction + improvement done
+        result = check_convergence(tmp_path, "scientific", eval_score=0.60,
+                                    improvement_rounds=1)
+        assert result.converged is True
+        assert result.status == "negative_result"
+
+    def test_negative_result_blocked_by_design_invalid(self, tmp_path, monkeypatch):
+        """Negative result should NOT converge if DESIGN_INVALID is present."""
+        monkeypatch.setattr("voronoi.science._helpers._fetch_tasks", lambda w: [
+            {"id": "bd-1", "status": "open", "title": "Experiment",
+             "notes": "RESULT_CONTRADICTS_HYPOTHESIS:X\nDESIGN_INVALID:broken"},
+        ])
+        monkeypatch.setattr("voronoi.science._helpers._find_design_invalid",
+            lambda w, t=None: ["bd-1"])
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "deliverable.md").write_text("# Results")
+        result = check_convergence(tmp_path, "scientific", eval_score=0.60,
+                                    improvement_rounds=1)
+        assert result.converged is False
+        assert result.status == "blocked"

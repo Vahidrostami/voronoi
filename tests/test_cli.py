@@ -40,20 +40,15 @@ def test_cli_help():
 
 
 def testfind_data_dir():
-    """find_data_dir locates repo root in editable install."""
+    """find_data_dir locates the data directory with agents."""
     data_dir = find_data_dir()
-    # In editable mode, should return the repo root
-    assert (data_dir / "scripts").is_dir()
-    assert (data_dir / ".github" / "agents").is_dir()
-    assert (data_dir / "pyproject.toml").is_file()
+    # Should return the data/ directory containing agents (canonical location)
+    assert (data_dir / "agents").is_dir()
 
 
 def test_init_creates_files():
     """voronoi init scaffolds expected files into target directory."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        # Initialize a git repo first (init guards against running in source repo)
-        subprocess.run(["git", "init"], cwd=tmpdir, capture_output=True)
-
         result = subprocess.run(
             [sys.executable, "-m", "voronoi.cli", "init"],
             cwd=tmpdir,
@@ -77,6 +72,14 @@ def test_init_creates_files():
         assert (target / ".github" / "agents").is_dir()
         assert (target / ".github" / "prompts").is_dir()
         assert (target / ".github" / "skills").is_dir()
+
+        branch = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=tmpdir,
+            capture_output=True,
+            text=True,
+        )
+        assert branch.stdout.strip() == "main"
 
 
 def test_init_blocks_inside_source_repo():

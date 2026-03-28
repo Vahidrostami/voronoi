@@ -5,8 +5,10 @@ logic.  The bridge script is a thin Telegram I/O layer that delegates
 to these modules — it is not tested directly here.
 """
 
+import asyncio
 import importlib.util
 import json
+import threading
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -24,18 +26,17 @@ from voronoi.gateway.router import (
     handle_guide,
     handle_pivot,
     handle_abort,
-    handle_investigate,
-    handle_explore,
-    handle_build,
-    handle_experiment,
+    handle_discover,
+    handle_prove,
     handle_belief,
     handle_journal,
     handle_finding,
+    handle_complete,
 )
 
 
 def _load_bridge_module():
-    bridge_path = Path(__file__).resolve().parent.parent / "scripts" / "telegram-bridge.py"
+    bridge_path = Path(__file__).resolve().parent.parent / "src" / "voronoi" / "data" / "scripts" / "telegram-bridge.py"
     spec = importlib.util.spec_from_file_location("voronoi_telegram_bridge", bridge_path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -74,6 +75,82 @@ class TestConfig:
         chat_file = tmp_path / ".telegram-chat-id"
         assert chat_file.exists()
         assert chat_file.read_text().strip() == "12345"
+
+
+class TestBridgeSupervision:
+    def test_run_coro_threadsafe_returns_result_without_worker_event_loop(self):
+        module = _load_bridge_module()
+        loop = asyncio.new_event_loop()
+        loop_ready = threading.Event()
+
+        def run_loop() -> None:
+            asyncio.set_event_loop(loop)
+            loop_ready.set()
+            loop.run_forever()
+
+        loop_thread = threading.Thread(target=run_loop)
+        loop_thread.start()
+        loop_ready.wait(timeout=1)
+
+        result_holder: dict[str, int] = {}
+        error_holder: dict[str, BaseException] = {}
+
+        async def sample() -> int:
+            return 42
+
+        def worker() -> None:
+            try:
+                result_holder["value"] = module._run_coro_threadsafe(loop, sample(), timeout=1.0)
+            except BaseException as exc:
+                error_holder["error"] = exc
+
+        worker_thread = threading.Thread(target=worker)
+        worker_thread.start()
+        worker_thread.join(timeout=1)
+
+        loop.call_soon_threadsafe(loop.stop)
+        loop_thread.join(timeout=1)
+        loop.close()
+
+        assert "error" not in error_holder
+        assert result_holder["value"] == 42
+
+    def test_run_bot_forever_retries_transient_errors(self, monkeypatch):
+        module = _load_bridge_module()
+        calls = {"count": 0}
+        sleeps = []
+
+        def fake_run_bot(config):
+            calls["count"] += 1
+            if calls["count"] < 3:
+                raise RuntimeError("temporary failure")
+            raise KeyboardInterrupt()
+
+        monkeypatch.setattr(module, "run_bot", fake_run_bot)
+        monkeypatch.setattr(module.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+        module.run_bot_forever({"bot_token": "test"}, restart_delay=2, max_delay=10)
+
+        assert calls["count"] == 3
+        assert sleeps == [2, 4]
+
+    def test_run_bot_forever_fails_fast_on_invalid_token(self, monkeypatch):
+        module = _load_bridge_module()
+        sleeps = []
+
+        class InvalidToken(Exception):
+            pass
+
+        def fake_run_bot(config):
+            raise InvalidToken("bad token")
+
+        monkeypatch.setattr(module, "run_bot", fake_run_bot)
+        monkeypatch.setattr(module.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+        with pytest.raises(InvalidToken):
+            module.run_bot_forever({"bot_token": "test"}, restart_delay=2, max_delay=10)
+
+        assert sleeps == []
 
 
 # ---------------------------------------------------------------------------
@@ -139,7 +216,7 @@ class TestHandlers:
         q = InvestigationQueue(Path.home() / ".voronoi" / "queue.db")
         # Enqueue a test investigation
         inv = Investigation(chat_id="test", question="test q", slug="abort-test",
-                            mode="build", rigor="standard")
+                            mode="discover", rigor="adaptive")
         inv_id = q.enqueue(inv)
         result = handle_abort(str(tmp_path))
         assert "Abort requested" in result
@@ -156,56 +233,31 @@ class TestHandlers:
 class TestScienceHandlers:
     @patch("voronoi.gateway.router.InvestigationQueue", autospec=True)
     @patch("voronoi.gateway.router.make_slug", return_value="test-slug")
-    def test_handle_investigate(self, mock_slug, mock_queue_cls, tmp_path):
+    def test_handle_discover(self, mock_slug, mock_queue_cls, tmp_path):
         mock_q = MagicMock()
         mock_q.enqueue.return_value = 1
         mock_q.get_queued.return_value = []
         mock_q.get_running.return_value = []
         mock_queue_cls.return_value = mock_q
 
-        result = handle_investigate(str(tmp_path), "Why is latency high?", "chat1")
+        result = handle_discover(str(tmp_path), "Why is latency high?", "chat1")
         assert "Voronoi" in result
         assert "LAUNCHED" in result
-        assert "investigation" in result
+        assert "discovery" in result
 
     @patch("voronoi.gateway.router.InvestigationQueue", autospec=True)
     @patch("voronoi.gateway.router.make_slug", return_value="test-slug")
-    def test_handle_explore(self, mock_slug, mock_queue_cls, tmp_path):
+    def test_handle_prove(self, mock_slug, mock_queue_cls, tmp_path):
         mock_q = MagicMock()
         mock_q.enqueue.return_value = 2
         mock_q.get_queued.return_value = []
         mock_q.get_running.return_value = []
         mock_queue_cls.return_value = mock_q
 
-        result = handle_explore(str(tmp_path), "Redis vs Memcached", "chat1")
-        assert "Voronoi" in result
-        assert "exploration" in result
-
-    @patch("voronoi.gateway.router.InvestigationQueue", autospec=True)
-    @patch("voronoi.gateway.router.make_slug", return_value="test-slug")
-    def test_handle_build(self, mock_slug, mock_queue_cls, tmp_path):
-        mock_q = MagicMock()
-        mock_q.enqueue.return_value = 3
-        mock_q.get_queued.return_value = []
-        mock_q.get_running.return_value = []
-        mock_queue_cls.return_value = mock_q
-
-        result = handle_build(str(tmp_path), "Build REST API", "chat1")
-        assert "Voronoi" in result
-        assert "build" in result
-
-    @patch("voronoi.gateway.router.InvestigationQueue", autospec=True)
-    @patch("voronoi.gateway.router.make_slug", return_value="test-slug")
-    def test_handle_experiment(self, mock_slug, mock_queue_cls, tmp_path):
-        mock_q = MagicMock()
-        mock_q.enqueue.return_value = 4
-        mock_q.get_queued.return_value = []
-        mock_q.get_running.return_value = []
-        mock_queue_cls.return_value = mock_q
-
-        result = handle_experiment(str(tmp_path), "test batch size effect", "chat1")
+        result = handle_prove(str(tmp_path), "test batch size effect", "chat1")
         assert "Voronoi" in result
         assert "LAUNCHED" in result
+        assert "proof" in result
 
 
 # ---------------------------------------------------------------------------
@@ -290,6 +342,27 @@ class TestCommandRouter:
         text, _ = router.route("xyzzy", [], "chat1")
         assert "Unknown command" in text
 
+    def test_route_complete(self, tmp_path):
+        router = CommandRouter(str(tmp_path))
+        with patch("voronoi.gateway.router._run_bd") as mock_bd:
+            mock_bd.return_value = (0, "")
+            text, _ = router.route("complete", ["bd-42", "Done", "work"], "chat1")
+        assert "bd-42" in text
+        assert "closed" in text
+
+    def test_handle_complete_with_default_reason(self, tmp_path):
+        with patch("voronoi.gateway.router._run_bd") as mock_bd:
+            mock_bd.return_value = (0, "")
+            result = handle_complete(str(tmp_path), "bd-1")
+        assert "Completed" in result
+        assert "bd-1" in result
+
+    def test_handle_complete_failure(self, tmp_path):
+        with patch("voronoi.gateway.router._run_bd") as mock_bd:
+            mock_bd.return_value = (1, "not found")
+            result = handle_complete(str(tmp_path), "bd-99")
+        assert "Failed" in result
+
 
 class TestHumanGateBridgeCommands:
     def test_approve_command_calls_dispatcher(self):
@@ -353,11 +426,11 @@ class TestFreeText:
     def test_science_question(self, tmp_path):
         router = CommandRouter(str(tmp_path))
         text, _ = router.handle_free_text("Why is our model accuracy dropping?", "chat1", True)
-        assert "investigate" in text.lower()
+        assert "discover" in text.lower()
         assert "Voronoi" in text
 
     def test_explore_question(self, tmp_path):
         router = CommandRouter(str(tmp_path))
         text, _ = router.handle_free_text("Which database should we use — Postgres vs MySQL?", "chat1", True)
-        assert "explore" in text.lower()
+        assert "discover" in text.lower()
         assert "Voronoi" in text

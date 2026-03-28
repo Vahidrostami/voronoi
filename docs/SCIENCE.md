@@ -21,19 +21,21 @@ The gateway and execution layers consume these; the orchestrator and review agen
 
 ## 2. Rigor Level Gate Matrix
 
-| Gate | Standard | Analytical | Scientific | Experimental |
-|------|:--------:|:----------:|:----------:|:------------:|
+Rigor is determined by mode: DISCOVER uses adaptive rigor (starts analytical, escalates), PROVE uses scientific or experimental from the start.
+
+| Gate | DISCOVER (initial) | DISCOVER (escalated) | PROVE (scientific) | PROVE (experimental) |
+|------|:------------------:|:-------------------:|:-----------------:|:-------------------:|
 | Code review (Critic inline) | YES | YES | YES | YES |
 | Statistician review | — | YES | YES | YES |
 | Finding interpretation | — | YES | YES | YES |
 | Claim-evidence registry | — | YES | YES | YES |
 | Final evaluation (CCSA) | — | YES | YES | YES |
-| Methodologist design review | — | — | YES (advisory) | YES (mandatory) |
-| Pre-registration | — | — | YES | YES |
-| Pre-reg compliance audit | — | — | YES | YES |
-| Power analysis | — | — | YES | YES |
-| Partial blinding for Critic | — | — | YES | YES |
-| Adversarial review loop | — | — | YES | YES |
+| Methodologist design review | — | YES (advisory) | YES (mandatory) | YES (mandatory) |
+| Pre-registration | — | YES | YES | YES |
+| Pre-reg compliance audit | — | YES | YES | YES |
+| Power analysis | — | YES | YES | YES |
+| Partial blinding for Critic | — | YES | YES | YES |
+| Adversarial review loop | — | YES | YES | YES |
 | Replication | — | — | — | YES |
 
 ## 3. Pre-Registration
@@ -126,6 +128,8 @@ class BeliefMap:
 
 `.swarm/belief-map.json` — read/written by orchestrator at each OODA cycle.
 
+**Schema contract**: `hypotheses` MUST be a JSON array of objects (not an object map keyed by ID). Both the Python loader and the shell convergence gate validate this on load. Non-conforming data (e.g., object maps) is automatically migrated to the array format.
+
 ### Functions
 
 ```python
@@ -147,11 +151,13 @@ Determines when an investigation is complete. Criteria vary by rigor level.
 @dataclass
 class ConvergenceResult:
     converged: bool
-    status: str           # converged | not_converged | exhausted
+    status: str           # converged | not_converged | exhausted | negative_result
     reason: str           # Human-readable explanation
     score: float          # 0.0 – 1.0 convergence score
     blockers: list[str]   # What's preventing convergence
 ```
+
+The `negative_result` status indicates a scientifically valid negative outcome: the investigation ran correctly but the hypothesis was falsified. This is a completed investigation, not a failure.
 
 ### Convergence Criteria by Rigor
 
