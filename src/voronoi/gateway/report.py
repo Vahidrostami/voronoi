@@ -257,6 +257,8 @@ class ReportGenerator:
                     best, best_val = f, val
             except (ValueError, TypeError):
                 continue
+        if not findings:
+            return {}
         return best if best is not None else findings[0]
 
     @staticmethod

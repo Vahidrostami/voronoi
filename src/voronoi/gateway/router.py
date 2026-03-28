@@ -662,7 +662,7 @@ def handle_resume_investigation(project_dir: str, identifier: str) -> str:
     """
     from voronoi.server.queue import InvestigationQueue
 
-    db_path = Path(project_dir) / "queue.db"
+    db_path = Path.home() / ".voronoi" / "queue.db"
     if not db_path.exists():
         return "❌ No investigation queue found."
 
@@ -841,8 +841,6 @@ def handle_prove(project_dir: str, hypothesis: str, chat_id: str = "") -> str:
 
 def handle_recall(project_dir: str, query: str) -> str:
     ks = _get_knowledge(project_dir)
-    if ks is None:
-        return "❌ Knowledge store not available"
     return ks.format_recall_response(query)
 
 
@@ -994,7 +992,7 @@ def handle_details(project_dir: str) -> str:
     # Read task snapshot from bd
     task_snapshot: dict = {}
     if has_beads_dir(str(ws)):
-        code, data = run_bd("list", "--json", cwd=str(ws))
+        code, data = _run_bd("list", "--json", cwd=str(ws))
         if code == 0 and data:
             try:
                 tasks = json.loads(data)
