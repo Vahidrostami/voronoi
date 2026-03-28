@@ -227,8 +227,8 @@ def build_orchestrator_prompt(
         f"1. Read checkpoint + `.swarm/brief-digest.md` (NOT the full `{prompt_path}`)\n"
         "2. Read `.swarm/dispatcher-directive.json` if it exists — obey it:\n"
         "   - `context_advisory`: prioritize convergence\n"
-        "   - `context_warning`: delegate ALL remaining work to fresh agents\n"
-        "   - `context_critical`: write checkpoint and dispatch Scribe NOW\n"
+        "   - `context_warning`: run `/compact` NOW to recover context budget, then delegate remaining work\n"
+        "   - `context_critical`: run `/compact` NOW, write checkpoint, dispatch Scribe immediately\n"
         "3. Run targeted `bd query` (NEVER `bd list --json` in routine cycles)\n"
         "4. Orient → Decide → Act\n"
         "5. Write checkpoint, update belief map\n\n"
@@ -418,10 +418,12 @@ SKILL_MAP: dict[str, list[str]] = {
     "investigation": [
         ".github/skills/investigation-protocol/SKILL.md",
         ".github/skills/evidence-system/SKILL.md",
+        ".github/skills/context-management/SKILL.md",
     ],
     "experiment": [
         ".github/skills/investigation-protocol/SKILL.md",
         ".github/skills/evidence-system/SKILL.md",
+        ".github/skills/context-management/SKILL.md",
     ],
     "paper": [
         ".github/skills/figure-generation/SKILL.md",
@@ -430,6 +432,13 @@ SKILL_MAP: dict[str, list[str]] = {
     "compilation": [
         ".github/skills/figure-generation/SKILL.md",
         ".github/skills/compilation-protocol/SKILL.md",
+    ],
+    "scout": [
+        ".github/skills/deep-research/SKILL.md",
+    ],
+    "exploration": [
+        ".github/skills/deep-research/SKILL.md",
+        ".github/skills/context-management/SKILL.md",
     ],
 }
 

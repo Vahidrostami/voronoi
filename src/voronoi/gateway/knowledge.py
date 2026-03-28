@@ -58,8 +58,10 @@ class Finding:
 
 
 def _escape_md(text: str) -> str:
-    """Minimal Markdown escaping for Telegram."""
-    return text.replace("_", "\\_").replace("*", "\\*").replace("`", "\\`")
+    """Markdown escaping for Telegram MarkdownV2."""
+    for ch in r"\_*[]()~`>#+-=|{}.!":
+        text = text.replace(ch, f"\\{ch}")
+    return text
 
 
 class KnowledgeStore:

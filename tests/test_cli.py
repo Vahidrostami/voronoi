@@ -1,5 +1,6 @@
 """Tests for voronoi CLI."""
 
+import json
 import subprocess
 import sys
 import tempfile
@@ -72,6 +73,9 @@ def test_init_creates_files():
         assert (target / ".github" / "agents").is_dir()
         assert (target / ".github" / "prompts").is_dir()
         assert (target / ".github" / "skills").is_dir()
+        mcp_config = json.loads((target / ".github" / "mcp-config.json").read_text())
+        assert mcp_config["mcpServers"]["voronoi"]["command"] == sys.executable
+        assert mcp_config["mcpServers"]["voronoi"]["args"] == ["-m", "voronoi.mcp"]
 
         branch = subprocess.run(
             ["git", "branch", "--show-current"],
@@ -122,6 +126,16 @@ def test_upgrade_preserves_user_files():
         # Modify CLAUDE.md
         claude_path = Path(tmpdir) / "CLAUDE.md"
         claude_path.write_text("# My Custom Config\n")
+        mcp_path = Path(tmpdir) / ".github" / "mcp-config.json"
+        mcp_path.write_text(json.dumps({
+            "mcpServers": {
+                "voronoi": {
+                    "command": "python3",
+                    "args": ["-m", "voronoi.mcp"],
+                    "env": {"VORONOI_WORKSPACE": "."},
+                }
+            }
+        }, indent=2))
 
         # Upgrade
         result = subprocess.run(
@@ -137,3 +151,6 @@ def test_upgrade_preserves_user_files():
 
         # But scripts should be refreshed
         assert (Path(tmpdir) / "scripts" / "spawn-agent.sh").is_file()
+        mcp_config = json.loads(mcp_path.read_text())
+        assert mcp_config["mcpServers"]["voronoi"]["command"] == sys.executable
+        assert mcp_config["mcpServers"]["voronoi"]["args"] == ["-m", "voronoi.mcp"]

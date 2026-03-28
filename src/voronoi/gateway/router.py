@@ -34,6 +34,7 @@ __all__ = [
     "handle_status", "handle_whatsup", "handle_howsitgoing",
     "handle_tasks", "handle_ready", "handle_health", "handle_board",
     "handle_reprioritize", "handle_pause", "handle_resume", "handle_add",
+    "handle_resume_investigation",
     "handle_complete",
     "handle_abort", "handle_pivot", "handle_guide",
     "handle_discover", "handle_prove",
@@ -652,6 +653,59 @@ def handle_resume(project_dir: str, task_id: str) -> str:
     return f"▶️ Task `{task_id}` resumed"
 
 
+def handle_resume_investigation(project_dir: str, identifier: str) -> str:
+    """Resume a paused or failed investigation by ID or codename.
+
+    The dispatcher's resume_investigation() is called via a lazy import
+    to avoid circular dependencies.  If no dispatcher instance is
+    running (CLI context), we fall back to updating the queue directly.
+    """
+    from voronoi.server.queue import InvestigationQueue
+
+    db_path = Path(project_dir) / "queue.db"
+    if not db_path.exists():
+        return "❌ No investigation queue found."
+
+    queue = InvestigationQueue(db_path)
+
+    # Resolve identifier → investigation ID
+    inv = None
+    # Try numeric ID first
+    try:
+        inv_id = int(identifier)
+        inv = queue.get(inv_id)
+    except (ValueError, TypeError):
+        pass
+
+    # Try codename match
+    if inv is None:
+        needle = identifier.lower().strip()
+        for candidate in queue.get_recent(limit=50):
+            if candidate.codename and candidate.codename.lower() == needle:
+                inv = candidate
+                break
+
+    if inv is None:
+        return f"❌ No investigation matching `{identifier}`."
+    if inv.status not in ("paused", "failed"):
+        return f"❌ *{inv.codename or f'#{inv.id}'}* is {inv.status} — can only resume paused or failed."
+
+    # Try to use an active dispatcher if one exists (server context)
+    try:
+        from voronoi.server.dispatcher import _active_dispatcher
+        dispatcher = _active_dispatcher()
+        if dispatcher is not None:
+            return dispatcher.resume_investigation(inv.id)
+    except (ImportError, Exception):
+        pass
+
+    # Fallback: update queue directly (no agent launch — just mark resumable)
+    if not queue.resume(inv.id):
+        return f"❌ Failed to resume #{inv.id}."
+    label = inv.codename or f"#{inv.id}"
+    return f"▶️ *{label}* marked as running — it will be picked up on next dispatch cycle."
+
+
 def handle_add(project_dir: str, title: str) -> str:
     # Create task in the first running investigation workspace
     ws_path = _get_first_active_workspace(project_dir) or project_dir
@@ -939,25 +993,21 @@ def handle_details(project_dir: str) -> str:
 
     # Read task snapshot from bd
     task_snapshot: dict = {}
-    try:
-        import subprocess
-        result = subprocess.run(
-            ["bd", "list", "--json"],
-            capture_output=True, text=True, timeout=15, cwd=str(ws),
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            import json as _json
-            tasks = _json.loads(result.stdout)
-            if isinstance(tasks, list):
-                for t in tasks:
-                    tid = t.get("id", "")
-                    task_snapshot[tid] = {
-                        "status": t.get("status", ""),
-                        "title": t.get("title", ""),
-                        "notes": t.get("notes", ""),
-                    }
-    except Exception:
-        pass
+    if has_beads_dir(str(ws)):
+        code, data = run_bd("list", "--json", cwd=str(ws))
+        if code == 0 and data:
+            try:
+                tasks = json.loads(data)
+                if isinstance(tasks, list):
+                    for t in tasks:
+                        tid = t.get("id", "")
+                        task_snapshot[tid] = {
+                            "status": t.get("status", ""),
+                            "title": t.get("title", ""),
+                            "notes": t.get("notes", ""),
+                        }
+            except (json.JSONDecodeError, TypeError):
+                pass
 
     elapsed_sec = (time.time() - (inv.started_at or time.time()))
     text, _ = build_digest(
@@ -1162,7 +1212,15 @@ class CommandRouter:
             elif sub == "pause" and args:
                 return handle_pause(self.project_dir, args[0]), None
             elif sub == "resume" and args:
-                return handle_resume(self.project_dir, args[0]), None
+                # Detect investigation ID/codename vs task ID.
+                # Beads task IDs look like "bd-123"; investigation IDs are
+                # plain integers or codenames (single words, no hyphens
+                # starting with "bd-").
+                arg = args[0]
+                is_beads_task = arg.startswith("bd-")
+                if is_beads_task:
+                    return handle_resume(self.project_dir, arg), None
+                return handle_resume_investigation(self.project_dir, arg), None
             elif sub == "add" and args:
                 return handle_add(self.project_dir, " ".join(args)), None
             elif sub == "complete" and args:

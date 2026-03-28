@@ -80,6 +80,8 @@ The orchestrator selects roles based on the classified rigor level. Roles CANNOT
 - SOTA anchoring (what's the current best?)
 - Identification of gaps in existing knowledge
 
+**Deep Research**: The scout uses the `deep-research` skill for literature review and prior-art search. This skill leverages Copilot CLI's `/research` command to search GitHub repos + live web sources, providing citation-backed evidence instead of relying on LLM training data. See `.github/skills/deep-research/SKILL.md`.
+
 **Verify Loop**:
 - Knowledge brief written + sources cited
 - Max iterations: **3**

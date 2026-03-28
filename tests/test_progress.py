@@ -8,7 +8,7 @@ from pathlib import Path
 
 from voronoi.gateway.progress import (
     format_launch, format_complete, format_failure, format_alert,
-    format_restart, format_duration, progress_bar, estimate_remaining,
+    format_restart, format_pause, format_duration, progress_bar, estimate_remaining,
     build_digest, build_digest_whatsup, assess_track_status,
     phase_description, phase_position, _synthesize_narrative,
     VOICE_PHASE_VARIANTS, MSG_TYPE_MILESTONE, MSG_TYPE_STATUS,
@@ -53,6 +53,20 @@ class TestBuddyFormatters:
     def test_format_restart_crash(self):
         msg = format_restart("Synapse", 1, 2, clean_exit=False)
         assert "crashed" in msg
+
+    def test_format_pause(self):
+        msg = format_pause("Synapse", "auth expired", 7200, 5, 20)
+        assert "Synapse" in msg
+        assert "paused" in msg.lower()
+        assert "auth expired" in msg
+        assert "5/20" in msg
+        assert "/voronoi resume" in msg
+
+    def test_format_pause_no_tasks(self):
+        msg = format_pause("Synapse", "auth expired", 300, 0, 0)
+        assert "Synapse" in msg
+        assert "paused" in msg.lower()
+        assert "0/0" not in msg  # should skip progress when total=0
 
     def test_format_duration(self):
         assert format_duration(300) == "5min"

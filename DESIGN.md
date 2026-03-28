@@ -253,6 +253,18 @@ Pure plumbing — no decision logic. The orchestrator (copilot) makes all decisi
 | `dashboard.py` | Rich terminal dashboard (optional dev tool) |
 | `telegram-bridge.py` | Telegram ↔ Voronoi gateway |
 
+### Copilot CLI Flags
+
+The dispatcher and `spawn-agent.sh` inject flags at agent launch time:
+
+| Flag | Applied to | Purpose |
+|------|-----------|---------|
+| `--effort <level>` | All agents | Reasoning depth scaled by rigor (medium→high→xhigh) |
+| `--share .swarm/session.md` | All agents | Clean markdown audit trail per session |
+| `--deny-tool=write` | Read-only roles (scout, critic, statistician, methodologist) | Structural role permission enforcement |
+
+Context pressure management uses Copilot CLI's `/compact` command — native conversation compression that recovers 60-70% of context budget without restarting the agent.
+
 ```mermaid
 sequenceDiagram
     participant O as Orchestrator

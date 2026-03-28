@@ -861,3 +861,17 @@ def format_restart(codename: str, attempt: int, max_retries: int,
         lines.append(f"\nLast output:\n```\n{log_tail[-300:]}\n```")
     return "\n".join(lines)
 
+
+def format_pause(codename: str, reason: str, elapsed_sec: float,
+                 closed: int, total: int) -> str:
+    """Format a pause notification — recoverable, action needed."""
+    elapsed = format_duration(elapsed_sec)
+    lines = [f"⏸ *{codename}* paused after {elapsed}.\n"]
+    lines.append(f"Reason: {reason}")
+    if total > 0:
+        lines.append(f"Progress: {closed}/{total} tasks completed.")
+    lines.append(
+        "\nFix the issue, then send `/voronoi resume` to continue."
+    )
+    return "\n".join(lines)
+

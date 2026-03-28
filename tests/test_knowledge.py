@@ -45,7 +45,7 @@ class TestFinding:
         assert "N=10000" in text
         assert "POSITIVE" in text
         assert "yes" in text
-        assert "Welch t-test" in text
+        assert "Welch t\\-test" in text
 
     def test_format_telegram_negative_finding(self):
         f = Finding(

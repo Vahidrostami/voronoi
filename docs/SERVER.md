@@ -66,15 +66,24 @@ class Investigation:
        │running │──────────────────────┐
        └───┬───┘                       │
            │                           │
-     ┌─────┼─────┐              cancel()
-     │     │     │                     │
-  complete() fail()                    │
-     │     │     │                     │
-     ▼     ▼     ▼                     ▼
- ┌────────┐ ┌──────┐            ┌──────────┐
- │complete│ │failed│            │cancelled │
- └────────┘ └──────┘            └──────────┘
+     ┌─────┼─────┼──────┐        cancel()
+     │     │     │      │              │
+  complete() fail() pause()            │
+     │     │     │      │              │
+     ▼     ▼     ▼      ▼              ▼
+ ┌────────┐ ┌──────┐ ┌──────┐   ┌──────────┐
+ │complete│ │failed│ │paused│   │cancelled │
+ └────────┘ └──┬───┘ └──┬───┘   └──────────┘
+               │        │
+               └────┬───┘
+                    │ resume()
+                    ▼
+               ┌───────┐
+               │running │
+               └───────┘
 ```
+
+The `paused` state is entered when the agent exits due to a recoverable error (e.g., auth expiry). The `resume()` method transitions both `paused` and `failed` investigations back to `running`. Paused investigations do not count against `max_retries`.
 
 ### InvestigationQueue API
 
@@ -90,6 +99,8 @@ class InvestigationQueue:
     def complete(self, investigation_id: int, github_url: str | None = None) -> None: ...
     def fail(self, investigation_id: int, error: str) -> None: ...
     def cancel(self, investigation_id: int) -> bool: ...
+    def pause(self, investigation_id: int, reason: str) -> None: ...    # running → paused
+    def resume(self, investigation_id: int) -> None: ...                # paused|failed → running
 
     # Queries
     def get(self, investigation_id: int) -> Investigation | None: ...
@@ -164,10 +175,40 @@ class DispatcherConfig:
     timeout_hours: int       # 48 — max investigation runtime
     max_retries: int         # 2 — retry failed launches
     stall_minutes: int       # 45 — minutes without progress before warning
+    pause_timeout_hours: int # 24 — auto-fail paused investigations after this
     context_advisory_hours: int   # 6 — "prioritize convergence" directive
     context_warning_hours: int    # 10 — "delegate remaining work" directive
     context_critical_hours: int   # 14 — "dispatch Scribe NOW" directive
 ```
+
+### Copilot CLI Flags
+
+The dispatcher injects several Copilot CLI flags at launch time:
+
+| Flag | Where | Purpose |
+|------|-------|---------|
+| `--effort <level>` | Orchestrator + workers (via `.swarm-config.json`) | Reasoning effort scaled by rigor: adaptive→`high`, scientific→`high`, experimental→`xhigh` |
+| `--share <path>` | Orchestrator + workers | Saves clean markdown session transcript to `.swarm/session.md` for audit trails |
+| `--deny-tool` | Workers only (via `spawn-agent.sh` role permissions) | Read-only roles (scout, critic, statistician, methodologist) get `--deny-tool=write` |
+
+**Effort-by-rigor mapping** (applied in `_launch_in_tmux()` and `spawn-agent.sh`):
+
+| Rigor | `--effort` | Rationale |
+|-------|-----------|----------|
+| (none / standard) | `medium` | Routine build tasks |
+| `adaptive` | `high` | Science discovery needs deeper reasoning |
+| `scientific` | `high` | Full science protocol |
+| `experimental` | `xhigh` | Maximum depth for novel discovery |
+
+**Role permission profiles** (configured in `.swarm-config.json`):
+
+| Role | Permissions |
+|------|------------|
+| `scout` | `--allow-all --deny-tool=write` |
+| `review_critic` | `--allow-all --deny-tool=write` |
+| `review_stats` | `--allow-all --deny-tool=write` |
+| `review_method` | `--allow-all --deny-tool=write` |
+| All others | `--allow-all` (default) |
 
 ### RunningInvestigation
 
@@ -223,7 +264,7 @@ class InvestigationDispatcher:
 3. Copy demo files if `demo_source` set
 4. Build orchestrator prompt via `prompt.py`
 5. Verify Copilot auth (`_ensure_copilot_auth()`)
-6. Launch in tmux: `tmux new-session -d -s {session} "cd {workspace} && {agent_command} {flags} -p prompt.txt ; exit"`
+6. Launch in tmux: `tmux new-session -d -s {session} "cd {workspace} && {agent_command} {flags} --effort {level} --share .swarm/session.md -p prompt.txt ; exit"`
 7. Add to `_running` dict
 
 ### Progress Polling
@@ -314,13 +355,27 @@ Phase inferred from workspace artifacts:
 When tmux session dies:
 1. **Classify the exit first** — check if agent logged out cleanly vs crashed unexpectedly
 2. If exit was clean but incomplete, check if a human gate is pending — if so, do NOT retry (the agent is waiting for approval)
-3. Check retry limit (`max_retries`, default 2)
-4. Send contextual notification: "exited early" for clean exits, "crashed" only for unexpected exits
-5. Validate orchestrator prompt still exists
-6. Build **resume prompt** that includes: the original question, essential protocol references, checkpoint state, success criteria status, task summary, and clear next actions
-7. Rotate log file (preserve previous attempt's logs)
-8. Re-launch in tmux with the resume prompt
-9. On auth failure: stop retrying (no point wasting retries)
+3. **Check for auth failure** — if log tail contains auth-related patterns ("authenticate", "gh auth login", "COPILOT_GITHUB_TOKEN", etc.), transition to `paused` state instead of burning a retry. Send Telegram notification with `/resume` instructions.
+4. Check retry limit (`max_retries`, default 2)
+5. Send contextual notification: "exited early" for clean exits, "crashed" only for unexpected exits
+6. Validate orchestrator prompt still exists
+7. Build **resume prompt** that includes: the original question, essential protocol references, checkpoint state, success criteria status, task summary, and clear next actions
+8. Rotate log file (preserve previous attempt's logs)
+9. Re-launch in tmux with the resume prompt
+10. On auth failure during launch: transition to `paused` (not exhausting retries)
+
+### Investigation Resume
+
+The dispatcher exposes `resume_investigation(investigation_id)` for resuming `paused` or `failed` investigations. This:
+1. Validates the investigation exists and is in `paused` or `failed` status
+2. Validates the workspace still exists with an orchestrator prompt
+3. Transitions the queue status back to `running` via `queue.resume()`
+4. Resets `retry_count` to 0
+5. Builds a fresh resume prompt via `_build_resume_prompt()`
+6. Launches in tmux
+7. Adds back to `self.running` for monitoring
+
+Paused investigations auto-fail after `pause_timeout_hours` (default 24h).
 
 ### Abort Handling
 
@@ -386,6 +441,19 @@ def build_orchestrator_prompt(
 ### Key Design Principle
 
 The prompt **references** `.github/agents/*.agent.md` files in the target workspace. It tells the orchestrator: "Read this file NOW — it contains your complete role definition." Role definitions live canonically in `src/voronoi/data/agents/` and are copied to `.github/agents/` in investigation workspaces. They are NEVER duplicated in Python code.
+
+### Worker Prompt Skill Injection
+
+`build_worker_prompt()` uses `SKILL_MAP` to inject task-type-specific skill references:
+
+| Task Type | Skills Injected |
+|-----------|----------------|
+| `investigation`, `experiment` | `investigation-protocol`, `evidence-system`, `context-management` |
+| `paper`, `compilation` | `figure-generation`, `compilation-protocol` |
+| `scout` | `deep-research` |
+| `exploration` | `deep-research`, `context-management` |
+
+Skills are referenced as paths (e.g., `.github/skills/deep-research/SKILL.md`) in the worker prompt. The agent reads them at task start.
 
 ---
 

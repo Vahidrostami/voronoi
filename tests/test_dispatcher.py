@@ -5,6 +5,7 @@ The dispatcher now only: dispatch_next() + poll_progress().
 """
 
 import json
+import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -855,6 +856,82 @@ class TestLaunchInTmux:
 
         assert mock_run.call_count >= 3
 
+    def test_effort_flag_from_rigor(self, dispatcher_setup):
+        """--effort flag is derived from rigor level."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        (tmp_path / ".swarm").mkdir(parents=True, exist_ok=True)
+
+        with patch("voronoi.server.dispatcher.shutil.which", return_value="/bin/echo"), \
+             patch("voronoi.server.dispatcher.subprocess.run") as mock_run:
+            d._launch_in_tmux("test-session", tmp_path, rigor="experimental")
+
+        # Find the send-keys call containing the copilot command
+        send_keys_calls = [c for c in mock_run.call_args_list
+                           if "send-keys" in str(c)]
+        assert send_keys_calls
+        cmd = str(send_keys_calls[-1])
+        assert "--effort xhigh" in cmd
+
+    def test_effort_defaults_to_medium(self, dispatcher_setup):
+        """Unknown rigor maps to medium effort."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        (tmp_path / ".swarm").mkdir(parents=True, exist_ok=True)
+
+        with patch("voronoi.server.dispatcher.shutil.which", return_value="/bin/echo"), \
+             patch("voronoi.server.dispatcher.subprocess.run") as mock_run:
+            d._launch_in_tmux("test-session", tmp_path, rigor="")
+
+        send_keys_calls = [c for c in mock_run.call_args_list
+                           if "send-keys" in str(c)]
+        assert send_keys_calls
+        cmd = str(send_keys_calls[-1])
+        assert "--effort medium" in cmd
+
+    def test_share_flag_included(self, dispatcher_setup):
+        """--share flag points to .swarm/session.md."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        (tmp_path / ".swarm").mkdir(parents=True, exist_ok=True)
+
+        with patch("voronoi.server.dispatcher.shutil.which", return_value="/bin/echo"), \
+             patch("voronoi.server.dispatcher.subprocess.run") as mock_run:
+            d._launch_in_tmux("test-session", tmp_path)
+
+        send_keys_calls = [c for c in mock_run.call_args_list
+                           if "send-keys" in str(c)]
+        assert send_keys_calls
+        cmd = str(send_keys_calls[-1])
+        assert "--share" in cmd
+        assert "session.md" in cmd
+
+    def test_effort_by_rigor_mapping(self):
+        """Verify the complete rigor-to-effort mapping."""
+        from voronoi.server.dispatcher import InvestigationDispatcher
+        mapping = InvestigationDispatcher._EFFORT_BY_RIGOR
+        assert mapping["adaptive"] == "high"
+        assert mapping["scientific"] == "high"
+        assert mapping["experimental"] == "xhigh"
+
+    def test_patch_swarm_config(self, dispatcher_setup):
+        """_patch_swarm_config writes effort, permissions, and MCP config."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+
+        # Start with a minimal config
+        config_path = tmp_path / ".swarm-config.json"
+        config_path.write_text(json.dumps({"project_dir": str(tmp_path)}))
+
+        d._patch_swarm_config(tmp_path, "experimental")
+
+        data = json.loads(config_path.read_text())
+        assert data["effort"] == "xhigh"
+        assert "role_permissions" in data
+        assert "--deny-tool=write" in data["role_permissions"]["scout"]
+        assert "--deny-tool=write" in data["role_permissions"]["review_critic"]
+
+        mcp_path = tmp_path / ".github" / "mcp-config.json"
+        mcp = json.loads(mcp_path.read_text())
+        assert mcp["mcpServers"]["voronoi"]["command"] == sys.executable
+        assert mcp["mcpServers"]["voronoi"]["args"] == ["-m", "voronoi.mcp"]
+
 
 # ---------------------------------------------------------------------------
 # Workspace activity detection (Change 4)
@@ -1002,6 +1079,42 @@ class TestContextPressure:
 
         # Should not re-write if same level
         assert run.context_directive_level == "context_advisory"
+
+    def test_warning_directive_includes_compact(self, dispatcher_setup):
+        """Context warning directive tells orchestrator to run /compact."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        (tmp_path / ".swarm").mkdir(parents=True, exist_ok=True)
+
+        d._check_context_pressure(run, elapsed_hours=11)
+
+        directive_path = tmp_path / ".swarm" / "dispatcher-directive.json"
+        data = json.loads(directive_path.read_text())
+        assert "/compact" in data["message"]
+
+    def test_critical_directive_includes_compact(self, dispatcher_setup):
+        """Context critical directive tells orchestrator to run /compact."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        (tmp_path / ".swarm").mkdir(parents=True, exist_ok=True)
+
+        d._check_context_pressure(run, elapsed_hours=15)
+
+        directive_path = tmp_path / ".swarm" / "dispatcher-directive.json"
+        data = json.loads(directive_path.read_text())
+        assert "/compact" in data["message"]
 
 
 # ---------------------------------------------------------------------------
@@ -1241,3 +1354,181 @@ class TestReliabilityFixes:
 
         d._check_criteria_progress(run, elapsed_hours=5.0)
         assert not any("success criteria met" in m for m in msgs)
+
+
+class TestAuthDetection:
+    def test_looks_like_auth_failure_detects_patterns(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        log_tail = (
+            "To authenticate, you can use any of the following methods:\n"
+            "  • Start 'copilot' and run the '/login' command\n"
+            "  • Set the COPILOT_GITHUB_TOKEN, GH_TOKEN, or GITHUB_TOKEN environment variable\n"
+            "  • Run 'gh auth login' to authenticate with the GitHub CLI"
+        )
+        assert d._looks_like_auth_failure(log_tail) is True
+
+    def test_looks_like_auth_failure_negative(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        log_tail = "Agent completed all tasks successfully\nlogout\ntotal session time: 2h"
+        assert d._looks_like_auth_failure(log_tail) is False
+
+    def test_looks_like_auth_failure_empty(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        assert d._looks_like_auth_failure("") is False
+
+
+class TestPauseInvestigation:
+    def test_pause_investigation(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        mock_queue = MagicMock()
+        d._queue = mock_queue
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test-session",
+            question="test",
+            mode="discover",
+            codename="Synapse",
+        )
+        d.running[1] = run
+
+        with patch("voronoi.server.dispatcher.subprocess.run"):
+            d._pause_investigation(run, "Copilot/GitHub auth expired")
+
+        mock_queue.pause.assert_called_once_with(1, "Copilot/GitHub auth expired")
+        assert 1 not in d.running
+        assert any("paused" in m.lower() for m in msgs)
+        assert any("auth" in m.lower() for m in msgs)
+
+    def test_resume_investigation_success(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+
+        # Set up paused investigation data
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True, exist_ok=True)
+        (swarm / "orchestrator-prompt.txt").write_text("test prompt")
+
+        mock_queue = MagicMock()
+        mock_inv = MagicMock()
+        mock_inv.id = 1
+        mock_inv.status = "paused"
+        mock_inv.workspace_path = str(tmp_path)
+        mock_inv.question = "Why?"
+        mock_inv.mode = "discover"
+        mock_inv.codename = "Synapse"
+        mock_inv.chat_id = "123"
+        mock_inv.rigor = "adaptive"
+        mock_queue.get.return_value = mock_inv
+        mock_queue.resume.return_value = True
+        d._queue = mock_queue
+
+        with patch.object(d, "_restore_task_snapshot"), \
+             patch.object(d, "_build_resume_prompt", return_value=swarm / "resume.txt"), \
+             patch.object(d, "_launch_in_tmux"):
+            result = d.resume_investigation(1)
+
+        assert "resumed" in result.lower()
+        mock_queue.resume.assert_called_once_with(1)
+        assert 1 in d.running
+
+    def test_resume_investigation_not_found(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        mock_queue = MagicMock()
+        mock_queue.get.return_value = None
+        d._queue = mock_queue
+
+        result = d.resume_investigation(99)
+        assert "not found" in result.lower()
+
+    def test_resume_investigation_wrong_status(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        mock_queue = MagicMock()
+        mock_inv = MagicMock()
+        mock_inv.id = 1
+        mock_inv.status = "complete"
+        mock_queue.get.return_value = mock_inv
+        d._queue = mock_queue
+
+        result = d.resume_investigation(1)
+        assert "complete" in result.lower()
+        assert "only resume" in result.lower()
+
+    def test_resume_failed_investigation(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True, exist_ok=True)
+        (swarm / "orchestrator-prompt.txt").write_text("test prompt")
+
+        mock_queue = MagicMock()
+        mock_inv = MagicMock()
+        mock_inv.id = 2
+        mock_inv.status = "failed"
+        mock_inv.workspace_path = str(tmp_path)
+        mock_inv.question = "Failed Q"
+        mock_inv.mode = "prove"
+        mock_inv.codename = "Dopamine"
+        mock_inv.chat_id = "456"
+        mock_inv.rigor = "scientific"
+        mock_queue.get.return_value = mock_inv
+        mock_queue.resume.return_value = True
+        d._queue = mock_queue
+
+        with patch.object(d, "_restore_task_snapshot"), \
+             patch.object(d, "_build_resume_prompt", return_value=swarm / "resume.txt"), \
+             patch.object(d, "_launch_in_tmux"):
+            result = d.resume_investigation(2)
+
+        assert "resumed" in result.lower()
+        assert "Dopamine" in result
+
+    def test_check_paused_timeouts(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        d.config.pause_timeout_hours = 1  # 1 hour for test
+
+        mock_queue = MagicMock()
+        mock_inv = MagicMock()
+        mock_inv.id = 1
+        mock_inv.codename = "Synapse"
+        mock_inv.started_at = time.time() - 7200  # 2 hours ago
+        mock_queue.get_paused.return_value = [mock_inv]
+        mock_queue.resume.return_value = True
+        d._queue = mock_queue
+
+        d._check_paused_timeouts()
+
+        mock_queue.resume.assert_called_once_with(1)
+        mock_queue.fail.assert_called_once()
+        assert any("auto-failed" in m.lower() for m in msgs)
+
+    def test_try_restart_auth_failure_pauses(self, dispatcher_setup):
+        """Auth failure during restart should pause, not exhaust retries."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        mock_queue = MagicMock()
+        d._queue = mock_queue
+
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True, exist_ok=True)
+        (swarm / "orchestrator-prompt.txt").write_text("prompt")
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+            codename="Synapse",
+        )
+        d.running[1] = run
+
+        with patch.object(d, "_read_log_tail", return_value=""), \
+             patch.object(d, "_looks_like_clean_agent_exit", return_value=False), \
+             patch.object(d, "_build_resume_prompt", return_value=swarm / "resume.txt"), \
+             patch.object(d, "_launch_in_tmux", side_effect=RuntimeError("authentication expired")), \
+             patch("voronoi.server.dispatcher.subprocess.run"):
+            result = d._try_restart(run)
+
+        assert result is False
+        mock_queue.pause.assert_called_once()
+        assert run.retry_count == 0  # should be undone

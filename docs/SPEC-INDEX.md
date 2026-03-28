@@ -87,3 +87,4 @@
 | `src/voronoi/server/events.py` | CONTEXT-MANAGEMENT.md §10 |
 | `src/voronoi/server/publisher.py` | SERVER.md §8 |
 | `src/voronoi/server/repo_url.py` | SERVER.md §9 |
+| `src/voronoi/mcp/` | ARCHITECTURE.md §8 |

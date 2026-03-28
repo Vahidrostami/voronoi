@@ -16,6 +16,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -26,7 +27,7 @@ from voronoi.gateway.progress import (
     MODE_EMOJI, MODE_VERB,
     MSG_TYPE_MILESTONE, MSG_TYPE_STATUS,
     format_launch, format_complete, format_failure, format_alert,
-    format_restart, format_duration, phase_description,
+    format_restart, format_pause, format_duration, phase_description,
     build_digest,
 )
 
@@ -47,6 +48,7 @@ class DispatcherConfig:
     timeout_hours: int = 48      # max hours before marking investigation exhausted
     max_retries: int = 2         # max times to restart a dead agent
     stall_minutes: int = 45      # warn/restart if 0 tasks after this long
+    pause_timeout_hours: int = 24  # auto-fail paused investigations after this
     context_advisory_hours: int = 6    # "prioritize convergence" directive
     context_warning_hours: int = 10    # "delegate remaining work" directive
     context_critical_hours: int = 14   # "dispatch Scribe NOW" directive
@@ -91,6 +93,17 @@ class RunningInvestigation:
         return self.workspace_path / ".swarm" / "agent.log"
 
 
+# Module-level weak reference to the active dispatcher, used by
+# handle_resume_investigation in the router to reach the dispatcher's
+# resume_investigation() method without circular imports.
+_active_dispatcher_ref: Optional["InvestigationDispatcher"] = None
+
+
+def _active_dispatcher() -> Optional["InvestigationDispatcher"]:
+    """Return the active dispatcher instance, or None."""
+    return _active_dispatcher_ref
+
+
 class InvestigationDispatcher:
     """Launches queued investigations and monitors their progress.
 
@@ -102,7 +115,7 @@ class InvestigationDispatcher:
     def __init__(
         self,
         config: DispatcherConfig,
-        send_message: Callable[[str], None],
+        send_message: Callable[[str], Optional[int]],
         send_document: Callable[[str, Path, str], None] | None = None,
         edit_message: Callable[[str, int], None] | None = None,
     ):
@@ -113,6 +126,10 @@ class InvestigationDispatcher:
         self.running: dict[int, RunningInvestigation] = {}
         self._queue = None
         self._workspace_mgr = None
+
+        # Register as the active dispatcher so the router can reach us
+        global _active_dispatcher_ref
+        _active_dispatcher_ref = self
 
     @property
     def queue(self):
@@ -142,6 +159,9 @@ class InvestigationDispatcher:
         """
         # Recovery: re-adopt running investigations we're not tracking
         self._recover_running()
+
+        # Auto-fail paused investigations that exceeded the timeout
+        self._check_paused_timeouts()
 
         inv = self.queue.next_ready(self.config.max_concurrent)
         if inv is None:
@@ -251,13 +271,18 @@ class InvestigationDispatcher:
 
         self.queue.start(inv.id, ws.path)
 
+        # Patch .swarm-config.json with rigor-mapped effort level
+        rigor = getattr(inv, 'rigor', 'scientific') or 'scientific'
+        self._patch_swarm_config(workspace_path, rigor)
+
         prompt = self._build_prompt(inv, workspace_path)
         prompt_file = workspace_path / ".swarm" / "orchestrator-prompt.txt"
         prompt_file.parent.mkdir(parents=True, exist_ok=True)
         prompt_file.write_text(prompt)
 
         tmux_session = f"voronoi-inv-{inv.id}"
-        self._launch_in_tmux(tmux_session, workspace_path)
+        rigor = getattr(inv, 'rigor', 'scientific') or 'scientific'
+        self._launch_in_tmux(tmux_session, workspace_path, rigor=rigor)
 
         self.running[inv.id] = RunningInvestigation(
             investigation_id=inv.id,
@@ -297,6 +322,42 @@ class InvestigationDispatcher:
             max_agents=self.config.max_agents,
         )
 
+    def _patch_swarm_config(self, workspace_path: Path, rigor: str) -> None:
+        """Patch .swarm-config.json with rigor-derived effort and role permissions."""
+        config_path = workspace_path / ".swarm-config.json"
+        try:
+            if config_path.exists():
+                data = json.loads(config_path.read_text())
+            else:
+                data = {}
+            effort = self._EFFORT_BY_RIGOR.get(rigor, "medium")
+            data["effort"] = effort
+            data.setdefault("role_permissions", {
+                "scout": "--allow-all --deny-tool=write",
+                "review_critic": "--allow-all --deny-tool=write",
+                "review_stats": "--allow-all --deny-tool=write",
+                "review_method": "--allow-all --deny-tool=write",
+            })
+            if self.config.worker_model:
+                data["worker_model"] = self.config.worker_model
+            config_path.write_text(json.dumps(data, indent=2))
+
+            # Write .github/mcp-config.json for Copilot CLI MCP auto-discovery
+            mcp_config_path = workspace_path / ".github" / "mcp-config.json"
+            mcp_config_path.parent.mkdir(parents=True, exist_ok=True)
+            mcp_config = {
+                "mcpServers": {
+                    "voronoi": {
+                        "command": sys.executable or shutil.which("python3") or "python3",
+                        "args": ["-m", "voronoi.mcp"],
+                        "env": {"VORONOI_WORKSPACE": "."},
+                    }
+                }
+            }
+            mcp_config_path.write_text(json.dumps(mcp_config, indent=2))
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning("Failed to patch .swarm-config.json: %s", e)
+
     def _ensure_copilot_auth(self) -> None:
         """Verify Copilot/GitHub auth is valid before launching an agent.
 
@@ -329,8 +390,16 @@ class InvestigationDispatcher:
             "or set GITHUB_TOKEN / COPILOT_GITHUB_TOKEN env var with a PAT for unattended use."
         )
 
+    # Rigor → Copilot CLI --effort mapping
+    _EFFORT_BY_RIGOR: dict[str, str] = {
+        "adaptive": "high",
+        "scientific": "high",
+        "experimental": "xhigh",
+    }
+
     def _launch_in_tmux(self, session: str, workspace_path: Path,
-                        prompt_file: Path | None = None) -> None:
+                        prompt_file: Path | None = None,
+                        rigor: str = "") -> None:
         agent_cmd = self.config.agent_command
         agent_flags = self.config.agent_flags
         parts = agent_cmd.split()
@@ -346,6 +415,14 @@ class InvestigationDispatcher:
         model_flag = ""
         if self.config.orchestrator_model:
             model_flag = f" --model {shlex.quote(self.config.orchestrator_model)}"
+
+        # --effort scaled by rigor level
+        effort = self._EFFORT_BY_RIGOR.get(rigor, "medium")
+        effort_flag = f" --effort {effort}"
+
+        # --share for clean audit trail
+        share_path = workspace_path / ".swarm" / "session.md"
+        share_flag = f" --share {shlex.quote(str(share_path))}"
 
         log_path = workspace_path / ".swarm" / "agent.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -385,7 +462,8 @@ class InvestigationDispatcher:
 
         subprocess.run(
             ["tmux", "send-keys", "-t", session,
-             f'cd {safe_ws} && {safe_cmd} {safe_flags}{model_flag} '
+             f'cd {safe_ws} && {safe_cmd} {safe_flags}{model_flag}'
+             f'{effort_flag}{share_flag} '
              f'-p "$(cat {safe_prompt})" ; exit',
              "Enter"],
             capture_output=True, timeout=10,
@@ -491,8 +569,14 @@ class InvestigationDispatcher:
                         logger.info("Investigation #%d paused at human gate",
                                     inv_id)
                         continue  # don't add to completed_ids
-                    # Classify the exit before deciding to retry
+                    # Check for auth failure — pause instead of burning retries
                     log_tail = self._read_log_tail(run)
+                    if self._looks_like_auth_failure(log_tail):
+                        logger.warning("Investigation #%d paused — auth failure detected",
+                                       inv_id)
+                        self._pause_investigation(run, "Copilot/GitHub auth expired")
+                        continue  # don't add to completed_ids
+                    # Classify the exit before deciding to retry
                     is_clean = self._looks_like_clean_agent_exit(log_tail)
                     # Try to restart the agent instead of giving up
                     if self._try_restart(run):
@@ -716,8 +800,8 @@ class InvestigationDispatcher:
                 and run.context_directive_level != "context_critical"):
             run.context_directive_level = "context_critical"
             self._write_directive(run, "context_critical",
-                f"{int(elapsed_hours)}h elapsed. Write checkpoint and dispatch "
-                f"Scribe NOW or risk session loss.")
+                f"{int(elapsed_hours)}h elapsed. Run /compact NOW to recover context budget, "
+                f"write checkpoint, and dispatch Scribe immediately or risk session loss.")
             self.send_message(format_alert(
                 run.label,
                 f"Context critical — {int(elapsed_hours)}h elapsed. "
@@ -727,8 +811,8 @@ class InvestigationDispatcher:
               and run.context_directive_level not in ("context_warning", "context_critical")):
             run.context_directive_level = "context_warning"
             self._write_directive(run, "context_warning",
-                f"{int(elapsed_hours)}h elapsed. Delegate ALL remaining work "
-                f"to fresh agents.")
+                f"{int(elapsed_hours)}h elapsed. Run /compact NOW to recover context budget, "
+                f"then delegate ALL remaining work to fresh agents.")
             self.send_message(format_alert(
                 run.label,
                 f"Context warning — {int(elapsed_hours)}h elapsed. "
@@ -761,7 +845,7 @@ class InvestigationDispatcher:
                 run.context_directive_level = "context_critical"
                 self._write_directive(run, "context_critical",
                     "Context window nearly exhausted (self-reported). "
-                    "Dispatch Scribe and write checkpoint NOW.")
+                    "Run /compact NOW, dispatch Scribe, and write checkpoint.")
                 self.send_message(format_alert(
                     run.label,
                     f"Context critical — orchestrator reports {remaining:.0%} "
@@ -772,7 +856,7 @@ class InvestigationDispatcher:
                 run.context_directive_level = "context_warning"
                 self._write_directive(run, "context_warning",
                     "Context window below 30% (self-reported). "
-                    "Delegate remaining work to fresh agents.")
+                    "Run /compact NOW, then delegate remaining work to fresh agents.")
         except (json.JSONDecodeError, OSError):
             pass
 
@@ -1343,6 +1427,25 @@ class InvestigationDispatcher:
         )
         return sum(marker in lowered for marker in markers) >= 2
 
+    def _looks_like_auth_failure(self, log_tail: str) -> bool:
+        """Detect auth-related failures in agent log output."""
+        if not log_tail:
+            return False
+        lowered = log_tail.lower()
+        auth_markers = (
+            "authenticate",
+            "gh auth login",
+            "copilot_github_token",
+            "gh_token",
+            "github_token",
+            "oauth token",
+            "fine-grained personal access token",
+            "authentication required",
+            "credentials",
+            "/login",
+        )
+        return sum(marker in lowered for marker in auth_markers) >= 2
+
     def _classify_incomplete_exit(self, run: RunningInvestigation) -> str:
         """Describe why a dead agent session is incomplete."""
         log_tail = self._read_log_tail(run)
@@ -1436,28 +1539,134 @@ class InvestigationDispatcher:
 
         try:
             self._launch_in_tmux(run.tmux_session, run.workspace_path,
-                                 prompt_file=resume_file)
+                                 prompt_file=resume_file, rigor=run.rigor)
             run.stall_warned = False
             run.context_directive_level = ""
             return True
         except RuntimeError as e:
             if "authentication" in str(e).lower():
-                logger.error("Auth expired for #%d — skipping remaining retries: %s",
+                logger.error("Auth expired for #%d — pausing: %s",
                              run.investigation_id, e)
-                run.retry_count = self.config.max_retries
-                self.send_message(format_alert(
-                    run.label,
-                    "Copilot auth expired. SSH into the server and run:\n"
-                    "• `copilot` → `/login`\n"
-                    "• `gh auth login`\n\n"
-                    "Then retry with /spawn"
-                ))
+                # Don't burn retries — pause so operator can fix and /resume
+                run.retry_count -= 1  # undo the increment at top of method
+                self._pause_investigation(run, "Copilot/GitHub auth expired")
             else:
                 logger.error("Failed to restart #%d: %s", run.investigation_id, e)
             return False
         except Exception as e:
             logger.error("Failed to restart #%d: %s", run.investigation_id, e)
             return False
+
+    # ------------------------------------------------------------------
+    # Pause / Resume
+    # ------------------------------------------------------------------
+
+    def _pause_investigation(self, run: RunningInvestigation, reason: str) -> None:
+        """Pause a running investigation due to a recoverable error.
+
+        Transitions the queue status to 'paused', cleans up tmux,
+        removes from self.running, and notifies via Telegram.
+        """
+        self._cleanup_tmux(run)
+        self.queue.pause(run.investigation_id, reason)
+
+        total_tasks = len(run.task_snapshot)
+        closed = sum(1 for t in run.task_snapshot.values() if t["status"] == "closed")
+        elapsed_sec = time.time() - run.started_at
+
+        self.send_message(format_pause(
+            codename=run.label,
+            reason=reason,
+            elapsed_sec=elapsed_sec,
+            closed=closed,
+            total=total_tasks,
+        ))
+
+        # Remove from running so poll_progress skips it
+        self.running.pop(run.investigation_id, None)
+        logger.info("Investigation #%d (%s) paused: %s",
+                     run.investigation_id, run.label, reason)
+
+    def resume_investigation(self, investigation_id: int) -> str:
+        """Resume a paused or failed investigation.
+
+        Validates workspace, rebuilds resume prompt, relaunches agent.
+        Returns a status message for the user.
+        """
+        inv = self.queue.get(investigation_id)
+        if inv is None:
+            return f"❌ Investigation #{investigation_id} not found."
+        if inv.status not in ("paused", "failed"):
+            return f"❌ Investigation #{investigation_id} is {inv.status} — can only resume paused or failed."
+
+        if not inv.workspace_path or not Path(inv.workspace_path).exists():
+            return f"❌ Workspace for #{investigation_id} no longer exists."
+
+        workspace_path = Path(inv.workspace_path)
+        prompt_file = workspace_path / ".swarm" / "orchestrator-prompt.txt"
+        if not prompt_file.exists():
+            return f"❌ Orchestrator prompt missing for #{investigation_id} — cannot resume."
+
+        # Transition queue status
+        if not self.queue.resume(investigation_id):
+            return f"❌ Failed to resume #{investigation_id} — status may have changed."
+
+        # Build tracker
+        tmux_session = f"voronoi-inv-{inv.id}"
+        run = RunningInvestigation(
+            investigation_id=inv.id,
+            workspace_path=workspace_path,
+            tmux_session=tmux_session,
+            question=inv.question,
+            mode=inv.mode,
+            codename=inv.codename,
+            chat_id=inv.chat_id,
+            rigor=inv.rigor or "adaptive",
+            started_at=time.time(),
+            retry_count=0,
+        )
+
+        # Restore task snapshot for accurate progress
+        self._restore_task_snapshot(run)
+
+        # Build resume prompt and launch
+        resume_file = self._build_resume_prompt(run)
+        try:
+            self._launch_in_tmux(run.tmux_session, run.workspace_path,
+                                 prompt_file=resume_file, rigor=run.rigor)
+        except Exception as e:
+            logger.error("Failed to resume #%d: %s", inv.id, e)
+            self.queue.fail(inv.id, f"Resume launch failed: {e}")
+            return f"❌ Failed to launch #{investigation_id}: {e}"
+
+        self.running[inv.id] = run
+        label = inv.codename or f"#{inv.id}"
+        self.send_message(f"▶️ *{label}* resumed — agent relaunched.")
+        logger.info("Investigation #%d (%s) resumed", inv.id, label)
+        return f"▶️ *{label}* resumed."
+
+    def _check_paused_timeouts(self) -> None:
+        """Auto-fail paused investigations that exceeded pause_timeout_hours."""
+        try:
+            paused = self.queue.get_paused()
+        except Exception:
+            return
+        for inv in paused:
+            if not inv.started_at:
+                continue
+            paused_hours = (time.time() - inv.started_at) / 3600
+            if paused_hours >= self.config.pause_timeout_hours:
+                logger.warning("Paused investigation #%d timed out after %.1fh",
+                               inv.id, paused_hours)
+                # Transition paused → running → failed (resume clears error first)
+                self.queue.resume(inv.id)
+                self.queue.fail(inv.id,
+                                f"Paused for {int(paused_hours)}h without resume — auto-failed")
+                label = inv.codename or f"#{inv.id}"
+                self.send_message(format_alert(
+                    label,
+                    f"Was paused for {int(paused_hours)}h with no /resume — auto-failed."
+                ))
 
     def _build_resume_prompt(self, run: RunningInvestigation) -> Path:
         """Build a resume prompt for a restarted session.
@@ -1785,7 +1994,7 @@ class InvestigationDispatcher:
                 pass
         try:
             self._launch_in_tmux(run.tmux_session, run.workspace_path,
-                                 prompt_file=resume_file)
+                                 prompt_file=resume_file, rigor=run.rigor)
             run.stall_warned = False
             run.context_directive_level = ""
             logger.info("Restarted %s after human gate decision", run.label)

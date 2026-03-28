@@ -123,6 +123,7 @@ Central dispatch point for all user actions. Every Telegram command and programm
 | `handle_reprioritize(project_dir, task_id, priority) -> str` | Changes task priority |
 | `handle_pause(project_dir, task_id) -> str` | Pauses a task |
 | `handle_resume(project_dir, task_id) -> str` | Resumes a paused task |
+| `handle_resume_investigation(project_dir, inv_id_or_codename) -> str` | Resumes a paused/failed investigation |
 | `handle_add(project_dir, task_desc) -> str` | Creates new task |
 | `handle_abort(project_dir, inv_id) -> str` | Aborts investigation |
 | `handle_pivot(project_dir, inv_id, new_question) -> str` | Pivots investigation question |
@@ -450,6 +451,8 @@ def format_failure(codename: str, reason: str, elapsed_sec: float, closed: int,
                    total: int, log_tail: str, retry_count: int, max_retries: int) -> str
 def format_alert(codename: str, message: str) -> str
 def format_restart(codename: str, attempt: int, max_retries: int, log_tail: str) -> str
+def format_pause(codename: str, reason: str, elapsed_sec: float,
+                 closed: int, total: int) -> str
 ```
 
 ### Utility Functions

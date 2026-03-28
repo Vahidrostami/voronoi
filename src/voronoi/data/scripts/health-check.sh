@@ -2,15 +2,16 @@
 # =============================================================================
 # health-check.sh — Lightweight liveness probe for Voronoi pipeline sessions
 #
-# Auto-discovers ALL voronoi-related tmux sessions (orchestrators, swarms,
-# and investigation sessions) and checks every window/pane for liveness.
+# Auto-discovers voronoi-related tmux sessions for the current project/workspace
+# (orchestrators, swarms, and investigation sessions) and checks every
+# window/pane for liveness.
 #
 # Detection method:
 #   1. Hashes pane output — if unchanged for too long → stale/stuck
 #   2. Checks git commit recency on agent branches
 #   3. Checks process tree — if shell has no children → exited
 #
-# Session discovery (no config file required):
+# Session discovery (scoped to current project/workspace):
 #   - voronoi-inv-*     →  orchestrator sessions (from dispatcher)
 #   - *-swarm           →  swarm sessions (from swarm-init.sh)
 #   - Also reads .swarm-config.json if present
@@ -63,10 +64,55 @@ log() {
 
 die() { echo "✗ $*" >&2; exit 2; }
 
+resolve_config_file() {
+    local config_file=".swarm-config.json"
+    if [[ ! -f "$config_file" ]]; then
+        for parent in .. ../.. ../../..; do
+            [[ -f "$parent/$config_file" ]] && { config_file="$parent/$config_file"; break; }
+        done
+    fi
+    if [[ -f "$config_file" ]]; then
+        echo "$config_file"
+    fi
+}
+
+resolve_scope_dir() {
+    local config_file="$1"
+    local scope_dir=""
+    if [[ -n "$config_file" ]]; then
+        scope_dir=$(jq -r '.project_dir // empty' "$config_file" 2>/dev/null || true)
+    fi
+    if [[ -z "$scope_dir" ]]; then
+        scope_dir=$(pwd)
+    fi
+    if [[ -d "$scope_dir" ]]; then
+        (cd "$scope_dir" 2>/dev/null && pwd -P) || true
+    fi
+}
+
+session_in_scope() {
+    local session="$1"
+    local scope_dir="$2"
+    [[ -z "$scope_dir" ]] && return 1
+
+    local session_dir=""
+    session_dir=$(tmux display-message -t "$session" -p '#{session_path}' 2>/dev/null || true)
+    [[ -z "$session_dir" ]] && return 1
+    session_dir=$(cd "$session_dir" 2>/dev/null && pwd -P) || return 1
+
+    [[ "$session_dir" == "$scope_dir" ]] && return 0
+    [[ "$session_dir" == "$scope_dir"/* ]] && return 0
+    return 1
+}
+
 # ── Discover sessions ────────────────────────────────────────────────────────
-# Auto-discover all voronoi-related tmux sessions. No config file required.
+# Auto-discover voronoi-related tmux sessions for the current project/workspace.
 discover_sessions() {
     local sessions=()
+    local config_file=""
+    local scope_dir=""
+    config_file=$(resolve_config_file)
+    scope_dir=$(resolve_scope_dir "$config_file")
 
     # Get all live tmux sessions
     local all_sessions
@@ -76,20 +122,14 @@ discover_sessions() {
     fi
 
     while IFS= read -r s; do
-        # Match: voronoi-inv-* (orchestrator), *-swarm (agent swarms)
-        if [[ "$s" == voronoi-inv-* ]] || [[ "$s" == *-swarm ]]; then
+        # Match only sessions tied to the current project/workspace.
+        if [[ "$s" == voronoi-inv-* || "$s" == *-swarm ]] && session_in_scope "$s" "$scope_dir"; then
             sessions+=("$s")
         fi
     done <<< "$all_sessions"
 
     # Also include session from .swarm-config.json if present and not already listed
     local config_session=""
-    local config_file=".swarm-config.json"
-    if [[ ! -f "$config_file" ]]; then
-        for parent in .. ../.. ../../..; do
-            [[ -f "$parent/$config_file" ]] && { config_file="$parent/$config_file"; break; }
-        done
-    fi
     if [[ -f "$config_file" ]]; then
         config_session=$(jq -r '.tmux_session // empty' "$config_file" 2>/dev/null || true)
         if [[ -n "$config_session" ]]; then
@@ -112,12 +152,8 @@ discover_sessions() {
 find_project_dir() {
     local session="$1"
     # From config
-    local config_file=".swarm-config.json"
-    if [[ ! -f "$config_file" ]]; then
-        for parent in .. ../.. ../../..; do
-            [[ -f "$parent/$config_file" ]] && { config_file="$parent/$config_file"; break; }
-        done
-    fi
+    local config_file
+    config_file=$(resolve_config_file)
     if [[ -f "$config_file" ]]; then
         local dir
         dir=$(jq -r '.project_dir // empty' "$config_file" 2>/dev/null || true)

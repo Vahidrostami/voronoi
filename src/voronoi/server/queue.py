@@ -20,7 +20,7 @@ class Investigation:
     """An investigation in the queue."""
     id: int = 0
     chat_id: str = ""
-    status: str = "queued"            # queued | running | complete | failed | cancelled
+    status: str = "queued"            # queued | running | paused | complete | failed | cancelled
     investigation_type: str = "lab"   # repo | lab
     repo: Optional[str] = None        # owner/repo if repo-bound
     question: str = ""
@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS investigations (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     chat_id           TEXT NOT NULL,
     status            TEXT NOT NULL DEFAULT 'queued'
-                      CHECK(status IN ('queued', 'running', 'complete', 'failed', 'cancelled')),
+                      CHECK(status IN ('queued', 'running', 'paused', 'complete', 'failed', 'cancelled')),
     investigation_type TEXT NOT NULL DEFAULT 'lab'
                       CHECK(investigation_type IN ('repo', 'lab')),
     repo              TEXT,
@@ -76,6 +76,40 @@ _MIGRATION_ADD_DEMO_SOURCE = """
 ALTER TABLE investigations ADD COLUMN demo_source TEXT;
 """
 
+_MIGRATION_ADD_PAUSED_STATUS = """
+-- Widen CHECK constraint to accept 'paused' status.
+-- SQLite doesn't support ALTER CHECK, so we recreate the table.
+CREATE TABLE IF NOT EXISTS investigations_new (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id           TEXT NOT NULL,
+    status            TEXT NOT NULL DEFAULT 'queued'
+                      CHECK(status IN ('queued', 'running', 'paused', 'complete', 'failed', 'cancelled')),
+    investigation_type TEXT NOT NULL DEFAULT 'lab'
+                      CHECK(investigation_type IN ('repo', 'lab')),
+    repo              TEXT,
+    question          TEXT NOT NULL,
+    slug              TEXT NOT NULL,
+    mode              TEXT NOT NULL DEFAULT 'discover',
+    rigor             TEXT NOT NULL DEFAULT 'scientific',
+    codename          TEXT NOT NULL DEFAULT '',
+    workspace_path    TEXT,
+    sandbox_id        TEXT,
+    github_url        TEXT,
+    parent_id         INTEGER REFERENCES investigations_new(id),
+    demo_source       TEXT,
+    created_at        REAL NOT NULL,
+    started_at        REAL,
+    completed_at      REAL,
+    error             TEXT
+);
+INSERT OR IGNORE INTO investigations_new SELECT * FROM investigations;
+DROP TABLE investigations;
+ALTER TABLE investigations_new RENAME TO investigations;
+CREATE INDEX IF NOT EXISTS idx_inv_status ON investigations(status);
+CREATE INDEX IF NOT EXISTS idx_inv_chat ON investigations(chat_id);
+CREATE INDEX IF NOT EXISTS idx_inv_repo ON investigations(repo);
+"""
+
 
 class InvestigationQueue:
     """SQLite-backed investigation queue with concurrency control."""
@@ -105,6 +139,19 @@ class InvestigationQueue:
                 conn.execute("SELECT demo_source FROM investigations LIMIT 1")
             except sqlite3.OperationalError:
                 conn.executescript(_MIGRATION_ADD_DEMO_SOURCE)
+            # Migrate existing databases that have the old CHECK constraint
+            # without 'paused' status.  Detect by trying an insert+rollback.
+            try:
+                conn.execute(
+                    "INSERT INTO investigations "
+                    "(chat_id, status, question, slug, created_at) "
+                    "VALUES ('__migration_test', 'paused', '__test', '__test', 0)"
+                )
+                conn.execute(
+                    "DELETE FROM investigations WHERE chat_id='__migration_test'"
+                )
+            except sqlite3.IntegrityError:
+                conn.executescript(_MIGRATION_ADD_PAUSED_STATUS)
         finally:
             conn.close()
 
@@ -238,6 +285,35 @@ class InvestigationQueue:
             )
             return cursor.rowcount > 0
 
+    def pause(self, investigation_id: int, reason: str) -> None:
+        """Pause a running investigation (e.g. auth expiry).
+
+        Transitions running → paused.  Does not set completed_at because
+        the investigation is expected to resume.
+        """
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE investigations SET status='paused', error=? "
+                "WHERE id=? AND status='running'",
+                (reason, investigation_id),
+            )
+
+    def resume(self, investigation_id: int) -> bool:
+        """Resume a paused or failed investigation.
+
+        Transitions paused|failed → running, clears the error field,
+        and resets started_at so elapsed-time tracking is accurate.
+        Returns True if the status was actually changed.
+        """
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE investigations SET status='running', error=NULL, "
+                "started_at=?, completed_at=NULL "
+                "WHERE id=? AND status IN ('paused', 'failed')",
+                (time.time(), investigation_id),
+            )
+            return cursor.rowcount > 0
+
     def get(self, investigation_id: int) -> Optional[Investigation]:
         """Get an investigation by ID."""
         with self._connect() as conn:
@@ -316,10 +392,20 @@ class InvestigationQueue:
                 ).fetchall()
             return [self._row_to_investigation(r) for r in rows]
 
+    def get_paused(self) -> list[Investigation]:
+        """Get all paused investigations."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM investigations WHERE status='paused' "
+                "ORDER BY started_at ASC",
+            ).fetchall()
+            return [self._row_to_investigation(r) for r in rows]
+
     def format_status(self) -> str:
         """Format queue status for Telegram."""
         running = self.get_running()
         queued = self.get_queued()
+        paused = self.get_paused()
 
         lines = ["📊 *Investigation Queue*\n"]
 
@@ -331,6 +417,14 @@ class InvestigationQueue:
                 name = inv.codename or f"#{inv.id}"
                 lines.append(f"  ⚡ {name} {label} ({elapsed:.0f}min)")
 
+        if paused:
+            lines.append("\n*Paused:*")
+            for inv in paused:
+                label = inv.repo or inv.slug
+                name = inv.codename or f"#{inv.id}"
+                reason = (inv.error or "unknown")[:60]
+                lines.append(f"  ⏸ {name} {label} — {reason}")
+
         if queued:
             lines.append("\n*Queued:*")
             for i, inv in enumerate(queued):
@@ -338,7 +432,7 @@ class InvestigationQueue:
                 name = inv.codename or f"#{inv.id}"
                 lines.append(f"  ⏳ {name} {label} (position {i+1})")
 
-        if not running and not queued:
+        if not running and not queued and not paused:
             lines.append("No active investigations.")
 
         return "\n".join(lines)

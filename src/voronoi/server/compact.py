@@ -73,8 +73,9 @@ def _compact_experiments(swarm: Path) -> bool:
     # Append old lines to archive
     old_lines = data_lines[:-_EXPERIMENTS_KEEP]
     try:
+        needs_header = not archive.exists() or archive.stat().st_size == 0
         with open(archive, "a") as f:
-            if not archive.exists() or archive.stat().st_size == 0:
+            if needs_header:
                 f.write(header + "\n")
             for line in old_lines:
                 f.write(line + "\n")

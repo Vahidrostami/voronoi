@@ -48,7 +48,8 @@ Scaffolds Voronoi framework into the current directory. Makes a project agent-re
 .github/
 ├── agents/           # 12 role definitions
 ├── prompts/          # 6 invocable prompts
-└── skills/           # 9 domain knowledge packages
+├── skills/           # Domain knowledge packages
+└── mcp-config.json   # Per-workspace MCP sidecar config
 
 scripts/              # Infrastructure scripts (made executable)
 CLAUDE.md             # Agent constitution
@@ -59,10 +60,11 @@ AGENTS.md             # Compatibility alias
 ### Behavior
 
 1. Creates `.github/` subdirs (`agents/`, `prompts/`, `skills/`) with framework files
-2. Copies `scripts/` directory (all `.sh` files made executable)
-3. Copies `CLAUDE.md` and `AGENTS.md` (skips if already exist — user-owned)
-4. Copies `.env.example`
-5. Initializes git repo if not already initialized
+2. Writes `.github/mcp-config.json` pointing at the same Python interpreter that ran `voronoi init`
+3. Copies `scripts/` directory (all `.sh` files made executable)
+4. Copies `CLAUDE.md` and `AGENTS.md` (skips if already exist — user-owned)
+5. Copies `.env.example`
+6. Initializes git repo if not already initialized
 
 ### User-Owned Files
 
@@ -85,8 +87,9 @@ Updates framework files while preserving user edits.
 ### Behavior
 
 1. Copies runtime agents/prompts/skills from package data → project `.github/` — overwrites with latest
-2. Copies `scripts/` — overwrites with latest
-3. Skips user-owned files (`CLAUDE.md`, `AGENTS.md`)
+2. Refreshes `.github/mcp-config.json` with the current interpreter path
+3. Copies `scripts/` — overwrites with latest
+4. Skips user-owned files (`CLAUDE.md`, `AGENTS.md`)
 
 ---
 

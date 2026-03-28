@@ -425,6 +425,14 @@ class TestContextEngineeringSections:
         assert "context_warning" in prompt
         assert "context_critical" in prompt
 
+    def test_compact_in_dispatcher_directives(self):
+        """Context warning and critical directives instruct orchestrator to run /compact."""
+        prompt = build_orchestrator_prompt(
+            question="test", mode="discover", rigor="adaptive",
+        )
+        # The /compact instruction should appear in the directive descriptions
+        assert "/compact" in prompt
+
     def test_context_management_is_compact(self):
         """The context management section should be a compact reminder, not the full protocol."""
         prompt = build_orchestrator_prompt(

@@ -194,7 +194,7 @@ src/voronoi/data/
 │   ├── standup.prompt.md            # /standup — cross-agent status
 │   ├── progress.prompt.md           # /progress — progress check
 │   └── teardown.prompt.md           # /teardown — cleanup
-└── skills/                          # 9 domain knowledge packages
+└── skills/                          # 11 domain knowledge packages
     ├── beads-tracking/
     ├── git-worktree-management/
     ├── branch-merging/
@@ -203,7 +203,9 @@ src/voronoi/data/
     ├── evidence-system/
     ├── investigation-protocol/
     ├── strategic-context/
-    └── agent-standup/
+    ├── agent-standup/
+    ├── deep-research/               # /research grounding for scout/explorer
+    └── context-management/          # /compact protocol for long-running agents
 ```
 
 ## 6. Infrastructure Scripts
@@ -223,6 +225,16 @@ Pure plumbing — no decision logic. The orchestrator makes all decisions.
 | `teardown.sh` | Kill tmux, prune worktrees/branches | User or orchestrator at session end |
 | `sync-package-data.sh` | Copy `.env.example` for pip build | Developer workflow |
 | `dashboard.py` | Rich terminal dashboard (optional) | Manual monitoring |
+
+### Copilot CLI Flags Injected at Launch
+
+Both the dispatcher (orchestrator launch) and `spawn-agent.sh` (worker launch) inject these flags:
+
+| Flag | Orchestrator | Workers | Purpose |
+|------|:---:|:---:|---------|
+| `--effort <level>` | Yes (from rigor) | Yes (from `.swarm-config.json`) | Reasoning effort scaled by rigor level |
+| `--share .swarm/session.md` | Yes | Yes (per-worktree) | Clean markdown audit trail for post-hoc review |
+| `--deny-tool=write` | No | Read-only roles only | Structural enforcement of role permissions |
 
 ## 7. Deployment Topology
 
@@ -253,7 +265,71 @@ my-project/
 └── .swarm/                 # Created during investigation
 ```
 
-## 8. Dependency Graph
+## 8. MCP Server (`src/voronoi/mcp/`)
+
+### Purpose
+
+Provides validated, typed tool calls for Beads task management and `.swarm/` state files. Replaces free-text `bd update --notes` conventions with schema-enforced MCP tools that prevent malformed metadata, missing fields, and fabricated data hashes.
+
+### Module Layout
+
+```
+src/voronoi/mcp/
+├── __init__.py
+├── __main__.py         # Package entry point (python -m voronoi.mcp)
+├── server.py           # MCP stdio transport + tool registry
+├── tools_beads.py      # Task lifecycle: create, update, close, query, record_finding
+├── tools_swarm.py      # .swarm/ files: checkpoint, belief_map, success_criteria, experiment
+└── validators.py       # Schema validation, hash verification, enum checks
+```
+
+### Per-Workspace Sidecar
+
+Each copilot instance (orchestrator + each worker) launches its own MCP server process via `.github/mcp-config.json`:
+
+```json
+{
+  "mcpServers": {
+    "voronoi": {
+               "command": "/absolute/path/to/python",
+      "args": ["-m", "voronoi.mcp"],
+      "env": {"VORONOI_WORKSPACE": "."}
+    }
+  }
+}
+```
+
+`command` is written from the Python interpreter that ran `voronoi init` or provisioned the workspace. This keeps the MCP sidecar on the same environment where the `voronoi` package is installed, even inside spawned investigation workspaces.
+
+The server communicates over stdio (no network, no ports). It reads `VORONOI_WORKSPACE` (or cwd) to locate `.beads/` and `.swarm/` directories.
+
+### Tool Categories
+
+| Category | Tools | Validation |
+|----------|-------|-----------|
+| **Task lifecycle** | `voronoi_create_task`, `voronoi_close_task`, `voronoi_query_tasks` | PRODUCES/REQUIRES path existence, task status transitions |
+| **Findings** | `voronoi_record_finding`, `voronoi_stat_review` | Required fields, data file existence, SHA-256 hash verification |
+| **Pre-registration** | `voronoi_pre_register` | Canonical `PRE_REG`/`PRE_REG_POWER`/`PRE_REG_SENSITIVITY` note formats consumed by science gates |
+| **State files** | `voronoi_write_checkpoint`, `voronoi_update_belief_map`, `voronoi_update_success_criteria`, `voronoi_log_experiment` | Canonical checkpoint/belief-map schemas, enum values, reference integrity |
+
+### Integration Rules
+
+- Beads MCP tools MUST upsert only the fields they own and preserve unrelated task notes.
+- State-file MCP tools MUST read/write the same schemas used by the core convergence and dispatcher code paths.
+- `voronoi_update_belief_map` MUST emit the canonical list-based hypothesis schema from INV-33.
+
+### Invariant Enforcement
+
+The MCP server reinforces invariants at the tool boundary and writes canonical formats that the existing science gates consume directly:
+
+| Invariant | Before (prompt) | After (MCP) |
+|-----------|-----------------|-------------|
+| INV-10: Pre-reg before execution | Agent told "MUST" | `voronoi_pre_register` writes the canonical fields consumed by dispatch/merge gates |
+| INV-11: Raw data SHA-256 | Agent told to compute hash | `voronoi_record_finding` computes and verifies hash |
+| INV-15: Claim-evidence trace | Agent told to link findings | `voronoi_update_belief_map` validates evidence IDs and writes canonical evidence links |
+| INV-19: PRODUCES verified | merge-agent.sh checks | `voronoi_close_task` checks PRODUCES before allowing close |
+
+## 9. Dependency Graph
 
 ### Python Package Dependencies
 

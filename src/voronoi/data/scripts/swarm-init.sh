@@ -118,6 +118,13 @@ cat > .swarm-config.json << EOF
   "agent_flags": "--allow-all",
   "orchestrator_model": "${VORONOI_ORCHESTRATOR_MODEL:-}",
   "worker_model": "${VORONOI_WORKER_MODEL:-}",
+  "effort": "${VORONOI_EFFORT:-high}",
+  "role_permissions": {
+    "scout": "--allow-all --deny-tool=write",
+    "review_critic": "--allow-all --deny-tool=write",
+    "review_stats": "--allow-all --deny-tool=write",
+    "review_method": "--allow-all --deny-tool=write"
+  },
   "agent_flags_safe": [
     "--disallow-tool", "mcp__curl",
     "--disallow-tool", "mcp__ssh",

@@ -283,6 +283,30 @@ If the orchestrator writes `context_window_remaining_pct` in the checkpoint:
 
 Self-reported pressure can trigger directives earlier than the time thresholds.
 
+### `/compact` — Native Context Compression
+
+At `context_warning` and `context_critical` levels, the dispatcher directive instructs the orchestrator to run Copilot CLI's `/compact` command. This is **native LLM-level context compression** — the agent's conversation history is summarized in-place, recovering 60-70% of context budget without restarting.
+
+**Why this matters:** Voronoi's workspace compaction (`compact.py`) compresses *state files* agents read. `/compact` compresses the agent's *conversation memory* — the accumulated tool calls, reasoning, and outputs from 30+ OODA cycles. These are complementary:
+
+| Mechanism | What it compresses | When |
+|-----------|-------------------|------|
+| `compact.py` (dispatcher) | `.swarm/` files (experiments.tsv, events.jsonl) | Every `compact_interval_hours` |
+| `/compact` (agent-side) | Agent's conversation history (context window) | On `context_warning` or `context_critical` directive |
+
+**Checkpoint + file state survives `/compact`** because they're on disk, not in conversation context. The agent reads checkpoint at each OODA cycle start, so compacted conversation history doesn't lose critical state.
+
+**Directive format** (written to `.swarm/dispatcher-directive.json`):
+```json
+{"directive": "context_warning",
+ "message": "10h elapsed. Run /compact NOW, then delegate remaining work to fresh agents.",
+ "hours_elapsed": 10.2}
+```
+
+The orchestrator reads this directive every OODA cycle and executes `/compact` before continuing.
+
+The full protocol is documented in the `context-management` skill (`src/voronoi/data/skills/context-management/SKILL.md`), which is injected into long-running worker prompts via `SKILL_MAP`.
+
 ### Configuration
 
 All thresholds are configurable via `~/.voronoi/config.json` or environment variables:

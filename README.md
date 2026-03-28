@@ -165,6 +165,7 @@ graph TD
 | `/voronoi progress` | Are we on track? Metrics, criteria, belief map |
 | `/voronoi results [id]` | View past investigation results |
 | `/voronoi recall <query>` | Search past findings |
+| `/voronoi resume [id\|codename]` | Resume a paused or failed investigation |
 | Free text in groups | Auto-detect intent and dispatch |
 
 **From CLI**: `/swarm <task>` · `/standup` · `/progress` · `/merge` · `/teardown`

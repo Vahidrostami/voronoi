@@ -38,8 +38,8 @@ def load_dotenv(env_path: Path | None = None) -> None:
                 if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
                     value = value[1:-1]
                 else:
-                    if "  #" in value:
-                        value = value[: value.index("  #")].strip()
+                    if " #" in value:
+                        value = value[: value.index(" #")].strip()
                     elif "\t#" in value:
                         value = value[: value.index("\t#")].strip()
                 if key not in os.environ:
