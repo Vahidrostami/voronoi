@@ -128,6 +128,8 @@ class BeliefMap:
 
 `.swarm/belief-map.json` — read/written by orchestrator at each OODA cycle.
 
+**Schema contract**: `hypotheses` MUST be a JSON array of objects (not an object map keyed by ID). Both the Python loader and the shell convergence gate validate this on load. Non-conforming data (e.g., object maps) is automatically migrated to the array format.
+
 ### Functions
 
 ```python
@@ -149,11 +151,13 @@ Determines when an investigation is complete. Criteria vary by rigor level.
 @dataclass
 class ConvergenceResult:
     converged: bool
-    status: str           # converged | not_converged | exhausted
+    status: str           # converged | not_converged | exhausted | negative_result
     reason: str           # Human-readable explanation
     score: float          # 0.0 – 1.0 convergence score
     blockers: list[str]   # What's preventing convergence
 ```
+
+The `negative_result` status indicates a scientifically valid negative outcome: the investigation ran correctly but the hypothesis was falsified. This is a completed investigation, not a failure.
 
 ### Convergence Criteria by Rigor
 

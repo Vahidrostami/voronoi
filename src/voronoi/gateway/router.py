@@ -34,6 +34,7 @@ __all__ = [
     "handle_status", "handle_whatsup", "handle_howsitgoing",
     "handle_tasks", "handle_ready", "handle_health", "handle_board",
     "handle_reprioritize", "handle_pause", "handle_resume", "handle_add",
+    "handle_complete",
     "handle_abort", "handle_pivot", "handle_guide",
     "handle_discover", "handle_prove",
     "handle_recall", "handle_belief", "handle_journal", "handle_finding",
@@ -667,6 +668,18 @@ def handle_add(project_dir: str, title: str) -> str:
     return f"✅ Created task `{new_id}`: {title}"
 
 
+def handle_complete(project_dir: str, task_id: str, reason: str = "Completed") -> str:
+    """Close a task via ``bd close``."""
+    for ws_path, _ in _get_active_workspaces(project_dir):
+        code, output = _run_bd("close", task_id, "--reason", reason, cwd=ws_path)
+        if code == 0:
+            return f"✅ Task `{task_id}` closed: {reason}"
+    code, output = _run_bd("close", task_id, "--reason", reason, cwd=project_dir)
+    if code != 0:
+        return f"❌ Failed to close: {output}"
+    return f"✅ Task `{task_id}` closed: {reason}"
+
+
 def handle_abort(project_dir: str) -> str:
     # Cancel all queued investigations
     q = _get_queue(project_dir)
@@ -1152,6 +1165,9 @@ class CommandRouter:
                 return handle_resume(self.project_dir, args[0]), None
             elif sub == "add" and args:
                 return handle_add(self.project_dir, " ".join(args)), None
+            elif sub == "complete" and args:
+                reason = " ".join(args[1:]) if len(args) > 1 else "Completed"
+                return handle_complete(self.project_dir, args[0], reason), None
             elif sub == "abort":
                 return handle_abort(self.project_dir), None
             elif sub == "pivot" and args:

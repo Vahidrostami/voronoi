@@ -47,9 +47,9 @@ class DispatcherConfig:
     timeout_hours: int = 48      # max hours before marking investigation exhausted
     max_retries: int = 2         # max times to restart a dead agent
     stall_minutes: int = 45      # warn/restart if 0 tasks after this long
-    context_advisory_hours: int = 12   # "prioritize convergence" directive
-    context_warning_hours: int = 20    # "delegate remaining work" directive
-    context_critical_hours: int = 28   # "dispatch Scribe NOW" directive
+    context_advisory_hours: int = 6    # "prioritize convergence" directive
+    context_warning_hours: int = 10    # "delegate remaining work" directive
+    context_critical_hours: int = 14   # "dispatch Scribe NOW" directive
     compact_interval_hours: int = 6    # workspace state compaction interval
 
 
@@ -202,7 +202,16 @@ class InvestigationDispatcher:
                 started_at=inv.started_at or time.time(),
             )
 
+            # Restore task_snapshot from Beads so progress reporting is accurate
+            self._restore_task_snapshot(run)
+
             if not session_alive:
+                # Check if a human gate is pending — do NOT crash-retry
+                if self._has_pending_human_gate(run):
+                    self.running[inv.id] = run
+                    logger.info("Recovered gate-paused investigation #%d (%s)",
+                                inv.id, inv.codename)
+                    continue
                 # Check if it finished while we were down
                 if self._is_complete(run):
                     logger.info("Recovered completed investigation #%d (%s)",
@@ -363,20 +372,20 @@ class InvestigationDispatcher:
         safe_flags = agent_flags
         safe_prompt = shlex.quote(str(prompt_file))
 
-        # Inject auth-related env vars into the tmux shell.
-        # tmux new-session starts a shell that inherits the tmux *server's*
-        # environment, not the dispatcher's.  If the server was started in
-        # a previous session (or by systemd), GH_TOKEN / GITHUB_TOKEN won't
-        # be present even though the dispatcher loaded .env.
-        env_exports = ""
+        # Inject auth-related env vars into the tmux session environment.
+        # Uses tmux set-environment instead of inline export commands to
+        # prevent secrets from being captured by pipe-pane logging (INV-31).
         for var in ("GH_TOKEN", "GITHUB_TOKEN", "COPILOT_GITHUB_TOKEN"):
             val = os.environ.get(var)
             if val:
-                env_exports += f"export {var}={shlex.quote(val)} && "
+                subprocess.run(
+                    ["tmux", "set-environment", "-t", session, var, val],
+                    capture_output=True, timeout=10,
+                )
 
         subprocess.run(
             ["tmux", "send-keys", "-t", session,
-             f'{env_exports}cd {safe_ws} && {safe_cmd} {safe_flags}{model_flag} '
+             f'cd {safe_ws} && {safe_cmd} {safe_flags}{model_flag} '
              f'-p "$(cat {safe_prompt})" ; exit',
              "Enter"],
             capture_output=True, timeout=10,
@@ -449,6 +458,10 @@ class InvestigationDispatcher:
                         f"The orchestrator may be stuck. Will auto-restart if the agent exits."
                     ))
 
+            # Criteria progress monitoring: alert if zero criteria met after 4+ hours
+            if session_alive and elapsed_hours >= 4.0:
+                self._check_criteria_progress(run, elapsed_hours)
+
             # Context pressure monitoring (Changes 3 + 6)
             if session_alive:
                 self._check_context_pressure(run, elapsed_hours)
@@ -473,6 +486,14 @@ class InvestigationDispatcher:
                     self._handle_completion(run, failed=True,
                                             failure_reason="Timed out")
                 elif not session_alive and not self._is_complete(run):
+                    # Check if a human gate is pending — do NOT crash-retry
+                    if self._has_pending_human_gate(run):
+                        logger.info("Investigation #%d paused at human gate",
+                                    inv_id)
+                        continue  # don't add to completed_ids
+                    # Classify the exit before deciding to retry
+                    log_tail = self._read_log_tail(run)
+                    is_clean = self._looks_like_clean_agent_exit(log_tail)
                     # Try to restart the agent instead of giving up
                     if self._try_restart(run):
                         reason = "restarted"
@@ -550,6 +571,63 @@ class InvestigationDispatcher:
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
         conv_path.write_text(json.dumps(data, indent=2))
+
+    def _restore_task_snapshot(self, run: RunningInvestigation) -> None:
+        """Restore task_snapshot from Beads so progress reporting is accurate after recovery."""
+        from voronoi.beads import run_bd_json
+        code, tasks = run_bd_json("list", "--json", cwd=str(run.workspace_path))
+        if code == 0 and isinstance(tasks, list):
+            for t in tasks:
+                if not isinstance(t, dict):
+                    continue
+                tid = t.get("id", "")
+                run.task_snapshot[tid] = {
+                    "status": t.get("status", ""),
+                    "title": t.get("title", ""),
+                    "notes": t.get("notes", ""),
+                }
+            logger.info("Restored %d tasks for #%d", len(run.task_snapshot),
+                        run.investigation_id)
+
+    def _check_criteria_progress(self, run: RunningInvestigation,
+                                  elapsed_hours: float) -> None:
+        """Alert if success criteria show zero progress after significant time."""
+        sc_path = run.workspace_path / ".swarm" / "success-criteria.json"
+        if not sc_path.exists():
+            return
+        try:
+            data = json.loads(sc_path.read_text())
+            if not isinstance(data, list) or not data:
+                return
+            criteria = [c for c in data if isinstance(c, dict)]
+            met = sum(1 for c in criteria if c.get("met"))
+            total = len(criteria)
+            # Alert at 4h if zero met, again at 8h
+            if met == 0 and total > 0:
+                hours_mark = 4 if elapsed_hours < 6 else 8
+                alert_key = f"criteria_zero_{hours_mark}h"
+                if not hasattr(run, '_criteria_alerts'):
+                    run._criteria_alerts = set()
+                if alert_key not in run._criteria_alerts:
+                    run._criteria_alerts.add(alert_key)
+                    self.send_message(format_alert(
+                        run.label,
+                        f"0/{total} success criteria met after {int(elapsed_hours)}h. "
+                        f"The investigation may need intervention."
+                    ))
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    def _has_pending_human_gate(self, run: RunningInvestigation) -> bool:
+        """Check if a human gate is pending (status pending or notified)."""
+        gate_path = run.workspace_path / ".swarm" / "human-gate.json"
+        if not gate_path.exists():
+            return False
+        try:
+            data = json.loads(gate_path.read_text())
+            return isinstance(data, dict) and data.get("status") in ("pending", "notified")
+        except (json.JSONDecodeError, OSError):
+            return False
 
     # ------------------------------------------------------------------
     # Context pressure, stall detection, and workspace compaction
@@ -715,32 +793,18 @@ class InvestigationDispatcher:
     def _check_progress(self, run: RunningInvestigation) -> list[dict]:
         events: list[dict] = []
         tasks: list[dict] | None = None
-        try:
-            result = subprocess.run(
-                ["bd", "list", "--json"],
-                capture_output=True, text=True, timeout=15,
-                cwd=str(run.workspace_path),
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                tasks = json.loads(result.stdout)
-                if isinstance(tasks, list):
-                    events.extend(self._diff_tasks(run, tasks))
-                else:
-                    logger.warning("bd list --json returned non-list for #%d: %s",
-                                   run.investigation_id, type(tasks).__name__)
-                    tasks = None
-            elif result.returncode != 0:
-                logger.debug("bd list --json failed for #%d (exit=%d): %s",
-                             run.investigation_id, result.returncode,
-                             result.stderr.strip()[:200] if result.stderr else "")
-        except subprocess.TimeoutExpired:
-            logger.warning("bd list --json timed out for #%d", run.investigation_id)
-        except FileNotFoundError:
-            logger.error("bd command not found during progress check for #%d",
-                         run.investigation_id)
-        except json.JSONDecodeError as e:
-            logger.warning("bd list --json returned invalid JSON for #%d: %s",
-                           run.investigation_id, e)
+        from voronoi.beads import run_bd_json
+        code, parsed = run_bd_json("list", "--json", cwd=str(run.workspace_path))
+        if code == 0 and parsed is not None:
+            if isinstance(parsed, list):
+                tasks = parsed
+                events.extend(self._diff_tasks(run, tasks))
+            else:
+                logger.warning("bd list --json returned non-list for #%d: %s",
+                               run.investigation_id, type(parsed).__name__)
+        elif code != 0:
+            logger.debug("bd list --json failed for #%d (exit=%d)",
+                         run.investigation_id, code)
         events.extend(self._check_findings(run, tasks))
         events.extend(self._check_design_invalid(run, tasks))
         events.extend(self._detect_phase(run))
@@ -779,22 +843,11 @@ class InvestigationDispatcher:
                          tasks: list[dict] | None = None) -> list[dict]:
         events: list[dict] = []
         if tasks is None:
-            try:
-                result = subprocess.run(
-                    ["bd", "list", "--json"],
-                    capture_output=True, text=True, timeout=15,
-                    cwd=str(run.workspace_path),
-                )
-                if result.returncode != 0 or not result.stdout.strip():
-                    return events
-                parsed = json.loads(result.stdout)
-                if not isinstance(parsed, list):
-                    return events
-                tasks = parsed
-            except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError) as e:
-                logger.debug("Findings check skipped for #%d: %s",
-                             run.investigation_id, e)
+            from voronoi.beads import run_bd_json
+            code, parsed = run_bd_json("list", "--json", cwd=str(run.workspace_path))
+            if code != 0 or not isinstance(parsed, list):
                 return events
+            tasks = parsed
 
         for task in tasks:
             tid = task.get("id", "")
@@ -1120,7 +1173,7 @@ class InvestigationDispatcher:
                     data = json.loads(conv.read_text())
                     if isinstance(data, dict):
                         return data.get("converged", False) or \
-                            data.get("status") in ("converged", "exhausted", "diminishing_returns")
+                            data.get("status") in ("converged", "exhausted", "diminishing_returns", "negative_result")
                 except (json.JSONDecodeError, OSError):
                     pass
             # Deliverable exists but no convergence signal — attempt to
@@ -1133,7 +1186,7 @@ class InvestigationDispatcher:
                     data = json.loads(conv.read_text())
                     if isinstance(data, dict):
                         return data.get("converged", False) or \
-                            data.get("status") in ("converged", "exhausted", "diminishing_returns")
+                            data.get("status") in ("converged", "exhausted", "diminishing_returns", "negative_result")
                 except (json.JSONDecodeError, OSError):
                     pass
             return False
@@ -1142,7 +1195,7 @@ class InvestigationDispatcher:
             try:
                 data = json.loads(conv.read_text())
                 if isinstance(data, dict):
-                    return data.get("status") in ("converged", "exhausted", "diminishing_returns")
+                    return data.get("status") in ("converged", "exhausted", "diminishing_returns", "negative_result")
             except (json.JSONDecodeError, OSError):
                 pass
         return False
@@ -1160,7 +1213,7 @@ class InvestigationDispatcher:
                 eval_score=run.eval_score,
                 improvement_rounds=run.improvement_rounds,
             )
-            if result.converged or result.status in ("exhausted", "diminishing_returns"):
+            if result.converged or result.status in ("exhausted", "diminishing_returns", "negative_result"):
                 # Run convergence-gate.sh for additional validation
                 gate_script = run.workspace_path / "scripts" / "convergence-gate.sh"
                 if not gate_script.exists():
@@ -1350,6 +1403,7 @@ class InvestigationDispatcher:
 
         # Extract the last lines from the agent log for diagnostics
         tail = self._read_log_tail(run)
+        is_clean = self._looks_like_clean_agent_exit(tail)
 
         logger.info("Restarting investigation #%d (attempt %d/%d)",
                     run.investigation_id, run.retry_count, self.config.max_retries)
@@ -1359,6 +1413,7 @@ class InvestigationDispatcher:
             attempt=run.retry_count,
             max_retries=self.config.max_retries,
             log_tail=tail,
+            clean_exit=is_clean,
         ))
 
         # Ensure original orchestrator prompt exists (needed as reference)
@@ -1405,26 +1460,59 @@ class InvestigationDispatcher:
             return False
 
     def _build_resume_prompt(self, run: RunningInvestigation) -> Path:
-        """Build a minimal resume prompt for a restarted session.
+        """Build a resume prompt for a restarted session.
 
-        Instead of appending to the original bloated prompt, writes a fresh
-        compact file (~100 lines) with identity, checkpoint state, remaining
-        tasks, and clear next actions.  The restarted agent starts with a
-        clean context window.
+        Includes the original question, essential protocol references,
+        checkpoint state, remaining tasks, and clear next actions.
+        The restarted agent starts with a clean context window.
         """
         lines: list[str] = [
             "You are the Voronoi swarm orchestrator. This is a RESTART "
             f"(attempt {run.retry_count}/{self.config.max_retries}).\n",
             f"**Codename:** {run.label}",
             f"**Mode:** {run.mode} | **Rigor:** {run.rigor}\n",
-            "## Critical Rules for This Restart\n",
-            "- All previous experimental work is preserved in the workspace.",
-            "- Do NOT re-run experiments or re-read PROMPT.md in full.",
-            "- Do NOT re-read `.github/agents/swarm-orchestrator.agent.md` in full.",
-            "- Work from the checkpoint and state digest below.",
-            "- Poll `.swarm/dispatcher-directive.json` each OODA cycle.",
-            "- ALWAYS delegate manuscript writing to a Scribe worker.\n",
         ]
+
+        # Include the original investigation question
+        lines.append("## Investigation Question\n")
+        lines.append(run.question[:2000])
+        lines.append("")
+
+        # Essential protocol reference
+        lines.append("## Your Full Protocol\n")
+        lines.append(
+            "Read `.github/agents/swarm-orchestrator.agent.md` NOW — it contains your "
+            "complete role definition including OODA workflow, role selection tables, "
+            "convergence criteria, and the macro retry loop. Follow it precisely.\n"
+        )
+
+        lines.append("## Critical Rules for This Restart\n")
+        lines.append(
+            "- All previous experimental work is preserved in the workspace.\n"
+            "- Do NOT re-run experiments that already produced results.\n"
+            "- Read `.swarm/brief-digest.md` instead of re-reading full PROMPT.md.\n"
+            "- Work from the checkpoint and state digest below.\n"
+            "- Poll `.swarm/dispatcher-directive.json` each OODA cycle.\n"
+            "- ALWAYS delegate manuscript writing to a Scribe worker.\n"
+            "- Use `bd query` for targeted task lookups, never `bd list --json`.\n"
+            "- Dispatch workers via `./scripts/spawn-agent.sh`.\n"
+            "- Merge completed work via `./scripts/merge-agent.sh`.\n"
+            "- Before convergence, run: `./scripts/convergence-gate.sh . " + run.rigor + "`\n"
+        )
+
+        # Human gate status
+        gate_path = run.workspace_path / ".swarm" / "human-gate.json"
+        if gate_path.exists():
+            try:
+                gate_data = json.loads(gate_path.read_text())
+                if isinstance(gate_data, dict):
+                    gate_status = gate_data.get("status", "")
+                    gate_feedback = gate_data.get("feedback", "")
+                    lines.append(f"## Human Gate Status: {gate_status}\n")
+                    if gate_feedback:
+                        lines.append(f"Feedback: {gate_feedback}\n")
+            except (json.JSONDecodeError, OSError):
+                pass
 
         # Checkpoint summary
         cp_path = run.workspace_path / ".swarm" / "orchestrator-checkpoint.json"
@@ -1609,6 +1697,13 @@ class InvestigationDispatcher:
                         f"Reply `/approve {run.investigation_id}` to proceed\n"
                         f"Reply `/revise {run.investigation_id} <feedback>` to request changes"
                     )
+                    # Kill tmux to truly pause execution (INV-32)
+                    subprocess.run(
+                        ["tmux", "kill-session", "-t", run.tmux_session],
+                        capture_output=True, timeout=10,
+                    )
+                    logger.info("Paused investigation %s at human gate '%s'",
+                                run.label, gate_type)
                     # Mark as notified so we don't spam
                     data["status"] = "notified"
                     gate_path.write_text(json.dumps(data, indent=2))
@@ -1640,6 +1735,8 @@ class InvestigationDispatcher:
                 data["feedback"] = feedback
             gate_path.write_text(json.dumps(data, indent=2))
             self.send_message(f"✅ *{run.label}* — gate approved. Investigation resuming.")
+            # Restart the agent now that the gate is approved
+            self._restart_after_gate(run)
             return True
         except (json.JSONDecodeError, OSError) as e:
             logger.error("Failed to approve gate for %s: %s", run.label, e)
@@ -1665,7 +1762,32 @@ class InvestigationDispatcher:
                 f"🔄 *{run.label}* — revision requested.\n"
                 f"Feedback: _{feedback}_"
             )
+            # Restart the agent so it can read the revision feedback
+            self._restart_after_gate(run)
             return True
         except (json.JSONDecodeError, OSError) as e:
             logger.error("Failed to write revision for %s: %s", run.label, e)
             return False
+
+    def _restart_after_gate(self, run: RunningInvestigation) -> None:
+        """Restart an investigation after a human gate decision.
+
+        Unlike _try_restart (which is for crash recovery), this does not
+        count against retry limits since the pause was intentional.
+        """
+        resume_file = self._build_resume_prompt(run)
+        # Rotate the log file so the new session starts clean
+        if run.log_path.exists():
+            suffix = f".gate-{int(time.time())}.log"
+            try:
+                run.log_path.rename(run.log_path.with_suffix(suffix))
+            except OSError:
+                pass
+        try:
+            self._launch_in_tmux(run.tmux_session, run.workspace_path,
+                                 prompt_file=resume_file)
+            run.stall_warned = False
+            run.context_directive_level = ""
+            logger.info("Restarted %s after human gate decision", run.label)
+        except Exception as e:
+            logger.error("Failed to restart %s after gate: %s", run.label, e)

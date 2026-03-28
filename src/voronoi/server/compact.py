@@ -28,10 +28,27 @@ def compact_workspace_state(workspace: Path) -> bool:
     if not swarm.is_dir():
         return False
 
+    changed |= _compact_beads(workspace)
     changed |= _compact_experiments(swarm)
     changed |= _compact_events(swarm)
     changed |= _write_state_digest(workspace)
     return changed
+
+
+# ------------------------------------------------------------------
+# Beads database compaction
+# ------------------------------------------------------------------
+
+def _compact_beads(workspace: Path) -> bool:
+    """Run ``bd compact`` to summarise old closed tasks in the Beads database."""
+    try:
+        from voronoi.beads import run_bd, has_beads_dir
+        if not has_beads_dir(str(workspace)):
+            return False
+        code, _ = run_bd("compact", cwd=str(workspace))
+        return code == 0
+    except Exception:
+        return False
 
 
 # ------------------------------------------------------------------

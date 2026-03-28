@@ -43,6 +43,16 @@ class TestBuddyFormatters:
         msg = format_restart("Synapse", 1, 2, log_tail="last line")
         assert "Synapse" in msg
         assert "1/2" in msg
+        assert "crashed" in msg
+
+    def test_format_restart_clean_exit(self):
+        msg = format_restart("Synapse", 1, 2, clean_exit=True)
+        assert "exited early" in msg
+        assert "crashed" not in msg
+
+    def test_format_restart_crash(self):
+        msg = format_restart("Synapse", 1, 2, clean_exit=False)
+        assert "crashed" in msg
 
     def test_format_duration(self):
         assert format_duration(300) == "5min"

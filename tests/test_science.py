@@ -261,6 +261,52 @@ class TestBeliefMap:
         assert s["by_status"]["confirmed"] == 1
         assert s["by_status"]["refuted"] == 1
 
+    def test_load_dict_keyed_hypotheses(self, tmp_path):
+        """belief-map.json with dict-keyed hypotheses should be migrated to list."""
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "belief-map.json").write_text(json.dumps({
+            "cycle": 2,
+            "hypotheses": {
+                "H1": {"name": "Encoding helps", "prior": 0.6, "posterior": 0.8, "status": "confirmed"},
+                "H2": {"name": "No effect", "prior": 0.4, "posterior": 0.2, "status": "refuted"},
+            },
+        }))
+        bm = load_belief_map(tmp_path)
+        assert len(bm.hypotheses) == 2
+        ids = {h.id for h in bm.hypotheses}
+        assert "H1" in ids
+        assert "H2" in ids
+        assert bm.cycle == 2
+
+    def test_load_dict_keyed_string_values(self, tmp_path):
+        """belief-map.json with string-valued dict hypotheses should be handled."""
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "belief-map.json").write_text(json.dumps({
+            "cycle": 1,
+            "hypotheses": {
+                "H1": "Encoding helps",
+                "H2": "No effect",
+            },
+        }))
+        bm = load_belief_map(tmp_path)
+        assert len(bm.hypotheses) == 2
+        assert bm.hypotheses[0].name == "Encoding helps"
+
+    def test_load_hypotheses_with_non_dict_items(self, tmp_path):
+        """Entries that are not dicts should be skipped."""
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "belief-map.json").write_text(json.dumps({
+            "cycle": 1,
+            "hypotheses": [
+                {"id": "H1", "name": "Good", "prior": 0.5, "posterior": 0.5},
+                "bad entry",
+                42,
+            ],
+        }))
+        bm = load_belief_map(tmp_path)
+        assert len(bm.hypotheses) == 1
+        assert bm.hypotheses[0].id == "H1"
+
 
 # ---------------------------------------------------------------------------
 # Convergence
@@ -1797,3 +1843,49 @@ class TestConvergenceSuccessCriteriaOverride:
                                     improvement_rounds=0)
         assert result.converged is False
         assert result.status == "not_ready"
+
+
+class TestNegativeResultConvergence:
+    def test_negative_result_with_contradiction(self, tmp_path, monkeypatch):
+        """Valid negative result: hypothesis falsified, deliverable exists, no design invalid."""
+        monkeypatch.setattr("voronoi.science._helpers._fetch_tasks", lambda w: [
+            {"id": "bd-1", "status": "closed", "title": "Experiment",
+             "notes": "RESULT_CONTRADICTS_HYPOTHESIS:Expected L4>L1 but L1>L4"},
+        ])
+        monkeypatch.setattr("voronoi.science._helpers._find_theories",
+            lambda w, t=None: [{"id": "T1", "status": "refuted"}])
+        monkeypatch.setattr("voronoi.science._helpers._find_tested_predictions",
+            lambda w, t=None: ["P1"])
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "deliverable.md").write_text("# Negative result")
+        (swarm / "success-criteria.json").write_text(json.dumps([
+            {"id": "SC1", "description": "L4 > L1", "met": False},
+        ]))
+        (swarm / "belief-map.json").write_text(json.dumps({
+            "hypotheses": [
+                {"id": "H1", "name": "Encoding helps", "prior": 0.7,
+                 "posterior": 0.2, "status": "refuted"},
+            ],
+        }))
+        # Valid negative: deliver + eval score + contradiction + improvement done
+        result = check_convergence(tmp_path, "scientific", eval_score=0.60,
+                                    improvement_rounds=1)
+        assert result.converged is True
+        assert result.status == "negative_result"
+
+    def test_negative_result_blocked_by_design_invalid(self, tmp_path, monkeypatch):
+        """Negative result should NOT converge if DESIGN_INVALID is present."""
+        monkeypatch.setattr("voronoi.science._helpers._fetch_tasks", lambda w: [
+            {"id": "bd-1", "status": "open", "title": "Experiment",
+             "notes": "RESULT_CONTRADICTS_HYPOTHESIS:X\nDESIGN_INVALID:broken"},
+        ])
+        monkeypatch.setattr("voronoi.science._helpers._find_design_invalid",
+            lambda w, t=None: ["bd-1"])
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "deliverable.md").write_text("# Results")
+        result = check_convergence(tmp_path, "scientific", eval_score=0.60,
+                                    improvement_rounds=1)
+        assert result.converged is False
+        assert result.status == "blocked"

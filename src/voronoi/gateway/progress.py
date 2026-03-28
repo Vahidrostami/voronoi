@@ -851,9 +851,12 @@ def format_alert(codename: str, message: str) -> str:
 
 
 def format_restart(codename: str, attempt: int, max_retries: int,
-                   log_tail: str = "") -> str:
+                   log_tail: str = "", clean_exit: bool = False) -> str:
     """Format a restart notification."""
-    lines = [f"*{codename}* — the agent crashed. Restarting (attempt {attempt}/{max_retries})."]
+    if clean_exit:
+        lines = [f"*{codename}* — the agent exited early. Restarting (attempt {attempt}/{max_retries})."]
+    else:
+        lines = [f"*{codename}* — the agent crashed. Restarting (attempt {attempt}/{max_retries})."]
     if log_tail:
         lines.append(f"\nLast output:\n```\n{log_tail[-300:]}\n```")
     return "\n".join(lines)

@@ -87,7 +87,26 @@ def load_belief_map(workspace: Path) -> BeliefMap:
             logger.warning("belief-map.json is not a dict in %s", workspace)
             return BeliefMap()
         bm = BeliefMap(cycle=data.get("cycle", 0), last_updated=data.get("last_updated", ""))
-        for h in data.get("hypotheses", []):
+        raw_hyps = data.get("hypotheses", [])
+        # Schema migration: accept both list-of-objects (canonical) and
+        # dict-keyed-by-id (legacy/malformed).  See INV-33.
+        if isinstance(raw_hyps, dict):
+            logger.warning("belief-map.json has dict-keyed hypotheses in %s — migrating to list", workspace)
+            items: list[dict] = []
+            for key, val in raw_hyps.items():
+                if isinstance(val, dict):
+                    if "id" not in val:
+                        val["id"] = key
+                    items.append(val)
+                elif isinstance(val, str):
+                    items.append({"id": key, "name": val})
+            raw_hyps = items
+        if not isinstance(raw_hyps, list):
+            logger.warning("belief-map.json hypotheses is not a list or dict in %s", workspace)
+            raw_hyps = []
+        for h in raw_hyps:
+            if not isinstance(h, dict):
+                continue
             bm.hypotheses.append(Hypothesis(
                 id=h.get("id", ""), name=h.get("name", ""),
                 prior=h.get("prior", 0.5), posterior=h.get("posterior", h.get("prior", 0.5)),
@@ -312,6 +331,26 @@ def check_convergence(workspace: Path, rigor: str,
     if improvement_rounds >= 2 and not blockers:
         return ConvergenceResult(True, "diminishing_returns", "Max improvement rounds, blockers cleared", score=eval_score)
     if blockers:
+        # Check for valid negative result: deliverable exists, experiments ran,
+        # but hypothesis was falsified (criteria unmet by design, not by bug).
+        has_deliverable = (swarm / "deliverable.md").exists()
+        has_contradiction = any("RESULT_CONTRADICTS_HYPOTHESIS" in b for b in blockers)
+        # Also check task notes for contradictions (closed tasks don't produce blockers)
+        if not has_contradiction and tasks:
+            has_contradiction = any(
+                "RESULT_CONTRADICTS_HYPOTHESIS" in t.get("notes", "")
+                for t in tasks if isinstance(t, dict)
+            )
+        # A negative result needs: deliverable + eval score + no DESIGN_INVALID
+        no_design_invalid = not any("DESIGN_INVALID" in b for b in blockers)
+        if (has_deliverable and eval_score >= 0.50 and no_design_invalid
+                and has_contradiction and improvement_rounds >= 1):
+            return ConvergenceResult(
+                True, "negative_result",
+                f"Valid negative result — hypothesis falsified (score={eval_score:.2f})",
+                score=eval_score,
+                blockers=blockers,
+            )
         return ConvergenceResult(False, "blocked", "; ".join(blockers), score=eval_score, blockers=blockers)
     return ConvergenceResult(False, "not_ready", "Evaluation in progress", score=eval_score)
 

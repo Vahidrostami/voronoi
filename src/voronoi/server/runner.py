@@ -42,9 +42,9 @@ class ServerConfig:
         self.orchestrator_model = ""  # e.g. "claude-opus-4.6"
         self.worker_model = ""        # e.g. "claude-sonnet-4.6"
         self.workspace_retention_days = 30
-        self.context_advisory_hours = 12
-        self.context_warning_hours = 20
-        self.context_critical_hours = 28
+        self.context_advisory_hours = 6
+        self.context_warning_hours = 10
+        self.context_critical_hours = 14
         self.compact_interval_hours = 6
         self.github_lab_org = "voronoi-lab"
         self.github_visibility = "private"

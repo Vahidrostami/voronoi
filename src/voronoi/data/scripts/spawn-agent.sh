@@ -274,25 +274,31 @@ if [[ -n "$WORKER_MODEL" ]]; then
     MODEL_FLAG=" --model $(printf '%q' "$WORKER_MODEL")"
 fi
 
-# 5b. Build env var exports for auth tokens.
-# tmux shells inherit the tmux server's env, not the caller's. If the
-# server was started in a different session, GH_TOKEN etc. won't exist
-# in the new pane even though the dispatcher/caller has them.
-ENV_EXPORTS=""
+# 5b. Inject auth tokens via tmux set-environment (INV-31: no secrets in logs).
+# tmux shells inherit the tmux server's env, not the caller's. Using
+# set-environment avoids inline export commands that would be captured
+# by pipe-pane logging.
 for _var in GH_TOKEN GITHUB_TOKEN COPILOT_GITHUB_TOKEN; do
     _val="${!_var:-}"
     if [[ -n "$_val" ]]; then
-        ENV_EXPORTS+="export ${_var}=$(printf '%q' "$_val") && "
+        tmux set-environment -t "$TMUX_SESSION" "$_var" "$_val" 2>/dev/null || true
     fi
 done
 
+# 5c. Export BEADS_DIR so workers can find the Beads database from worktrees.
+# Worktrees live in a sibling directory, so bd's upward discovery won't
+# find .beads in the main workspace.
+if [[ -d "${PROJECT_DIR}/.beads" ]]; then
+    tmux set-environment -t "$TMUX_SESSION" "BEADS_DIR" "${PROJECT_DIR}/.beads" 2>/dev/null || true
+fi
+
 if [[ -f "$WORKTREE_PATH/.agent-prompt.txt" ]]; then
     tmux send-keys -t "$TMUX_SESSION:$BRANCH_NAME" \
-        "${ENV_EXPORTS}cd $SAFE_WP && $SAFE_CMD $SAFE_FLAGS$MODEL_FLAG -p \"\$(cat .agent-prompt.txt)\"" Enter
+        "cd $SAFE_WP && $SAFE_CMD $SAFE_FLAGS$MODEL_FLAG -p \"\$(cat .agent-prompt.txt)\"" Enter
 else
     echo "⚠ No prompt file found — agent will start in interactive mode"
     tmux send-keys -t "$TMUX_SESSION:$BRANCH_NAME" \
-        "${ENV_EXPORTS}cd $SAFE_WP && $SAFE_CMD $SAFE_FLAGS$MODEL_FLAG" Enter
+        "cd $SAFE_WP && $SAFE_CMD $SAFE_FLAGS$MODEL_FLAG" Enter
 fi
 
 echo "✓ Agent spawned: $BRANCH_NAME (tmux: $TMUX_SESSION)"

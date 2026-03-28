@@ -938,7 +938,7 @@ class TestContextPressure:
         )
         (tmp_path / ".swarm").mkdir(parents=True, exist_ok=True)
 
-        d._check_context_pressure(run, elapsed_hours=13)
+        d._check_context_pressure(run, elapsed_hours=7)
 
         directive_path = tmp_path / ".swarm" / "dispatcher-directive.json"
         assert directive_path.exists()
@@ -957,7 +957,7 @@ class TestContextPressure:
         )
         (tmp_path / ".swarm").mkdir(parents=True, exist_ok=True)
 
-        d._check_context_pressure(run, elapsed_hours=21)
+        d._check_context_pressure(run, elapsed_hours=11)
 
         directive_path = tmp_path / ".swarm" / "dispatcher-directive.json"
         data = json.loads(directive_path.read_text())
@@ -997,8 +997,8 @@ class TestContextPressure:
         )
         (tmp_path / ".swarm").mkdir(parents=True, exist_ok=True)
 
-        d._check_context_pressure(run, elapsed_hours=13)
-        d._check_context_pressure(run, elapsed_hours=14)
+        d._check_context_pressure(run, elapsed_hours=7)
+        d._check_context_pressure(run, elapsed_hours=8)
 
         # Should not re-write if same level
         assert run.context_directive_level == "context_advisory"
@@ -1066,3 +1066,178 @@ class TestWorkspaceCompaction:
         events_file = tmp_path / ".swarm" / "events.jsonl"
         assert len(events_file.read_text().strip().splitlines()) == 60
         assert not (tmp_path / ".swarm" / "events.archive.jsonl").exists()
+
+    def test_compact_calls_bd_compact(self, dispatcher_setup):
+        """compact_workspace_state should call bd compact when .beads/ exists."""
+        from voronoi.server.compact import compact_workspace_state
+
+        d, msgs, docs, tmp_path = dispatcher_setup
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True, exist_ok=True)
+        (tmp_path / ".beads").mkdir()
+
+        with patch("voronoi.beads.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0, stdout="", stderr=""
+            )
+            changed = compact_workspace_state(tmp_path)
+
+        assert changed is True
+        # Verify bd compact was called
+        calls = mock_run.call_args_list
+        assert any(
+            call[0][0] == ["bd", "compact"] for call in calls
+        )
+
+
+# ---------------------------------------------------------------------------
+# New tests for reliability fixes
+# ---------------------------------------------------------------------------
+
+class TestReliabilityFixes:
+    def test_resume_prompt_includes_question(self, dispatcher_setup):
+        """Resume prompt must include the original investigation question."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="Does structured encoding improve decision quality?",
+            mode="discover",
+        )
+        run.retry_count = 1
+        prompt_file = tmp_path / ".swarm" / "orchestrator-prompt.txt"
+        prompt_file.parent.mkdir(parents=True, exist_ok=True)
+        prompt_file.write_text("Original prompt")
+
+        resume_file = d._build_resume_prompt(run)
+        content = resume_file.read_text()
+        assert "structured encoding" in content
+        assert "Investigation Question" in content
+
+    def test_resume_prompt_includes_protocol_reference(self, dispatcher_setup):
+        """Resume prompt must reference the orchestrator role file."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test question",
+            mode="discover",
+        )
+        run.retry_count = 1
+        prompt_file = tmp_path / ".swarm" / "orchestrator-prompt.txt"
+        prompt_file.parent.mkdir(parents=True, exist_ok=True)
+        prompt_file.write_text("Original prompt")
+
+        resume_file = d._build_resume_prompt(run)
+        content = resume_file.read_text()
+        assert "swarm-orchestrator.agent.md" in content
+        assert "spawn-agent.sh" in content
+
+    def test_has_pending_human_gate(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        assert d._has_pending_human_gate(run) is False
+
+        gate_path = tmp_path / ".swarm" / "human-gate.json"
+        gate_path.parent.mkdir(parents=True, exist_ok=True)
+        gate_path.write_text(json.dumps({"status": "pending", "gate": "convergence"}))
+        assert d._has_pending_human_gate(run) is True
+
+        gate_path.write_text(json.dumps({"status": "notified", "gate": "convergence"}))
+        assert d._has_pending_human_gate(run) is True
+
+        gate_path.write_text(json.dumps({"status": "approved"}))
+        assert d._has_pending_human_gate(run) is False
+
+    def test_restore_task_snapshot(self, dispatcher_setup):
+        """_restore_task_snapshot should populate task_snapshot from Beads."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        assert run.task_snapshot == {}
+
+        with patch("voronoi.beads.run_bd") as mock_bd:
+            mock_bd.return_value = (0, json.dumps([
+                {"id": "bd-1", "status": "closed", "title": "Task 1", "notes": ""},
+                {"id": "bd-2", "status": "open", "title": "Task 2", "notes": ""},
+            ]))
+            d._restore_task_snapshot(run)
+
+        assert len(run.task_snapshot) == 2
+        assert run.task_snapshot["bd-1"]["status"] == "closed"
+        assert run.task_snapshot["bd-2"]["status"] == "open"
+
+    def test_is_complete_accepts_negative_result(self, dispatcher_setup):
+        """_is_complete should accept negative_result convergence status."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+            rigor="scientific",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True, exist_ok=True)
+        (swarm / "deliverable.md").write_text("# Results")
+        (swarm / "convergence.json").write_text(json.dumps({
+            "status": "negative_result",
+            "converged": True,
+            "reason": "Valid negative result",
+        }))
+
+        assert d._is_complete(run) is True
+
+    def test_check_criteria_progress_alerts_zero(self, dispatcher_setup):
+        """Should alert when zero criteria met after 4+ hours."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True, exist_ok=True)
+        (swarm / "success-criteria.json").write_text(json.dumps([
+            {"id": "SC1", "description": "test", "met": False},
+            {"id": "SC2", "description": "test", "met": False},
+        ]))
+
+        d._check_criteria_progress(run, elapsed_hours=5.0)
+        assert any("0/2 success criteria met" in m for m in msgs)
+
+    def test_check_criteria_progress_no_alert_when_met(self, dispatcher_setup):
+        """Should not alert when some criteria are met."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True, exist_ok=True)
+        (swarm / "success-criteria.json").write_text(json.dumps([
+            {"id": "SC1", "description": "test", "met": True},
+            {"id": "SC2", "description": "test", "met": False},
+        ]))
+
+        d._check_criteria_progress(run, elapsed_hours=5.0)
+        assert not any("success criteria met" in m for m in msgs)

@@ -29,6 +29,7 @@ from voronoi.gateway.router import (
     handle_belief,
     handle_journal,
     handle_finding,
+    handle_complete,
 )
 
 
@@ -301,6 +302,27 @@ class TestCommandRouter:
         router = CommandRouter(str(tmp_path))
         text, _ = router.route("xyzzy", [], "chat1")
         assert "Unknown command" in text
+
+    def test_route_complete(self, tmp_path):
+        router = CommandRouter(str(tmp_path))
+        with patch("voronoi.gateway.router._run_bd") as mock_bd:
+            mock_bd.return_value = (0, "")
+            text, _ = router.route("complete", ["bd-42", "Done", "work"], "chat1")
+        assert "bd-42" in text
+        assert "closed" in text
+
+    def test_handle_complete_with_default_reason(self, tmp_path):
+        with patch("voronoi.gateway.router._run_bd") as mock_bd:
+            mock_bd.return_value = (0, "")
+            result = handle_complete(str(tmp_path), "bd-1")
+        assert "Completed" in result
+        assert "bd-1" in result
+
+    def test_handle_complete_failure(self, tmp_path):
+        with patch("voronoi.gateway.router._run_bd") as mock_bd:
+            mock_bd.return_value = (1, "not found")
+            result = handle_complete(str(tmp_path), "bd-99")
+        assert "Failed" in result
 
 
 class TestHumanGateBridgeCommands:

@@ -161,9 +161,12 @@ class DispatcherConfig:
     orchestrator_model: str  # "" — use default
     worker_model: str        # "" — use default
     progress_interval: int   # 30 seconds between progress checks
-    timeout_hours: int       # 8 — max investigation runtime
+    timeout_hours: int       # 48 — max investigation runtime
     max_retries: int         # 2 — retry failed launches
     stall_minutes: int       # 45 — minutes without progress before warning
+    context_advisory_hours: int   # 6 — "prioritize convergence" directive
+    context_warning_hours: int    # 10 — "delegate remaining work" directive
+    context_critical_hours: int   # 14 — "dispatch Scribe NOW" directive
 ```
 
 ### RunningInvestigation
@@ -246,10 +249,10 @@ class InvestigationDispatcher:
 
 ### Human Review Gates (Scientific+ Rigor)
 
-At Scientific and Experimental rigor, the orchestrator can pause for human approval by writing `.swarm/human-gate.json` with `status: "pending"`. The dispatcher detects this via `check_human_gates()` and sends a Telegram message with `/approve <id>` or `/revise <id> <feedback>` options. Methods:
+At Scientific and Experimental rigor, the orchestrator can pause for human approval by writing `.swarm/human-gate.json` with `status: "pending"`. The dispatcher detects this via `check_human_gates()`, **kills the tmux session** to truly pause execution, and sends a Telegram message with `/approve <id>` or `/revise <id> <feedback>` options. On approval, the dispatcher **restarts the agent** with a resume prompt. A gate-pending dead session is NEVER routed through crash-retry logic. Methods:
 
-- `approve_human_gate(investigation_id, feedback)` — approves the gate
-- `revise_human_gate(investigation_id, feedback)` — requests revision with feedback
+- `approve_human_gate(investigation_id, feedback)` — approves the gate and restarts the agent
+- `revise_human_gate(investigation_id, feedback)` — requests revision with feedback and restarts the agent
 
 ### Structured Event Log
 
@@ -308,13 +311,16 @@ Phase inferred from workspace artifacts:
 
 ### Agent Restart
 
-When tmux session dies unexpectedly:
-1. Check retry limit (`max_retries`, default 2)
-2. Send restart notification via `format_restart()`
-3. Validate orchestrator prompt still exists
-4. Rotate log file (preserve previous attempt's logs)
-5. Re-launch in tmux
-6. On auth failure: stop retrying (no point wasting retries)
+When tmux session dies:
+1. **Classify the exit first** — check if agent logged out cleanly vs crashed unexpectedly
+2. If exit was clean but incomplete, check if a human gate is pending — if so, do NOT retry (the agent is waiting for approval)
+3. Check retry limit (`max_retries`, default 2)
+4. Send contextual notification: "exited early" for clean exits, "crashed" only for unexpected exits
+5. Validate orchestrator prompt still exists
+6. Build **resume prompt** that includes: the original question, essential protocol references, checkpoint state, success criteria status, task summary, and clear next actions
+7. Rotate log file (preserve previous attempt's logs)
+8. Re-launch in tmux with the resume prompt
+9. On auth failure: stop retrying (no point wasting retries)
 
 ### Abort Handling
 
@@ -327,6 +333,7 @@ When tmux session dies unexpectedly:
 ### Recovery
 
 On dispatcher restart, `_recover_running()` scans for investigations in `running` status:
+- Restores `task_snapshot` from Beads (`bd list --json`) so progress reporting is accurate
 - If tmux session alive → re-adopt for monitoring
 - If tmux dead + deliverable exists → mark complete
 - If tmux dead + no deliverable → try restart OR mark failed
