@@ -31,7 +31,7 @@ class TestBuddyFormatters:
     def test_format_failure(self):
         msg = format_failure("Synapse", "crashed", 7200, 5, 20, log_tail="error here")
         assert "Synapse" in msg
-        assert "failed" in msg.lower()
+        assert "didn't make it" in msg
         assert "error here" in msg
 
     def test_format_alert(self):
@@ -43,16 +43,16 @@ class TestBuddyFormatters:
         msg = format_restart("Synapse", 1, 2, log_tail="last line")
         assert "Synapse" in msg
         assert "1/2" in msg
-        assert "crashed" in msg
+        assert "hit a bump" in msg
 
     def test_format_restart_clean_exit(self):
         msg = format_restart("Synapse", 1, 2, clean_exit=True)
         assert "exited early" in msg
-        assert "crashed" not in msg
+        assert "hit a bump" not in msg
 
     def test_format_restart_crash(self):
         msg = format_restart("Synapse", 1, 2, clean_exit=False)
-        assert "crashed" in msg
+        assert "hit a bump" in msg
 
     def test_format_pause(self):
         msg = format_pause("Synapse", "auth expired", 7200, 5, 20)
@@ -145,7 +145,7 @@ class TestBuildDigest:
             task_snapshot=snapshot,
             workspace=tmp_path,
             events_since_last=[
-                {"type": "task_done", "msg": "✅ Done: *Build encoder*"},
+                {"type": "task_done", "msg": "✅ Wrapped up: *Build encoder*"},
             ],
         )
         assert "Synapse" in msg
@@ -244,7 +244,7 @@ class TestBuildDigestWhatsup:
         )
         assert "Synapse" in msg
         assert "1h" in msg
-        assert "8/20" in msg or "Phase" in msg
+        assert "8/20" in msg or "investigating" in msg
         assert "accuracy" in msg.lower()
 
 
@@ -373,7 +373,7 @@ class TestMessageTypes:
             task_snapshot={"t1": {"status": "in_progress", "notes": ""}},
             workspace=tmp_path,
             events_since_last=[
-                {"type": "task_new", "msg": "📋 New: *task 1*"},
+                {"type": "task_new", "msg": "📋 Queued: *task 1*"},
             ],
         )
         assert msg_type == MSG_TYPE_STATUS

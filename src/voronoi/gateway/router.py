@@ -17,7 +17,7 @@ from typing import Optional
 from voronoi.beads import run_bd, has_beads_dir
 from voronoi.gateway.intent import ClassifiedIntent, WorkflowMode, classify
 from voronoi.gateway.progress import (
-    MODE_EMOJI, RIGOR_DESCRIPTIONS, MODE_VERB,
+    MODE_EMOJI, MODE_VERB,
     build_digest_whatsup, build_digest, phase_description, format_duration,
     assess_track_status, _criteria_summary, _experiment_summary,
     progress_bar, _clean_question_preview,
@@ -471,16 +471,16 @@ def handle_health(project_dir: str) -> str:
         # Try the package data directory
         script = Path(__file__).resolve().parent.parent / "data" / "scripts" / "health-check.sh"
     if not script.exists():
-        return "❌ `health-check.sh` not found"
+        return "❌ Health check script isn't set up — run `voronoi init` first."
     try:
         result = subprocess.run(
             ["bash", str(script), "--json", "--no-notify"],
             capture_output=True, text=True, timeout=30,
         )
     except subprocess.TimeoutExpired:
-        return "⏱ Health check timed out"
+        return "⏱ Health check is taking too long — try again in a moment."
     except FileNotFoundError:
-        return "❌ bash not found"
+        return "❌ Can't run health check — bash not available on this system."
 
     if result.returncode == 2:
         return "❌ No Voronoi sessions found. Is the pipeline running?"
@@ -810,16 +810,12 @@ def _workflow_response(mode: str, rigor: str, question: str,
                        inv_id: int, queue_status: str,
                        codename: str = "") -> str:
     emoji = MODE_EMOJI.get(mode, "🔷")
-    rigor_desc = RIGOR_DESCRIPTIONS.get(rigor, rigor)
     verb = MODE_VERB.get(mode, mode)
     label = codename or f"#{inv_id}"
     return (
-        f"⚡ *Voronoi · {label}* {emoji} LAUNCHED\n\n"
+        f"{emoji} *{label}* — {verb} is live.\n\n"
         f"_{question}_\n\n"
-        f"  Mode     *{rigor}* {verb}\n"
-        f"  Rigor    {rigor_desc}\n"
-        f"  Queue    {queue_status}\n\n"
-        f"Setting up workspace — I'll ping you when agents are live."
+        f"Agents are spinning up — I'll keep you posted."
     )
 
 
@@ -966,15 +962,11 @@ def handle_demo(project_dir: str, demo_name: str, chat_id: str = "") -> str:
     # Tag the investigation so the dispatcher knows to copy demo files
     q.set_demo_source(inv_id, demo_name, str(demo["path"]))
 
-    queued = len(q.get_queued())
-    running = len(q.get_running())
     logger.info("Enqueued demo %s as investigation %s (#%d)", demo_name, codename, inv_id)
 
     return (
-        f"⚡ *Voronoi · {codename}* 🎮 DEMO LAUNCHED\n\n"
-        f"Demo: *{demo_name}*\n"
-        f"Queue: {queued} waiting · {running} running\n\n"
-        f"Setting up workspace — I'll ping you when agents are live."
+        f"🎮 *{codename}* — demo is live.\n\n"
+        f"Running *{demo_name}* — agents are spinning up."
     )
 
 
@@ -1061,11 +1053,11 @@ def handle_results(project_dir: str, inv_id_str: str = "") -> str:
 # ---------------------------------------------------------------------------
 
 _INTRO_MESSAGE = (
-    "*Voronoi* — ask a question, get evidence.\n\n"
+    "👋 *Voronoi* — ask a question, get evidence.\n\n"
     "Drop me a question — anything from _\"why is our model degrading?\"_ "
     "to _\"does EWC beat replay for catastrophic forgetting?\"_ — and I'll "
-    "dispatch a swarm of AI agents to discover the answer.\n\n"
-    "Or send `/voronoi` for commands."
+    "spin up a team of AI agents to find out.\n\n"
+    "Or send `/voronoi` to see what I can do."
 )
 
 def _LOW_CONFIDENCE_MESSAGE(text: str, intent) -> str:
@@ -1073,36 +1065,36 @@ def _LOW_CONFIDENCE_MESSAGE(text: str, intent) -> str:
     mode_label = intent.mode.value if intent.mode else "unknown"
     confidence_pct = int(intent.confidence * 100)
     return (
-        f"I'm not quite sure what you'd like ({confidence_pct}% → _{mode_label}_).\n\n"
+        f"Hmm, I'm only {confidence_pct}% sure what you're after (leaning toward _{mode_label}_).\n\n"
         f"Your message: _{text[:120]}_\n\n"
-        "Try something like:\n"
+        "Try phrasing it like:\n"
         "  _Why is our model accuracy dropping?_ → discover\n"
         "  _Prove that EWC beats replay_ → prove\n\n"
-        "Or use a command directly:\n"
+        "Or go direct:\n"
         "`/voronoi discover <question>`\n"
         "`/voronoi prove <hypothesis>`"
     )
 
 
 _HELP_MESSAGE = (
-    "*Voronoi* — your AI research lab\n\n"
+    "🧪 *Voronoi* — your AI research lab\n\n"
     "Just ask me anything:\n"
     "  → _Why is our model accuracy dropping?_\n"
     "  → _Prove that EWC beats replay for catastrophic forgetting_\n"
     "  → _Compare Redis vs Memcached_\n\n"
-    "I'll figure out what to do — classify intent, pick the right "
-    "rigor level, spawn parallel agents, and deliver findings.\n\n"
+    "I'll figure out the rest — pick the right approach, "
+    "spin up agents, and bring you findings.\n\n"
     "━━━━━━━━━━━━━━━━━━━━━━\n"
-    "*Quick check-ins*\n"
-    "`/voronoi status` — what's happening right now\n"
-    "`/voronoi board` — Kanban snapshot (To Do / In Progress / Done)\n"
-    "`/voronoi progress` — are we on track? metrics + criteria\n\n"
-    "*Workflows*\n"
+    "*Check in*\n"
+    "`/voronoi status` — what's happening now\n"
+    "`/voronoi board` — Kanban snapshot\n"
+    "`/voronoi progress` — metrics + criteria\n\n"
+    "*Investigate*\n"
     "`/voronoi discover <question>`\n"
     "`/voronoi prove <hypothesis>`\n\n"
     "*Knowledge*\n"
     "`/voronoi belief` · `journal` · `finding <id>` · `recall <query>`\n\n"
-    "*Control*\n"
+    "*Steer*\n"
     "`/voronoi guide <msg>` · `pivot <msg>` · `abort`\n\n"
     "_In groups, @mention me or reply to my messages._"
 )

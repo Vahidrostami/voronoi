@@ -241,8 +241,7 @@ class TestScienceHandlers:
         mock_queue_cls.return_value = mock_q
 
         result = handle_discover(str(tmp_path), "Why is latency high?", "chat1")
-        assert "Voronoi" in result
-        assert "LAUNCHED" in result
+        assert "is live" in result
         assert "discovery" in result
 
     @patch("voronoi.gateway.router.InvestigationQueue", autospec=True)
@@ -255,8 +254,7 @@ class TestScienceHandlers:
         mock_queue_cls.return_value = mock_q
 
         result = handle_prove(str(tmp_path), "test batch size effect", "chat1")
-        assert "Voronoi" in result
-        assert "LAUNCHED" in result
+        assert "is live" in result
         assert "proof" in result
 
 
@@ -427,10 +425,10 @@ class TestFreeText:
         router = CommandRouter(str(tmp_path))
         text, _ = router.handle_free_text("Why is our model accuracy dropping?", "chat1", True)
         assert "discover" in text.lower()
-        assert "Voronoi" in text
+        assert "is live" in text
 
     def test_explore_question(self, tmp_path):
         router = CommandRouter(str(tmp_path))
         text, _ = router.handle_free_text("Which database should we use — Postgres vs MySQL?", "chat1", True)
         assert "discover" in text.lower()
-        assert "Voronoi" in text
+        assert "is live" in text

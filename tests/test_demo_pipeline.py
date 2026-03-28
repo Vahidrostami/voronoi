@@ -61,7 +61,7 @@ class TestHandleDemo:
              }]):
             result = handle_demo(str(tmp_path), "test-demo", "chat1")
 
-        assert "DEMO LAUNCHED" in result
+        assert "demo is live" in result.lower()
         assert "Dopamine" in result
         # Verify the full prompt was passed as the question
         call_args = mock_q.enqueue.call_args

@@ -906,12 +906,12 @@ class InvestigationDispatcher:
 
             old = run.task_snapshot.get(tid)
             if old is None and run.task_snapshot:
-                events.append({"type": "task_new", "msg": f"📋 New: *{title}*"})
+                events.append({"type": "task_new", "msg": f"📋 Queued: *{title}*"})
             elif old and old["status"] != status:
                 if status == "closed":
-                    events.append({"type": "task_done", "msg": f"✅ Done: *{title}*"})
+                    events.append({"type": "task_done", "msg": f"✅ Wrapped up: *{title}*"})
                 elif status == "in_progress" and old["status"] != "in_progress":
-                    events.append({"type": "task_started", "msg": f"⚡ Working: *{title}*"})
+                    events.append({"type": "task_started", "msg": f"⚡ Picked up: *{title}*"})
 
         run.task_snapshot = current
 
@@ -1096,8 +1096,8 @@ class InvestigationDispatcher:
                 run.notified_paradigm_stress = True
                 events.append({
                     "type": "paradigm_stress",
-                    "msg": f"⚠️ *PARADIGM STRESS* — {result.contradiction_count} "
-                           f"contradictions detected. Working model may need revision.",
+                    "msg": f"⚠️ *Paradigm stress* — {result.contradiction_count} "
+                           f"contradictions found. The working model might need a rethink.",
                 })
         except Exception as e:
             logger.debug("Paradigm stress check failed: %s", e)

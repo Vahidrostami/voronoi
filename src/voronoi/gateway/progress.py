@@ -507,10 +507,9 @@ def build_digest(
 
     lines: list[str] = []
 
-    # ── Header: codename · elapsed · phase label ──
-    step, total_steps = phase_position(phase)
-    if step > 0:
-        lines.append(f"*{codename}* · {elapsed_str} · Phase {step}/{total_steps}")
+    # ── Header: codename · elapsed · phase name ──
+    if phase:
+        lines.append(f"*{codename}* · {elapsed_str} · {phase}")
     else:
         lines.append(f"*{codename}* · {elapsed_str}")
 
@@ -647,10 +646,9 @@ def build_digest_whatsup(
         stuck = inv.get("agents_stuck", 0)
         question = inv.get("question", "")[:80]
 
-        # Header with phase position
-        step, total_steps = phase_position(phase)
-        if step > 0:
-            lines.append(f"*{label}* · {elapsed} · Phase {step}/{total_steps}")
+        # Header with phase name
+        if phase:
+            lines.append(f"*{label}* · {elapsed} · {phase}")
         else:
             lines.append(f"*{label}* · running for {elapsed}")
         if question:
@@ -687,8 +685,9 @@ def build_digest_whatsup(
 def _extract_task_title(event: dict) -> str:
     """Extract a clean task title from an event dict."""
     msg = event.get("msg", "")
-    # Strip common prefixes from old-style event messages
-    for prefix in ("✅ Done: ", "⚡ Working: ", "📋 New: ", "🚨 "):
+    # Strip common prefixes from event messages
+    for prefix in ("✅ Wrapped up: ", "⚡ Picked up: ", "📋 Queued: ",
+                    "✅ Done: ", "⚡ Working: ", "📋 New: ", "🚨 "):
         if msg.startswith(prefix):
             msg = msg[len(prefix):]
     # Strip markdown bold
@@ -806,13 +805,12 @@ def _clean_question_preview(question: str, max_len: int = 120) -> str:
 
 def format_launch(codename: str, mode: str, rigor: str, question: str) -> str:
     """Format a launch notification — conversational, not a status log."""
-    rigor_desc = RIGOR_DESCRIPTIONS.get(rigor, rigor)
+    mode_emoji = MODE_EMOJI.get(mode, "🔷")
     preview = _clean_question_preview(question)
     return (
-        f"*{codename}* is live.\n\n"
+        f"{mode_emoji} *{codename}* is live.\n\n"
         f"_{preview}_\n\n"
-        f"Mode: {mode} · Rigor: {rigor_desc}\n"
-        f"I'll send you updates as things progress."
+        f"Agents are spinning up — I'll keep you posted."
     )
 
 
@@ -821,11 +819,13 @@ def format_complete(codename: str, mode: str, total_tasks: int,
                     eval_score: float = 0.0) -> str:
     """Format a completion message — brief, celebratory."""
     elapsed = format_duration(elapsed_sec)
-    bar = progress_bar(closed_tasks, total_tasks)
-    lines = [f"*{codename}* is done. {elapsed}, {closed_tasks} tasks completed.\n"]
-    lines.append(bar)
+    lines = [f"*{codename}* is done — {elapsed}, {closed_tasks} tasks completed."]
     if eval_score > 0:
-        lines.append(f"\nQuality score: {eval_score:.2f}")
+        label = VOICE_QUALITY_LABELS["high"] if eval_score >= 0.75 else (
+            VOICE_QUALITY_LABELS["ok"] if eval_score >= 0.50
+            else VOICE_QUALITY_LABELS["low"]
+        )
+        lines.append(f"Quality: {eval_score:.2f} — {label}")
     lines.append("\nReport attached below.")
     return "\n".join(lines)
 
@@ -833,13 +833,13 @@ def format_complete(codename: str, mode: str, total_tasks: int,
 def format_failure(codename: str, reason: str, elapsed_sec: float,
                    closed: int, total: int, log_tail: str = "",
                    retry_count: int = 0, max_retries: int = 0) -> str:
-    """Format a failure message — honest, diagnostic."""
+    """Format a failure message — honest but not scary."""
     elapsed = format_duration(elapsed_sec)
-    lines = [f"*{codename}* failed after {elapsed}.\n"]
-    lines.append(f"Reason: {reason}")
-    lines.append(f"Got through {closed}/{total} tasks before it stopped.")
+    lines = [f"💀 *{codename}* didn't make it ({elapsed}).\n"]
+    lines.append(f"Hit a wall: {reason} — completed {closed}/{total} tasks before stopping.")
     if retry_count > 0:
-        lines.append(f"Tried to restart {retry_count} time{'s' if retry_count > 1 else ''} (max {max_retries}).")
+        lines.append(f"Tried {retry_count} restart{'s' if retry_count > 1 else ''}, couldn't recover.")
+    lines.append("\nYou can retry with `/voronoi discover` or check what happened with `/voronoi details`.")
     if log_tail:
         lines.append(f"\nLast output:\n```\n{log_tail[-400:]}\n```")
     return "\n".join(lines)
@@ -847,16 +847,16 @@ def format_failure(codename: str, reason: str, elapsed_sec: float,
 
 def format_alert(codename: str, message: str) -> str:
     """Format an alert — something needs attention."""
-    return f"*{codename}* — heads up:\n{message}"
+    return f"⚠️ *{codename}* — heads up:\n{message}"
 
 
 def format_restart(codename: str, attempt: int, max_retries: int,
                    log_tail: str = "", clean_exit: bool = False) -> str:
     """Format a restart notification."""
     if clean_exit:
-        lines = [f"*{codename}* — the agent exited early. Restarting (attempt {attempt}/{max_retries})."]
+        lines = [f"*{codename}* — agent exited early, restarting ({attempt}/{max_retries})."]
     else:
-        lines = [f"*{codename}* — the agent crashed. Restarting (attempt {attempt}/{max_retries})."]
+        lines = [f"*{codename}* — agent hit a bump, restarting ({attempt}/{max_retries})."]
     if log_tail:
         lines.append(f"\nLast output:\n```\n{log_tail[-300:]}\n```")
     return "\n".join(lines)

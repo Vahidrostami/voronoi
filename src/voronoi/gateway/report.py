@@ -540,6 +540,45 @@ class ReportGenerator:
         return "\n".join(lines)
 
     # ------------------------------------------------------------------
+    # Human-readable stat description for Telegram
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _humanize_stats(finding: dict) -> str:
+        """Translate raw stats into a human-friendly description."""
+        parts: list[str] = []
+        p_val = finding.get("p", "")
+        effect = finding.get("effect_size", "")
+        try:
+            p_float = float(p_val)
+            if p_float < 0.001:
+                parts.append("very strong evidence")
+            elif p_float < 0.01:
+                parts.append("strong evidence")
+            elif p_float < 0.05:
+                parts.append("significant")
+            else:
+                parts.append("weak evidence")
+            parts.append(f"p={p_val}")
+        except (ValueError, TypeError):
+            pass
+        if effect:
+            try:
+                d = abs(float(effect))
+                if d >= 0.8:
+                    size = "large effect"
+                elif d >= 0.5:
+                    size = "medium effect"
+                elif d >= 0.2:
+                    size = "small effect"
+                else:
+                    size = "negligible effect"
+                parts.append(size)
+            except (ValueError, TypeError):
+                pass
+        return ", ".join(parts)
+
+    # ------------------------------------------------------------------
     # Teaser (Telegram message)
     # ------------------------------------------------------------------
 
@@ -548,13 +587,13 @@ class ReportGenerator:
                      elapsed_min: float, *, mode: str = "discover",
                      codename: str = "") -> str:
         """3-5 bullet point teaser for Telegram."""
-        from voronoi.gateway.progress import MODE_EMOJI, progress_bar
+        from voronoi.gateway.progress import MODE_EMOJI
 
         findings = self._get_findings()
         mode_emoji = MODE_EMOJI.get(mode, "\U0001f537")
         label = codename or f"#{investigation_id}"
 
-        lines = [f"\U0001f3c1 *Voronoi \u00b7 {label}* {mode_emoji} COMPLETE \u00b7 {elapsed_min:.0f}min\n"]
+        lines = [f"\U0001f3c1 *{label}* {mode_emoji} COMPLETE \u00b7 {elapsed_min:.0f}min\n"]
         lines.append(f"_{question}_\n")
 
         if findings:
@@ -562,46 +601,31 @@ class ReportGenerator:
 
             title = _clean_finding_title(headline["title"])
             h_emoji = self._valence_emoji(headline.get("valence", ""))
-            stat_parts = []
-            if headline.get("effect_size"):
-                stat_parts.append(f"d={headline['effect_size']}")
-            if headline.get("ci_95"):
-                stat_parts.append(f"CI {headline['ci_95']}")
-            if headline.get("p"):
-                stat_parts.append(f"p={headline['p']}")
-            if headline.get("n"):
-                stat_parts.append(f"N={headline['n']}")
+            stat_desc = self._humanize_stats(headline)
 
             lines.append("\u2501" * 20)
-            lines.append("\U0001f4a1 *HEADLINE*")
+            lines.append("\U0001f4a1 *The big one:*")
             lines.append(f"{h_emoji} {title}")
-            if stat_parts:
-                lines.append(" \u00b7 ".join(stat_parts))
+            if stat_desc:
+                lines.append(stat_desc)
             lines.append("\u2501" * 20 + "\n")
 
             # Remaining findings (skip headline)
             others = [f for f in findings if f["id"] != headline["id"]]
             if others:
-                lines.append("*All findings:*")
+                lines.append("*Also found:*")
                 for f in others[:5]:
                     emoji = self._valence_emoji(f.get("valence", ""))
                     f_title = _clean_finding_title(f["title"])
-                    effect = f.get("effect_size", "")
-                    p_val = f.get("p", "")
+                    f_desc = self._humanize_stats(f)
                     entry = f"{emoji} {f_title}"
-                    if effect:
-                        entry += f" (d={effect}"
-                        if p_val:
-                            entry += f", p={p_val}"
-                        entry += ")"
+                    if f_desc:
+                        entry += f" ({f_desc})"
                     lines.append(f"  {entry}")
                 lines.append("")
 
         finding_count = len(findings)
-        bar = progress_bar(closed_tasks, total_tasks)
-        lines.append(f"{bar} \u00b7 {finding_count} finding{'s' if finding_count != 1 else ''}")
-
-        lines.append(f"\n\U0001f4ce Full {self.doc_type} attached")
+        lines.append(f"{finding_count} finding{'s' if finding_count != 1 else ''} \u00b7 Full {self.doc_type} attached \U0001f4ce")
         return "\n".join(lines)
 
     # ------------------------------------------------------------------

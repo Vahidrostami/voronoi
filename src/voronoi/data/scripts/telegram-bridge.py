@@ -391,7 +391,7 @@ def run_bot(config: dict) -> None:
 
             async def _async_send(cid: str, text: str) -> int | None:
                 # Typing indicator before milestone messages
-                is_milestone = any(marker in text for marker in ("★ ", "⚠ ", "is done", "failed"))
+                is_milestone = any(marker in text for marker in ("★ ", "⚠ ", "is done", "didn't make it", "failed"))
                 if is_milestone:
                     try:
                         await app.bot.send_chat_action(chat_id=cid, action="typing")
@@ -413,7 +413,7 @@ def run_bot(config: dict) -> None:
                             [InlineKeyboardButton("📋 Details", callback_data="details"),
                              InlineKeyboardButton("🧠 Belief Map", callback_data="belief")],
                         ])
-                    elif any(k in text for k in ("tasks", "Phase ", "agents active", "criteria")):
+                    elif any(k in text for k in ("tasks", "agents active", "criteria")):
                         # Status/digest update
                         reply_markup = InlineKeyboardMarkup([
                             [InlineKeyboardButton("📋 Details", callback_data="details"),
@@ -425,7 +425,7 @@ def run_bot(config: dict) -> None:
                             [InlineKeyboardButton("📋 Details", callback_data="details"),
                              InlineKeyboardButton("🧠 Belief Map", callback_data="belief")],
                         ])
-                    elif "failed" in text.lower():
+                    elif "didn't make it" in text.lower() or "failed" in text.lower():
                         reply_markup = InlineKeyboardMarkup([
                             [InlineKeyboardButton("📋 Details", callback_data="details"),
                              InlineKeyboardButton("🛑 Abort", callback_data="abort")],
