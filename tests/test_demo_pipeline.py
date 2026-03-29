@@ -313,9 +313,10 @@ class TestTimeoutDetection:
              patch("voronoi.server.dispatcher.subprocess.run", side_effect=_mock_run):
             d.poll_progress()
 
-        # Should have been completed via timeout
+        # Should have been completed via timeout — science investigations
+        # go to review status, not directly to complete
         assert 1 not in d.running
-        d._queue.complete.assert_called_once_with(1)
+        d._queue.review.assert_called_once_with(1)
 
     def test_effective_timeout_default(self, dispatcher_setup):
         """Without override file, uses config default."""
@@ -709,7 +710,8 @@ class TestCoupledDecisionsCrashFix:
             d.poll_progress()
 
         # Should have completed successfully, NOT failed
-        d._queue.complete.assert_called_once_with(1)
+        # Science investigations go to review status
+        d._queue.review.assert_called_once_with(1)
         d._queue.fail.assert_not_called()
         assert 1 not in d.running
 
@@ -753,8 +755,8 @@ class TestCoupledDecisionsCrashFix:
              patch("voronoi.server.dispatcher.subprocess.run", side_effect=_mock_run):
             d.poll_progress()
 
-        # Verify: completed, not failed, not restarted
-        d._queue.complete.assert_called_once_with(1)
+        # Verify: completed (review status for science), not failed, not restarted
+        d._queue.review.assert_called_once_with(1)
         d._queue.fail.assert_not_called()
         assert 1 not in d.running
         # No restart messages

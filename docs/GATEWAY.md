@@ -128,6 +128,16 @@ Central dispatch point for all user actions. Every Telegram command and programm
 | `handle_abort(project_dir, inv_id) -> str` | Aborts investigation |
 | `handle_pivot(project_dir, inv_id, new_question) -> str` | Pivots investigation question |
 
+### Iterative Science Handlers
+
+| Function | Effect |
+|----------|--------|
+| `handle_review_investigation(project_dir, id_or_codename) -> str` | Show Claim Ledger in review format |
+| `handle_continue_investigation(project_dir, id_or_codename, feedback) -> str` | Create continuation run with PI feedback |
+| `handle_claims(project_dir, id_or_codename) -> str` | Show current claim ledger state |
+
+These handlers interact with the Claim Ledger (`~/.voronoi/ledgers/<lineage_id>/claim-ledger.json`). The `continue` handler parses natural-language feedback for `lock C1`, `challenge C2: reason` patterns and updates the ledger before creating the continuation investigation.
+
 ### Workflow Handlers
 
 | Function | Mode | Rigor |

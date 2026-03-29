@@ -64,6 +64,7 @@ The system is organized into four layers, each with clear responsibilities and b
 │                   Science Layer                      │
 │   science/ subpackage:                               │
 │   _helpers · convergence · fabrication · gates        │
+│   claims (cross-run scientific state)                │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -145,7 +146,9 @@ Agents do NOT communicate through custom IPC. All inter-agent communication flow
 ├── events.jsonl             # Structured event log (tool calls, tests, findings)
 ├── human-gate.json          # Human approval gate (Scientific+ rigor)
 ├── abort-signal             # Written by /voronoi abort
-└── orchestrator-prompt.txt  # Saved prompt for restart recovery
+├── orchestrator-prompt.txt  # Saved prompt for restart recovery
+└── archive/                 # Archived state from prior rounds
+    └── run-<N>/             # Per-round state snapshot
 ```
 
 ## 5. File Audience Separation

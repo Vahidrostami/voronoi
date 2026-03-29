@@ -36,6 +36,7 @@ __all__ = [
     "handle_reprioritize", "handle_pause", "handle_resume", "handle_add",
     "handle_resume_investigation",
     "handle_complete",
+    "handle_review_investigation", "handle_continue_investigation", "handle_claims",
     "handle_abort", "handle_pivot", "handle_guide",
     "handle_discover", "handle_prove",
     "handle_recall", "handle_belief", "handle_journal", "handle_finding",
@@ -734,6 +735,168 @@ def handle_complete(project_dir: str, task_id: str, reason: str = "Completed") -
     return f"✅ Task `{task_id}` closed: {reason}"
 
 
+def handle_review_investigation(project_dir: str, identifier: str) -> str:
+    """Show the Claim Ledger for an investigation in review format.
+
+    The identifier can be an investigation ID (integer) or a codename.
+    """
+    q = _get_queue(project_dir)
+    inv = _find_investigation(q, identifier)
+    if inv is None:
+        return f"❌ Investigation *{identifier}* not found."
+
+    lineage_id = inv.lineage_id or inv.id
+    from voronoi.science.claims import load_ledger
+    base_dir = q.db_path.parent
+    ledger = load_ledger(lineage_id, base_dir=base_dir)
+
+    if not ledger.claims:
+        return (
+            f"🔬 *{inv.codename or f'#{inv.id}'}* — no claims recorded yet.\n"
+            f"Status: {inv.status} | Mode: {inv.mode} | Round: {inv.cycle_number}"
+        )
+
+    header = (
+        f"🔬 *{inv.codename or f'#{inv.id}'}* — "
+        f"Round {inv.cycle_number} | {inv.status}\n\n"
+    )
+    return header + ledger.format_for_review()
+
+
+def handle_continue_investigation(project_dir: str, identifier: str,
+                                  feedback: str = "") -> str:
+    """Continue an investigation with optional PI feedback.
+
+    Creates a new run in the same lineage with the prior claim ledger.
+    """
+    q = _get_queue(project_dir)
+    inv = _find_investigation(q, identifier)
+    if inv is None:
+        return f"❌ Investigation *{identifier}* not found."
+
+    if inv.status not in ("review", "complete"):
+        return (
+            f"❌ *{inv.codename or f'#{inv.id}'}* is {inv.status} — "
+            f"can only continue from review or complete."
+        )
+
+    # If feedback provided, process lock/challenge intents
+    if feedback:
+        lineage_id = inv.lineage_id or inv.id
+        base_dir = q.db_path.parent
+        _process_feedback(lineage_id, feedback, base_dir)
+
+    new_id = q.continue_investigation(inv.id, feedback)
+    if new_id is None:
+        return f"❌ Failed to continue *{inv.codename or f'#{inv.id}'}*."
+
+    new_inv = q.get(new_id)
+    label = inv.codename or f"#{inv.id}"
+    round_num = new_inv.cycle_number if new_inv else "?"
+    return (
+        f"🔄 *{label}* — Round {round_num} queued.\n"
+        + (f"Feedback recorded: _{feedback[:100]}_" if feedback else "No additional feedback.")
+    )
+
+
+def handle_claims(project_dir: str, identifier: str = "") -> str:
+    """Show the Claim Ledger for an investigation."""
+    q = _get_queue(project_dir)
+    if identifier:
+        inv = _find_investigation(q, identifier)
+    else:
+        # Find the most recent science investigation
+        recent = q.get_recent(limit=5)
+        inv = next((i for i in recent if i.mode in ("discover", "prove")), None)
+
+    if inv is None:
+        return "❌ No investigation found."
+
+    lineage_id = inv.lineage_id or inv.id
+    from voronoi.science.claims import load_ledger
+    base_dir = q.db_path.parent
+    ledger = load_ledger(lineage_id, base_dir=base_dir)
+
+    if not ledger.claims:
+        return f"📋 *{inv.codename or f'#{inv.id}'}* — no claims yet."
+
+    return (
+        f"📋 *{inv.codename or f'#{inv.id}'}* — {ledger.summary()}\n\n"
+        + ledger.format_for_review()
+    )
+
+
+def _find_investigation(q: InvestigationQueue, identifier: str) -> Optional[Investigation]:
+    """Find an investigation by ID or codename."""
+    # Try as integer ID
+    try:
+        inv_id = int(identifier)
+        return q.get(inv_id)
+    except (ValueError, TypeError):
+        pass
+    # Try as codename
+    recent = q.get_recent(limit=50)
+    for inv in recent:
+        if inv.codename and inv.codename.lower() == identifier.lower():
+            return inv
+    return None
+
+
+def _process_feedback(lineage_id: int, feedback: str, base_dir: Path) -> None:
+    """Parse natural-language feedback into claim ledger operations.
+
+    Detects simple patterns like "lock C1", "challenge C2: reason", etc.
+    Falls back to recording as general PI feedback if no patterns match.
+    """
+    from voronoi.science.claims import load_ledger, save_ledger
+    import re
+
+    ledger = load_ledger(lineage_id, base_dir=base_dir)
+    if not ledger.claims:
+        return
+
+    changed = False
+    lines = feedback.strip().split("\n")
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+
+        # "lock C1" or "lock C1 C3"
+        lock_match = re.match(r"lock\s+(C\d+(?:\s+C\d+)*)", line, re.IGNORECASE)
+        if lock_match:
+            for cid in re.findall(r"C\d+", lock_match.group(1)):
+                claim = ledger.get_claim(cid)
+                if claim and claim.status in ("provisional", "asserted"):
+                    try:
+                        if claim.status == "provisional":
+                            ledger.assert_claim(cid)
+                        ledger.lock_claim(cid)
+                        changed = True
+                    except (ValueError, KeyError):
+                        pass
+            continue
+
+        # "challenge C2: reason" or "challenge C2 reason"
+        challenge_match = re.match(
+            r"challenge\s+(C\d+)[:\s]+(.+)", line, re.IGNORECASE
+        )
+        if challenge_match:
+            cid = challenge_match.group(1)
+            reason = challenge_match.group(2).strip()
+            claim = ledger.get_claim(cid)
+            if claim and claim.status not in ("retired",):
+                try:
+                    ledger.challenge_claim(cid, reason, raised_by="PI")
+                    changed = True
+                except (ValueError, KeyError):
+                    pass
+            continue
+
+    if changed:
+        save_ledger(lineage_id, ledger, base_dir=base_dir)
+
+
 def handle_abort(project_dir: str) -> str:
     # Cancel all queued investigations
     q = _get_queue(project_dir)
@@ -1222,6 +1385,16 @@ class CommandRouter:
                 return handle_pivot(self.project_dir, " ".join(args)), None
             elif sub == "guide" and args:
                 return handle_guide(self.project_dir, " ".join(args)), None
+            elif sub == "review":
+                arg = args[0] if args else ""
+                return handle_review_investigation(self.project_dir, arg), None
+            elif sub == "continue" and args:
+                identifier = args[0]
+                feedback = " ".join(args[1:]) if len(args) > 1 else ""
+                return handle_continue_investigation(self.project_dir, identifier, feedback), None
+            elif sub == "claims":
+                arg = args[0] if args else ""
+                return handle_claims(self.project_dir, arg), None
             else:
                 return f"❓ Unknown command: `{sub}`\nSend `/voronoi` for help.", None
         except Exception as e:

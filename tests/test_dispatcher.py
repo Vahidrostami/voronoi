@@ -220,12 +220,18 @@ class TestProgressMonitoring:
         )
         run.task_snapshot = {"bd-1": {"status": "closed", "title": "Done"}}
 
+        # Mock queue.get() for the review transition path
+        mock_inv = MagicMock()
+        mock_inv.lineage_id = None
+        mock_inv.cycle_number = 1
+        mock_queue.get.return_value = mock_inv
+
         with patch("voronoi.server.dispatcher.subprocess.run"):
             d._handle_completion(run)
 
-        mock_queue.complete.assert_called_once_with(1)
+        # Science investigations go to review, not complete
+        mock_queue.review.assert_called_once_with(1)
         assert len(msgs) >= 1
-        assert "COMPLETE" in msgs[0]
 
     def test_handle_completion_failed_calls_fail(self, dispatcher_setup):
         """When tmux exits without deliverable, should call queue.fail()."""
@@ -267,6 +273,12 @@ class TestProgressMonitoring:
             chat_id="12345",
         )
         run.task_snapshot = {"bd-1": {"status": "closed", "title": "Done"}}
+
+        # Mock queue.get() for the review transition path
+        mock_inv = MagicMock()
+        mock_inv.lineage_id = None
+        mock_inv.cycle_number = 1
+        mock_queue.get.return_value = mock_inv
 
         with patch("voronoi.server.dispatcher.subprocess.run"):
             d._handle_completion(run)

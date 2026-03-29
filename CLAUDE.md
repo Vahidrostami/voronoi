@@ -12,23 +12,13 @@
 
 ## Project Structure
 
-```
-src/voronoi/           # Package code
-├── cli.py             # CLI entry point (init, demo, server)
-├── beads.py           # Beads wrapper (bd subprocess calls)
-├── utils.py           # Shared utilities (field extraction, note parsing)
-├── gateway/           # Intent classification, routing, memory, knowledge, reporting
-├── server/            # Queue, dispatcher, prompt builder, workspace, events
-├── science/           # Gates, convergence, fabrication, belief maps
-├── mcp/               # MCP server — validated tool interface for Beads + .swarm/ state
-└── data/              # Runtime files — canonical location, shipped with pip install
-    ├── templates/     # CLAUDE.md + AGENTS.md for investigation workspaces
-    ├── agents/        # .agent.md role definitions
-    ├── skills/        # SKILL.md files
-    ├── prompts/       # .prompt.md files
-    ├── scripts/       # Runtime shell scripts (spawn, merge, convergence gate)
-    └── demos/         # Demo investigations
-```
+Use `list_dir` on `src/voronoi/` to explore the current layout — do not rely on cached trees. The key packages are:
+
+- **`gateway/`** — User-facing layer (intent, routing, memory, knowledge, reporting)
+- **`server/`** — Execution layer (queue, dispatcher, prompt, workspace, sandbox, events)
+- **`science/`** — Rigor enforcement (gates, convergence, fabrication)
+- **`mcp/`** — MCP server (validated tool interface for Beads + .swarm/)
+- **`data/`** — Runtime content shipped with pip install (agents, prompts, skills, scripts, templates, demos)
 
 ## Key Architecture Rules
 

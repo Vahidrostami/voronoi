@@ -32,7 +32,7 @@ SQLite-backed investigation lifecycle management. Global queue (`~/.voronoi/queu
 class Investigation:
     id: int              # Auto-assigned on enqueue
     chat_id: str         # Telegram chat or CLI session
-    status: str          # queued | running | complete | failed | cancelled
+    status: str          # queued | running | paused | review | complete | failed | cancelled
     investigation_type: str  # "repo" | "lab"
     repo: str | None     # GitHub repo URL (repo-type only)
     question: str        # The user's question/task
@@ -45,6 +45,8 @@ class Investigation:
     github_url: str | None
     parent_id: int | None    # For follow-up investigations
     demo_source: str | None  # Demo name if from demo
+    lineage_id: int | None   # Root investigation ID for claim ledger scoping
+    cycle_number: int        # Iteration round within a lineage (default 1)
     created_at: float
     started_at: float | None
     completed_at: float | None
@@ -66,24 +68,25 @@ class Investigation:
        │running │──────────────────────┐
        └───┬───┘                       │
            │                           │
-     ┌─────┼─────┼──────┐        cancel()
-     │     │     │      │              │
-  complete() fail() pause()            │
-     │     │     │      │              │
-     ▼     ▼     ▼      ▼              ▼
- ┌────────┐ ┌──────┐ ┌──────┐   ┌──────────┐
- │complete│ │failed│ │paused│   │cancelled │
- └────────┘ └──┬───┘ └──┬───┘   └──────────┘
-               │        │
-               └────┬───┘
-                    │ resume()
-                    ▼
-               ┌───────┐
-               │running │
-               └───────┘
+     ┌─────┼─────┼──────┼─────┐   cancel()
+     │     │     │      │     │        │
+  complete() fail() pause() review()   │
+     │     │     │      │     │        │
+     ▼     ▼     ▼      ▼     ▼        ▼
+ ┌────────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────────┐
+ │complete│ │failed│ │paused│ │review│ │cancelled │
+ └────────┘ └──┬───┘ └──┬───┘ └──┬───┘ └──────────┘
+               │        │        │
+               └────┬───┘   continue_investigation()
+                    │            │
+                    │ resume()   │
+                    ▼            ▼
+               ┌───────┐    ┌───────┐
+               │running │    │queued │ (new investigation, same lineage)
+               └───────┘    └───────┘
 ```
 
-The `paused` state is entered when the agent exits due to a recoverable error (e.g., auth expiry). The `resume()` method transitions both `paused` and `failed` investigations back to `running`. Paused investigations do not count against `max_retries`.
+The `review` state is entered when a science investigation (mode=discover/prove) converges successfully. The PI reviews claims, provides feedback, and can continue to a new round. Build-mode investigations skip `review` and go directly to `complete`.
 
 ### InvestigationQueue API
 
@@ -101,6 +104,9 @@ class InvestigationQueue:
     def cancel(self, investigation_id: int) -> bool: ...
     def pause(self, investigation_id: int, reason: str) -> None: ...    # running → paused
     def resume(self, investigation_id: int) -> None: ...                # paused|failed → running
+    def review(self, investigation_id: int) -> bool: ...                # running → review
+    def continue_investigation(self, investigation_id: int,
+                               feedback: str = "") -> int | None: ...  # review|complete → new queued
 
     # Queries
     def get(self, investigation_id: int) -> Investigation | None: ...
@@ -125,7 +131,8 @@ class InvestigationQueue:
 CREATE TABLE investigations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     chat_id TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'queued',
+    status TEXT NOT NULL DEFAULT 'queued'
+        CHECK(status IN ('queued','running','paused','review','complete','failed','cancelled')),
     investigation_type TEXT NOT NULL DEFAULT 'lab',
     repo TEXT,
     question TEXT NOT NULL,
@@ -138,6 +145,8 @@ CREATE TABLE investigations (
     github_url TEXT,
     parent_id INTEGER,
     demo_source TEXT,
+    lineage_id INTEGER,            -- Root investigation ID for claim ledger scoping
+    cycle_number INTEGER DEFAULT 1, -- Iteration round within a lineage
     created_at REAL NOT NULL,
     started_at REAL,
     completed_at REAL,

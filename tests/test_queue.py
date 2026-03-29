@@ -285,3 +285,81 @@ class TestPauseResume:
         ready = queue.next_ready(max_concurrent=2)
         assert ready is not None
         assert ready.id == id3
+
+
+class TestReviewAndContinue:
+    def test_review_running_investigation(self, queue):
+        inv_id = queue.enqueue(Investigation(chat_id="c1", question="Q", slug="q"))
+        queue.start(inv_id, "/tmp/ws")
+        assert queue.review(inv_id) is True
+        result = queue.get(inv_id)
+        assert result.status == "review"
+        assert result.completed_at is not None
+
+    def test_review_wrong_status(self, queue):
+        inv_id = queue.enqueue(Investigation(chat_id="c1", question="Q", slug="q"))
+        assert queue.review(inv_id) is False  # can't review queued
+
+    def test_continue_from_review(self, queue):
+        inv_id = queue.enqueue(Investigation(chat_id="c1", question="Q", slug="q"))
+        queue.start(inv_id, "/tmp/ws")
+        queue.review(inv_id)
+        new_id = queue.continue_investigation(inv_id, "test more")
+        assert new_id is not None
+        # New investigation
+        new_inv = queue.get(new_id)
+        assert new_inv.status == "queued"
+        assert new_inv.parent_id == inv_id
+        assert new_inv.cycle_number == 2
+        assert "PI Feedback" in new_inv.question
+        assert "test more" in new_inv.question
+        assert new_inv.workspace_path == "/tmp/ws"
+        # Original transitions to complete
+        assert queue.get(inv_id).status == "complete"
+
+    def test_continue_from_complete(self, queue):
+        inv_id = queue.enqueue(Investigation(chat_id="c1", question="Q", slug="q"))
+        queue.start(inv_id, "/tmp/ws")
+        queue.complete(inv_id)
+        new_id = queue.continue_investigation(inv_id)
+        assert new_id is not None
+        new_inv = queue.get(new_id)
+        assert new_inv.parent_id == inv_id
+        assert new_inv.cycle_number == 2
+
+    def test_continue_wrong_status(self, queue):
+        inv_id = queue.enqueue(Investigation(chat_id="c1", question="Q", slug="q"))
+        queue.start(inv_id, "/tmp/ws")
+        assert queue.continue_investigation(inv_id) is None  # running, not reviewable
+
+    def test_continue_preserves_codename(self, queue):
+        inv_id = queue.enqueue(Investigation(
+            chat_id="c1", question="Q", slug="q", codename="Dopamine"))
+        queue.start(inv_id, "/tmp/ws")
+        queue.complete(inv_id)
+        new_id = queue.continue_investigation(inv_id)
+        new_inv = queue.get(new_id)
+        assert new_inv.codename == "Dopamine"
+
+    def test_lineage_chain(self, queue):
+        """Three rounds should share the same lineage_id."""
+        id1 = queue.enqueue(Investigation(chat_id="c1", question="Q", slug="q"))
+        inv1 = queue.get(id1)
+        assert inv1.lineage_id == id1  # root sets lineage to self
+
+        queue.start(id1, "/ws")
+        queue.complete(id1)
+        id2 = queue.continue_investigation(id1, "round 2 feedback")
+        inv2 = queue.get(id2)
+        assert inv2.lineage_id == id1
+        assert inv2.cycle_number == 2
+
+        queue.start(id2, "/ws")
+        queue.complete(id2)
+        id3 = queue.continue_investigation(id2, "round 3 feedback")
+        inv3 = queue.get(id3)
+        assert inv3.lineage_id == id1
+        assert inv3.cycle_number == 3
+
+    def test_continue_nonexistent(self, queue):
+        assert queue.continue_investigation(999) is None

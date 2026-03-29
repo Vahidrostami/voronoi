@@ -84,6 +84,18 @@ from voronoi.science.gates import (
     validate_pre_registration,
 )
 
+# --- Claims (cross-run scientific state) ---
+from voronoi.science.claims import (
+    Claim,
+    ClaimArtifact,
+    ClaimLedger,
+    Objection,
+    generate_self_critique,
+    load_ledger,
+    resolve_lineage_id,
+    save_ledger,
+)
+
 __all__ = [
     # Convergence + belief map + checkpoint
     "Hypothesis", "BeliefMap", "load_belief_map", "save_belief_map",
@@ -112,4 +124,8 @@ __all__ = [
     "check_invariants", "validate_data_invariants",
     "CalibrationResult", "check_calibration", "parse_revise_context",
     "ReplicationNeed", "find_replication_needs",
+    # Claims (cross-run scientific state)
+    "Claim", "ClaimArtifact", "ClaimLedger", "Objection",
+    "load_ledger", "save_ledger", "resolve_lineage_id",
+    "generate_self_critique",
 ]

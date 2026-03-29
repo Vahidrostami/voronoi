@@ -32,6 +32,9 @@ from voronoi.gateway.router import (
     handle_journal,
     handle_finding,
     handle_complete,
+    handle_review_investigation,
+    handle_continue_investigation,
+    handle_claims,
 )
 
 
@@ -432,3 +435,100 @@ class TestFreeText:
         text, _ = router.handle_free_text("Which database should we use — Postgres vs MySQL?", "chat1", True)
         assert "discover" in text.lower()
         assert "is live" in text
+
+
+# ---------------------------------------------------------------------------
+# Review / Continue / Claims
+# ---------------------------------------------------------------------------
+
+class TestReviewContinueClaims:
+    def _setup_investigation(self, tmp_path):
+        """Create a queue with a review-status investigation and a claim ledger."""
+        from voronoi.server.queue import InvestigationQueue, Investigation
+        from voronoi.science.claims import ClaimLedger, save_ledger, PROVENANCE_RUN_EVIDENCE
+
+        q = InvestigationQueue(tmp_path / "queue.db")
+        inv_id = q.enqueue(Investigation(
+            chat_id="c1", question="Does L4 beat L1?",
+            slug="l4-vs-l1", codename="Synapse", mode="discover",
+        ))
+        q.start(inv_id, str(tmp_path / "workspace"))
+        q.review(inv_id)
+
+        # Create claim ledger
+        ledger = ClaimLedger()
+        ledger.add_claim("L4 outperforms L1", PROVENANCE_RUN_EVIDENCE,
+                         effect_summary="d=0.8", supporting_findings=["bd-17"])
+        ledger.assert_claim("C1")
+        ledger.add_claim("No effect for conversational text", PROVENANCE_RUN_EVIDENCE,
+                         supporting_findings=["bd-19"])
+        save_ledger(inv_id, ledger, base_dir=tmp_path)
+
+        return q, inv_id
+
+    def test_review_shows_claims(self, tmp_path):
+        q, inv_id = self._setup_investigation(tmp_path)
+        with patch("voronoi.gateway.router._get_queue", return_value=q):
+            result = handle_review_investigation(str(tmp_path), "Synapse")
+        assert "Synapse" in result
+        assert "C1" in result
+        assert "L4 outperforms" in result
+
+    def test_review_not_found(self, tmp_path):
+        q = MagicMock()
+        q.get.return_value = None
+        q.get_recent.return_value = []
+        with patch("voronoi.gateway.router._get_queue", return_value=q):
+            result = handle_review_investigation(str(tmp_path), "Nonexistent")
+        assert "not found" in result
+
+    def test_claims_shows_ledger(self, tmp_path):
+        q, inv_id = self._setup_investigation(tmp_path)
+        with patch("voronoi.gateway.router._get_queue", return_value=q):
+            result = handle_claims(str(tmp_path), "Synapse")
+        assert "C1" in result
+        assert "C2" in result
+
+    def test_continue_creates_new_run(self, tmp_path):
+        q, inv_id = self._setup_investigation(tmp_path)
+        with patch("voronoi.gateway.router._get_queue", return_value=q):
+            result = handle_continue_investigation(str(tmp_path), "Synapse",
+                                                    "Test multilingual")
+        assert "Round 2" in result
+        assert "queued" in result.lower()
+
+    def test_continue_wrong_status(self, tmp_path):
+        from voronoi.server.queue import InvestigationQueue, Investigation
+        q = InvestigationQueue(tmp_path / "queue.db")
+        inv_id = q.enqueue(Investigation(
+            chat_id="c1", question="Q", slug="q", codename="Test", mode="discover",
+        ))
+        q.start(inv_id, str(tmp_path))
+        # Still running, can't continue
+        with patch("voronoi.gateway.router._get_queue", return_value=q):
+            result = handle_continue_investigation(str(tmp_path), "Test")
+        assert "running" in result.lower()
+
+    def test_router_dispatches_review(self, tmp_path):
+        router = CommandRouter(str(tmp_path))
+        with patch("voronoi.gateway.router.handle_review_investigation",
+                    return_value="review result") as mock:
+            text, _ = router.route("review", ["Synapse"], "c1")
+        assert text == "review result"
+        mock.assert_called_once_with(str(tmp_path), "Synapse")
+
+    def test_router_dispatches_continue(self, tmp_path):
+        router = CommandRouter(str(tmp_path))
+        with patch("voronoi.gateway.router.handle_continue_investigation",
+                    return_value="continue result") as mock:
+            text, _ = router.route("continue", ["Synapse", "more", "data", "please"], "c1")
+        assert text == "continue result"
+        mock.assert_called_once_with(str(tmp_path), "Synapse", "more data please")
+
+    def test_router_dispatches_claims(self, tmp_path):
+        router = CommandRouter(str(tmp_path))
+        with patch("voronoi.gateway.router.handle_claims",
+                    return_value="claims result") as mock:
+            text, _ = router.route("claims", ["Synapse"], "c1")
+        assert text == "claims result"
+        mock.assert_called_once_with(str(tmp_path), "Synapse")

@@ -6,25 +6,9 @@ applyTo: "src/voronoi/server/**"
 
 Before modifying any file in `src/voronoi/server/`:
 
-1. Read `docs/SPEC-INDEX.md` to find the exact section
-2. Read the relevant section of `docs/SERVER.md`
+1. Read `docs/SPEC-INDEX.md` — find the spec section and test file for the module you're changing
+2. Read the relevant section of the spec
 3. If your change affects behavior or public surface, update the spec FIRST
-
-Key specs by file:
-- `queue.py` → SERVER.md §2
-- `dispatcher.py` → SERVER.md §3
-- `prompt.py` → SERVER.md §4
-- `workspace.py` → SERVER.md §5
-- `sandbox.py` → SERVER.md §6
-- `runner.py` → SERVER.md §7
-- `publisher.py` → SERVER.md §8
-- `events.py` → CONTEXT-MANAGEMENT.md §10
-- `repo_url.py` → SERVER.md §9
-- `compact.py` → CONTEXT-MANAGEMENT.md §12
-
-Critical invariants:
-- `prompt.py` is the SOLE prompt builder — INV-01 in INVARIANTS.md
-- Role files are source of truth — INV-02
-- Orchestrator never enters worktrees — INV-03
+4. Check `docs/INVARIANTS.md` if touching `prompt.py` (INV-01), role files (INV-02), or orchestrator dispatch (INV-03)
 
 After changes: run `python -m pytest tests/ -x -q` and update tests if behavior changed.

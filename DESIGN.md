@@ -128,6 +128,39 @@ All runtime content lives in `src/voronoi/data/` — the single canonical locati
 
 ---
 
+## 3b. Iterative Science — Multi-Run Design
+
+### The Problem
+
+Science is iterative. A single autonomous run produces one sample from a reasoning distribution — not truth. The user needs to review results, raise doubts, lock what's solid, and trigger another round that builds on (not replaces) prior work.
+
+### Solution: Claim Ledger as Spine
+
+The Claim Ledger (`science/claims.py`) is a durable, cross-run scientific object stored at `~/.voronoi/ledgers/<lineage_id>/claim-ledger.json`. It tracks:
+
+- **Claims** with provenance tags (`model_prior` | `retrieved_prior` | `run_evidence`)
+- **Status lifecycle**: `provisional → asserted → locked → replicated` (or `challenged` / `retired` at any point)
+- **Objections**: structured doubts targeting specific claims
+- **Artifact chains**: which files (code, data) support each claim
+
+### Iteration Flow
+
+1. Run converges → dispatcher syncs findings to Claim Ledger → status becomes `review`
+2. PI reviews: locks solid claims, challenges weak ones, adds objections
+3. PI says `/continue` → workspace prepared (archive `.swarm/`, tag git, prune worktrees, write immutability invariants)
+4. New orchestrator starts with Warm-Start Brief from Claim Ledger
+5. Locked claims → DO NOT re-test. Challenged claims → priority. New questions → explore.
+
+### Key Properties
+
+- **Runs are additive**: code and data accumulate. Only the paper is rewritten per round.
+- **Stochasticity is managed**: locked findings can't regress due to random variation.
+- **LLM priors are tagged**: model knowledge enters as `model_prior` and must earn promotion.
+- **Self-critique**: auto-identifies weaknesses before showing the PI.
+- **Workspace reuse**: same git repo across rounds, with git tags at run boundaries.
+
+---
+
 ## 4. Agent Roles, Prompts, and Skills — `src/voronoi/data/`
 
 The canonical location for all runtime content is `src/voronoi/data/`. The prompt builder *references* these files, never duplicates.
@@ -699,7 +732,8 @@ voronoi/
 │   ├── _helpers.py         # Beads queries, consistency, interpretation, I/O
 │   ├── convergence.py      # Belief map, checkpoint, convergence detection
 │   ├── fabrication.py      # Anti-fabrication, simulation bypass
-│   └── gates.py            # Dispatch/merge gates, pre-reg, invariants, calibration
+│   ├── gates.py            # Dispatch/merge gates, pre-reg, invariants, calibration
+│   └── claims.py           # Claim Ledger — cross-run scientific state
 ├── gateway/
 │   ├── intent.py           # Free-text → mode + rigor classification
 │   ├── router.py           # Command dispatch (investigate · demo · status · guide)

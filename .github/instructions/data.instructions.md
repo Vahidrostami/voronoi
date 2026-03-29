@@ -10,7 +10,7 @@ applyTo: "src/voronoi/data/**"
 
 | Directory | Content | Spec |
 |-----------|---------|------|
-| `agents/` | 12 agent role definitions (`.agent.md`) | AGENT-ROLES.md |
+| `agents/` | Agent role definitions (`.agent.md`) | AGENT-ROLES.md |
 | `skills/` | Domain knowledge packages (`SKILL.md`) | AGENT-ROLES.md §6 |
 | `prompts/` | Runtime prompts (spawn, merge, standup, progress, teardown) | SERVER.md §4 |
 | `scripts/` | Shell scripts (spawn-agent.sh, etc.) | ARCHITECTURE.md §6 |

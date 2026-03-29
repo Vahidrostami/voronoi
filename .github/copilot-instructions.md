@@ -24,11 +24,12 @@ Do NOT skip the spec lookup. The spec is the source of truth for how voronoi wor
 
 ## Architecture Awareness
 
-- `src/voronoi/data/` is the **single canonical location** for all runtime content (agents, prompts, skills, scripts, demos, templates)
-- `.github/` is for **development** tooling only (CI workflows, Copilot dev config)
-- `prompt.py` is the SOLE prompt builder — both CLI and Telegram use `build_orchestrator_prompt()`
+Read `CLAUDE.md` for full architecture rules. The key principles:
+
+- `src/voronoi/data/` is the canonical location for all runtime content — `.github/` is dev tooling only
+- `prompt.py` is the sole prompt builder — both CLI and Telegram use `build_orchestrator_prompt()`
 - Agent roles live in `src/voronoi/data/agents/*.agent.md` — prompt builder references, never duplicates
-- `scripts/sync-package-data.sh` at repo root is a dev-only build tool (copies `.env.example`)
+- Use `list_dir` and `docs/SPEC-INDEX.md` to discover project structure and module mappings — don't memorize them
 
 ## What NOT to Do
 

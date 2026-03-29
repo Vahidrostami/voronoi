@@ -919,6 +919,15 @@ class InvestigationDispatcher:
         events.extend(self._check_findings(run, tasks))
         events.extend(self._check_design_invalid(run, tasks))
         events.extend(self._detect_phase(run))
+
+        # Sync findings to cross-run Claim Ledger
+        if tasks:
+            try:
+                self._sync_findings_to_ledger(run, tasks)
+            except Exception as e:
+                logger.debug("Claim ledger sync failed for #%d: %s",
+                             run.investigation_id, e)
+
         return events
 
     def _diff_tasks(self, run: RunningInvestigation, tasks: list[dict]) -> list[dict]:
@@ -1406,7 +1415,14 @@ class InvestigationDispatcher:
 
         logger.info("Voronoi %s (#%d) complete: %d/%d tasks in %.1fmin",
                     run.label, run.investigation_id, closed, total_tasks, elapsed)
-        self.queue.complete(run.investigation_id)
+
+        # Science investigations go to review for PI feedback;
+        # build-mode investigations complete immediately.
+        is_science = run.mode in ("discover", "prove")
+        if is_science:
+            self._transition_to_review(run)
+        else:
+            self.queue.complete(run.investigation_id)
 
         # Build teaser + report
         from voronoi.gateway.report import ReportGenerator
@@ -2046,3 +2062,254 @@ class InvestigationDispatcher:
             logger.info("Restarted %s after human gate decision", run.label)
         except Exception as e:
             logger.error("Failed to restart %s after gate: %s", run.label, e)
+
+    # ------------------------------------------------------------------
+    # Claim Ledger — cross-run scientific state
+    # ------------------------------------------------------------------
+
+    def _sync_findings_to_ledger(self, run: RunningInvestigation,
+                                 tasks: list[dict] | None = None) -> None:
+        """Sync new Beads findings into the Claim Ledger for this lineage.
+
+        Called during progress polling. Only processes findings not yet synced.
+        Provenance is inferred from task type/title.
+        """
+        inv = self.queue.get(run.investigation_id)
+        if inv is None or inv.lineage_id is None:
+            return
+
+        if tasks is None:
+            from voronoi.beads import run_bd_json
+            code, parsed = run_bd_json("list", "--json", cwd=str(run.workspace_path))
+            if code != 0 or not isinstance(parsed, list):
+                return
+            tasks = parsed
+
+        from voronoi.science.claims import (
+            PROVENANCE_RETRIEVED_PRIOR,
+            PROVENANCE_RUN_EVIDENCE,
+            ClaimArtifact,
+            load_ledger,
+            save_ledger,
+        )
+        from voronoi.utils import extract_field
+
+        ledger = load_ledger(inv.lineage_id, base_dir=self.config.base_dir)
+        synced_ids = {f_id for c in ledger.claims for f_id in c.supporting_findings}
+
+        new_claims = False
+        for task in tasks:
+            tid = task.get("id", "")
+            title = task.get("title", "")
+            notes = task.get("notes", "")
+
+            if "FINDING" not in title.upper():
+                continue
+            if tid in synced_ids:
+                continue
+
+            # Determine provenance from task context
+            title_lower = title.lower()
+            if "scout" in title_lower or "literature" in title_lower or "prior" in title_lower:
+                provenance = PROVENANCE_RETRIEVED_PRIOR
+            else:
+                provenance = PROVENANCE_RUN_EVIDENCE
+
+            # Extract quantitative summary
+            effect = extract_field(notes, "EFFECT_SIZE")
+            n = extract_field(notes, "N") or extract_field(notes, "SAMPLE_SIZE")
+            sample_summary = f"N={n}" if n else None
+
+            # Extract data file as artifact
+            artifacts = []
+            data_file = extract_field(notes, "DATA_FILE")
+            if data_file:
+                sha = extract_field(notes, "SHA256") or extract_field(notes, "DATA_HASH")
+                artifacts.append(ClaimArtifact(
+                    path=data_file,
+                    artifact_type="data",
+                    sha256=sha or None,
+                    git_tag=f"run-{inv.cycle_number}-complete" if inv.cycle_number > 1 else None,
+                    description=f"Data for {title}",
+                ))
+
+            # Clean statement from FINDING prefix
+            statement = title
+            for prefix in ("FINDING:", "FINDING -", "FINDING"):
+                if statement.upper().startswith(prefix):
+                    statement = statement[len(prefix):].strip()
+                    break
+
+            ledger.add_claim(
+                statement=statement,
+                provenance=provenance,
+                source_cycle=inv.cycle_number,
+                supporting_findings=[tid],
+                effect_summary=effect or None,
+                sample_summary=sample_summary,
+                artifacts=artifacts,
+            )
+            new_claims = True
+
+        if new_claims:
+            save_ledger(inv.lineage_id, ledger, base_dir=self.config.base_dir)
+
+    def _transition_to_review(self, run: RunningInvestigation) -> None:
+        """Transition a completed science investigation to review status.
+
+        Generates self-critique, syncs final findings to ledger, and sends
+        the review message to Telegram.
+        """
+        inv = self.queue.get(run.investigation_id)
+        if inv is None:
+            return
+
+        # Final sync of all findings
+        self._sync_findings_to_ledger(run)
+
+        # Generate self-critique
+        if inv.lineage_id is not None:
+            from voronoi.science.claims import generate_self_critique, load_ledger, save_ledger
+            ledger = load_ledger(inv.lineage_id, base_dir=self.config.base_dir)
+
+            # Promote provisional claims to asserted (run converged successfully)
+            for claim in ledger.claims:
+                if claim.status == "provisional" and claim.source_cycle == inv.cycle_number:
+                    try:
+                        ledger.assert_claim(claim.id)
+                    except (ValueError, KeyError):
+                        pass
+
+            critiques = generate_self_critique(ledger)
+            for obj in critiques:
+                ledger.objections.append(obj)
+
+            save_ledger(inv.lineage_id, ledger, base_dir=self.config.base_dir)
+
+            # Build review message with claims
+            review_text = self._build_review_message(run, ledger)
+            self.send_message(review_text)
+        else:
+            self.send_message(
+                f"🔬 *{run.label}* converged — ready for review.\n"
+                f"Reply with feedback or send `/voronoi continue {run.label}` to iterate."
+            )
+
+        self.queue.review(run.investigation_id)
+
+    def _build_review_message(self, run: RunningInvestigation,
+                              ledger) -> str:
+        """Build the Telegram review message from the claim ledger."""
+        lines = [
+            f"🔬 *{run.label}* — Round {run.improvement_rounds or 1} complete "
+            f"(eval: {run.eval_score:.2f})\n",
+        ]
+
+        # Show claims
+        for claim in ledger.claims:
+            if claim.status == "retired":
+                continue
+            badge = {"locked": "🔒", "replicated": "🔒🔒", "challenged": "⚡",
+                     "asserted": "✅", "provisional": "❓"
+                     }.get(claim.status, "•")
+            ev = f" ({claim.effect_summary})" if claim.effect_summary else ""
+            lines.append(f"{badge} {claim.id}: {claim.statement}{ev}")
+
+        # Show self-critique warnings
+        surfaced = [o for o in ledger.objections if o.status == "surfaced"]
+        if surfaced:
+            lines.append("\n⚠️ *Self-identified weaknesses:*")
+            for obj in surfaced[:5]:
+                lines.append(f"  • {obj.concern}")
+
+        lines.append(
+            "\nReply with your feedback, or:\n"
+            f"`/voronoi continue {run.label}` — run another round\n"
+            f"`/voronoi complete {run.label}` — accept and close"
+        )
+        return "\n".join(lines)
+
+    def prepare_continuation(self, run: RunningInvestigation) -> None:
+        """Prepare the workspace for a continuation run.
+
+        Archives .swarm/ state, tags the git boundary, prunes worktrees,
+        and writes immutability invariants for locked claims.
+        """
+        ws = run.workspace_path
+        swarm = ws / ".swarm"
+
+        inv = self.queue.get(run.investigation_id)
+        cycle_num = inv.cycle_number if inv else 1
+
+        # 1. Git tag the run boundary
+        tag_name = f"run-{cycle_num}-complete"
+        try:
+            subprocess.run(
+                ["git", "tag", "-f", tag_name],
+                cwd=str(ws), capture_output=True, timeout=30,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            logger.debug("Failed to create git tag %s", tag_name)
+
+        # 2. Archive .swarm/ state
+        archive_dir = swarm / "archive" / f"run-{cycle_num}"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        files_to_archive = [
+            "deliverable.md", "belief-map.json", "orchestrator-checkpoint.json",
+            "success-criteria.json", "experiments.tsv", "eval-score.json",
+            "convergence.json", "claim-evidence.json", "report.pdf",
+            "state-digest.md", "scout-brief.md",
+        ]
+        for fname in files_to_archive:
+            src = swarm / fname
+            if src.exists():
+                try:
+                    shutil.copy2(src, archive_dir / fname)
+                except OSError:
+                    pass
+
+        # 3. Clean .swarm/ for fresh orchestrator (keep reusable files)
+        files_to_remove = [
+            "orchestrator-checkpoint.json", "convergence.json",
+            "eval-score.json", "dispatcher-directive.json",
+            "human-gate.json", "state-digest.md",
+        ]
+        for fname in files_to_remove:
+            p = swarm / fname
+            if p.exists():
+                try:
+                    p.unlink()
+                except OSError:
+                    pass
+
+        # Keep: belief-map.json, experiments.tsv, success-criteria.json,
+        #        deliverable.md (for warm-start reference), events.jsonl
+
+        # 4. Prune git worktrees
+        try:
+            subprocess.run(
+                ["git", "worktree", "prune"],
+                cwd=str(ws), capture_output=True, timeout=30,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+
+        # 5. Write immutability invariants for locked claims
+        if inv and inv.lineage_id is not None:
+            from voronoi.science.claims import load_ledger
+            ledger = load_ledger(inv.lineage_id, base_dir=self.config.base_dir)
+            immutable_paths = ledger.get_immutable_paths()
+            if immutable_paths:
+                from voronoi.science.gates import load_invariants, save_invariants, Invariant
+                existing = load_invariants(ws)
+                # Add file_unchanged invariants for locked claim artifacts
+                for path in immutable_paths:
+                    inv_id = f"IMMUTABLE_{path.replace('/', '_').upper()}"
+                    if not any(i.id == inv_id for i in existing):
+                        existing.append(Invariant(
+                            id=inv_id,
+                            description=f"Do not modify locked claim artifact: {path}",
+                            check_type="file_unchanged",
+                            params={"paths": [path], "since_tag": tag_name},
+                        ))
+                save_invariants(ws, existing)

@@ -347,3 +347,54 @@ Orchestrator
 - `bd ready` returns only unblocked tasks
 - Workers check `REQUIRES` at startup — report BLOCKED if missing
 - Merge rejected if `PRODUCES` missing
+
+---
+
+## 10. Multi-Run Iteration
+
+### Philosophy
+
+Science is iterative. The user fires a question, Voronoi runs autonomously, then the PI reviews results, raises objections, and triggers another round. The Claim Ledger is the durable scientific state that survives across runs.
+
+### Lifecycle
+
+```
+Run 1: question → agents → findings → convergence → REVIEW
+  ↓ PI feedback: "lock C1, challenge C2: N too small"
+Run 2: warm-start brief → agents → new findings → convergence → REVIEW
+  ↓ PI feedback: "looks good"
+Run 2: REVIEW → COMPLETE
+```
+
+### Key Mechanisms
+
+| Mechanism | Where | What it does |
+|-----------|-------|-------------|
+| `review` status | queue.py | Pauses after convergence for PI feedback |
+| Claim Ledger | claims.py | Cross-run scientific state with provenance |
+| Warm-Start Brief | prompt.py | Loads prior claims + PI feedback into new round |
+| Workspace reuse | dispatcher.py | Same git repo, archived `.swarm/`, git tags at boundaries |
+| Immutability | gates.py | Locked claims' artifacts can't be modified |
+| Self-critique | claims.py | Auto-identifies weaknesses before showing PI |
+
+### Workspace Handoff Between Runs
+
+When `/continue` is triggered:
+1. Git tag `run-<N>-complete` marks the boundary
+2. `.swarm/` state archived to `.swarm/archive/run-<N>/`
+3. Checkpoint and convergence files cleared for fresh orchestrator
+4. Belief map, experiments.tsv, success criteria carried forward
+5. Worktrees pruned
+6. Locked claims' artifacts written as `file_unchanged` invariants
+
+### Runs Are Additive
+
+New runs add experiments, code, and data to the workspace. They never regenerate what prior runs established — unless the PI challenged it. Locked claims create immutability zones. The paper is the only artifact rewritten each round.
+
+### Telegram Commands
+
+| Command | When | Effect |
+|---------|------|--------|
+| `/voronoi review [codename]` | During or after run | Show Claim Ledger |
+| `/voronoi continue <codename> [feedback]` | After review | Start new round with feedback |
+| `/voronoi claims [codename]` | Any time | Show claim state |

@@ -10,20 +10,9 @@ Every time you modify code in `src/voronoi/`, you MUST follow this workflow.
 
 ## Test File Discovery
 
-Tests follow a naming convention — find the test file by module name:
-
-```
-src/voronoi/<module>.py        → tests/test_<module>.py
-src/voronoi/gateway/<module>.py → tests/test_<module>.py
-src/voronoi/server/<module>.py  → tests/test_<module>.py
-src/voronoi/science/<module>.py → tests/test_science.py  (all science in one file)
-src/voronoi/mcp/<module>.py     → tests/test_mcp.py      (all MCP in one file)
-```
-
-**Exceptions** (check these if the convention doesn't match):
-- `server/prompt.py` → `test_unified_prompt.py` + `test_worker_prompt.py`
-- `gateway/router.py` → `test_bridge.py` + integration tests
-- `mcp/validators.py`, `mcp/tools_beads.py`, `mcp/tools_swarm.py` → all in `test_mcp.py`
+Test files follow `tests/test_{module_name}.py` by convention. Non-standard mappings
+(bundled test files, renamed test files) are documented in `docs/SPEC-INDEX.md` — **always
+check it** before assuming a test file path.
 
 **When in doubt**: run `ls tests/test_*<module>*.py` or `grep -rl '<function_name>' tests/` to find the right file.
 
@@ -60,6 +49,6 @@ src/voronoi/mcp/<module>.py     → tests/test_mcp.py      (all MCP in one file)
 
 Before committing, confirm:
 - [ ] Specific module tests pass
-- [ ] Full test suite passes (829+ tests, all green)
+- [ ] Full test suite passes (all green)
 - [ ] New behavior has corresponding test coverage
 - [ ] No test depends on external services or network

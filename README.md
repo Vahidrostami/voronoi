@@ -166,6 +166,9 @@ graph TD
 | `/voronoi results [id]` | View past investigation results |
 | `/voronoi recall <query>` | Search past findings |
 | `/voronoi resume [id\|codename]` | Resume a paused or failed investigation |
+| `/voronoi review [codename]` | Show Claim Ledger — lock, challenge, or accept findings |
+| `/voronoi continue <codename> [feedback]` | Start a new round with PI feedback |
+| `/voronoi claims [codename]` | Show current claim state for an investigation |
 | Free text in groups | Auto-detect intent and dispatch |
 
 **From CLI**: `/swarm <task>` · `/standup` · `/progress` · `/merge` · `/teardown`
@@ -255,8 +258,8 @@ src/voronoi/
   cli.py                  # init, upgrade, demo, server
   utils.py                # shared field extraction, note parsing
   beads.py                # Beads subprocess helpers
-  science/                # rigor gates (4 modules)
-    convergence.py  fabrication.py  gates.py  _helpers.py
+  science/                # rigor gates (5 modules)
+    convergence.py  fabrication.py  gates.py  _helpers.py  claims.py
   gateway/                # Telegram interface
     config.py  router.py  report.py  intent.py
     memory.py  knowledge.py  handoff.py  progress.py
@@ -283,6 +286,7 @@ Each agent is a **full Copilot CLI session** in its own **tmux window** with its
 ~/.voronoi/              # server mode
   config.json  queue.db
   objects/               # shared bare git repos
+  ledgers/               # claim ledgers per investigation lineage
   active/                # one workspace per investigation
     inv-1-slug/
       .swarm/            # journal, beliefs, deliverable
@@ -303,6 +307,7 @@ Each agent is a **full Copilot CLI session** in its own **tmux window** with its
 | Statistical rigor gates | ✅ | — | — | — |
 | Pre-registration & replication | ✅ | — | — | — |
 | Evidence system (SHA-256) | ✅ | — | — | — |
+| Iterative science (claim ledger) | ✅ | — | — | — |
 | Telegram-native interface | ✅ | — | — | — |
 | Docker-sandboxed execution | ✅ | — | ✅ | — |
 | Role-based specialization | ✅ (12) | ✅ | ✅ | ✅ (6) |

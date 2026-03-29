@@ -32,6 +32,7 @@ def build_orchestrator_prompt(
     output_dir: str = "",
     max_agents: int = 4,
     safe: bool = False,
+    prior_context: dict | None = None,
 ) -> str:
     """Build the unified orchestrator system prompt.
 
@@ -55,6 +56,13 @@ def build_orchestrator_prompt(
         Maximum concurrent worker agents.
     safe : bool
         If True, spawns workers with restricted tool access.
+    prior_context : dict | None
+        If set, contains warm-start data from prior runs:
+        - ``ledger_summary``: formatted claim ledger for the prompt
+        - ``pi_feedback``: verbatim human feedback
+        - ``cycle_number``: which round this is
+        - ``immutable_paths``: artifact paths that must not be modified
+        - ``artifact_manifest``: reusable artifacts description
     """
     _MODE_VERB = {
         "discover": "Discovery",
@@ -386,7 +394,116 @@ def build_orchestrator_prompt(
             "See `.github/agents/evaluator.agent.md` for the full evaluation protocol.\n"
         )
 
+    # -- Warm-Start Brief (multi-run context) ------------------------------
+    if prior_context:
+        cycle = prior_context.get("cycle_number", 2)
+        sections.append(
+            f"\n## Round {cycle} — Continuation\n\n"
+            f"This is round {cycle} of an iterative investigation. "
+            "Prior rounds established findings that are summarized below. "
+            "Your job: address the PI's feedback while preserving confirmed results.\n\n"
+            "**Critical rules for continuation rounds:**\n"
+            "- Do NOT re-run experiments whose results are not challenged\n"
+            "- Do NOT regenerate data that locked claims depend on\n"
+            "- If you need additional data, create NEW files — don't modify existing ones\n"
+            "- Locked claims are constraints — treat them as established facts\n"
+            "- Challenged claims are your priority — investigate and resolve them\n"
+        )
+
+        ledger_summary = prior_context.get("ledger_summary", "")
+        if ledger_summary:
+            sections.append(
+                "\n## Claim Ledger — Prior State of Knowledge\n\n"
+                + ledger_summary + "\n"
+            )
+
+        pi_feedback = prior_context.get("pi_feedback", "")
+        if pi_feedback:
+            sections.append(
+                "\n## PI Feedback\n\n"
+                "The principal investigator provided this feedback after the last round. "
+                "Address each concern:\n\n"
+                + pi_feedback + "\n"
+            )
+
+        immutable_paths = prior_context.get("immutable_paths", [])
+        if immutable_paths:
+            sections.append(
+                "\n## Immutable Artifacts — DO NOT MODIFY\n\n"
+                "The following files support locked claims. Modifying them will block convergence:\n"
+            )
+            for p in immutable_paths:
+                sections.append(f"- `{p}`\n")
+
+        artifact_manifest = prior_context.get("artifact_manifest", "")
+        if artifact_manifest:
+            sections.append(
+                "\n## Reusable Artifacts from Prior Rounds\n\n"
+                + artifact_manifest + "\n"
+            )
+
     return "".join(sections)
+
+
+# ---------------------------------------------------------------------------
+# Warm-Start Brief builder
+# ---------------------------------------------------------------------------
+
+
+def build_warm_start_context(
+    lineage_id: int,
+    cycle_number: int,
+    pi_feedback: str = "",
+    base_dir: Path | None = None,
+    workspace: Path | None = None,
+) -> dict:
+    """Build the prior_context dict for build_orchestrator_prompt.
+
+    Reads the Claim Ledger and workspace artifacts to produce a structured
+    context dict that the prompt builder can inject into continuation prompts.
+    """
+    from voronoi.science.claims import load_ledger
+
+    ledger = load_ledger(lineage_id, base_dir=base_dir)
+
+    context: dict = {
+        "cycle_number": cycle_number,
+        "ledger_summary": ledger.format_for_prompt(),
+        "pi_feedback": pi_feedback,
+        "immutable_paths": ledger.get_immutable_paths(),
+    }
+
+    # Build artifact manifest from workspace if available
+    if workspace and workspace.exists():
+        manifest_lines: list[str] = []
+        swarm = workspace / ".swarm"
+
+        # Check for prior experiments
+        experiments = swarm / "experiments.tsv"
+        if experiments.exists():
+            try:
+                lines = experiments.read_text().strip().splitlines()
+                keep_count = sum(1 for l in lines[1:] if "\tkeep\t" in l)
+                manifest_lines.append(
+                    f"- Experiments: {len(lines) - 1} total, {keep_count} kept results"
+                )
+            except OSError:
+                pass
+
+        # Check for existing data directories
+        for data_dir in ("data", "data/raw", "data/synthetic", "output"):
+            dp = workspace / data_dir
+            if dp.is_dir():
+                files = list(dp.iterdir())
+                if files:
+                    manifest_lines.append(
+                        f"- `{data_dir}/`: {len(files)} files (DO NOT REGENERATE)"
+                    )
+
+        if manifest_lines:
+            context["artifact_manifest"] = "\n".join(manifest_lines)
+
+    return context
 
 
 # ---------------------------------------------------------------------------

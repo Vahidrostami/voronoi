@@ -329,6 +329,69 @@ class ParadigmStressResult:
     message: str
 ```
 
+### Claim (`science/claims.py`)
+
+```python
+@dataclass
+class Claim:
+    id: str                       # "C1", "C2", ...
+    statement: str                # Paper-level assertion
+    provenance: str               # model_prior | retrieved_prior | run_evidence
+    status: str                   # provisional | asserted | locked | challenged | replicated | retired
+    supporting_findings: list[str]  # Beads finding IDs
+    source_cycle: int             # Which run produced this
+    effect_summary: str | None    # e.g. "d=0.8, p=0.003"
+    sample_summary: str | None    # e.g. "N=200 across 3 experiments"
+    literature_refs: list[str]
+    model_basis: str | None
+    artifacts: list[ClaimArtifact]
+    challenges: list[Objection]
+    first_asserted: str           # ISO timestamp
+    last_updated: str
+```
+
+### ClaimArtifact (`science/claims.py`)
+
+```python
+@dataclass
+class ClaimArtifact:
+    path: str                     # Relative workspace path
+    artifact_type: str            # data | code | result | figure | model
+    sha256: str | None
+    git_tag: str | None
+    description: str
+```
+
+### Objection (`science/claims.py`)
+
+```python
+@dataclass
+class Objection:
+    id: str                       # "O1", "O2", ...
+    target_claim: str             # Claim ID
+    concern: str
+    objection_type: str           # confound | power | methodology | interpretation | scope | other
+    raised_by: str                # PI | self_critique | critic_agent
+    status: str                   # pending | investigating | resolved | dismissed | surfaced
+    resolution: str | None
+    resolution_cycle: int | None
+    timestamp: str
+```
+
+### ClaimLedger (`science/claims.py`)
+
+```python
+class ClaimLedger:
+    claims: list[Claim]
+    objections: list[Objection]
+    # Methods: add_claim, lock_claim, challenge_claim, retire_claim,
+    #          add_objection, resolve_objection, get_locked, get_challenged,
+    #          get_pending_objections, get_immutable_paths, format_for_prompt,
+    #          format_for_review, summary
+```
+
+**Storage**: `~/.voronoi/ledgers/<lineage_id>/claim-ledger.json`
+
 ### ConsistencyConflict (`science/_helpers.py`)
 
 ```python
@@ -378,7 +441,8 @@ class AntiFabricationResult:
 CREATE TABLE investigations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     chat_id TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'queued',
+    status TEXT NOT NULL DEFAULT 'queued'
+        CHECK(status IN ('queued','running','paused','review','complete','failed','cancelled')),
     investigation_type TEXT NOT NULL DEFAULT 'lab',
     repo TEXT,
     question TEXT NOT NULL,
@@ -391,6 +455,8 @@ CREATE TABLE investigations (
     github_url TEXT,
     parent_id INTEGER,
     demo_source TEXT,
+    lineage_id INTEGER,            -- Root investigation ID for claim ledger scoping
+    cycle_number INTEGER DEFAULT 1, -- Iteration round within a lineage
     created_at REAL NOT NULL,
     started_at REAL,
     completed_at REAL,

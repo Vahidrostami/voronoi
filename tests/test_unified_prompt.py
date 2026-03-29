@@ -459,3 +459,118 @@ class TestContextEngineeringSections:
         )
         assert "ALWAYS DELEGATE TO SCRIBE" in prompt
         assert "NEVER write the manuscript" in prompt
+
+
+# ---------------------------------------------------------------------------
+# Warm-Start (multi-run continuation)
+# ---------------------------------------------------------------------------
+
+class TestWarmStartPrompt:
+    """Test warm-start sections appear correctly in continuation prompts."""
+
+    def test_no_warm_start_without_prior_context(self):
+        prompt = build_orchestrator_prompt(
+            question="test", mode="discover", rigor="adaptive",
+        )
+        assert "Round" not in prompt or "Round" in prompt  # generic word
+        assert "Continuation" not in prompt
+        assert "Claim Ledger" not in prompt
+
+    def test_warm_start_round_number(self):
+        prompt = build_orchestrator_prompt(
+            question="test", mode="discover", rigor="adaptive",
+            prior_context={"cycle_number": 3},
+        )
+        assert "Round 3" in prompt
+        assert "Continuation" in prompt
+        assert "Do NOT re-run experiments" in prompt
+
+    def test_warm_start_ledger_summary(self):
+        prompt = build_orchestrator_prompt(
+            question="test", mode="discover", rigor="adaptive",
+            prior_context={
+                "cycle_number": 2,
+                "ledger_summary": "### Established\n- C1: L4 > L1 (d=0.8)",
+            },
+        )
+        assert "Claim Ledger" in prompt
+        assert "L4 > L1" in prompt
+
+    def test_warm_start_pi_feedback(self):
+        prompt = build_orchestrator_prompt(
+            question="test", mode="discover", rigor="adaptive",
+            prior_context={
+                "cycle_number": 2,
+                "pi_feedback": "Control for tokenizer differences.",
+            },
+        )
+        assert "PI Feedback" in prompt
+        assert "Control for tokenizer" in prompt
+
+    def test_warm_start_immutable_paths(self):
+        prompt = build_orchestrator_prompt(
+            question="test", mode="discover", rigor="adaptive",
+            prior_context={
+                "cycle_number": 2,
+                "immutable_paths": ["data/raw/x.csv", "src/experiments/baseline.py"],
+            },
+        )
+        assert "Immutable Artifacts" in prompt
+        assert "data/raw/x.csv" in prompt
+        assert "src/experiments/baseline.py" in prompt
+
+    def test_warm_start_artifact_manifest(self):
+        prompt = build_orchestrator_prompt(
+            question="test", mode="discover", rigor="adaptive",
+            prior_context={
+                "cycle_number": 2,
+                "artifact_manifest": "- Experiments: 8 total, 5 kept results",
+            },
+        )
+        assert "Reusable Artifacts" in prompt
+        assert "8 total" in prompt
+
+
+class TestBuildWarmStartContext:
+    """Test the warm-start context builder."""
+
+    def test_basic_context(self, tmp_path):
+        from voronoi.server.prompt import build_warm_start_context
+        from voronoi.science.claims import ClaimLedger, save_ledger, PROVENANCE_RUN_EVIDENCE
+
+        # Create a ledger with claims
+        ledger = ClaimLedger()
+        ledger.add_claim("L4 > L1", PROVENANCE_RUN_EVIDENCE, effect_summary="d=0.8")
+        ledger.assert_claim("C1")
+        ledger.lock_claim("C1")
+        save_ledger(1, ledger, base_dir=tmp_path)
+
+        ctx = build_warm_start_context(
+            lineage_id=1, cycle_number=2,
+            pi_feedback="Test multilingual",
+            base_dir=tmp_path,
+        )
+        assert ctx["cycle_number"] == 2
+        assert "L4 > L1" in ctx["ledger_summary"]
+        assert ctx["pi_feedback"] == "Test multilingual"
+
+    def test_context_with_workspace(self, tmp_path):
+        from voronoi.server.prompt import build_warm_start_context
+        from voronoi.science.claims import ClaimLedger, save_ledger, PROVENANCE_RUN_EVIDENCE
+
+        ledger = ClaimLedger()
+        save_ledger(1, ledger, base_dir=tmp_path)
+
+        # Create a workspace with data files
+        ws = tmp_path / "workspace"
+        ws.mkdir()
+        (ws / ".swarm").mkdir()
+        (ws / "data").mkdir()
+        (ws / "data" / "results.csv").write_text("a,b\n1,2\n")
+
+        ctx = build_warm_start_context(
+            lineage_id=1, cycle_number=2,
+            base_dir=tmp_path, workspace=ws,
+        )
+        assert "artifact_manifest" in ctx
+        assert "data/" in ctx["artifact_manifest"]

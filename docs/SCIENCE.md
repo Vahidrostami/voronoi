@@ -618,3 +618,67 @@ Prevents substituting real experiment execution with simulation.
 Dry-run mode for debugging is acceptable ONLY if:
 - Gated behind `--dry-run` flag
 - Writes NO output to `output/`
+
+---
+
+## 16. Claim Ledger — Cross-Run Scientific State
+
+### Purpose
+
+The Claim Ledger tracks paper-level assertions across multiple runs of the same investigation lineage, enabling iterative science: lock what's solid, challenge what's doubtful, carry results forward.
+
+### Module
+
+`src/voronoi/science/claims.py` — all public symbols re-exported from `voronoi.science`.
+
+### Key Concepts
+
+- **Claim**: A paper-level assertion with provenance tag (`model_prior` | `retrieved_prior` | `run_evidence`), status (`provisional` → `asserted` → `locked` | `challenged` | `replicated` | `retired`), and artifact chain.
+- **Objection**: A structured doubt targeting a specific claim, with type (`confound` | `power` | `methodology` | `interpretation` | `scope`) and resolution status.
+- **ClaimArtifact**: A file in the workspace that supports a claim (data, code, result, figure, model).
+- **Lineage**: A chain of investigations linked by `parent_id`. Investigations in the same lineage share a Claim Ledger.
+
+### Storage
+
+`~/.voronoi/ledgers/<lineage_id>/claim-ledger.json`
+
+The `lineage_id` is the ID of the root investigation in a `parent_id` chain. Set automatically on enqueue.
+
+### Claim Lifecycle
+
+```
+Finding made → provisional → asserted → locked → replicated
+                    ↓             ↓         ↓
+               challenged    challenged  challenged
+                    ↓             ↓         ↓
+                retired       retired    retired
+```
+
+### Dispatcher Integration
+
+During progress polling, the dispatcher syncs Beads findings to the Claim Ledger:
+- Scout/literature findings → `retrieved_prior` provenance
+- Investigator findings → `run_evidence` provenance
+- On convergence: provisional claims promoted to `asserted`, self-critique generated
+
+### Self-Critique
+
+At convergence, `generate_self_critique()` identifies weak claims:
+- Single-finding evidence (recommends replication)
+- Unverified model priors
+- Low sample sizes (N < 100)
+
+Self-critique objections have `raised_by: "self_critique"` and `status: "surfaced"`.
+
+### Immutability
+
+Locked claims' supporting artifacts become immutable in subsequent runs. The dispatcher writes `file_unchanged` invariants to `.swarm/invariants.json` during workspace handoff, enforced by the convergence gate.
+
+### Warm-Start Brief
+
+`build_warm_start_context()` in `prompt.py` reads the Claim Ledger to generate a structured context for continuation prompts, including:
+- Established claims (do not re-test)
+- Challenged claims (must address)
+- Pending objections
+- Immutable artifact paths
+- PI feedback
