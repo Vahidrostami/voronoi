@@ -167,10 +167,15 @@ def _check_suspiciously_clean(data_columns: list[list[float]]) -> list[str]:
         decimals = []
         for v in col:
             s = f"{v:.15g}"
-            if "." in s:
+            if "e" in s or "E" in s:
+                # Scientific notation — skip; decimal count is meaningless
+                decimals.append(-1)
+            elif "." in s:
                 decimals.append(len(s.split(".")[1].rstrip("0")) or 0)
             else:
                 decimals.append(0)
+        # Exclude values that fell into scientific notation
+        decimals = [d for d in decimals if d >= 0]
         if len(set(decimals)) == 1 and decimals[0] > 0 and len(col) > 5:
             warnings.append(
                 f"Column {i}: all {len(col)} values have exactly "

@@ -481,8 +481,13 @@ class InvestigationDispatcher:
                     capture_output=True, timeout=10,
                 )
         if env_lines:
-            env_file.write_text("\n".join(env_lines) + "\n")
-            env_file.chmod(0o600)
+            # Write with restricted permissions from the start to avoid
+            # a window where secrets are world-readable (umask race).
+            fd = os.open(str(env_file), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            try:
+                os.write(fd, ("\n".join(env_lines) + "\n").encode())
+            finally:
+                os.close(fd)
             source_cmd = f"source {shlex.quote(str(env_file))} && "
         else:
             source_cmd = ""
