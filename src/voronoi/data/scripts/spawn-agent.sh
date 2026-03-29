@@ -305,11 +305,12 @@ if [[ -n "$ROLE_PERMS" && "$ROLE_PERMS" != "null" ]]; then
     SAFE_FLAGS=$(printf '%q' "$AGENT_FLAGS")
 fi
 
-# 5c. Inject auth tokens via tmux set-environment (INV-31: no secrets in logs).
+# 5c. Inject auth/state env via tmux set-environment (INV-31: no secrets in logs).
 # tmux shells inherit the tmux server's env, not the caller's. Using
 # set-environment avoids inline export commands that would be captured
-# by pipe-pane logging.
-for _var in GH_TOKEN GITHUB_TOKEN COPILOT_GITHUB_TOKEN; do
+# by pipe-pane logging. COPILOT_HOME and GH_HOST are needed so worker
+# sessions reuse the same Copilot state directory and GitHub host.
+for _var in GH_TOKEN GITHUB_TOKEN COPILOT_GITHUB_TOKEN COPILOT_HOME GH_HOST; do
     _val="${!_var:-}"
     if [[ -n "$_val" ]]; then
         tmux set-environment -t "$TMUX_SESSION" "$_var" "$_val" 2>/dev/null || true

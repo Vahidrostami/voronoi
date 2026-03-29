@@ -236,6 +236,8 @@ Both the dispatcher (orchestrator launch) and `spawn-agent.sh` (worker launch) i
 | `--share .swarm/session.md` | Yes | Yes (per-worktree) | Clean markdown audit trail for post-hoc review |
 | `--deny-tool=write` | No | Read-only roles only | Structural enforcement of role permissions |
 
+The launchers also propagate Copilot CLI session state into tmux (`COPILOT_HOME`, `GH_HOST`, and auth token env vars when present). This is part of the infrastructure contract for long-running or resumed investigations: a restarted agent must reuse the same Copilot CLI account context instead of prompting for `/login` after a human gate or crash recovery.
+
 ## 7. Deployment Topology
 
 ### Server Mode (`~/.voronoi/`)

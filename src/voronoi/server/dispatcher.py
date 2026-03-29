@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -449,20 +450,46 @@ class InvestigationDispatcher:
         safe_flags = agent_flags
         safe_prompt = shlex.quote(str(prompt_file))
 
-        # Inject auth-related env vars into the tmux session environment.
-        # Uses tmux set-environment instead of inline export commands to
-        # prevent secrets from being captured by pipe-pane logging (INV-31).
-        for var in ("GH_TOKEN", "GITHUB_TOKEN", "COPILOT_GITHUB_TOKEN"):
+        # Inject auth/state env vars into the tmux shell.
+        #
+        # tmux set-environment only affects *new* windows/panes, NOT the
+        # shell already running in the initial pane created by new-session.
+        # This meant env vars like GH_TOKEN never reached the copilot
+        # process, causing auth failures on long-running servers.
+        #
+        # Fix: write vars to a temporary env file inside .swarm/ and
+        # source it in the command line.  The file path (not contents)
+        # appears in pipe-pane logs, keeping secrets out of logs (INV-31).
+        # COPILOT_HOME and GH_HOST matter for long-running servers because
+        # restarted tmux sessions must resolve the same stored Copilot state
+        # directory and GitHub host as the parent process.
+        env_file = workspace_path / ".swarm" / ".tmux-env"
+        env_lines: list[str] = []
+        for var in (
+            "GH_TOKEN",
+            "GITHUB_TOKEN",
+            "COPILOT_GITHUB_TOKEN",
+            "COPILOT_HOME",
+            "GH_HOST",
+        ):
             val = os.environ.get(var)
             if val:
+                env_lines.append(f"export {var}={shlex.quote(val)}")
+                # Also set in session env for any future panes/windows
                 subprocess.run(
                     ["tmux", "set-environment", "-t", session, var, val],
                     capture_output=True, timeout=10,
                 )
+        if env_lines:
+            env_file.write_text("\n".join(env_lines) + "\n")
+            env_file.chmod(0o600)
+            source_cmd = f"source {shlex.quote(str(env_file))} && "
+        else:
+            source_cmd = ""
 
         subprocess.run(
             ["tmux", "send-keys", "-t", session,
-             f'cd {safe_ws} && {safe_cmd} {safe_flags}{model_flag}'
+             f'cd {safe_ws} && {source_cmd}{safe_cmd} {safe_flags}{model_flag}'
              f'{effort_flag}{share_flag} '
              f'-p "$(cat {safe_prompt})" ; exit',
              "Enter"],
@@ -1414,26 +1441,45 @@ class InvestigationDispatcher:
             return ""
         return "\n".join(raw.strip().splitlines()[-lines:])
 
+    def _normalize_log_tail(self, log_tail: str) -> str:
+        """Normalize tmux/copilot log output for heuristic matching."""
+        if not log_tail:
+            return ""
+
+        normalized = log_tail.lower().replace("\r", "\n")
+        normalized = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", " ", normalized)
+        normalized = re.sub(r"\x1b\][^\x07]*(?:\x07|\x1b\\)", " ", normalized)
+        normalized = re.sub(r"\[\?[0-9;]*[a-z]", " ", normalized)
+        normalized = re.sub(r"\[<[^\s]+", " ", normalized)
+        normalized = "".join(
+            ch if ch.isprintable() or ch.isspace() else " "
+            for ch in normalized
+        )
+        normalized = re.sub(r"[^a-z0-9/_:+.-]+", " ", normalized)
+        normalized = re.sub(r"\s+", " ", normalized)
+        return normalized.strip()
+
     def _looks_like_clean_agent_exit(self, log_tail: str) -> bool:
         """Heuristically detect a normal Copilot CLI shutdown."""
-        if not log_tail:
+        lowered = self._normalize_log_tail(log_tail)
+        if not lowered:
             return False
-        lowered = log_tail.lower()
         markers = (
             "logout",
-            "total session time:",
-            "total usage est:",
-            "breakdown by ai model:",
+            "total session time",
+            "total usage est",
+            "breakdown by ai model",
         )
         return sum(marker in lowered for marker in markers) >= 2
 
     def _looks_like_auth_failure(self, log_tail: str) -> bool:
         """Detect auth-related failures in agent log output."""
-        if not log_tail:
+        lowered = self._normalize_log_tail(log_tail)
+        if not lowered:
             return False
-        lowered = log_tail.lower()
         auth_markers = (
             "authenticate",
+            "copilot login",
             "gh auth login",
             "copilot_github_token",
             "gh_token",

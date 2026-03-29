@@ -856,6 +856,76 @@ class TestLaunchInTmux:
 
         assert mock_run.call_count >= 3
 
+    def test_launch_propagates_copilot_state_env(self, dispatcher_setup, monkeypatch):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        monkeypatch.setenv("COPILOT_HOME", "/srv/copilot-state")
+        monkeypatch.setenv("GH_HOST", "github.example.com")
+        (tmp_path / ".swarm").mkdir(parents=True, exist_ok=True)
+
+        with patch("voronoi.server.dispatcher.shutil.which", return_value="/bin/echo"), \
+             patch("voronoi.server.dispatcher.subprocess.run") as mock_run:
+            d._launch_in_tmux("test-session", tmp_path)
+
+        calls = [call.args[0] for call in mock_run.call_args_list]
+        # Still propagated via set-environment for future panes
+        assert [
+            "tmux", "set-environment", "-t", "test-session",
+            "COPILOT_HOME", "/srv/copilot-state",
+        ] in calls
+        assert [
+            "tmux", "set-environment", "-t", "test-session",
+            "GH_HOST", "github.example.com",
+        ] in calls
+        # Env file written for the initial pane's shell
+        env_file = tmp_path / ".swarm" / ".tmux-env"
+        assert env_file.exists()
+        content = env_file.read_text()
+        assert "COPILOT_HOME=" in content
+        assert "GH_HOST=" in content
+        # File has restricted permissions
+        assert oct(env_file.stat().st_mode & 0o777) == "0o600"
+        # send-keys sources the env file
+        send_keys_calls = [c for c in mock_run.call_args_list
+                           if "send-keys" in str(c)]
+        assert send_keys_calls
+        cmd = str(send_keys_calls[-1])
+        assert "source" in cmd
+        assert ".tmux-env" in cmd
+
+    def test_gh_token_written_to_env_file(self, dispatcher_setup, monkeypatch):
+        """GH_TOKEN from .env reaches copilot via env file, not just set-environment."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        monkeypatch.setenv("GH_TOKEN", "ghp_test_token_value")
+        (tmp_path / ".swarm").mkdir(parents=True, exist_ok=True)
+
+        with patch("voronoi.server.dispatcher.shutil.which", return_value="/bin/echo"), \
+             patch("voronoi.server.dispatcher.subprocess.run"):
+            d._launch_in_tmux("test-session", tmp_path)
+
+        env_file = tmp_path / ".swarm" / ".tmux-env"
+        assert env_file.exists()
+        content = env_file.read_text()
+        assert "GH_TOKEN=" in content
+
+    def test_no_env_file_when_no_vars(self, dispatcher_setup, monkeypatch):
+        """No env file or source command when no auth vars are set."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        for var in ("GH_TOKEN", "GITHUB_TOKEN", "COPILOT_GITHUB_TOKEN",
+                    "COPILOT_HOME", "GH_HOST"):
+            monkeypatch.delenv(var, raising=False)
+        (tmp_path / ".swarm").mkdir(parents=True, exist_ok=True)
+
+        with patch("voronoi.server.dispatcher.shutil.which", return_value="/bin/echo"), \
+             patch("voronoi.server.dispatcher.subprocess.run") as mock_run:
+            d._launch_in_tmux("test-session", tmp_path)
+
+        env_file = tmp_path / ".swarm" / ".tmux-env"
+        assert not env_file.exists()
+        send_keys_calls = [c for c in mock_run.call_args_list
+                           if "send-keys" in str(c)]
+        cmd = str(send_keys_calls[-1])
+        assert "source" not in cmd
+
     def test_effort_flag_from_rigor(self, dispatcher_setup):
         """--effort flag is derived from rigor level."""
         d, msgs, docs, tmp_path = dispatcher_setup
@@ -1375,6 +1445,17 @@ class TestAuthDetection:
     def test_looks_like_auth_failure_empty(self, dispatcher_setup):
         d, msgs, docs, tmp_path = dispatcher_setup
         assert d._looks_like_auth_failure("") is False
+
+    def test_looks_like_auth_failure_with_tui_noise(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        log_tail = (
+            "To authenticate, you can use any of the following methods:\n"
+            "  • Start 'copilot' and run the '/login' command\n"
+            "  • Set the COPILOT_GITHUB_TOKEN, GH_TOKEN, or GITHUB_TOKEN environment variable\n"
+            "  • Run 'gh auth login' to authenticate with the GitHub CLI\n"
+            "[?1049l [?1006l [?1003l [?1002l [?2004l [?1004l [?25h [?2026l [<ulogout"
+        )
+        assert d._looks_like_auth_failure(log_tail) is True
 
 
 class TestPauseInvestigation:

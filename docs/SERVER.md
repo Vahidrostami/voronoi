@@ -191,6 +191,8 @@ The dispatcher injects several Copilot CLI flags at launch time:
 | `--share <path>` | Orchestrator + workers | Saves clean markdown session transcript to `.swarm/session.md` for audit trails |
 | `--deny-tool` | Workers only (via `spawn-agent.sh` role permissions) | Read-only roles (scout, critic, statistician, methodologist) get `--deny-tool=write` |
 
+Both orchestrator and worker tmux launches also propagate Copilot CLI auth/state environment needed for durable restarts: `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`, `COPILOT_HOME`, and `GH_HOST`. This ensures a resumed agent uses the same stored Copilot state directory and GitHub host selection as the parent server process, rather than falling back to a fresh login prompt.
+
 **Effort-by-rigor mapping** (applied in `_launch_in_tmux()` and `spawn-agent.sh`):
 
 | Rigor | `--effort` | Rationale |
@@ -264,7 +266,7 @@ class InvestigationDispatcher:
 3. Copy demo files if `demo_source` set
 4. Build orchestrator prompt via `prompt.py`
 5. Verify Copilot auth (`_ensure_copilot_auth()`)
-6. Launch in tmux: `tmux new-session -d -s {session} "cd {workspace} && {agent_command} {flags} --effort {level} --share .swarm/session.md -p prompt.txt ; exit"`
+6. Launch in tmux: `tmux new-session -d -s {session} "cd {workspace} && {agent_command} {flags} --effort {level} --share .swarm/session.md -p prompt.txt ; exit"`, injecting auth/state environment into the tmux session before `send-keys`
 7. Add to `_running` dict
 
 ### Progress Polling
@@ -355,7 +357,7 @@ Phase inferred from workspace artifacts:
 When tmux session dies:
 1. **Classify the exit first** — check if agent logged out cleanly vs crashed unexpectedly
 2. If exit was clean but incomplete, check if a human gate is pending — if so, do NOT retry (the agent is waiting for approval)
-3. **Check for auth failure** — if log tail contains auth-related patterns ("authenticate", "gh auth login", "COPILOT_GITHUB_TOKEN", etc.), transition to `paused` state instead of burning a retry. Send Telegram notification with `/resume` instructions.
+3. **Check for auth failure** — normalize the log tail first (strip ANSI/TUI control sequences, collapse punctuation noise), then inspect it for auth-related patterns ("authenticate", "gh auth login", "COPILOT_GITHUB_TOKEN", etc.). If matched, transition to `paused` state instead of burning a retry. Send Telegram notification with `/resume` instructions.
 4. Check retry limit (`max_retries`, default 2)
 5. Send contextual notification: "exited early" for clean exits, "crashed" only for unexpected exits
 6. Validate orchestrator prompt still exists
