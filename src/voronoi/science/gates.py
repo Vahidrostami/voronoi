@@ -123,6 +123,72 @@ def audit_pre_registration_compliance(task_notes: str) -> PreRegComplianceResult
 
 
 # ===================================================================
+# Plan Review Gate
+# ===================================================================
+
+#: Mapping from rigor level to the set of roles that review the plan.
+PLAN_REVIEW_REVIEWERS: dict[str, list[str]] = {
+    "standard": [],
+    "analytical": ["critic"],
+    "adaptive": ["critic"],
+    "scientific": ["critic", "theorist"],
+    "experimental": ["critic", "theorist", "methodologist"],
+}
+
+
+@dataclass
+class PlanReviewResult:
+    """Result of reading .swarm/plan-review.json."""
+    exists: bool
+    verdict: str = ""          # APPROVED | REVISE | RESTRUCTURE | ""
+    reviewer: str = ""
+    issues: dict = field(default_factory=dict)
+
+
+def check_plan_review_gate(workspace: Path, rigor: str) -> tuple[bool, PlanReviewResult]:
+    """Check whether plan review gate is satisfied.
+
+    Returns ``(gate_passed, result)`` where *gate_passed* is ``True`` when:
+    - rigor is 'standard' (no review needed), OR
+    - ``.swarm/plan-review.json`` exists with verdict ``APPROVED`` or ``REVISE``
+      (REVISE means orchestrator will adjust but may proceed).
+
+    A ``RESTRUCTURE`` verdict means the gate is NOT passed — the orchestrator
+    must re-decompose before dispatching.
+    """
+    reviewers = PLAN_REVIEW_REVIEWERS.get(rigor, [])
+    if not reviewers:
+        return True, PlanReviewResult(exists=False)
+
+    gate_path = workspace / ".swarm" / "plan-review.json"
+    if not gate_path.exists():
+        return False, PlanReviewResult(exists=False)
+
+    try:
+        data = json.loads(gate_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return False, PlanReviewResult(exists=True, verdict="ERROR")
+
+    verdict = data.get("verdict", "").upper()
+    result = PlanReviewResult(
+        exists=True,
+        verdict=verdict,
+        reviewer=data.get("reviewer", ""),
+        issues={
+            k: data[k]
+            for k in ("coverage", "granularity", "dependencies", "missing",
+                       "redundant", "strategic")
+            if k in data
+        },
+    )
+
+    if verdict in ("APPROVED", "REVISE"):
+        return True, result
+    # RESTRUCTURE or unknown → gate not passed
+    return False, result
+
+
+# ===================================================================
 # Gate checks
 # ===================================================================
 

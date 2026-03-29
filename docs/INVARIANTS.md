@@ -2,7 +2,7 @@
 
 > Rules that MUST never be violated. Reference during code review, debugging, and development.
 
-**TL;DR**: 30 invariants. Key ones: prompt.py is sole prompt builder (INV-01). Roles only in .github/ files (INV-02). Orchestrator never enters worktrees (INV-03). Atomic queue claiming (INV-06). Rigor only escalates (INV-08). Baseline-first (INV-09). EVA before finding (INV-12). No simulation bypass (INV-16). Push before session end (INV-25).
+**TL;DR**: 31 invariants. Key ones: prompt.py is sole prompt builder (INV-01). Roles only in .github/ files (INV-02). Orchestrator never enters worktrees (INV-03). Atomic queue claiming (INV-06). Rigor only escalates (INV-08). Baseline-first (INV-09). EVA before finding (INV-12). No simulation bypass (INV-16). Push before session end (INV-25). Plan review before dispatch at Analytical+ (INV-35).
 
 ## 1. Architectural Invariants
 
@@ -149,3 +149,6 @@ When a human gate is pending (`.swarm/human-gate.json` with `status: "pending"`)
 
 ### INV-34: Negative-Result Completion
 An investigation that produces valid experimental results that falsify the hypothesis is a completed investigation, not a failed one. The convergence system MUST support a `negative_result` status distinct from `failed` and `exhausted`.
+
+### INV-35: Plan Review Before Dispatch (Analytical+)
+At Analytical rigor and above, the orchestrator MUST submit its task decomposition for plan review BEFORE dispatching investigation workers. The Critic (and at higher rigor, Theorist and Methodologist) reviews the plan and writes a verdict to `.swarm/plan-review.json`. The orchestrator MUST revise the plan if the verdict is REVISE or RESTRUCTURE. Only one review round is permitted — no iterative loops. At Standard rigor (build tasks), plan review is skipped.

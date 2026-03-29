@@ -1889,3 +1889,118 @@ class TestNegativeResultConvergence:
                                     improvement_rounds=1)
         assert result.converged is False
         assert result.status == "blocked"
+
+
+# ---------------------------------------------------------------------------
+# Plan Review Gate
+# ---------------------------------------------------------------------------
+
+class TestPlanReviewGate:
+    """Tests for check_plan_review_gate and PLAN_REVIEW_REVIEWERS."""
+
+    def test_standard_rigor_skips_gate(self, tmp_path):
+        """Standard rigor should pass gate without any file."""
+        from voronoi.science import check_plan_review_gate
+        passed, result = check_plan_review_gate(tmp_path, "standard")
+        assert passed is True
+        assert result.exists is False
+
+    def test_analytical_requires_review(self, tmp_path):
+        """Analytical rigor should fail gate when no review file exists."""
+        from voronoi.science import check_plan_review_gate
+        (tmp_path / ".swarm").mkdir()
+        passed, result = check_plan_review_gate(tmp_path, "analytical")
+        assert passed is False
+        assert result.exists is False
+
+    def test_approved_verdict_passes(self, tmp_path):
+        """APPROVED verdict should pass the gate."""
+        from voronoi.science import check_plan_review_gate
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "plan-review.json").write_text(json.dumps({
+            "reviewer": "critic-bd-05",
+            "verdict": "APPROVED",
+            "coverage": "good",
+            "strategic": "sound plan",
+        }))
+        passed, result = check_plan_review_gate(tmp_path, "analytical")
+        assert passed is True
+        assert result.verdict == "APPROVED"
+        assert result.reviewer == "critic-bd-05"
+
+    def test_revise_verdict_passes(self, tmp_path):
+        """REVISE verdict should pass the gate (orchestrator adjusts and proceeds)."""
+        from voronoi.science import check_plan_review_gate
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "plan-review.json").write_text(json.dumps({
+            "reviewer": "critic-bd-07",
+            "verdict": "REVISE",
+            "granularity": ["task bd-12 too large"],
+            "missing": ["negative control"],
+        }))
+        passed, result = check_plan_review_gate(tmp_path, "scientific")
+        assert passed is True
+        assert result.verdict == "REVISE"
+        assert "granularity" in result.issues
+        assert "missing" in result.issues
+
+    def test_restructure_verdict_blocks(self, tmp_path):
+        """RESTRUCTURE verdict should block the gate."""
+        from voronoi.science import check_plan_review_gate
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "plan-review.json").write_text(json.dumps({
+            "reviewer": "critic-bd-03",
+            "verdict": "RESTRUCTURE",
+            "coverage": "plan doesn't address original question",
+            "strategic": "fundamental redesign needed",
+        }))
+        passed, result = check_plan_review_gate(tmp_path, "experimental")
+        assert passed is False
+        assert result.verdict == "RESTRUCTURE"
+
+    def test_malformed_json_blocks(self, tmp_path):
+        """Malformed JSON should block the gate."""
+        from voronoi.science import check_plan_review_gate
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "plan-review.json").write_text("not json {{{")
+        passed, result = check_plan_review_gate(tmp_path, "analytical")
+        assert passed is False
+        assert result.verdict == "ERROR"
+
+    def test_missing_file_blocks_at_scientific(self, tmp_path):
+        """Missing review file at scientific rigor should block."""
+        from voronoi.science import check_plan_review_gate
+        passed, result = check_plan_review_gate(tmp_path, "scientific")
+        assert passed is False
+
+    def test_adaptive_rigor_requires_review(self, tmp_path):
+        """Adaptive rigor (DISCOVER mode) should require plan review."""
+        from voronoi.science import check_plan_review_gate, PLAN_REVIEW_REVIEWERS
+        assert PLAN_REVIEW_REVIEWERS["adaptive"] == ["critic"]
+        passed, _ = check_plan_review_gate(tmp_path, "adaptive")
+        assert passed is False
+
+    def test_reviewer_mapping(self):
+        """Verify reviewer escalation by rigor level."""
+        from voronoi.science import PLAN_REVIEW_REVIEWERS
+        assert PLAN_REVIEW_REVIEWERS["standard"] == []
+        assert PLAN_REVIEW_REVIEWERS["analytical"] == ["critic"]
+        assert PLAN_REVIEW_REVIEWERS["scientific"] == ["critic", "theorist"]
+        assert PLAN_REVIEW_REVIEWERS["experimental"] == ["critic", "theorist", "methodologist"]
+
+    def test_case_insensitive_verdict(self, tmp_path):
+        """Verdict comparison should be case-insensitive."""
+        from voronoi.science import check_plan_review_gate
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "plan-review.json").write_text(json.dumps({
+            "reviewer": "critic-bd-05",
+            "verdict": "approved",
+        }))
+        passed, result = check_plan_review_gate(tmp_path, "analytical")
+        assert passed is True
+        assert result.verdict == "APPROVED"

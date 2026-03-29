@@ -36,6 +36,7 @@ Rigor is determined by mode: DISCOVER uses adaptive rigor (starts analytical, es
 | Power analysis | — | YES | YES | YES |
 | Partial blinding for Critic | — | YES | YES | YES |
 | Adversarial review loop | — | YES | YES | YES |
+| Plan review | YES (Critic) | YES (Critic + Theorist) | YES (Critic + Theorist) | YES (Critic + Theorist + Methodologist) |
 | Replication | — | — | — | YES |
 
 ## 3. Pre-Registration
@@ -223,6 +224,52 @@ At Scientific and Experimental rigor, the investigation pauses for human approva
 The dispatcher detects pending gates and sends a Telegram message. The human replies `/approve <id>` or `/revise <id> <feedback>`. The orchestrator polls the gate file and resumes when approved or revises when feedback is given.
 
 This prevents the system from spending hours on a flawed methodology that a human would catch in minutes.
+
+### Plan Review Gate (Analytical+ Rigor)
+
+At Analytical rigor and above, the orchestrator's task decomposition is reviewed before workers are dispatched. This is the most consequential quality gate — it catches flawed plans before any compute is spent.
+
+**Activation by rigor:**
+
+| Rigor | Reviewers | Mode |
+|-------|-----------|------|
+| Standard | — (skipped) | Build tasks use verify loop |
+| Analytical+ | Critic | Single reviewer |
+| Scientific+ | Critic + Theorist | Two reviewers |
+| Experimental | Critic + Theorist + Methodologist | Full panel |
+
+**Flow:** Orchestrator decomposes → dispatches reviewer(s) with `TYPE:plan-review` → reviewer writes `.swarm/plan-review.json` → orchestrator revises plan if needed → dispatch workers.
+
+**One round only** — propose → review → revise → dispatch. No iterative loops.
+
+**Review checklist (used by Critic in plan-review mode):**
+
+1. Does the plan answer the original question?
+2. Are tasks properly scoped (30-min rule)?
+3. Are dependencies correct and non-circular?
+4. Is anything missing? Redundant?
+5. Can baseline anchor all experiments?
+6. Do PRODUCES/REQUIRES chains connect?
+
+**Review output** (`.swarm/plan-review.json`):
+
+```json
+{
+  "reviewer": "critic-bd-05",
+  "verdict": "APPROVED|REVISE|RESTRUCTURE",
+  "coverage": "assessment of whether plan answers original question",
+  "granularity": ["task X is too large — split..."],
+  "dependencies": ["task Y should depend on task Z"],
+  "missing": ["need a negative control task"],
+  "redundant": ["tasks A and B test the same thing"],
+  "strategic": "overall strategic assessment"
+}
+```
+
+**Verdicts:**
+- **APPROVED** — Plan is sound, proceed to dispatch
+- **REVISE** — Minor issues, orchestrator adjusts tasks and proceeds
+- **RESTRUCTURE** — Major issues, orchestrator must re-decompose before dispatching
 
 ### Diminishing Returns Rule
 
