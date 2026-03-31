@@ -138,6 +138,7 @@ def _build_registry() -> None:
             "improvement_rounds": {"type": "integer", "description": "Current evaluator improvement round"},
             "tokens_this_cycle": {"type": "integer", "description": "Tokens spent in the current cycle"},
             "tokens_cumulative": {"type": "integer", "description": "Cumulative token budget"},
+            "context_snapshot": {"type": "object", "description": "Structured /context output: {model, model_limit, total_used, system_tokens, message_tokens, free_tokens, buffer_tokens}"},
         },
         required=["cycle", "phase"],
     )

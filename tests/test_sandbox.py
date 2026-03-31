@@ -74,6 +74,52 @@ class TestSandboxManager:
         assert sandbox_file.read_text() == "abc123def456"
 
     @patch("voronoi.server.sandbox.subprocess.run")
+    def test_start_empty_stdout_with_fallback(self, mock_run, tmp_path):
+        """Bug fix: empty docker stdout should fallback, not store empty ID."""
+        ws = tmp_path / "workspace"
+        ws.mkdir()
+
+        def make_result(returncode=0, stdout="", stderr=""):
+            r = MagicMock()
+            r.returncode = returncode
+            r.stdout = stdout
+            r.stderr = stderr
+            return r
+
+        mock_run.side_effect = [
+            make_result(0),            # docker stop (cleanup)
+            make_result(0),            # docker rm (cleanup)
+            make_result(0, stdout=""),  # docker run returns empty stdout
+        ]
+        sm = SandboxManager(SandboxConfig(fallback_to_host=True))
+        sm._docker_available = True
+        result = sm.start(1, str(ws))
+        assert result is None
+
+    @patch("voronoi.server.sandbox.subprocess.run")
+    def test_start_empty_stdout_no_fallback(self, mock_run, tmp_path):
+        """Bug fix: empty docker stdout without fallback should raise."""
+        ws = tmp_path / "workspace"
+        ws.mkdir()
+
+        def make_result(returncode=0, stdout="", stderr=""):
+            r = MagicMock()
+            r.returncode = returncode
+            r.stdout = stdout
+            r.stderr = stderr
+            return r
+
+        mock_run.side_effect = [
+            make_result(0),            # docker stop (cleanup)
+            make_result(0),            # docker rm (cleanup)
+            make_result(0, stdout=""),  # docker run returns empty stdout
+        ]
+        sm = SandboxManager(SandboxConfig(fallback_to_host=False))
+        sm._docker_available = True
+        with pytest.raises(RuntimeError, match="empty container ID"):
+            sm.start(1, str(ws))
+
+    @patch("voronoi.server.sandbox.subprocess.run")
     def test_exec(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0, stdout="OK\n", stderr="")
         sm = SandboxManager()

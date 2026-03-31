@@ -117,3 +117,12 @@ class TestServerConfig:
         config = ServerConfig(base_dir=str(tmp_path / "voronoi"))
         assert config.orchestrator_model == "gpt-5.4"
         assert config.worker_model == "claude-haiku-4.5"
+
+    def test_invalid_integer_env_warns(self, tmp_path, monkeypatch, caplog):
+        """Bug fix: malformed integer env vars should log a warning, not silently ignore."""
+        import logging
+        monkeypatch.setenv("VORONOI_MAX_CONCURRENT", "abc")
+        with caplog.at_level(logging.WARNING):
+            config = ServerConfig(base_dir=str(tmp_path / "voronoi"))
+        assert config.max_concurrent == 2  # default preserved
+        assert any("VORONOI_MAX_CONCURRENT" in r.message for r in caplog.records)

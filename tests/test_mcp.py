@@ -305,7 +305,7 @@ class TestPreRegister:
         assert parsed.confounds == "dataset shift"
         assert parsed.stat_test == "Welch t-test"
         assert parsed.sample_size == "500"
-        assert parsed.power_analysis == "d=0.50"
+        assert parsed.power_analysis == "0.80"
         assert parsed.sensitivity_plan == "vary seeds and thresholds"
 
     def test_missing_hypothesis(self, tmp_path):
@@ -449,6 +449,56 @@ class TestWriteCheckpoint:
             with pytest.raises(ValidationError, match="must be 0.0"):
                 write_checkpoint(cycle=1, phase="starting",
                                  context_window_remaining_pct=1.5)
+
+    def test_context_snapshot(self, tmp_path):
+        from voronoi.mcp.tools_swarm import write_checkpoint
+
+        snapshot = {
+            "model": "claude-opus-4.6",
+            "model_limit": 200000,
+            "total_used": 50000,
+            "system_tokens": 22600,
+            "message_tokens": 27300,
+            "free_tokens": 109600,
+            "buffer_tokens": 40400,
+        }
+        with patch.dict(os.environ, {"VORONOI_WORKSPACE": str(tmp_path)}):
+            result = write_checkpoint(
+                cycle=5, phase="investigating",
+                context_snapshot=snapshot,
+            )
+        assert result["status"] == "written"
+        cp = json.loads((tmp_path / ".swarm" / "orchestrator-checkpoint.json").read_text())
+        assert cp["context_snapshot"]["model"] == "claude-opus-4.6"
+        assert cp["context_snapshot"]["free_tokens"] == 109600
+        # Auto-derived remaining pct from snapshot
+        assert abs(cp["context_window_remaining_pct"] - 0.548) < 0.01
+
+    def test_context_snapshot_does_not_override_explicit_pct(self, tmp_path):
+        from voronoi.mcp.tools_swarm import write_checkpoint
+
+        snapshot = {
+            "model": "claude-opus-4.6",
+            "model_limit": 200000,
+            "free_tokens": 109600,
+        }
+        with patch.dict(os.environ, {"VORONOI_WORKSPACE": str(tmp_path)}):
+            write_checkpoint(
+                cycle=3, phase="investigating",
+                context_window_remaining_pct=0.30,
+                context_snapshot=snapshot,
+            )
+        cp = json.loads((tmp_path / ".swarm" / "orchestrator-checkpoint.json").read_text())
+        # Explicit pct wins — snapshot auto-derive only when pct is still default 1.0
+        assert cp["context_window_remaining_pct"] == 0.30
+
+    def test_context_snapshot_invalid_type(self, tmp_path):
+        from voronoi.mcp.tools_swarm import write_checkpoint
+
+        with patch.dict(os.environ, {"VORONOI_WORKSPACE": str(tmp_path)}):
+            with pytest.raises(ValidationError, match="context_snapshot must be a dict"):
+                write_checkpoint(cycle=1, phase="starting",
+                                 context_snapshot="not a dict")
 
 
 class TestUpdateBeliefMap:

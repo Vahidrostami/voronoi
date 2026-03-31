@@ -63,7 +63,7 @@ def parse_pre_registration(notes: str) -> PreRegistration:
             if m:
                 setattr(pre_reg, fld.lower(), m.group(1).strip())
         if "POWER" in line:
-            m = re.search(r"EFFECT_SIZE=\[([^\]]+)\]", line)
+            m = re.search(r"POWER=\[([^\]]+)\]", line)
             if m:
                 pre_reg.power_analysis = m.group(1).strip()
         if "SENSITIVITY" in line and "PRE_REG_SENSITIVITY" in line:
@@ -451,3 +451,528 @@ def find_replication_needs(workspace: Path) -> list[ReplicationNeed]:
         if reasons:
             needs.append(ReplicationNeed(finding_id=task.get("id", ""), title=title, reason=reasons[0]))
     return needs
+
+
+# ===================================================================
+# Experiment Sentinel — contract-based structural validation
+# ===================================================================
+
+@dataclass
+class ManipulationCheck:
+    """A single check that the independent variable was actually varied."""
+    check_type: str  # hash_distinct | value_range | file_diff | metric_range
+    target: str      # file path relative to workspace
+    params: dict = field(default_factory=dict)
+
+
+@dataclass
+class DegeneracyCheck:
+    """Detects experiments that run but measure nothing."""
+    check_type: str  # not_identical | min_variance | min_distinct_values
+    target: str      # file path relative to workspace
+    params: dict = field(default_factory=dict)
+
+
+@dataclass
+class PhaseGate:
+    """Conditions that must hold before crossing to the next phase."""
+    from_phase: str
+    to_phase: str
+    checks: list[dict] = field(default_factory=list)  # each is a ManipulationCheck or DegeneracyCheck as dict
+
+
+@dataclass
+class ExperimentContract:
+    """Machine-readable declaration of what makes an experiment valid.
+
+    Written by orchestrator to ``.swarm/experiment-contract.json``.
+    Validated by the dispatcher sentinel at each audit trigger.
+    """
+    experiment_id: str
+    independent_variable: str
+    conditions: list[str] = field(default_factory=list)
+    manipulation_checks: list[ManipulationCheck] = field(default_factory=list)
+    required_outputs: list[dict] = field(default_factory=list)  # [{path, description}]
+    degeneracy_checks: list[DegeneracyCheck] = field(default_factory=list)
+    phase_gates: list[PhaseGate] = field(default_factory=list)
+
+
+@dataclass
+class SentinelCheckResult:
+    """Result of a single sentinel check."""
+    check_name: str
+    passed: bool
+    message: str = ""
+    actual_value: str = ""
+    expected: str = ""
+
+
+@dataclass
+class SentinelAuditResult:
+    """Result of a full sentinel audit."""
+    passed: bool
+    trigger: str  # what event triggered this audit
+    timestamp: str = ""
+    checks: list[SentinelCheckResult] = field(default_factory=list)
+    critical_failures: list[str] = field(default_factory=list)
+
+    @property
+    def failure_summary(self) -> str:
+        if not self.critical_failures:
+            return ""
+        return "; ".join(self.critical_failures)
+
+
+def load_experiment_contract(workspace: Path) -> ExperimentContract | None:
+    """Load experiment contract from ``.swarm/experiment-contract.json``."""
+    path = workspace / ".swarm" / "experiment-contract.json"
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("Failed to load experiment contract: %s", exc)
+        return None
+    if not isinstance(data, dict):
+        return None
+    return ExperimentContract(
+        experiment_id=data.get("experiment_id", ""),
+        independent_variable=data.get("independent_variable", ""),
+        conditions=data.get("conditions", []),
+        manipulation_checks=[
+            ManipulationCheck(**c) for c in data.get("manipulation_checks", [])
+            if isinstance(c, dict) and "check_type" in c
+        ],
+        required_outputs=data.get("required_outputs", []),
+        degeneracy_checks=[
+            DegeneracyCheck(**c) for c in data.get("degeneracy_checks", [])
+            if isinstance(c, dict) and "check_type" in c
+        ],
+        phase_gates=[
+            PhaseGate(
+                from_phase=g.get("from_phase", ""),
+                to_phase=g.get("to_phase", ""),
+                checks=g.get("checks", []),
+            )
+            for g in data.get("phase_gates", [])
+            if isinstance(g, dict)
+        ],
+    )
+
+
+def save_experiment_contract(workspace: Path, contract: ExperimentContract) -> None:
+    """Write experiment contract to ``.swarm/experiment-contract.json``."""
+    path = workspace / ".swarm" / "experiment-contract.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        "experiment_id": contract.experiment_id,
+        "independent_variable": contract.independent_variable,
+        "conditions": contract.conditions,
+        "manipulation_checks": [asdict(c) for c in contract.manipulation_checks],
+        "required_outputs": contract.required_outputs,
+        "degeneracy_checks": [asdict(c) for c in contract.degeneracy_checks],
+        "phase_gates": [
+            {"from_phase": g.from_phase, "to_phase": g.to_phase, "checks": g.checks}
+            for g in contract.phase_gates
+        ],
+    }
+    path.write_text(json.dumps(data, indent=2))
+
+
+def validate_experiment_contract(
+    workspace: Path,
+    contract: ExperimentContract | None = None,
+    trigger: str = "periodic",
+) -> SentinelAuditResult:
+    """Run all sentinel checks declared in the experiment contract.
+
+    Returns a :class:`SentinelAuditResult` with per-check details.  Called
+    by the dispatcher at event-driven audit points and on a periodic timer.
+    """
+    from datetime import datetime, timezone  # noqa: F811 — local to avoid top-level cycle
+
+    now = datetime.now(timezone.utc).isoformat()
+    if contract is None:
+        contract = load_experiment_contract(workspace)
+    if contract is None:
+        return SentinelAuditResult(passed=True, trigger=trigger, timestamp=now,
+                                   checks=[], critical_failures=[])
+
+    results: list[SentinelCheckResult] = []
+    critical: list[str] = []
+
+    # --- Manipulation checks ---
+    for mc in contract.manipulation_checks:
+        res = _run_manipulation_check(workspace, mc, contract.conditions)
+        results.append(res)
+        if not res.passed:
+            critical.append(f"MANIPULATION: {res.message}")
+
+    # --- Degeneracy checks ---
+    for dc in contract.degeneracy_checks:
+        res = _run_degeneracy_check(workspace, dc, contract.conditions)
+        results.append(res)
+        if not res.passed:
+            critical.append(f"DEGENERACY: {res.message}")
+
+    # --- Required outputs ---
+    for ro in contract.required_outputs:
+        rel_path = ro.get("path", "")
+        if rel_path and not (workspace / rel_path).exists():
+            r = SentinelCheckResult(
+                check_name=f"output_exists:{rel_path}", passed=False,
+                message=f"Required output missing: {rel_path}",
+            )
+            results.append(r)
+            critical.append(f"MISSING_OUTPUT: {rel_path}")
+        elif rel_path:
+            results.append(SentinelCheckResult(
+                check_name=f"output_exists:{rel_path}", passed=True))
+
+    passed = len(critical) == 0
+    audit = SentinelAuditResult(
+        passed=passed, trigger=trigger, timestamp=now,
+        checks=results, critical_failures=critical,
+    )
+
+    # Persist audit result
+    audit_path = workspace / ".swarm" / "sentinel-audit.json"
+    audit_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        audit_path.write_text(json.dumps(asdict(audit), indent=2))
+    except OSError:
+        pass
+
+    return audit
+
+
+def validate_phase_gate(
+    workspace: Path,
+    contract: ExperimentContract,
+    from_phase: str,
+    to_phase: str,
+) -> SentinelAuditResult:
+    """Validate the phase gate checks for a specific phase transition."""
+    from datetime import datetime, timezone  # noqa: F811
+
+    now = datetime.now(timezone.utc).isoformat()
+    results: list[SentinelCheckResult] = []
+    critical: list[str] = []
+
+    gate = None
+    for g in contract.phase_gates:
+        if g.from_phase == from_phase and g.to_phase == to_phase:
+            gate = g
+            break
+
+    if gate is None:
+        return SentinelAuditResult(passed=True, trigger=f"phase_gate:{from_phase}->{to_phase}",
+                                   timestamp=now, checks=[], critical_failures=[])
+
+    for check_dict in gate.checks:
+        ct = check_dict.get("check_type", "")
+        target = check_dict.get("target", "")
+        params = check_dict.get("params", {})
+        if ct in ("hash_distinct", "value_range", "metric_range", "file_diff"):
+            mc = ManipulationCheck(check_type=ct, target=target, params=params)
+            res = _run_manipulation_check(workspace, mc, contract.conditions)
+        else:
+            dc = DegeneracyCheck(check_type=ct, target=target, params=params)
+            res = _run_degeneracy_check(workspace, dc, contract.conditions)
+        results.append(res)
+        if not res.passed:
+            critical.append(f"PHASE_GATE({from_phase}->{to_phase}): {res.message}")
+
+    return SentinelAuditResult(
+        passed=len(critical) == 0,
+        trigger=f"phase_gate:{from_phase}->{to_phase}",
+        timestamp=now, checks=results, critical_failures=critical,
+    )
+
+
+# --- Internal check runners ---
+
+def _resolve_json_field(data: dict | list, field_path: str):
+    """Resolve a dot-separated field path like ``per_cell.*.decision_regret``.
+
+    If a path segment is ``*``, collects values across all keys at that level.
+    Returns a list of resolved values.
+    """
+    parts = field_path.split(".")
+    current: list = [data]
+    for part in parts:
+        nxt: list = []
+        for node in current:
+            if part == "*":
+                if isinstance(node, dict):
+                    nxt.extend(node.values())
+                elif isinstance(node, list):
+                    nxt.extend(node)
+            else:
+                if isinstance(node, dict) and part in node:
+                    nxt.append(node[part])
+        current = nxt
+    return current
+
+
+def _run_manipulation_check(
+    workspace: Path,
+    check: ManipulationCheck,
+    conditions: list[str],
+) -> SentinelCheckResult:
+    """Run a single manipulation check."""
+    name = f"manipulation:{check.check_type}:{check.target}"
+    target_path = workspace / check.target
+
+    if not target_path.exists():
+        return SentinelCheckResult(
+            check_name=name, passed=True,
+            message=f"Target {check.target} not yet produced — skipping (pre-execution)",
+        )
+
+    try:
+        data = json.loads(target_path.read_text())
+    except (json.JSONDecodeError, OSError) as exc:
+        return SentinelCheckResult(
+            check_name=name, passed=False,
+            message=f"Cannot read {check.target}: {exc}",
+        )
+
+    if check.check_type == "hash_distinct":
+        return _check_hash_distinct(name, data, check.params, conditions)
+    elif check.check_type == "value_range":
+        return _check_value_range(name, data, check.params)
+    elif check.check_type == "metric_range":
+        return _check_metric_range(name, data, check.params)
+    else:
+        return SentinelCheckResult(
+            check_name=name, passed=True,
+            message=f"Unknown check_type '{check.check_type}' — skipped",
+        )
+
+
+def _check_hash_distinct(
+    name: str, data: dict, params: dict, conditions: list[str],
+) -> SentinelCheckResult:
+    """Verify that a field has distinct values across conditions."""
+    field_name = params.get("field", "sha256")
+    across = params.get("across", "conditions")
+
+    if across == "conditions" and isinstance(data, dict):
+        values = []
+        for cond in conditions:
+            node = data.get(cond) or data.get("scenarios", {}).get(cond, {})
+            if isinstance(node, dict):
+                val = node.get(field_name, "")
+                if val:
+                    values.append(val)
+        if len(values) >= 2 and len(set(values)) < 2:
+            return SentinelCheckResult(
+                check_name=name, passed=False,
+                message=f"All conditions have identical {field_name} — manipulation collapsed",
+                actual_value=str(values[0])[:80],
+            )
+        if len(values) >= 2:
+            return SentinelCheckResult(
+                check_name=name, passed=True,
+                message=f"{len(set(values))} distinct {field_name} values across {len(values)} conditions",
+            )
+
+    # Fallback: check across top-level keys that look like scenario/condition data
+    all_hashes: list[str] = []
+    if isinstance(data, dict):
+        for key, val in data.items():
+            if isinstance(val, dict):
+                for cond_key, cond_val in val.items():
+                    if isinstance(cond_val, dict) and field_name in cond_val:
+                        all_hashes.append(str(cond_val[field_name]))
+    if len(all_hashes) >= 2 and len(set(all_hashes)) < 2:
+        return SentinelCheckResult(
+            check_name=name, passed=False,
+            message=f"All {field_name} values identical across data — manipulation collapsed",
+        )
+    return SentinelCheckResult(check_name=name, passed=True)
+
+
+def _check_value_range(
+    name: str, data: dict | list, params: dict,
+) -> SentinelCheckResult:
+    """Verify a field's values fall within [min, max]."""
+    field_path = params.get("field", "")
+    min_val = params.get("min")
+    max_val = params.get("max")
+
+    values = _resolve_json_field(data, field_path)
+    numeric_vals = []
+    for v in values:
+        try:
+            numeric_vals.append(float(v))
+        except (TypeError, ValueError):
+            pass
+
+    if not numeric_vals:
+        # Distinguish "file doesn't exist yet" (handled by caller) from
+        # "file exists but field path resolves to nothing" (likely a contract error).
+        raw_values = _resolve_json_field(data, field_path)
+        if raw_values:
+            # Values exist but aren't numeric — warn
+            return SentinelCheckResult(
+                check_name=name, passed=True,
+                message=f"Values at {field_path} are not numeric — skipping",
+            )
+        # No values at all — likely field path mismatch or data not yet populated
+        return SentinelCheckResult(
+            check_name=name, passed=True,
+            message=f"No values resolved at {field_path} — field path may be wrong or data not yet produced",
+        )
+
+    violations = []
+    for v in numeric_vals:
+        if min_val is not None and v < float(min_val):
+            violations.append(v)
+        if max_val is not None and v > float(max_val):
+            violations.append(v)
+
+    if violations:
+        return SentinelCheckResult(
+            check_name=name, passed=False,
+            message=(
+                f"{len(violations)}/{len(numeric_vals)} values outside "
+                f"[{min_val}, {max_val}] at {field_path}"
+            ),
+            actual_value=f"min={min(numeric_vals):.4f}, max={max(numeric_vals):.4f}",
+            expected=f"[{min_val}, {max_val}]",
+        )
+    return SentinelCheckResult(
+        check_name=name, passed=True,
+        message=f"All {len(numeric_vals)} values within [{min_val}, {max_val}]",
+    )
+
+
+def _check_metric_range(
+    name: str, data: dict | list, params: dict,
+) -> SentinelCheckResult:
+    """Verify metric values have sufficient variance (not degenerate)."""
+    field_path = params.get("field", "")
+    min_std = params.get("min_std", 0.001)
+
+    values = _resolve_json_field(data, field_path)
+    numeric_vals = []
+    for v in values:
+        try:
+            numeric_vals.append(float(v))
+        except (TypeError, ValueError):
+            pass
+
+    if len(numeric_vals) < 2:
+        # Check if the field path resolved to anything at all
+        raw_values = _resolve_json_field(data, field_path)
+        if raw_values and len(raw_values) >= 2:
+            return SentinelCheckResult(
+                check_name=name, passed=True,
+                message=f"Values at {field_path} are not numeric — skipping",
+            )
+        return SentinelCheckResult(
+            check_name=name, passed=True,
+            message=f"Fewer than 2 numeric values at {field_path} — skipping",
+        )
+
+    import statistics
+    std = statistics.stdev(numeric_vals)
+    if std < float(min_std):
+        return SentinelCheckResult(
+            check_name=name, passed=False,
+            message=f"Metric std={std:.6f} < min_std={min_std} at {field_path} — degenerate",
+            actual_value=f"std={std:.6f}",
+            expected=f"std >= {min_std}",
+        )
+    return SentinelCheckResult(
+        check_name=name, passed=True,
+        message=f"Metric std={std:.4f} at {field_path} (healthy)",
+    )
+
+
+def _run_degeneracy_check(
+    workspace: Path,
+    check: DegeneracyCheck,
+    conditions: list[str],
+) -> SentinelCheckResult:
+    """Run a single degeneracy check."""
+    name = f"degeneracy:{check.check_type}:{check.target}"
+    target_path = workspace / check.target
+
+    if not target_path.exists():
+        return SentinelCheckResult(
+            check_name=name, passed=True,
+            message=f"Target {check.target} not yet produced — skipping",
+        )
+
+    try:
+        data = json.loads(target_path.read_text())
+    except (json.JSONDecodeError, OSError) as exc:
+        return SentinelCheckResult(
+            check_name=name, passed=False,
+            message=f"Cannot read {check.target}: {exc}",
+        )
+
+    if check.check_type == "not_identical":
+        return _check_not_identical(name, data, check.params, conditions)
+    elif check.check_type == "min_variance":
+        return _check_metric_range(name, data, check.params)
+    elif check.check_type == "min_distinct_values":
+        return _check_min_distinct(name, data, check.params)
+    else:
+        return SentinelCheckResult(
+            check_name=name, passed=True,
+            message=f"Unknown check_type '{check.check_type}' — skipped",
+        )
+
+
+def _check_not_identical(
+    name: str, data: dict | list, params: dict, conditions: list[str],
+) -> SentinelCheckResult:
+    """Verify that values differ across conditions (not all identical)."""
+    field_path = params.get("field", "")
+    across = params.get("across", "conditions")
+
+    values = _resolve_json_field(data, field_path)
+    str_values = [str(v) for v in values if v is not None]
+
+    if len(str_values) < 2:
+        return SentinelCheckResult(
+            check_name=name, passed=True,
+            message=f"Fewer than 2 values at {field_path} — skipping",
+        )
+
+    if len(set(str_values)) == 1:
+        return SentinelCheckResult(
+            check_name=name, passed=False,
+            message=f"All {len(str_values)} values identical at {field_path} — experiment degenerate",
+            actual_value=str_values[0][:80],
+        )
+    return SentinelCheckResult(
+        check_name=name, passed=True,
+        message=f"{len(set(str_values))} distinct values across {len(str_values)} observations",
+    )
+
+
+def _check_min_distinct(
+    name: str, data: dict | list, params: dict,
+) -> SentinelCheckResult:
+    """Verify at least N distinct values exist."""
+    field_path = params.get("field", "")
+    min_count = params.get("min", 2)
+
+    values = _resolve_json_field(data, field_path)
+    str_values = [str(v) for v in values if v is not None]
+    distinct = len(set(str_values))
+
+    if distinct < int(min_count):
+        return SentinelCheckResult(
+            check_name=name, passed=False,
+            message=f"Only {distinct} distinct values at {field_path}, need >= {min_count}",
+        )
+    return SentinelCheckResult(
+        check_name=name, passed=True,
+        message=f"{distinct} distinct values at {field_path}",
+    )

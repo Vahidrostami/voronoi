@@ -740,6 +740,132 @@ class TestDesignInvalidHardGate:
 
 
 # ---------------------------------------------------------------------------
+# Experiment Sentinel (contract-based structural validation)
+# ---------------------------------------------------------------------------
+
+class TestSentinelDispatcher:
+    """Tests for _check_sentinel in the dispatcher."""
+
+    def test_no_contract_no_events(self, dispatcher_setup):
+        """No contract file → sentinel returns empty events."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1, workspace_path=tmp_path,
+            tmux_session="test", question="test", mode="prove",
+            rigor="scientific",
+        )
+        events = d._check_sentinel(run)
+        assert events == []
+
+    def test_missing_contract_warning_after_1h(self, dispatcher_setup):
+        """At Analytical+ rigor, warn if no contract exists after 1 hour."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1, workspace_path=tmp_path,
+            tmux_session="test", question="test", mode="prove",
+            rigor="scientific",
+        )
+        # Simulate 1.5 hours elapsed
+        run.started_at = time.time() - 5400
+        # Add experiment-like tasks to snapshot
+        run.task_snapshot = {
+            "bd-1": {"status": "open", "title": "Phase 0 experiment", "notes": ""},
+        }
+        events = d._check_sentinel(run)
+        assert len(events) == 1
+        assert "SENTINEL WARNING" in events[0]["msg"]
+        assert "No experiment contract" in events[0]["msg"]
+        # Second call should NOT warn again
+        events2 = d._check_sentinel(run)
+        assert events2 == []
+
+    def test_missing_contract_skipped_for_standard_rigor(self, dispatcher_setup):
+        """Standard rigor → no warning about missing contract."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1, workspace_path=tmp_path,
+            tmux_session="test", question="test", mode="discover",
+            rigor="standard",
+        )
+        run.started_at = time.time() - 7200
+        run.task_snapshot = {
+            "bd-1": {"status": "open", "title": "Build experiment", "notes": ""},
+        }
+        events = d._check_sentinel(run)
+        assert events == []
+
+    def test_sentinel_runs_on_contract_change(self, dispatcher_setup):
+        """Sentinel should trigger when contract file is modified."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        # Write a contract with no checks (should pass)
+        (swarm / "experiment-contract.json").write_text(json.dumps({
+            "experiment_id": "e1",
+            "independent_variable": "x",
+            "conditions": [],
+            "manipulation_checks": [],
+            "required_outputs": [],
+            "degeneracy_checks": [],
+            "phase_gates": [],
+        }))
+        run = RunningInvestigation(
+            investigation_id=1, workspace_path=tmp_path,
+            tmux_session="test", question="test", mode="prove",
+            rigor="scientific",
+        )
+        events = d._check_sentinel(run)
+        # Should run (contract changed since no prior audit)
+        assert (swarm / "sentinel-audit.json").exists()
+
+    def test_sentinel_writes_directive_on_failure(self, dispatcher_setup):
+        """Sentinel failure should write a dispatcher directive."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        # Contract with a check that will fail (required output missing)
+        (swarm / "experiment-contract.json").write_text(json.dumps({
+            "experiment_id": "e1",
+            "independent_variable": "x",
+            "conditions": [],
+            "manipulation_checks": [],
+            "required_outputs": [{"path": "output/missing.json", "description": "test"}],
+            "degeneracy_checks": [],
+            "phase_gates": [],
+        }))
+        run = RunningInvestigation(
+            investigation_id=1, workspace_path=tmp_path,
+            tmux_session="test", question="test", mode="prove",
+            rigor="scientific",
+        )
+        events = d._check_sentinel(run)
+        assert len(events) == 1
+        assert events[0]["type"] == "design_invalid"
+        # Directive should exist
+        directive = swarm / "dispatcher-directive.json"
+        assert directive.exists()
+        data = json.loads(directive.read_text())
+        assert data["level"] == "sentinel_violation"
+        assert data["action"] == "stop_and_fix"
+
+    def test_has_experiment_tasks(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1, workspace_path=tmp_path,
+            tmux_session="test", question="test", mode="prove",
+        )
+        run.task_snapshot = {
+            "bd-1": {"status": "open", "title": "Phase 2 factorial experiment", "notes": ""},
+        }
+        assert d._has_experiment_tasks(run) is True
+
+        run.task_snapshot = {
+            "bd-1": {"status": "open", "title": "Write README", "notes": ""},
+        }
+        assert d._has_experiment_tasks(run) is False
+
+
+# ---------------------------------------------------------------------------
 # Resume context injection on restart
 # ---------------------------------------------------------------------------
 
@@ -863,7 +989,8 @@ class TestLaunchInTmux:
 
         with patch.object(d, "_ensure_copilot_auth", side_effect=AssertionError("should not be called")), \
              patch("voronoi.server.dispatcher.shutil.which", return_value="/bin/echo"), \
-             patch("voronoi.server.dispatcher.subprocess.run") as mock_run:
+             patch("voronoi.server.dispatcher.subprocess.run",
+                   return_value=MagicMock(returncode=0, stderr=b"")) as mock_run:
             d._launch_in_tmux("test-session", tmp_path)
 
         assert mock_run.call_count >= 3
@@ -875,7 +1002,8 @@ class TestLaunchInTmux:
         (tmp_path / ".swarm").mkdir(parents=True, exist_ok=True)
 
         with patch("voronoi.server.dispatcher.shutil.which", return_value="/bin/echo"), \
-             patch("voronoi.server.dispatcher.subprocess.run") as mock_run:
+             patch("voronoi.server.dispatcher.subprocess.run",
+                   return_value=MagicMock(returncode=0, stderr=b"")) as mock_run:
             d._launch_in_tmux("test-session", tmp_path)
 
         calls = [call.args[0] for call in mock_run.call_args_list]
@@ -911,7 +1039,8 @@ class TestLaunchInTmux:
         (tmp_path / ".swarm").mkdir(parents=True, exist_ok=True)
 
         with patch("voronoi.server.dispatcher.shutil.which", return_value="/bin/echo"), \
-             patch("voronoi.server.dispatcher.subprocess.run"):
+             patch("voronoi.server.dispatcher.subprocess.run",
+                   return_value=MagicMock(returncode=0, stderr=b"")):
             d._launch_in_tmux("test-session", tmp_path)
 
         env_file = tmp_path / ".swarm" / ".tmux-env"
@@ -928,7 +1057,8 @@ class TestLaunchInTmux:
         (tmp_path / ".swarm").mkdir(parents=True, exist_ok=True)
 
         with patch("voronoi.server.dispatcher.shutil.which", return_value="/bin/echo"), \
-             patch("voronoi.server.dispatcher.subprocess.run") as mock_run:
+             patch("voronoi.server.dispatcher.subprocess.run",
+                   return_value=MagicMock(returncode=0, stderr=b"")) as mock_run:
             d._launch_in_tmux("test-session", tmp_path)
 
         env_file = tmp_path / ".swarm" / ".tmux-env"
@@ -944,7 +1074,8 @@ class TestLaunchInTmux:
         (tmp_path / ".swarm").mkdir(parents=True, exist_ok=True)
 
         with patch("voronoi.server.dispatcher.shutil.which", return_value="/bin/echo"), \
-             patch("voronoi.server.dispatcher.subprocess.run") as mock_run:
+             patch("voronoi.server.dispatcher.subprocess.run",
+                   return_value=MagicMock(returncode=0, stderr=b"")) as mock_run:
             d._launch_in_tmux("test-session", tmp_path, rigor="experimental")
 
         # Find the send-keys call containing the copilot command
@@ -960,7 +1091,8 @@ class TestLaunchInTmux:
         (tmp_path / ".swarm").mkdir(parents=True, exist_ok=True)
 
         with patch("voronoi.server.dispatcher.shutil.which", return_value="/bin/echo"), \
-             patch("voronoi.server.dispatcher.subprocess.run") as mock_run:
+             patch("voronoi.server.dispatcher.subprocess.run",
+                   return_value=MagicMock(returncode=0, stderr=b"")) as mock_run:
             d._launch_in_tmux("test-session", tmp_path, rigor="")
 
         send_keys_calls = [c for c in mock_run.call_args_list
@@ -975,7 +1107,8 @@ class TestLaunchInTmux:
         (tmp_path / ".swarm").mkdir(parents=True, exist_ok=True)
 
         with patch("voronoi.server.dispatcher.shutil.which", return_value="/bin/echo"), \
-             patch("voronoi.server.dispatcher.subprocess.run") as mock_run:
+             patch("voronoi.server.dispatcher.subprocess.run",
+                   return_value=MagicMock(returncode=0, stderr=b"")) as mock_run:
             d._launch_in_tmux("test-session", tmp_path)
 
         send_keys_calls = [c for c in mock_run.call_args_list
@@ -1144,6 +1277,77 @@ class TestContextPressure:
         assert directive_path.exists()
         data = json.loads(directive_path.read_text())
         assert data["directive"] == "context_critical"
+
+    def test_critical_directive_from_context_snapshot(self, dispatcher_setup):
+        """Dispatcher prefers ground-truth snapshot over self-reported pct."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True, exist_ok=True)
+        # Self-reported says 80% remaining, but snapshot says only 10% free
+        (swarm / "orchestrator-checkpoint.json").write_text(
+            json.dumps({
+                "cycle": 10,
+                "context_window_remaining_pct": 0.80,
+                "context_snapshot": {
+                    "model": "claude-opus-4.6",
+                    "model_limit": 200000,
+                    "total_used": 180000,
+                    "free_tokens": 20000,
+                },
+            })
+        )
+
+        d._check_context_pressure(run, elapsed_hours=3)
+
+        directive_path = swarm / "dispatcher-directive.json"
+        assert directive_path.exists()
+        data = json.loads(directive_path.read_text())
+        assert data["directive"] == "context_critical"
+
+    def test_snapshot_logs_context_event(self, dispatcher_setup):
+        """Dispatcher logs context_snapshot events to events.jsonl."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True, exist_ok=True)
+        (swarm / "orchestrator-checkpoint.json").write_text(
+            json.dumps({
+                "cycle": 5,
+                "context_snapshot": {
+                    "model": "claude-opus-4.6",
+                    "model_limit": 200000,
+                    "total_used": 60000,
+                    "system_tokens": 20000,
+                    "message_tokens": 40000,
+                    "free_tokens": 100000,
+                    "buffer_tokens": 40000,
+                },
+            })
+        )
+
+        d._check_context_pressure(run, elapsed_hours=3)
+
+        events_path = swarm / "events.jsonl"
+        assert events_path.exists()
+        import json as json_mod
+        lines = events_path.read_text().strip().split("\n")
+        assert len(lines) >= 1
+        ev = json_mod.loads(lines[-1])
+        assert ev["event"] == "context_snapshot"
+        assert ev["tokens_used"] == 60000
 
     def test_no_duplicate_directives(self, dispatcher_setup):
         d, msgs, docs, tmp_path = dispatcher_setup
@@ -1625,3 +1829,93 @@ class TestPauseInvestigation:
         assert result is False
         mock_queue.pause.assert_called_once()
         assert run.retry_count == 0  # should be undone
+
+
+class TestLaunchInTmuxSessionSafety:
+    """Tests for BUG 1 fix: _launch_in_tmux kills stale sessions and checks RC."""
+
+    def test_kills_stale_session_before_creating(self, dispatcher_setup):
+        """_launch_in_tmux should kill any existing session before new-session."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        (tmp_path / ".swarm").mkdir(parents=True, exist_ok=True)
+
+        call_order = []
+
+        def track_calls(args, **kwargs):
+            if isinstance(args, list) and len(args) >= 2 and args[0] == "tmux":
+                call_order.append(args[1])
+            return MagicMock(returncode=0, stderr=b"")
+
+        with patch("voronoi.server.dispatcher.shutil.which", return_value="/bin/echo"), \
+             patch("voronoi.server.dispatcher.subprocess.run", side_effect=track_calls):
+            d._launch_in_tmux("test-session", tmp_path)
+
+        # kill-session must come before new-session
+        assert "kill-session" in call_order
+        assert "new-session" in call_order
+        kill_idx = call_order.index("kill-session")
+        new_idx = call_order.index("new-session")
+        assert kill_idx < new_idx
+
+    def test_raises_on_tmux_new_session_failure(self, dispatcher_setup):
+        """_launch_in_tmux should raise RuntimeError if tmux new-session fails."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        (tmp_path / ".swarm").mkdir(parents=True, exist_ok=True)
+
+        def mock_run(args, **kwargs):
+            if isinstance(args, list) and "new-session" in args:
+                return MagicMock(returncode=1, stderr=b"duplicate session: test-session")
+            return MagicMock(returncode=0, stderr=b"")
+
+        with patch("voronoi.server.dispatcher.shutil.which", return_value="/bin/echo"), \
+             patch("voronoi.server.dispatcher.subprocess.run", side_effect=mock_run):
+            with pytest.raises(RuntimeError, match="Failed to create tmux session"):
+                d._launch_in_tmux("test-session", tmp_path)
+
+
+class TestResumePromptLabel:
+    """Tests for BUG 2 fix: resume prompt uses correct label for user-initiated resume."""
+
+    def test_user_resume_says_resume_not_restart(self, dispatcher_setup):
+        """retry_count=0 means operator-initiated resume, not a crash restart."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test question",
+            mode="discover",
+        )
+        run.retry_count = 0
+
+        prompt_file = tmp_path / ".swarm" / "orchestrator-prompt.txt"
+        prompt_file.parent.mkdir(parents=True, exist_ok=True)
+        prompt_file.write_text("Original prompt")
+
+        resume_file = d._build_resume_prompt(run)
+        content = resume_file.read_text()
+        assert "RESUME" in content
+        assert "operator-initiated" in content
+        assert "attempt 0/" not in content
+
+    def test_crash_restart_says_restart_with_count(self, dispatcher_setup):
+        """retry_count>0 means crash restart, should show attempt number."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test question",
+            mode="discover",
+        )
+        run.retry_count = 2
+
+        prompt_file = tmp_path / ".swarm" / "orchestrator-prompt.txt"
+        prompt_file.parent.mkdir(parents=True, exist_ok=True)
+        prompt_file.write_text("Original prompt")
+
+        resume_file = d._build_resume_prompt(run)
+        content = resume_file.read_text()
+        assert "RESTART" in content
+        assert "attempt 2/2" in content
+        assert "RESUME" not in content

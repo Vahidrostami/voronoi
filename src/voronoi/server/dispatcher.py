@@ -432,10 +432,23 @@ class InvestigationDispatcher:
         if prompt_file is None:
             prompt_file = workspace_path / ".swarm" / "orchestrator-prompt.txt"
 
+        # Kill any stale tmux session with the same name to avoid sending
+        # commands into an old shell (race between session-death detection
+        # and relaunch).
         subprocess.run(
+            ["tmux", "kill-session", "-t", session],
+            capture_output=True, timeout=10,
+        )
+
+        result = subprocess.run(
             ["tmux", "new-session", "-d", "-s", session, "-c", str(workspace_path)],
             capture_output=True,
         )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"Failed to create tmux session '{session}': "
+                f"{result.stderr.decode(errors='replace').strip()}"
+            )
         # Enable tmux pane logging so we can inspect crashes after the fact.
         subprocess.run(
             ["tmux", "pipe-pane", "-t", session,
@@ -607,6 +620,14 @@ class InvestigationDispatcher:
                         logger.warning("Investigation #%d paused — auth failure detected",
                                        inv_id)
                         self._pause_investigation(run, "Copilot/GitHub auth expired")
+                        continue  # don't add to completed_ids
+                    # Check if orchestrator exited intentionally while workers run.
+                    # If checkpoint has active_workers and any are still alive,
+                    # defer restart until workers finish.
+                    if self._has_active_workers(run):
+                        logger.info("Investigation #%d orchestrator idle — "
+                                    "workers still running, deferring restart",
+                                    inv_id)
                         continue  # don't add to completed_ids
                     # Classify the exit before deciding to retry
                     is_clean = self._looks_like_clean_agent_exit(log_tail)
@@ -868,7 +889,33 @@ class InvestigationDispatcher:
             cp = json.loads(cp_path.read_text())
             if not isinstance(cp, dict):
                 return
-            remaining = cp.get("context_window_remaining_pct", 0)
+
+            # Prefer ground-truth snapshot over self-reported estimate
+            snapshot = cp.get("context_snapshot")
+            if isinstance(snapshot, dict) and snapshot.get("model_limit", 0) > 0:
+                limit = snapshot["model_limit"]
+                free = snapshot.get("free_tokens", 0)
+                remaining = free / limit if limit else 0
+                # Log context snapshot event for timeline analysis
+                try:
+                    from voronoi.server.events import log_context_snapshot
+                    log_context_snapshot(
+                        run.workspace_path,
+                        agent="orchestrator",
+                        cycle=cp.get("cycle", 0),
+                        model=snapshot.get("model", ""),
+                        model_limit=limit,
+                        total_used=snapshot.get("total_used", 0),
+                        system_tokens=snapshot.get("system_tokens", 0),
+                        message_tokens=snapshot.get("message_tokens", 0),
+                        free_tokens=free,
+                        buffer_tokens=snapshot.get("buffer_tokens", 0),
+                    )
+                except Exception:
+                    pass  # non-critical logging
+            else:
+                remaining = cp.get("context_window_remaining_pct", 0)
+
             if not remaining or remaining <= 0:
                 return  # orchestrator didn't report
 
@@ -923,6 +970,7 @@ class InvestigationDispatcher:
                          run.investigation_id, code)
         events.extend(self._check_findings(run, tasks))
         events.extend(self._check_design_invalid(run, tasks))
+        events.extend(self._check_sentinel(run))
         events.extend(self._detect_phase(run))
 
         # Sync findings to cross-run Claim Ledger
@@ -989,6 +1037,212 @@ class InvestigationDispatcher:
                     msg += f"\n{effect}"
                 events.append({"type": "finding", "msg": msg})
         return events
+
+    def _check_sentinel(self, run: RunningInvestigation) -> list[dict]:
+        """Run experiment sentinel audit if a contract exists.
+
+        Checks are event-driven (contract file mtime changed) plus periodic
+        (every ``sentinel_interval_hours`` from config, default 6h).
+        If the sentinel finds critical failures, it autonomously flags
+        ``DESIGN_INVALID`` and sends an alert.
+
+        Also detects:
+        - Missing contract after first hour (at Analytical+ rigor)
+        - Phase transitions via orchestrator checkpoint
+        """
+        events: list[dict] = []
+        contract_path = run.workspace_path / ".swarm" / "experiment-contract.json"
+        audit_path = run.workspace_path / ".swarm" / "sentinel-audit.json"
+
+        # --- Missing contract detection ---
+        # At Analytical+ rigor, if the orchestrator has created experiment tasks
+        # but no contract after 1 hour, alert.
+        if not contract_path.exists():
+            elapsed_hours = (time.time() - run.started_at) / 3600
+            if (elapsed_hours >= 1.0
+                    and run.rigor in ("adaptive", "scientific", "experimental")
+                    and self._has_experiment_tasks(run)
+                    and not getattr(run, "_sentinel_missing_contract_warned", False)):
+                run._sentinel_missing_contract_warned = True  # type: ignore[attr-defined]
+                events.append({
+                    "type": "design_invalid",
+                    "msg": (
+                        "\U0001f6a8 *SENTINEL WARNING* — No experiment contract found\n"
+                        "  Experiment tasks exist but `.swarm/experiment-contract.json` "
+                        "is missing. The sentinel cannot validate outputs without a contract. "
+                        "Write the contract NOW."
+                    ),
+                })
+                # Write directive to force orchestrator to act
+                directive_path = run.workspace_path / ".swarm" / "dispatcher-directive.json"
+                directive_path.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    directive_path.write_text(json.dumps({
+                        "level": "sentinel_violation",
+                        "message": (
+                            "SENTINEL WARNING: No experiment contract found after 1+ hour. "
+                            "Write .swarm/experiment-contract.json before dispatching more workers. "
+                            "See the Experiment Contract section in your prompt for the schema."
+                        ),
+                        "action": "write_contract",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    }, indent=2))
+                except OSError:
+                    pass
+            return events
+
+        # --- Phase transition detection via checkpoint ---
+        checkpoint_path = run.workspace_path / ".swarm" / "checkpoint.json"
+        checkpoint_phase = ""
+        if checkpoint_path.exists():
+            try:
+                cp = json.loads(checkpoint_path.read_text())
+                checkpoint_phase = cp.get("phase", "") if isinstance(cp, dict) else ""
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        last_audited_phase = ""
+        if audit_path.exists():
+            try:
+                prev = json.loads(audit_path.read_text())
+                last_audited_phase = prev.get("_last_phase", "") if isinstance(prev, dict) else ""
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        phase_changed = bool(checkpoint_phase and checkpoint_phase != last_audited_phase)
+
+        # Decide whether to run: on contract change or periodically
+        try:
+            contract_mtime = contract_path.stat().st_mtime
+        except OSError:
+            return events
+
+        last_audit_time = 0.0
+        if audit_path.exists():
+            try:
+                last_audit_time = audit_path.stat().st_mtime
+            except OSError:
+                pass
+
+        sentinel_interval = getattr(self.config, "sentinel_interval_hours", 6) * 3600
+        now = time.time()
+        contract_changed = contract_mtime > last_audit_time
+        periodic_due = (now - last_audit_time) > sentinel_interval
+
+        # Also trigger if any output file declared in the contract was recently modified
+        output_changed = False
+        try:
+            from voronoi.science.gates import load_experiment_contract
+            contract = load_experiment_contract(run.workspace_path)
+            if contract:
+                for ro in contract.required_outputs:
+                    p = run.workspace_path / ro.get("path", "")
+                    if p.exists():
+                        try:
+                            if p.stat().st_mtime > last_audit_time:
+                                output_changed = True
+                                break
+                        except OSError:
+                            pass
+        except Exception:
+            contract = None
+
+        if not (contract_changed or periodic_due or output_changed or phase_changed):
+            return events
+
+        # Run the audit
+        trigger = ("phase_transition" if phase_changed else
+                   "contract_changed" if contract_changed else
+                   "output_produced" if output_changed else "periodic")
+        try:
+            from voronoi.science.gates import validate_experiment_contract
+            result = validate_experiment_contract(
+                run.workspace_path, contract=contract, trigger=trigger)
+        except Exception as exc:
+            logger.debug("Sentinel audit failed for #%d: %s",
+                         run.investigation_id, exc)
+            return events
+
+        # If phase changed, also run phase gate validation
+        if phase_changed and contract and last_audited_phase:
+            try:
+                from voronoi.science.gates import validate_phase_gate
+                pg_result = validate_phase_gate(
+                    run.workspace_path, contract, last_audited_phase, checkpoint_phase)
+                if not pg_result.passed:
+                    for f in pg_result.critical_failures:
+                        if f not in result.critical_failures:
+                            result.critical_failures.append(f)
+                    result.passed = result.passed and pg_result.passed
+                    result.checks.extend(pg_result.checks)
+            except Exception:
+                pass
+
+        # Persist phase in audit for next comparison
+        try:
+            audit_file = run.workspace_path / ".swarm" / "sentinel-audit.json"
+            if audit_file.exists():
+                audit_data = json.loads(audit_file.read_text())
+                if isinstance(audit_data, dict):
+                    audit_data["_last_phase"] = checkpoint_phase
+                    audit_file.write_text(json.dumps(audit_data, indent=2))
+        except (json.JSONDecodeError, OSError):
+            pass
+
+        if not result.passed:
+            summary = result.failure_summary
+            events.append({
+                "type": "design_invalid",
+                "msg": (
+                    f"\U0001f6a8 *SENTINEL ALERT* — Experiment contract violated\n"
+                    f"  {summary}"
+                ),
+            })
+            logger.warning(
+                "Sentinel audit FAILED for #%d: %s",
+                run.investigation_id, summary,
+            )
+
+            # Write a dispatcher directive so the orchestrator is FORCED to act
+            # on its next OODA cycle (the orchestrator already obeys directives).
+            directive_path = run.workspace_path / ".swarm" / "dispatcher-directive.json"
+            directive_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                directive_path.write_text(json.dumps({
+                    "level": "sentinel_violation",
+                    "message": (
+                        "SENTINEL ALERT: Experiment contract violated. "
+                        "Read .swarm/sentinel-audit.json for details. "
+                        "This IS a DESIGN_INVALID event — do NOT create a separate "
+                        "DESIGN_INVALID task. The sentinel has already flagged it. "
+                        "Do NOT proceed to the next phase or dispatch new workers. "
+                        "Dispatch Methodologist for post-mortem, then create a REVISE task."
+                    ),
+                    "action": "stop_and_fix",
+                    "sentinel_failures": result.critical_failures,
+                    "timestamp": result.timestamp,
+                }, indent=2))
+            except OSError:
+                pass
+        else:
+            logger.info(
+                "Sentinel audit PASSED for #%d (trigger=%s, %d checks)",
+                run.investigation_id, trigger, len(result.checks),
+            )
+
+        return events
+
+    def _has_experiment_tasks(self, run: RunningInvestigation) -> bool:
+        """Check if task_snapshot contains experiment-type tasks."""
+        for t in run.task_snapshot.values():
+            notes = t.get("notes", "")
+            title = t.get("title", "").lower()
+            if any(kw in title for kw in ("experiment", "phase", "baseline", "pilot",
+                                           "factorial", "ablation", "benchmark")):
+                return True
+            if "TASK_TYPE=investigation" in notes or "TASK_TYPE=experiment" in notes:
+                return True
+        return False
 
     def _check_design_invalid(self, run: RunningInvestigation,
                                tasks: list[dict] | None = None) -> list[dict]:
@@ -1493,6 +1747,58 @@ class InvestigationDispatcher:
         )
         return sum(marker in lowered for marker in markers) >= 2
 
+    def _has_active_workers(self, run: RunningInvestigation) -> bool:
+        """Check if the orchestrator exited with workers still running.
+
+        Reads the checkpoint for ``active_workers`` and checks if any of
+        those tmux windows are still alive in the swarm session.  If so,
+        the orchestrator intentionally exited to conserve context and
+        should NOT be restarted until the workers finish.
+        """
+        cp_path = run.workspace_path / ".swarm" / "orchestrator-checkpoint.json"
+        if not cp_path.exists():
+            return False
+        try:
+            cp = json.loads(cp_path.read_text())
+            if not isinstance(cp, dict):
+                return False
+        except (json.JSONDecodeError, OSError):
+            return False
+
+        workers = cp.get("active_workers", [])
+        if not workers:
+            return False
+
+        # Check if any of the listed workers have a live tmux window
+        swarm_session = run.tmux_session + "-swarm"
+        for worker in workers:
+            try:
+                result = subprocess.run(
+                    ["tmux", "has-session", "-t", swarm_session],
+                    capture_output=True, timeout=5,
+                )
+                if result.returncode != 0:
+                    continue
+                # Session exists — check for a window matching this worker
+                result = subprocess.run(
+                    ["tmux", "list-windows", "-t", swarm_session, "-F",
+                     "#{window_name}"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if result.returncode == 0:
+                    windows = result.stdout.strip().splitlines()
+                    if any(worker in w for w in windows):
+                        logger.debug("Worker %s still alive for %s",
+                                     worker, run.label)
+                        return True
+            except (subprocess.TimeoutExpired, OSError):
+                continue
+
+        # No live workers found — workers finished, proceed with restart
+        logger.info("All active_workers done for %s, proceeding with restart",
+                    run.label)
+        return False
+
     def _looks_like_auth_failure(self, log_tail: str) -> bool:
         """Detect auth-related failures in agent log output."""
         lowered = self._normalize_log_tail(log_tail)
@@ -1592,6 +1898,14 @@ class InvestigationDispatcher:
             logger.error("Prompt file missing for #%d — cannot restart",
                          run.investigation_id)
             return False
+
+        # Compact workspace state BEFORE building resume prompt so the
+        # state digest is fresh (avoids stale 0/13-met vs 7/13-met mismatches)
+        try:
+            from voronoi.server.compact import compact_workspace_state
+            compact_workspace_state(run.workspace_path)
+        except Exception:
+            pass
 
         # Write a NEW minimal resume prompt (don't append to the old one)
         resume_file = self._build_resume_prompt(run)
@@ -1742,9 +2056,12 @@ class InvestigationDispatcher:
         checkpoint state, remaining tasks, and clear next actions.
         The restarted agent starts with a clean context window.
         """
+        if run.retry_count > 0:
+            restart_label = f"RESTART (attempt {run.retry_count}/{self.config.max_retries})"
+        else:
+            restart_label = "RESUME (operator-initiated)"
         lines: list[str] = [
-            "You are the Voronoi swarm orchestrator. This is a RESTART "
-            f"(attempt {run.retry_count}/{self.config.max_retries}).\n",
+            f"You are the Voronoi swarm orchestrator. This is a {restart_label}.\n",
             f"**Codename:** {run.label}",
             f"**Mode:** {run.mode} | **Rigor:** {run.rigor}\n",
         ]
@@ -1856,15 +2173,43 @@ class InvestigationDispatcher:
             except OSError:
                 pass
 
-        # Directive
+        # Convergence-aware directive: if checkpoint shows near-convergence,
+        # tell the agent to skip the full role file and just verify + commit.
+        near_convergence = False
+        if cp_path.exists():
+            try:
+                cp_data = json.loads(cp_path.read_text())
+                if isinstance(cp_data, dict):
+                    phase = str(cp_data.get("phase", "")).lower()
+                    blockers = cp_data.get("blockers", "")
+                    remaining = cp_data.get("remaining", [])
+                    no_blockers = not blockers or "none" in str(blockers).lower()
+                    few_remaining = isinstance(remaining, list) and len(remaining) <= 3
+                    if ("converg" in phase or "final" in phase) and no_blockers and few_remaining:
+                        near_convergence = True
+            except (json.JSONDecodeError, OSError):
+                pass
+
         lines.append("## What To Do Now\n")
-        lines.append(
-            "1. Read `.swarm/orchestrator-checkpoint.json` for full state\n"
-            "2. Run `bd ready --json` to see remaining tasks\n"
-            "3. If all experiments are done, **dispatch a Scribe worker** for the manuscript\n"
-            "4. If `.swarm/brief-digest.md` exists, read it for critical constraints\n"
-            "5. **Conserve context** — delegate writing to workers, keep your session lean\n"
-        )
+        if near_convergence:
+            lines.append(
+                "**NEAR-CONVERGENCE RESTART — keep this session lean:**\n"
+                "1. Do NOT read `.github/agents/swarm-orchestrator.agent.md` — you already know the protocol\n"
+                "2. Read ONLY: checkpoint (above) + `bd ready` + dispatcher-directive\n"
+                "3. Verify convergence: run `./scripts/convergence-gate.sh . " + run.rigor + "`\n"
+                "4. If gate passes: commit, close remaining beads, write convergence.json\n"
+                "5. If gate fails: fix the specific blocker, then re-run gate\n"
+                "6. Do NOT re-read paper, belief map, eval score, or claim-evidence unless gate fails\n"
+            )
+        else:
+            lines.append(
+                "1. Read `.swarm/orchestrator-checkpoint.json` for full state\n"
+                "2. Run `bd ready --json` to see remaining tasks\n"
+                "3. If all experiments are done, **dispatch a Scribe worker** for the manuscript\n"
+                "4. If `.swarm/brief-digest.md` exists, read it for critical constraints\n"
+                "5. **Conserve context** — delegate writing to workers, keep your session lean\n"
+                "6. Do NOT re-read files already summarized in the checkpoint above\n"
+            )
 
         resume_file = run.workspace_path / ".swarm" / "orchestrator-prompt-resume.txt"
         resume_file.write_text("\n".join(lines))

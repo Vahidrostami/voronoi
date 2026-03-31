@@ -79,6 +79,7 @@ def write_checkpoint(
     improvement_rounds: Any = None,
     tokens_this_cycle: Any = None,
     tokens_cumulative: Any = None,
+    context_snapshot: Any = None,
 ) -> dict[str, Any]:
     """Write orchestrator checkpoint with schema validation.
 
@@ -163,6 +164,23 @@ def write_checkpoint(
             context_window_remaining_pct,
             "context_window_remaining_pct",
         )
+    if context_snapshot is not None:
+        if not isinstance(context_snapshot, dict):
+            raise ValidationError(
+                f"context_snapshot must be a dict, got {type(context_snapshot).__name__}"
+            )
+        # Validate expected numeric fields
+        for key in ("model_limit", "total_used", "system_tokens",
+                    "message_tokens", "free_tokens", "buffer_tokens"):
+            val = context_snapshot.get(key)
+            if val is not None:
+                context_snapshot[key] = int(val)
+        checkpoint.context_snapshot = context_snapshot
+        # Auto-derive context_window_remaining_pct from ground-truth snapshot
+        limit = context_snapshot.get("model_limit", 0)
+        free = context_snapshot.get("free_tokens", 0)
+        if limit > 0 and checkpoint.context_window_remaining_pct == 1.0:
+            checkpoint.context_window_remaining_pct = round(free / limit, 3)
 
     save_checkpoint(workspace, checkpoint)
     return {

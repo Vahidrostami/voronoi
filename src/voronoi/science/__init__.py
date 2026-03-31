@@ -82,6 +82,17 @@ from voronoi.science.gates import (
     save_invariants,
     validate_data_invariants,
     validate_pre_registration,
+    # Experiment Sentinel
+    DegeneracyCheck,
+    ExperimentContract,
+    ManipulationCheck,
+    PhaseGate,
+    SentinelAuditResult,
+    SentinelCheckResult,
+    load_experiment_contract,
+    save_experiment_contract,
+    validate_experiment_contract,
+    validate_phase_gate,
 )
 
 # --- Claims (cross-run scientific state) ---
@@ -124,6 +135,11 @@ __all__ = [
     "check_invariants", "validate_data_invariants",
     "CalibrationResult", "check_calibration", "parse_revise_context",
     "ReplicationNeed", "find_replication_needs",
+    # Experiment Sentinel
+    "ManipulationCheck", "DegeneracyCheck", "PhaseGate",
+    "ExperimentContract", "SentinelCheckResult", "SentinelAuditResult",
+    "load_experiment_contract", "save_experiment_contract",
+    "validate_experiment_contract", "validate_phase_gate",
     # Claims (cross-run scientific state)
     "Claim", "ClaimArtifact", "ClaimLedger", "Objection",
     "load_ledger", "save_ledger", "resolve_lineage_id",

@@ -50,7 +50,8 @@ The system is organized into four layers, each with clear responsibilities and b
 ┌──────────────────────▼──────────────────────────────┐
 │              Package Data (shipped with pip)          │
 │   data/agents/ · data/skills/ · data/prompts/        │
-│   data/scripts/ · data/templates/                    │
+│   data/instructions/ · data/hooks/ · data/scripts/   │
+│   data/templates/                                    │
 └──────────────────────┬──────────────────────────────┘
                        │
 ┌──────────────────────▼──────────────────────────────┐
@@ -169,7 +170,7 @@ Voronoi strictly separates dev files from runtime files:
 
 - **Editable install** (`pip install -e .`): `find_data_dir()` returns `src/voronoi/data/`. Agent roles read from `data/agents/`, templates from `data/templates/`.
 - **Packaged install** (`pip install voronoi`): `find_data_dir()` returns bundled `data/` inside the installed package.
-- **`voronoi init`**: Copies runtime `CLAUDE.md` from templates (NOT the dev CLAUDE.md). Copies agents/skills/prompts from package data into target `.github/`.
+- **`voronoi init`**: Copies runtime `CLAUDE.md` from templates (NOT the dev CLAUDE.md). Copies agents/skills/prompts/instructions/hooks from package data into target `.github/`.
 - **`sync-package-data.sh`**: Copies only `.env.example` into `data/`. Agent roles, scripts, and skills are maintained in-tree under `src/voronoi/data/`.
 
 ## 6. Runtime Agent Roles, Prompts, and Skills
@@ -197,7 +198,17 @@ src/voronoi/data/
 │   ├── standup.prompt.md            # /standup — cross-agent status
 │   ├── progress.prompt.md           # /progress — progress check
 │   └── teardown.prompt.md           # /teardown — cleanup
-└── skills/                          # 11 domain knowledge packages
+├── instructions/                    # File-based instructions (applyTo globs)
+│   ├── experiments.instructions.md  # Anti-fabrication for experiments/**
+│   ├── data-files.instructions.md   # Data integrity for data/**
+│   ├── findings.instructions.md     # Finding schema for *finding*/*results*
+│   ├── shell-scripts.instructions.md # Copilot CLI rules for **/*.sh
+│   └── test-files.instructions.md   # Test quality for tests/**
+├── hooks/                           # Agent lifecycle hooks
+│   ├── investigation-hooks.json     # Hook config (SessionStart + PreToolUse)
+│   ├── session-context.sh           # Inject Beads status at session start
+│   └── protect-data.sh              # Block destructive commands on raw data
+└── skills/                          # 21 domain knowledge packages
     ├── beads-tracking/
     ├── git-worktree-management/
     ├── branch-merging/
@@ -208,7 +219,9 @@ src/voronoi/data/
     ├── strategic-context/
     ├── agent-standup/
     ├── deep-research/               # /research grounding for scout/explorer
-    └── context-management/          # /compact protocol for long-running agents
+    ├── context-management/          # /compact protocol for long-running agents
+    ├── copilot-cli-usage/           # Programmatic LLM call patterns
+    └── data-integrity/              # SHA-256 hashing + raw data preservation
 ```
 
 ## 6. Infrastructure Scripts

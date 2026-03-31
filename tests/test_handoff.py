@@ -109,6 +109,41 @@ class TestHandoffBeadsTask:
         assert success is False
         assert "Failed" in msg
 
+    @patch("voronoi.gateway.handoff._run_cmd")
+    def test_create_beads_task_invalid_json_skips_metadata(self, mock_cmd, tmp_path):
+        """Bug fix: if bd create returns invalid JSON, don't call bd update with bad ID."""
+        mock_cmd.side_effect = [
+            (0, "not-json"),  # create succeeds but output is not JSON
+        ]
+        spec = FixSpec(
+            title="Fix auth", finding_id="bd-42",
+            root_cause="X", fix_description="Y",
+            expected_improvement="Z",
+        )
+        handoff = AntonHandoff(tmp_path)
+        success, msg = handoff.create_beads_task(spec)
+        assert success is True
+        assert "unknown id" in msg
+        # bd update should NOT have been called
+        assert mock_cmd.call_count == 1
+
+    @patch("voronoi.gateway.handoff._run_cmd")
+    def test_create_beads_task_missing_id_skips_metadata(self, mock_cmd, tmp_path):
+        """Bug fix: if bd create returns JSON without id, skip metadata update."""
+        mock_cmd.side_effect = [
+            (0, json.dumps({"status": "created"})),  # no "id" field
+        ]
+        spec = FixSpec(
+            title="Fix auth", finding_id="bd-42",
+            root_cause="X", fix_description="Y",
+            expected_improvement="Z",
+        )
+        handoff = AntonHandoff(tmp_path)
+        success, msg = handoff.create_beads_task(spec)
+        assert success is True
+        assert "unknown id" in msg
+        assert mock_cmd.call_count == 1
+
 
 # ---------------------------------------------------------------------------
 # AntonHandoff — GitHub issue creation (mocked)

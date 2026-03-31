@@ -134,6 +134,43 @@ def log_verify_step(
     ))
 
 
+def log_context_snapshot(
+    workspace: Path,
+    *,
+    agent: str,
+    cycle: int = 0,
+    model: str = "",
+    model_limit: int = 0,
+    total_used: int = 0,
+    system_tokens: int = 0,
+    message_tokens: int = 0,
+    free_tokens: int = 0,
+    buffer_tokens: int = 0,
+) -> None:
+    """Convenience: log a /context snapshot for timeline analysis."""
+    parts = []
+    if model:
+        parts.append(model)
+    if model_limit:
+        parts.append(f"{total_used}/{model_limit}")
+    if system_tokens:
+        parts.append(f"sys={system_tokens}")
+    if message_tokens:
+        parts.append(f"msg={message_tokens}")
+    if free_tokens:
+        parts.append(f"free={free_tokens}")
+    if buffer_tokens:
+        parts.append(f"buf={buffer_tokens}")
+    detail_str = f"cycle={cycle} " + " ".join(parts)
+    append_event(workspace, SwarmEvent(
+        agent=agent, task_id="",
+        event="context_snapshot",
+        status="ok",
+        detail=detail_str.strip(),
+        tokens_used=total_used,
+    ))
+
+
 # ---------------------------------------------------------------------------
 # Reader — used by dispatcher for monitoring
 # ---------------------------------------------------------------------------

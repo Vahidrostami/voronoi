@@ -18,7 +18,7 @@ Use `list_dir` on `src/voronoi/` to explore the current layout — do not rely o
 - **`server/`** — Execution layer (queue, dispatcher, prompt, workspace, sandbox, events)
 - **`science/`** — Rigor enforcement (gates, convergence, fabrication)
 - **`mcp/`** — MCP server (validated tool interface for Beads + .swarm/)
-- **`data/`** — Runtime content shipped with pip install (agents, prompts, skills, scripts, templates, demos)
+- **`data/`** — Runtime content shipped with pip install (agents, prompts, skills, instructions, hooks, scripts, templates, demos)
 
 ## Key Architecture Rules
 

@@ -39,11 +39,50 @@ because they're on disk, not in conversation context.
 
 ## Self-Monitoring Protocol
 
-1. If you notice forgetting earlier findings or repeating work:
+1. At the **start of every OODA cycle**, run `/context` to get ground-truth token usage
+2. Parse the output and include the snapshot in your checkpoint:
+
+```
+/context
+```
+
+This outputs something like:
+
+```
+● Context Usage
+  claude-opus-4.6 · 50k/200k tokens (25%)
+  ○ System/Tools:  22.6k (11%)
+  ◉ Messages:      27.3k (14%)
+  · Free Space:   109.6k (55%)
+  ◎ Buffer:        40.4k (20%)
+```
+
+3. Extract these values and pass them in your `voronoi_write_checkpoint` call:
+
+```json
+{
+  "context_snapshot": {
+    "model": "claude-opus-4.6",
+    "model_limit": 200000,
+    "total_used": 50000,
+    "system_tokens": 22600,
+    "message_tokens": 27300,
+    "free_tokens": 109600,
+    "buffer_tokens": 40400
+  }
+}
+```
+
+4. The dispatcher reads this snapshot and:
+   - Logs it to `events.jsonl` for timeline analysis
+   - Auto-derives `context_window_remaining_pct` from `free_tokens / model_limit`
+   - Triggers pressure directives based on **actual usage** instead of time heuristics
+
+5. If you notice forgetting earlier findings or repeating work:
    - Run `/context` to check token usage
-   - If above 80%, run `/compact` proactively
-2. After running `/compact`, re-read your checkpoint to restore strategic context
-3. If still above 90% after compacting, delegate remaining work to fresh agents
+   - If messages exceed 70% of the window, run `/compact` proactively
+6. After running `/compact`, re-read your checkpoint to restore strategic context
+7. If still above 90% after compacting, delegate remaining work to fresh agents
 
 ## Dispatcher Directive Response
 

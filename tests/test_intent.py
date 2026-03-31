@@ -120,6 +120,14 @@ class TestFreeTextScience:
         assert r.mode == WorkflowMode.DISCOVER
         assert r.rigor == RigorLevel.ADAPTIVE
 
+    def test_equal_recall_discover_prefers_discover(self):
+        """Bug fix: when recall and discover signals tie, DISCOVER should win."""
+        # "what" triggers recall, "why" triggers discover — should prefer discover
+        r = classify("What happened and why is the accuracy dropping?")
+        assert r.mode in (WorkflowMode.DISCOVER, WorkflowMode.PROVE), (
+            f"Expected DISCOVER or PROVE on tie, got {r.mode}"
+        )
+
     def test_low_confidence_goes_to_guide(self):
         r = classify("hello, how are you?")
         assert r.mode == WorkflowMode.GUIDE

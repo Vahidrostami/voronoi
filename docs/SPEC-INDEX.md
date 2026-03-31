@@ -47,7 +47,7 @@
 | Token budget tracking | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §9 |
 | Structured event log | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §10 |
 | Human review gates (Scientific+) | [SCIENCE.md](SCIENCE.md) | §5 (Convergence) |
-| Claim Ledger, provenance, objections | [SCIENCE.md](SCIENCE.md) | §11 (Claim Ledger) |
+| Claim Ledger, provenance, objections | [SCIENCE.md](SCIENCE.md) | §17 (Claim Ledger) |
 | Iterative science, review/continue | [WORKFLOWS.md](WORKFLOWS.md) | §9 (Multi-Run Iteration) |
 | Structured evaluator feedback | [SCIENCE.md](SCIENCE.md) | §5 (Convergence) |
 | Hybrid BM25+keyword search | [GATEWAY.md](GATEWAY.md) | §6 (Knowledge) |
@@ -95,9 +95,9 @@
 | `src/voronoi/server/repo_url.py` | SERVER.md | §9 | `test_repo_url.py` |
 | `src/voronoi/server/compact.py` | CONTEXT-MANAGEMENT.md | §12 | — |
 | `src/voronoi/science/claims.py` | SCIENCE.md | §16 | `test_claims.py` |
-| `src/voronoi/science/gates.py` | SCIENCE.md | §2 | `test_science.py` |
+| `src/voronoi/science/gates.py` | SCIENCE.md | §2, §10 | `test_science.py` |
 | `src/voronoi/science/convergence.py` | SCIENCE.md | §5 | `test_science.py` |
-| `src/voronoi/science/fabrication.py` | SCIENCE.md | §10 | `test_science.py` |
+| `src/voronoi/science/fabrication.py` | SCIENCE.md | §11 | `test_science.py` |
 | `src/voronoi/science/_helpers.py` | SCIENCE.md | — | `test_science.py` |
 | `src/voronoi/mcp/server.py` | ARCHITECTURE.md | §8 | `test_mcp.py` |
 | `src/voronoi/mcp/tools_beads.py` | ARCHITECTURE.md | §8 | `test_mcp.py` |

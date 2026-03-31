@@ -4,6 +4,19 @@ description: Multi-agent swarm orchestrator that classifies intent, selects rigo
 tools: [execute, read, edit, search]
 disable-model-invocation: false
 user-invokable: true
+handoffs:
+  - label: Check Progress
+    agent: progress
+    prompt: Show current investigation progress — task status, belief map, and criteria.
+    send: false
+  - label: Merge Results
+    agent: merge
+    prompt: Review and merge completed agent work back to main.
+    send: false
+  - label: Tear Down
+    agent: teardown
+    prompt: Clean up all agent sessions and worktrees, preserving Beads state.
+    send: false
 ---
 
 # Swarm Orchestrator Agent

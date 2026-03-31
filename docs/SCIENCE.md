@@ -441,7 +441,131 @@ Every investigation epic's first subtask is ALWAYS a baseline measurement. This 
 
 ---
 
-## 10. Anti-Fabrication
+## 10. Experiment Sentinel
+
+### Purpose
+
+Catches broken experiments **during execution** instead of after 30 hours of wasted compute. The Sentinel is an autonomous validation loop in the dispatcher that checks machine-readable experiment contracts against actual outputs.
+
+### The Problem It Solves
+
+Example: An encoding ablation study declares 4 conditions. The encoder produces L4 at 3% of L1's char count instead of the required 70–150%. The experiment runs all 36 scenarios across all 4 cells, consuming 30 hours of LLM calls, before anyone notices the manipulation collapsed. EVA (§8) would catch this — but only if the orchestrator runs it. The Sentinel catches it structurally, without relying on the orchestrator's attention.
+
+### Architecture
+
+```
+Orchestrator writes .swarm/experiment-contract.json
+  ↓
+Dispatcher sentinel_audit() runs at:
+  - contract file created/changed
+  - required output files produced
+  - phase gate crossings
+  - periodic timer (every 6h)
+  ↓
+Checks contract against actual artifacts
+  ↓
+Pass → .swarm/sentinel-audit.json (timestamped)
+Fail → DESIGN_INVALID + Telegram alert
+```
+
+### Experiment Contract
+
+Written by the orchestrator after experiment design, BEFORE dispatching workers.
+
+```python
+@dataclass
+class ExperimentContract:
+    experiment_id: str
+    independent_variable: str
+    conditions: list[str]
+    manipulation_checks: list[ManipulationCheck]
+    required_outputs: list[dict]      # [{path, description}]
+    degeneracy_checks: list[DegeneracyCheck]
+    phase_gates: list[PhaseGate]
+```
+
+### Check Types
+
+| Type | Purpose | Catches |
+|------|---------|---------|
+| `hash_distinct` | Field values differ across conditions | IV collapsed (identical encodings, same config) |
+| `value_range` | Numeric field within [min, max] | Ratio violations, out-of-spec parameters |
+| `metric_range` | Field std >= threshold | Degenerate metrics (all cells identical) |
+| `not_identical` | Values not all the same | Identical outputs across conditions |
+| `min_distinct_values` | At least N distinct values | Collapsed categorical variables |
+
+### Phase Gates
+
+Multi-phase experiments declare phase gate checks. The sentinel validates these when the orchestrator crosses phase boundaries:
+
+```python
+@dataclass
+class PhaseGate:
+    from_phase: str
+    to_phase: str
+    checks: list[dict]  # ManipulationCheck or DegeneracyCheck as dicts
+```
+
+### Audit Triggers
+
+| Trigger | When | Why |
+|---------|------|-----|
+| `contract_changed` | `.swarm/experiment-contract.json` modified | Re-validate after design changes |
+| `output_produced` | Any `required_outputs` file modified | Check outputs as they arrive |
+| `phase_transition` | Orchestrator checkpoint phase differs from last audited phase | Validate before committing to next phase |
+| `periodic` | Every N hours (default 6) | Safety net for anything missed |
+
+### Missing Contract Detection
+
+At Analytical+ rigor, if the orchestrator has created experiment-type tasks but no `.swarm/experiment-contract.json` exists after 1 hour, the sentinel warns and writes a directive forcing the orchestrator to write the contract. This prevents the sentinel from being silently bypassed by omission.
+
+### Empty-Resolve Handling
+
+When a target file exists but the declared field path resolves to no values, the sentinel distinguishes between:
+- **File not yet produced** → skip (pre-execution)
+- **File exists but field path resolves empty** → pass with warning (likely contract error)
+- **File exists and field path resolves to non-numeric values** → pass with warning
+
+This prevents silent false-passes when the contract's field paths don't match the actual output structure.
+
+### Escalation Path
+
+When the sentinel finds a critical failure:
+1. Writes `.swarm/sentinel-audit.json` (persisted for orchestrator to read)
+2. Writes `.swarm/dispatcher-directive.json` with `level: sentinel_violation` (forces orchestrator to act)
+3. Returns `design_invalid` event (triggers Telegram alert to PI)
+4. `_is_complete()` returns False while DESIGN_INVALID exists (hard gate — cannot be bypassed)
+
+The directive explicitly states: "This IS a DESIGN_INVALID event — do NOT create a separate DESIGN_INVALID task." This prevents duplicate escalation.
+
+### Relationship to EVA
+
+EVA (§8) is a **semantic** check performed by the investigator agent — "was the IV actually varied?" requires understanding the domain. The Sentinel is a **structural** check performed by the dispatcher — "does this hash match? is this number in range?" requires no domain understanding. They are complementary:
+
+| | EVA | Sentinel |
+|---|---|---|
+| Who runs it | Investigator agent | Dispatcher (autonomous) |
+| When | After experiment completion | During execution |
+| What it checks | Semantic validity | Structural contract compliance |
+| Can be skipped | Only if orchestrator forgets | Never (runs automatically) |
+| Domain knowledge | Required | Not required |
+
+### Functions
+
+```python
+def load_experiment_contract(workspace: Path) -> ExperimentContract | None
+def save_experiment_contract(workspace: Path, contract: ExperimentContract) -> None
+def validate_experiment_contract(workspace: Path, contract: ExperimentContract | None = None, trigger: str = "periodic") -> SentinelAuditResult
+def validate_phase_gate(workspace: Path, contract: ExperimentContract, from_phase: str, to_phase: str) -> SentinelAuditResult
+```
+
+### Invariant
+
+**INV-39**: At Analytical+ rigor, experiments with a declared contract MUST pass the Sentinel audit before phase gate crossings. The dispatcher enforces this structurally — it does not rely on the orchestrator to check.
+
+---
+
+## 11. Anti-Fabrication
 
 ### Purpose
 
@@ -495,7 +619,7 @@ def verify_finding_against_data(
 
 ---
 
-## 11. Data Integrity
+## 12. Data Integrity
 
 ### Functions
 
@@ -508,7 +632,7 @@ All raw data files MUST be hashed immediately after collection. Hash stored in f
 
 ---
 
-## 12. Lab Notebook
+## 13. Lab Notebook
 
 ### Purpose
 
@@ -539,7 +663,7 @@ File location: `.swarm/lab-notebook.json`
 
 ---
 
-## 13. Experiment Ledger
+## 14. Experiment Ledger
 
 ### Purpose
 
@@ -565,7 +689,7 @@ timestamp	task_id	branch	metric_name	metric_value	status	description
 
 ---
 
-## 14. Claim-Evidence Traceability
+## 15. Claim-Evidence Traceability
 
 ### Purpose
 
@@ -600,7 +724,7 @@ Every claim in the deliverable MUST trace to specific finding IDs. Prevents unsu
 
 ---
 
-## 15. Anti-Simulation Enforcement
+## 16. Anti-Simulation Enforcement
 
 ### Purpose
 
@@ -621,7 +745,7 @@ Dry-run mode for debugging is acceptable ONLY if:
 
 ---
 
-## 16. Claim Ledger — Cross-Run Scientific State
+## 17. Claim Ledger — Cross-Run Scientific State
 
 ### Purpose
 

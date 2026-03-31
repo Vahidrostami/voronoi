@@ -291,6 +291,11 @@ class InvestigationDispatcher:
      - `_diff_tasks()` — compares task snapshot for new/started/completed tasks
      - `_check_findings()` — detects new FINDING tasks (deduplicates via notified set)
      - `_check_design_invalid()` — detects DESIGN_INVALID flags in open tasks
+     - `_check_sentinel()` — experiment contract validation (see SCIENCE.md §10):
+       - Detects missing contract after 1h at Analytical+ rigor
+       - Triggers on contract change, output production, phase transition, or periodic timer
+       - Runs phase gate validation when orchestrator checkpoint phase changes
+       - Writes `sentinel_violation` directive on failure
      - `_detect_phase()` — classifies phase from workspace file artifacts
      - `_check_paradigm_stress()` — detects contradictions (Scientific+ only)
      - `_check_heartbeat_stalls()` — detects agent inactivity via heartbeat files
@@ -443,11 +448,14 @@ def build_orchestrator_prompt(
 | 9 | Phase gates | Hard gates (no paper while DESIGN_INVALID exists) |
 | 10 | Anti-simulation | Hard gate to detect fake LLM calls |
 | 11 | Workflow steps | Mode-specific OODA/iteration cycles |
-| 12 | Tools | bd commands, spawn-agent.sh, merge-agent.sh, figures |
-| 13 | Worker prompts | Role file inclusion, artifact contracts |
-| 14 | Rules | Concurrency limits, proofs, never edit worker code |
-| 15 | Rigor rules | Analytical/scientific/experimental enforcement |
-| 16 | Eval score | `.swarm/eval-score.json` output format |
+| 12 | Long-running processes | **NEVER block orchestrator** — delegate experiments to workers |
+| 13 | Code changes | **NEVER write >20 lines** — delegate coding to workers |
+| 14 | Manuscript delegation | **ALWAYS delegate to Scribe** |
+| 15 | Tools | bd commands, spawn-agent.sh, merge-agent.sh, figures |
+| 16 | Worker prompts | Role file inclusion, artifact contracts |
+| 17 | Rules | Concurrency limits, proofs, never edit worker code |
+| 18 | Rigor rules | Analytical/scientific/experimental enforcement |
+| 19 | Eval score | `.swarm/eval-score.json` output format |
 
 ### Key Design Principle
 
@@ -482,7 +490,7 @@ Provisions investigation workspaces with auto-cloning, git worktrees, and framew
 │   └── owner--repo.git        # --reference for deduplication
 └── active/                    # Active investigation workspaces
     └── inv-{id}-{slug}/       # One per investigation
-        ├── .github/           # Agent roles + skills
+        ├── .github/           # Agent roles, skills, instructions, hooks
         ├── .swarm/            # Orchestrator state
         ├── scripts/           # Infrastructure scripts
         ├── data/raw/          # Experimental data

@@ -18,8 +18,8 @@ FRAMEWORK_DIRS = ["scripts"]
 # Top-level template files (written from data/templates/)
 TEMPLATE_FILES = ["CLAUDE.md", "AGENTS.md"]
 
-# Runtime subdirectories to copy into target .github/ (agent definitions, prompts, skills)
-GITHUB_SUBDIRS = ["agents", "prompts", "skills"]
+# Runtime subdirectories to copy into target .github/ (agent definitions, prompts, skills, instructions, hooks)
+GITHUB_SUBDIRS = ["agents", "prompts", "skills", "instructions", "hooks"]
 
 # Files that should never be overwritten during upgrade
 USER_OWNED = {"CLAUDE.md", "AGENTS.md"}
@@ -161,7 +161,10 @@ def cmd_init(args: argparse.Namespace) -> None:
             _copy_dir(src, github_dst / subdir)
 
     _write_mcp_config(github_dst)
-    print("  ✓ .github/ (agents, prompts, skills, mcp)")
+    # Make hook scripts executable
+    hooks_dst = github_dst / "hooks"
+    _ensure_executable(hooks_dst)
+    print("  ✓ .github/ (agents, prompts, skills, instructions, hooks, mcp)")
 
     # Copy runtime constitution templates
     templates_dir = _resolve_templates_dir(data)
@@ -227,7 +230,10 @@ def cmd_upgrade(args: argparse.Namespace) -> None:
         if src.is_dir():
             _copy_dir(src, dst)
     _write_mcp_config(github_dst)
-    print("  ✓ .github/ (agents, prompts, skills, mcp replaced)")
+    # Make hook scripts executable
+    hooks_dst = github_dst / "hooks"
+    _ensure_executable(hooks_dst)
+    print("  ✓ .github/ (agents, prompts, skills, instructions, hooks, mcp replaced)")
 
     # User-owned files: only copy if missing
     templates_dir = _resolve_templates_dir(data)

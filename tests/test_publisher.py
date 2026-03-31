@@ -37,6 +37,23 @@ class TestGitHubPublisher:
         assert success is False
 
     @patch("voronoi.server.publisher._run_cmd")
+    def test_publish_fallback_updates_remote_url(self, mock_cmd, tmp_path):
+        """Bug fix: if git remote add fails, set-url should be tried."""
+        mock_cmd.side_effect = [
+            (1, "repo exists"),          # gh repo create fails
+            (1, "remote already exists"), # git remote add fails
+            (0, ""),                      # git remote set-url succeeds
+            (0, ""),                      # git push succeeds
+        ]
+        pub = GitHubPublisher(lab_org="lab")
+        success, url = pub.publish(str(tmp_path), "test-repo")
+        assert success is True
+        assert "lab/test-repo" in url
+        # Verify set-url was called
+        set_url_call = mock_cmd.call_args_list[2]
+        assert "set-url" in set_url_call[0][0]
+
+    @patch("voronoi.server.publisher._run_cmd")
     def test_create_finding_issues(self, mock_cmd):
         mock_cmd.return_value = (0, "https://github.com/lab/repo/issues/1")
         pub = GitHubPublisher(lab_org="lab")

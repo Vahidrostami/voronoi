@@ -155,6 +155,10 @@ class OrchestratorCheckpoint:
     tokens_this_cycle: int = 0
     tokens_cumulative: int = 0
     context_window_remaining_pct: float = 1.0
+    # Structured /context snapshot — ground-truth from Copilot CLI
+    context_snapshot: dict = field(default_factory=dict)
+    # Expected keys: model, model_limit, total_used, system_tokens,
+    # message_tokens, free_tokens, buffer_tokens (all ints except model=str)
 
 
 def load_checkpoint(workspace: Path) -> OrchestratorCheckpoint:
@@ -182,6 +186,7 @@ def load_checkpoint(workspace: Path) -> OrchestratorCheckpoint:
             tokens_this_cycle=d.get("tokens_this_cycle", 0),
             tokens_cumulative=d.get("tokens_cumulative", 0),
             context_window_remaining_pct=d.get("context_window_remaining_pct", 1.0),
+            context_snapshot=d.get("context_snapshot", {}),
         )
     except (json.JSONDecodeError, OSError) as e:
         logger.warning("Failed to load orchestrator checkpoint: %s", e)
@@ -215,6 +220,18 @@ def format_checkpoint_for_prompt(cp: OrchestratorCheckpoint) -> str:
         lines.append(f"Token budget: {cp.tokens_this_cycle:,} this cycle, "
                      f"{cp.tokens_cumulative:,} cumulative "
                      f"({cp.context_window_remaining_pct:.0%} window remaining)")
+    if cp.context_snapshot:
+        snap = cp.context_snapshot
+        model = snap.get("model", "")
+        limit = snap.get("model_limit", 0)
+        sys_tok = snap.get("system_tokens", 0)
+        msg_tok = snap.get("message_tokens", 0)
+        free_tok = snap.get("free_tokens", 0)
+        if limit:
+            lines.append(
+                f"Context ({model}): system={sys_tok:,} messages={msg_tok:,} "
+                f"free={free_tok:,} / {limit:,}"
+            )
     if cp.recent_events:
         lines.append("\nRecent events:")
         lines.extend(f"  - {e}" for e in cp.recent_events)

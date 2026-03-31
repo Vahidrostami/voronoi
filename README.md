@@ -215,7 +215,10 @@ DISCOVER starts light and escalates rigor as hypotheses crystallize. PROVE has f
 | Statistician | — | ✅ | ✅ |
 | Methodologist | — | ✅ | ✅ |
 | Pre-registration | — | ✅ | ✅ |
+| Experiment Sentinel | — | ✅ | ✅ |
 | Replication | — | — | ✅ (experimental) |
+
+**Experiment Sentinel** — the dispatcher autonomously validates experiment contracts against actual outputs during execution. Catches collapsed manipulations, degenerate metrics, and broken phase gates *before* wasting hours of compute. See `docs/SCIENCE.md` §10.
 
 **Evidence System** — every finding includes:
 
@@ -279,6 +282,11 @@ src/voronoi/
 ```
 
 **File audience separation**: The repo-root `CLAUDE.md` contains developer instructions. Investigation workspaces get `src/voronoi/data/templates/CLAUDE.md` — a separate runtime constitution with science-specific rules. They are never mixed.
+
+**Agent steering**: Investigation workspaces ship with scoped instructions (`.github/instructions/`), lifecycle hooks (`.github/hooks/`), and domain skills (`.github/skills/`):
+- **Instructions** apply automatically based on file context — anti-fabrication rules for experiment code, data integrity for raw data, finding schemas for results
+- **Hooks** enforce invariants at agent lifecycle points — session start injects Beads status, and destructive commands on raw data are blocked before execution
+- **Skills** load domain knowledge on demand — Copilot CLI usage patterns, data hashing protocols, evidence management, and 19 other specialized workflows
 
 Each agent is a **full Copilot CLI session** in its own **tmux window** with its own **git worktree**. No custom IPC — agents communicate through git + [Beads](https://github.com/steveyegge/beads).
 
