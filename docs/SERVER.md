@@ -364,7 +364,7 @@ The convergence status check (`_convergence_status_ok`) accepts `converged`, `CO
 
 ### Criteria Synchronization
 
-The dispatcher syncs `criteria_status` from the orchestrator checkpoint into `success-criteria.json` on each poll cycle via `_sync_criteria_from_checkpoint()`. This prevents stale criteria state when the orchestrator updates its checkpoint but doesn't write back to the canonical criteria file. The state digest generator also cross-references both sources, preferring whichever has more "met" values.
+The dispatcher syncs `criteria_status` from the orchestrator checkpoint into `success-criteria.json` on each poll cycle via `_sync_criteria_from_checkpoint()`. This sync is promotion-only: checkpoint entries can mark a criterion as met, but they do not clear a criterion that is already marked met in the canonical file. That prevents stale or partial checkpoints from regressing canonical criteria state when the orchestrator updates its checkpoint but does not write back the full criteria file. The state digest generator also cross-references both sources, preferring whichever has more "met" values.
 
 ### Completion Handling
 

@@ -2070,6 +2070,32 @@ class TestSyncCriteriaFromCheckpoint:
         assert result[1]["met"] is False  # SC2: checkpoint says False
         assert result[2]["met"] is True   # SC3: checkpoint says True
 
+    def test_sync_does_not_demote_met_criteria(self, dispatcher_setup):
+        """A stale checkpoint must not clear already-met canonical criteria."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="prove",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "orchestrator-checkpoint.json").write_text(json.dumps({
+            "criteria_status": {"SC1": False, "SC2": True}
+        }))
+        (swarm / "success-criteria.json").write_text(json.dumps([
+            {"id": "SC1", "description": "First", "met": True},
+            {"id": "SC2", "description": "Second", "met": False},
+        ]))
+
+        d._sync_criteria_from_checkpoint(run)
+
+        result = json.loads((swarm / "success-criteria.json").read_text())
+        assert result[0]["met"] is True   # stale checkpoint must not demote
+        assert result[1]["met"] is True   # checkpoint can still promote
+
     def test_sync_no_op_when_already_synced(self, dispatcher_setup):
         """Should not rewrite file if nothing changed."""
         d, msgs, docs, tmp_path = dispatcher_setup

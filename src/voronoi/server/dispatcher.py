@@ -740,8 +740,9 @@ class InvestigationDispatcher:
         The orchestrator agent updates ``checkpoint.criteria_status`` (a dict
         mapping criterion IDs to booleans) but may never write those updates
         back to the canonical ``success-criteria.json`` (a list of dicts with
-        ``met`` fields).  This causes the state digest, resume prompt, and
-        convergence checker to report stale "0/N met" even when work is done.
+        ``met`` fields). This method only promotes criteria to met when the
+        checkpoint indicates progress; it never clears a met criterion from the
+        canonical file because the checkpoint may be stale or partial.
 
         Called each poll cycle after ``_refresh_eval_score()``.
         """
@@ -767,8 +768,8 @@ class InvestigationDispatcher:
             if not isinstance(item, dict):
                 continue
             cid = item.get("id", "")
-            if cid in cs and bool(cs[cid]) != bool(item.get("met")):
-                item["met"] = bool(cs[cid])
+            if cid in cs and bool(cs[cid]) and not bool(item.get("met")):
+                item["met"] = True
                 changed = True
 
         if changed:
