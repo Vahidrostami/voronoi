@@ -90,6 +90,7 @@ def load_belief_map(workspace: Path) -> BeliefMap:
         raw_hyps = data.get("hypotheses", [])
         # Schema migration: accept both list-of-objects (canonical) and
         # dict-keyed-by-id (legacy/malformed).  See INV-33.
+        migrated = False
         if isinstance(raw_hyps, dict):
             logger.warning("belief-map.json has dict-keyed hypotheses in %s — migrating to list", workspace)
             items: list[dict] = []
@@ -101,6 +102,7 @@ def load_belief_map(workspace: Path) -> BeliefMap:
                 elif isinstance(val, str):
                     items.append({"id": key, "name": val})
             raw_hyps = items
+            migrated = True
         if not isinstance(raw_hyps, list):
             logger.warning("belief-map.json hypotheses is not a list or dict in %s", workspace)
             raw_hyps = []
@@ -113,6 +115,14 @@ def load_belief_map(workspace: Path) -> BeliefMap:
                 status=h.get("status", "untested"), evidence=h.get("evidence", []),
                 testability=h.get("testability", 0.5), impact=h.get("impact", 0.5),
             ))
+        # Persist migration so subsequent reads don't re-trigger warnings
+        if migrated:
+            try:
+                data["hypotheses"] = raw_hyps
+                path.write_text(json.dumps(data, indent=2))
+                logger.info("Persisted belief-map migration for %s", workspace)
+            except OSError:
+                pass
         return bm
     except (json.JSONDecodeError, OSError, AttributeError, TypeError) as e:
         logger.warning("Failed to load belief map: %s", e)

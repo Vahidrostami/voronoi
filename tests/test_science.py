@@ -341,6 +341,28 @@ class TestBeliefMap:
         assert len(bm.hypotheses) == 1
         assert bm.hypotheses[0].id == "H1"
 
+    def test_load_dict_keyed_persists_migration(self, tmp_path):
+        """Dict-keyed migration should be written back to disk so it doesn't re-trigger."""
+        (tmp_path / ".swarm").mkdir()
+        original = json.dumps({
+            "cycle": 2,
+            "hypotheses": {
+                "H1": {"name": "Encoding helps", "prior": 0.6, "status": "confirmed"},
+            },
+        })
+        (tmp_path / ".swarm" / "belief-map.json").write_text(original)
+        bm = load_belief_map(tmp_path)
+        assert len(bm.hypotheses) == 1
+
+        # Read the file again — it should now be in list format
+        data = json.loads((tmp_path / ".swarm" / "belief-map.json").read_text())
+        assert isinstance(data["hypotheses"], list)
+        assert data["hypotheses"][0]["id"] == "H1"
+
+        # Second load should NOT log a migration warning
+        bm2 = load_belief_map(tmp_path)
+        assert len(bm2.hypotheses) == 1
+
 
 # ---------------------------------------------------------------------------
 # Convergence

@@ -89,6 +89,22 @@ def _write_mcp_config(github_dst: Path) -> None:
     mcp_config_path.write_text(json.dumps(mcp_config, indent=2))
 
 
+def _server_tmp_dir(base_dir: Path) -> Path:
+    """Return the dedicated temp root for server subprocesses."""
+    return base_dir / "tmp"
+
+
+def _server_runtime_env(base_dir: Path) -> dict[str, str]:
+    """Build a subprocess environment rooted in the server temp directory."""
+    tmp_dir = _server_tmp_dir(base_dir)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    env = os.environ.copy()
+    for var in ("TMPDIR", "TMP", "TEMP"):
+        env[var] = str(tmp_dir)
+    return env
+
+
 def _build_orchestrator_prompt(
     prompt_path: str, output_dir: str, safe: bool, max_agents: int = 4,
 ) -> str:
@@ -511,6 +527,7 @@ def _server_init(args: argparse.Namespace) -> None:
     config.base_dir.mkdir(parents=True, exist_ok=True)
     (config.base_dir / "objects").mkdir(exist_ok=True)
     (config.base_dir / "active").mkdir(exist_ok=True)
+    _server_tmp_dir(config.base_dir).mkdir(exist_ok=True)
 
     if not config.config_path.exists():
         config.save()
@@ -674,7 +691,7 @@ def _server_start(args: argparse.Namespace) -> None:
     print(f"   Press Ctrl+C to stop\n")
 
     # Pass log level to the bridge subprocess via environment
-    env = os.environ.copy()
+    env = _server_runtime_env(config.base_dir)
     env.setdefault("VORONOI_LOG_LEVEL", log_level)
 
     try:

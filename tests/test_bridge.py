@@ -277,6 +277,21 @@ class TestKnowledgeHandlers:
         result = handle_belief(str(tmp_path))
         assert "H1" in result
 
+    def test_handle_belief_dict_keyed_hypotheses(self, tmp_path):
+        """handle_belief should not crash with dict-keyed hypotheses."""
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "belief-map.json").write_text(json.dumps({
+            "hypotheses": {
+                "H1": {"name": "Encoding helps", "prior": 0.6, "status": "confirmed"},
+                "H2": "Just a string",
+            },
+        }))
+        result = handle_belief(str(tmp_path))
+        assert "Encoding helps" in result
+        assert "Just a string" in result
+        assert "Belief Map" in result
+
     def test_handle_journal_no_file(self, tmp_path):
         result = handle_journal(str(tmp_path))
         assert "No journal" in result

@@ -165,12 +165,29 @@ def _write_state_digest(workspace: Path) -> bool:
     swarm = workspace / ".swarm"
     lines: list[str] = ["# State Digest (auto-generated)\n"]
 
-    # Success criteria
+    # Success criteria — cross-reference with checkpoint criteria_status
+    # to avoid stale "0/13 met" when the checkpoint shows progress.
     sc_path = swarm / "success-criteria.json"
     if sc_path.exists():
         try:
             criteria = json.loads(sc_path.read_text())
             if isinstance(criteria, list) and criteria:
+                # Check checkpoint for a potentially fresher criteria_status
+                cp_cs: dict = {}
+                cp_path = swarm / "orchestrator-checkpoint.json"
+                if cp_path.exists():
+                    try:
+                        cp = json.loads(cp_path.read_text())
+                        if isinstance(cp, dict):
+                            cp_cs = cp.get("criteria_status", {})
+                            if not isinstance(cp_cs, dict):
+                                cp_cs = {}
+                    except (json.JSONDecodeError, OSError):
+                        pass
+                # Merge: if checkpoint says met, override
+                for c in criteria:
+                    if isinstance(c, dict) and cp_cs.get(c.get("id")):
+                        c["met"] = True
                 met = sum(1 for c in criteria if c.get("met"))
                 lines.append(f"## Success Criteria: {met}/{len(criteria)} met\n")
                 for c in criteria:

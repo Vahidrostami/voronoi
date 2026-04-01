@@ -475,7 +475,9 @@ class InvestigationDispatcher:
         # appears in pipe-pane logs, keeping secrets out of logs (INV-31).
         # COPILOT_HOME and GH_HOST matter for long-running servers because
         # restarted tmux sessions must resolve the same stored Copilot state
-        # directory and GitHub host as the parent process.
+        # directory and GitHub host as the parent process. TMPDIR/TMP/TEMP
+        # keep worker-side tests and scratch files inside ~/.voronoi/tmp
+        # instead of the system temp dir.
         env_file = workspace_path / ".swarm" / ".tmux-env"
         env_lines: list[str] = []
         for var in (
@@ -484,6 +486,9 @@ class InvestigationDispatcher:
             "COPILOT_GITHUB_TOKEN",
             "COPILOT_HOME",
             "GH_HOST",
+            "TMPDIR",
+            "TMP",
+            "TEMP",
         ):
             val = os.environ.get(var)
             if val:
@@ -549,6 +554,9 @@ class InvestigationDispatcher:
 
             # Read eval_score from workspace if available
             self._refresh_eval_score(run)
+
+            # Sync checkpoint criteria_status → success-criteria.json
+            self._sync_criteria_from_checkpoint(run)
 
             result = subprocess.run(
                 ["tmux", "has-session", "-t", run.tmux_session],
@@ -725,6 +733,51 @@ class InvestigationDispatcher:
                 }
             logger.info("Restored %d tasks for #%d", len(run.task_snapshot),
                         run.investigation_id)
+
+    def _sync_criteria_from_checkpoint(self, run: RunningInvestigation) -> None:
+        """Sync criteria_status from orchestrator checkpoint into success-criteria.json.
+
+        The orchestrator agent updates ``checkpoint.criteria_status`` (a dict
+        mapping criterion IDs to booleans) but may never write those updates
+        back to the canonical ``success-criteria.json`` (a list of dicts with
+        ``met`` fields).  This causes the state digest, resume prompt, and
+        convergence checker to report stale "0/N met" even when work is done.
+
+        Called each poll cycle after ``_refresh_eval_score()``.
+        """
+        cp_path = run.workspace_path / ".swarm" / "orchestrator-checkpoint.json"
+        sc_path = run.workspace_path / ".swarm" / "success-criteria.json"
+        if not cp_path.exists() or not sc_path.exists():
+            return
+        try:
+            cp = json.loads(cp_path.read_text())
+            if not isinstance(cp, dict):
+                return
+            cs = cp.get("criteria_status")
+            if not isinstance(cs, dict) or not cs:
+                return
+            criteria = json.loads(sc_path.read_text())
+            if not isinstance(criteria, list) or not criteria:
+                return
+        except (json.JSONDecodeError, OSError):
+            return
+
+        changed = False
+        for item in criteria:
+            if not isinstance(item, dict):
+                continue
+            cid = item.get("id", "")
+            if cid in cs and bool(cs[cid]) != bool(item.get("met")):
+                item["met"] = bool(cs[cid])
+                changed = True
+
+        if changed:
+            try:
+                sc_path.write_text(json.dumps(criteria, indent=2))
+                logger.debug("Synced criteria_status → success-criteria.json for #%d",
+                             run.investigation_id)
+            except OSError:
+                pass
 
     def _check_criteria_progress(self, run: RunningInvestigation,
                                   elapsed_hours: float) -> None:
@@ -1536,6 +1589,23 @@ class InvestigationDispatcher:
                 return True
         return False
 
+    _CONVERGED_STATUSES = frozenset({
+        "converged", "exhausted", "diminishing_returns", "negative_result",
+    })
+
+    @staticmethod
+    def _convergence_status_ok(data: dict) -> bool:
+        """Check if convergence.json data indicates completion.
+
+        Case-insensitive: agents may write 'CONVERGED' or 'converged'.
+        """
+        if data.get("converged", False):
+            return True
+        status = data.get("status", "")
+        if isinstance(status, str):
+            return status.lower() in InvestigationDispatcher._CONVERGED_STATUSES
+        return False
+
     def _is_complete(self, run: RunningInvestigation) -> bool:
         # HARD GATE: never complete while DESIGN_INVALID tasks are open
         if self._has_open_design_invalid(run):
@@ -1550,9 +1620,8 @@ class InvestigationDispatcher:
             if conv.exists():
                 try:
                     data = json.loads(conv.read_text())
-                    if isinstance(data, dict):
-                        return data.get("converged", False) or \
-                            data.get("status") in ("converged", "exhausted", "diminishing_returns", "negative_result")
+                    if isinstance(data, dict) and self._convergence_status_ok(data):
+                        return True
                 except (json.JSONDecodeError, OSError):
                     pass
             # Deliverable exists but no convergence signal — attempt to
@@ -1563,9 +1632,8 @@ class InvestigationDispatcher:
             if conv.exists():
                 try:
                     data = json.loads(conv.read_text())
-                    if isinstance(data, dict):
-                        return data.get("converged", False) or \
-                            data.get("status") in ("converged", "exhausted", "diminishing_returns", "negative_result")
+                    if isinstance(data, dict) and self._convergence_status_ok(data):
+                        return True
                 except (json.JSONDecodeError, OSError):
                     pass
             return False
@@ -1573,8 +1641,8 @@ class InvestigationDispatcher:
         if conv.exists():
             try:
                 data = json.loads(conv.read_text())
-                if isinstance(data, dict):
-                    return data.get("status") in ("converged", "exhausted", "diminishing_returns", "negative_result")
+                if isinstance(data, dict) and self._convergence_status_ok(data):
+                    return True
             except (json.JSONDecodeError, OSError):
                 pass
         return False
@@ -1639,6 +1707,25 @@ class InvestigationDispatcher:
         elapsed = (time.time() - run.started_at) / 60
         total_tasks = len(run.task_snapshot)
         closed = sum(1 for t in run.task_snapshot.values() if t["status"] == "closed")
+
+        # If task_snapshot is empty (e.g. after dispatcher restart), try to
+        # restore from beads so the completion message isn't misleading (0/0).
+        if total_tasks == 0:
+            try:
+                result = subprocess.run(
+                    ["bd", "list", "--json"],
+                    capture_output=True, text=True, timeout=10,
+                    cwd=str(run.workspace_path),
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    tasks = json.loads(result.stdout)
+                    if isinstance(tasks, list):
+                        total_tasks = len(tasks)
+                        closed = sum(1 for t in tasks
+                                     if isinstance(t, dict) and t.get("status") == "closed")
+            except (subprocess.TimeoutExpired, json.JSONDecodeError,
+                    FileNotFoundError, OSError):
+                pass
 
         # Always clean up tmux sessions on completion
         self._cleanup_tmux(run)
@@ -1751,7 +1838,9 @@ class InvestigationDispatcher:
         """Check if the orchestrator exited with workers still running.
 
         Reads the checkpoint for ``active_workers`` and checks if any of
-        those tmux windows are still alive in the swarm session.  If so,
+        those tmux windows are still alive in the swarm session.  Also
+        checks for orphaned copilot processes whose cwd is inside the
+        workspace (workers that survived after tmux cleanup).  If so,
         the orchestrator intentionally exited to conserve context and
         should NOT be restarted until the workers finish.
         """
@@ -1793,6 +1882,23 @@ class InvestigationDispatcher:
                         return True
             except (subprocess.TimeoutExpired, OSError):
                 continue
+
+        # Fallback: check for orphaned copilot processes whose cwd is
+        # inside this workspace (workers that outlived their tmux window).
+        ws_str = str(run.workspace_path)
+        try:
+            result = subprocess.run(
+                ["pgrep", "-fa", self.config.agent_command],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0:
+                for line in result.stdout.strip().splitlines():
+                    if ws_str in line:
+                        logger.debug("Orphaned worker process for %s: %s",
+                                     run.label, line[:120])
+                        return True
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            pass
 
         # No live workers found — workers finished, proceed with restart
         logger.info("All active_workers done for %s, proceeding with restart",

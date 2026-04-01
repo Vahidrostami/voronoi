@@ -202,6 +202,8 @@ The dispatcher injects several Copilot CLI flags at launch time:
 
 Both orchestrator and worker tmux launches also propagate Copilot CLI auth/state environment needed for durable restarts: `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`, `COPILOT_HOME`, and `GH_HOST`. This ensures a resumed agent uses the same stored Copilot state directory and GitHub host selection as the parent server process, rather than falling back to a fresh login prompt.
 
+Server runtime also reserves `~/.voronoi/tmp` as the shared temp root. `voronoi server start` exports `TMPDIR`, `TMP`, and `TEMP` to that directory, and `_launch_in_tmux()` relays the same values into orchestrator sessions so worker-side tests and scratch files stay under server state instead of falling back to the system `/tmp`.
+
 **Effort-by-rigor mapping** (applied in `_launch_in_tmux()` and `spawn-agent.sh`):
 
 | Rigor | `--effort` | Rationale |
@@ -354,9 +356,15 @@ Phase inferred from workspace artifacts:
 |--------|---------|
 | tmux session dies | Agent finished (or crashed) — try restart if retries remain |
 | `deliverable.md` exists | Standard-rigor completion |
-| `deliverable.md` + `convergence.json` exist | Analytical+ completion |
+| `deliverable.md` + `convergence.json` exist | Analytical+ completion (convergence status is **case-insensitive**) |
 | DESIGN_INVALID open | **Hard gate** — blocks completion even if deliverable exists |
 | Timeout reached | Forced completion with exhaustion marker |
+
+The convergence status check (`_convergence_status_ok`) accepts `converged`, `CONVERGED`, or any case variant for all valid statuses (`converged`, `exhausted`, `diminishing_returns`, `negative_result`). It also checks the legacy `converged: true` boolean field.
+
+### Criteria Synchronization
+
+The dispatcher syncs `criteria_status` from the orchestrator checkpoint into `success-criteria.json` on each poll cycle via `_sync_criteria_from_checkpoint()`. This prevents stale criteria state when the orchestrator updates its checkpoint but doesn't write back to the canonical criteria file. The state digest generator also cross-references both sources, preferring whichever has more "met" values.
 
 ### Completion Handling
 
@@ -372,7 +380,8 @@ When tmux session dies:
 1. **Classify the exit first** — check if agent logged out cleanly vs crashed unexpectedly
 2. If exit was clean but incomplete, check if a human gate is pending — if so, do NOT retry (the agent is waiting for approval)
 3. **Check for auth failure** — normalize the log tail first (strip ANSI/TUI control sequences, collapse punctuation noise), then inspect it for auth-related patterns ("authenticate", "gh auth login", "COPILOT_GITHUB_TOKEN", etc.). If matched, transition to `paused` state instead of burning a retry. Send Telegram notification with `/resume` instructions.
-4. Check retry limit (`max_retries`, default 2)
+4. **Check for orphaned workers** — in addition to checking tmux windows, `_has_active_workers()` uses `pgrep` to detect orphaned copilot processes whose command line references the workspace path. This prevents premature restart when workers outlive their tmux session.
+5. Check retry limit (`max_retries`, default 2)
 5. Send contextual notification: "exited early" for clean exits, "crashed" only for unexpected exits
 6. Validate orchestrator prompt still exists
 7. Build **resume prompt** that includes: the original question, essential protocol references, checkpoint state, success criteria status, task summary, and clear next actions
@@ -488,6 +497,7 @@ Provisions investigation workspaces with auto-cloning, git worktrees, and framew
 ~/.voronoi/
 ├── objects/                    # Bare git repos (shared object store)
 │   └── owner--repo.git        # --reference for deduplication
+├── tmp/                        # Dedicated temp root for bridge + agent subprocesses
 └── active/                    # Active investigation workspaces
     └── inv-{id}-{slug}/       # One per investigation
         ├── .github/           # Agent roles, skills, instructions, hooks

@@ -1048,11 +1048,35 @@ class TestLaunchInTmux:
         content = env_file.read_text()
         assert "GH_TOKEN=" in content
 
+    def test_launch_propagates_runtime_temp_env(self, dispatcher_setup, monkeypatch):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        monkeypatch.setenv("TMPDIR", "/srv/voronoi-tmp")
+        monkeypatch.setenv("TMP", "/srv/voronoi-tmp")
+        monkeypatch.setenv("TEMP", "/srv/voronoi-tmp")
+        (tmp_path / ".swarm").mkdir(parents=True, exist_ok=True)
+
+        with patch("voronoi.server.dispatcher.shutil.which", return_value="/bin/echo"), \
+             patch("voronoi.server.dispatcher.subprocess.run",
+                   return_value=MagicMock(returncode=0, stderr=b"")) as mock_run:
+            d._launch_in_tmux("test-session", tmp_path)
+
+        calls = [call.args[0] for call in mock_run.call_args_list]
+        assert ["tmux", "set-environment", "-t", "test-session", "TMPDIR", "/srv/voronoi-tmp"] in calls
+        assert ["tmux", "set-environment", "-t", "test-session", "TMP", "/srv/voronoi-tmp"] in calls
+        assert ["tmux", "set-environment", "-t", "test-session", "TEMP", "/srv/voronoi-tmp"] in calls
+
+        env_file = tmp_path / ".swarm" / ".tmux-env"
+        assert env_file.exists()
+        content = env_file.read_text()
+        assert "TMPDIR=" in content
+        assert "TMP=" in content
+        assert "TEMP=" in content
+
     def test_no_env_file_when_no_vars(self, dispatcher_setup, monkeypatch):
         """No env file or source command when no auth vars are set."""
         d, msgs, docs, tmp_path = dispatcher_setup
         for var in ("GH_TOKEN", "GITHUB_TOKEN", "COPILOT_GITHUB_TOKEN",
-                    "COPILOT_HOME", "GH_HOST"):
+                    "COPILOT_HOME", "GH_HOST", "TMPDIR", "TMP", "TEMP"):
             monkeypatch.delenv(var, raising=False)
         (tmp_path / ".swarm").mkdir(parents=True, exist_ok=True)
 
@@ -1919,3 +1943,401 @@ class TestResumePromptLabel:
         assert "RESTART" in content
         assert "attempt 2/2" in content
         assert "RESUME" not in content
+
+
+class TestConvergenceStatusCaseInsensitive:
+    """Tests for case-insensitive convergence status checking."""
+
+    def test_is_complete_uppercase_converged(self, dispatcher_setup):
+        """_is_complete should accept uppercase CONVERGED status."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="prove",
+            rigor="scientific",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "deliverable.md").write_text("# Results\n")
+        (swarm / "convergence.json").write_text(json.dumps({
+            "status": "CONVERGED",
+            "converged": False,  # agent might not set this
+        }))
+        assert d._is_complete(run) is True
+
+    def test_is_complete_mixed_case_exhausted(self, dispatcher_setup):
+        """_is_complete should accept mixed-case Exhausted status."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="prove",
+            rigor="experimental",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "deliverable.md").write_text("# Results\n")
+        (swarm / "convergence.json").write_text(json.dumps({
+            "status": "Exhausted",
+        }))
+        assert d._is_complete(run) is True
+
+    def test_is_complete_uppercase_negative_result(self, dispatcher_setup):
+        """_is_complete should accept NEGATIVE_RESULT status."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="prove",
+            rigor="scientific",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "deliverable.md").write_text("# Results\n")
+        (swarm / "convergence.json").write_text(json.dumps({
+            "status": "NEGATIVE_RESULT",
+        }))
+        assert d._is_complete(run) is True
+
+    def test_is_complete_no_deliverable_uppercase_converged(self, dispatcher_setup):
+        """_is_complete should accept uppercase CONVERGED even without deliverable."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+            rigor="scientific",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "convergence.json").write_text(json.dumps({
+            "status": "CONVERGED",
+        }))
+        assert d._is_complete(run) is True
+
+    def test_convergence_status_ok_helper(self, dispatcher_setup):
+        """_convergence_status_ok should be case-insensitive."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        assert d._convergence_status_ok({"status": "converged"}) is True
+        assert d._convergence_status_ok({"status": "CONVERGED"}) is True
+        assert d._convergence_status_ok({"status": "Converged"}) is True
+        assert d._convergence_status_ok({"status": "EXHAUSTED"}) is True
+        assert d._convergence_status_ok({"status": "DIMINISHING_RETURNS"}) is True
+        assert d._convergence_status_ok({"converged": True}) is True
+        assert d._convergence_status_ok({"status": "blocked"}) is False
+        assert d._convergence_status_ok({"status": "not_ready"}) is False
+        assert d._convergence_status_ok({}) is False
+        assert d._convergence_status_ok({"status": 42}) is False
+
+
+class TestSyncCriteriaFromCheckpoint:
+    """Tests for syncing criteria_status from checkpoint into success-criteria.json."""
+
+    def test_sync_updates_met_criteria(self, dispatcher_setup):
+        """Criteria marked met in checkpoint should be synced to success-criteria.json."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="prove",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "orchestrator-checkpoint.json").write_text(json.dumps({
+            "criteria_status": {"SC1": True, "SC2": False, "SC3": True}
+        }))
+        (swarm / "success-criteria.json").write_text(json.dumps([
+            {"id": "SC1", "description": "First", "met": False},
+            {"id": "SC2", "description": "Second", "met": False},
+            {"id": "SC3", "description": "Third", "met": False},
+        ]))
+
+        d._sync_criteria_from_checkpoint(run)
+
+        result = json.loads((swarm / "success-criteria.json").read_text())
+        assert result[0]["met"] is True   # SC1: checkpoint says True
+        assert result[1]["met"] is False  # SC2: checkpoint says False
+        assert result[2]["met"] is True   # SC3: checkpoint says True
+
+    def test_sync_no_op_when_already_synced(self, dispatcher_setup):
+        """Should not rewrite file if nothing changed."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="prove",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "orchestrator-checkpoint.json").write_text(json.dumps({
+            "criteria_status": {"SC1": True}
+        }))
+        sc_content = json.dumps([
+            {"id": "SC1", "description": "First", "met": True},
+        ])
+        (swarm / "success-criteria.json").write_text(sc_content)
+        mtime_before = (swarm / "success-criteria.json").stat().st_mtime
+
+        import time as _time
+        _time.sleep(0.01)
+        d._sync_criteria_from_checkpoint(run)
+
+        mtime_after = (swarm / "success-criteria.json").stat().st_mtime
+        assert mtime_before == mtime_after  # file unchanged
+
+    def test_sync_missing_checkpoint_is_no_op(self, dispatcher_setup):
+        """Should silently skip when checkpoint doesn't exist."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="prove",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "success-criteria.json").write_text(json.dumps([
+            {"id": "SC1", "description": "First", "met": False},
+        ]))
+
+        d._sync_criteria_from_checkpoint(run)  # should not raise
+
+        result = json.loads((swarm / "success-criteria.json").read_text())
+        assert result[0]["met"] is False  # unchanged
+
+    def test_sync_missing_criteria_file_is_no_op(self, dispatcher_setup):
+        """Should silently skip when success-criteria.json doesn't exist."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="prove",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "orchestrator-checkpoint.json").write_text(json.dumps({
+            "criteria_status": {"SC1": True}
+        }))
+
+        d._sync_criteria_from_checkpoint(run)  # should not raise
+
+    def test_sync_empty_criteria_status_is_no_op(self, dispatcher_setup):
+        """Should skip when checkpoint has empty criteria_status."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="prove",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "orchestrator-checkpoint.json").write_text(json.dumps({
+            "criteria_status": {}
+        }))
+        (swarm / "success-criteria.json").write_text(json.dumps([
+            {"id": "SC1", "description": "First", "met": False},
+        ]))
+
+        d._sync_criteria_from_checkpoint(run)
+
+        result = json.loads((swarm / "success-criteria.json").read_text())
+        assert result[0]["met"] is False  # unchanged
+
+
+class TestStateDigestCriteriaXref:
+    """Tests for state digest cross-referencing checkpoint with criteria."""
+
+    def test_digest_uses_checkpoint_criteria(self, tmp_path):
+        """Digest should show criteria as MET when checkpoint says so,
+        even if success-criteria.json is stale."""
+        from voronoi.server.compact import _write_state_digest
+
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "success-criteria.json").write_text(json.dumps([
+            {"id": "SC1", "description": "Test 1", "met": False},
+            {"id": "SC2", "description": "Test 2", "met": False},
+        ]))
+        (swarm / "orchestrator-checkpoint.json").write_text(json.dumps({
+            "criteria_status": {"SC1": True, "SC2": False}
+        }))
+
+        _write_state_digest(tmp_path)
+
+        digest = (swarm / "state-digest.md").read_text()
+        assert "1/2 met" in digest
+        assert "[MET] SC1" in digest
+        assert "[PENDING] SC2" in digest
+
+    def test_digest_without_checkpoint_uses_criteria_only(self, tmp_path):
+        """Without checkpoint, digest should use success-criteria.json as-is."""
+        from voronoi.server.compact import _write_state_digest
+
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "success-criteria.json").write_text(json.dumps([
+            {"id": "SC1", "description": "Test 1", "met": True},
+            {"id": "SC2", "description": "Test 2", "met": False},
+        ]))
+
+        _write_state_digest(tmp_path)
+
+        digest = (swarm / "state-digest.md").read_text()
+        assert "1/2 met" in digest
+
+
+class TestOrphanedWorkerDetection:
+    """Tests for orphaned process detection in _has_active_workers."""
+
+    def test_orphaned_process_detected(self, dispatcher_setup):
+        """Should detect orphaned copilot processes referencing workspace."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "orchestrator-checkpoint.json").write_text(json.dumps({
+            "active_workers": ["worker-1"]
+        }))
+
+        tmux_no_session = MagicMock(returncode=1)
+        pgrep_found = MagicMock(
+            returncode=0,
+            stdout=f"12345 copilot --allow-all -p @{tmp_path}/.swarm/prompt.txt\n",
+        )
+
+        with patch("voronoi.server.dispatcher.subprocess.run",
+                    side_effect=[tmux_no_session, pgrep_found]):
+            assert d._has_active_workers(run) is True
+
+    def test_no_orphan_when_pgrep_empty(self, dispatcher_setup):
+        """Should return False when pgrep finds nothing."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "orchestrator-checkpoint.json").write_text(json.dumps({
+            "active_workers": ["worker-1"]
+        }))
+
+        tmux_no_session = MagicMock(returncode=1)
+        pgrep_empty = MagicMock(returncode=1, stdout="")
+
+        with patch("voronoi.server.dispatcher.subprocess.run",
+                    side_effect=[tmux_no_session, pgrep_empty]):
+            assert d._has_active_workers(run) is False
+
+    def test_no_orphan_when_pgrep_unavailable(self, dispatcher_setup):
+        """Should return False when pgrep is not available."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "orchestrator-checkpoint.json").write_text(json.dumps({
+            "active_workers": ["worker-1"]
+        }))
+
+        tmux_no_session = MagicMock(returncode=1)
+
+        def side_effect(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args", [])
+            if cmd[0] == "tmux":
+                return tmux_no_session
+            raise FileNotFoundError("pgrep not found")
+
+        with patch("voronoi.server.dispatcher.subprocess.run",
+                    side_effect=side_effect):
+            assert d._has_active_workers(run) is False
+
+
+class TestCompletionTaskFallback:
+    """Tests for task count fallback when task_snapshot is empty."""
+
+    def test_completion_falls_back_to_bd_when_snapshot_empty(self, dispatcher_setup):
+        """Failed completion with empty task_snapshot should try bd list."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        mock_queue = MagicMock()
+        d._queue = mock_queue
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        # task_snapshot is empty (default)
+
+        bd_result = MagicMock(
+            returncode=0,
+            stdout=json.dumps([
+                {"id": "bd-1", "status": "closed", "title": "Done"},
+                {"id": "bd-2", "status": "open", "title": "Open"},
+                {"id": "bd-3", "status": "closed", "title": "Also done"},
+            ]),
+        )
+
+        with patch("voronoi.server.dispatcher.subprocess.run", return_value=bd_result):
+            d._handle_completion(run, failed=True, failure_reason="test failure")
+
+        # The failure message should show 2/3 tasks, not 0/0
+        assert any("2/3" in m for m in msgs)
+
+    def test_completion_no_fallback_when_snapshot_populated(self, dispatcher_setup):
+        """Should not call bd when task_snapshot has entries."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        mock_queue = MagicMock()
+        d._queue = mock_queue
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        run.task_snapshot = {
+            "bd-1": {"status": "closed", "title": "Done"},
+        }
+
+        with patch("voronoi.server.dispatcher.subprocess.run") as mock_run:
+            d._handle_completion(run, failed=True, failure_reason="test failure")
+            # subprocess should only be called for tmux cleanup, not bd
+            for call in mock_run.call_args_list:
+                cmd = call[0][0] if call[0] else call[1].get("args", [])
+                assert cmd[0] != "bd"

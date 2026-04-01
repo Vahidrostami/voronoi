@@ -1016,11 +1016,17 @@ def handle_belief(project_dir: str) -> str:
                 if name.endswith(".json"):
                     try:
                         data = json.loads(content)
+                        hyps = data.get("hypotheses", [])
+                        if isinstance(hyps, dict):
+                            hyps = list(hyps.values())
                         lines = []
-                        for h in data.get("hypotheses", []):
-                            lines.append(f"- {h.get('name', '?')}: P={h.get('prior', '?')} [{h.get('status', '?')}]")
+                        for h in hyps:
+                            if isinstance(h, dict):
+                                lines.append(f"- {h.get('name', '?')}: P={h.get('prior', '?')} [{h.get('status', '?')}]")
+                            elif isinstance(h, str):
+                                lines.append(f"- {h}")
                         content = "\n".join(lines) if lines else content
-                    except (json.JSONDecodeError, ValueError):
+                    except (json.JSONDecodeError, ValueError, TypeError):
                         pass
                 return f"📊 *Belief Map*\n\n{content}"
     return "📊 No belief map found. Start an investigation to generate one."

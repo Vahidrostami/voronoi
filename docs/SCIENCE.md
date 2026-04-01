@@ -129,7 +129,7 @@ class BeliefMap:
 
 `.swarm/belief-map.json` — read/written by orchestrator at each OODA cycle.
 
-**Schema contract**: `hypotheses` MUST be a JSON array of objects (not an object map keyed by ID). Both the Python loader and the shell convergence gate validate this on load. Non-conforming data (e.g., object maps) is automatically migrated to the array format.
+**Schema contract**: `hypotheses` MUST be a JSON array of objects (not an object map keyed by ID). Both the Python loader and the shell convergence gate validate this on load. Non-conforming data (e.g., object maps) is automatically migrated to the array format and **persisted back to disk** so subsequent reads don't re-trigger migration warnings.
 
 ### Functions
 

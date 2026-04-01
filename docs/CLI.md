@@ -132,14 +132,15 @@ Removes demo artifacts from the current directory.
 1. Creates `~/.voronoi/` directory
 2. Creates `config.json` with defaults
 3. Copies `.env.example` to `~/.voronoi/.env`
-4. Creates `objects/` and `active/` directories
+4. Creates `objects/`, `active/`, and `tmp/` directories
 
 ### `voronoi server start`
 
 1. Loads config from `~/.voronoi/config.json`
 2. Loads `.env` for bot token
-3. Starts Telegram bridge (`telegram-bridge.py`) if token present
-4. Starts dispatcher loop (10s poll interval)
+3. Exports `TMPDIR`, `TMP`, and `TEMP` to `~/.voronoi/tmp`
+4. Starts Telegram bridge (`telegram-bridge.py`) if token present
+5. Starts dispatcher loop (10s poll interval)
 
 By default this runs in the foreground. Use `voronoi server start --daemon` on remote hosts or SSH sessions to detach the bridge and write logs to `~/.voronoi/logs/telegram-bridge.log`.
 
