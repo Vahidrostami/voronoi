@@ -1295,7 +1295,8 @@ class TestContextPressure:
             json.dumps({"context_window_remaining_pct": 0.12})
         )
 
-        d._check_context_pressure(run, elapsed_hours=5)  # early, but self-reported
+        with patch.object(d, "_force_context_restart", return_value=False):
+            d._check_context_pressure(run, elapsed_hours=5)  # early, but self-reported
 
         directive_path = swarm / "dispatcher-directive.json"
         assert directive_path.exists()
@@ -1328,7 +1329,8 @@ class TestContextPressure:
             })
         )
 
-        d._check_context_pressure(run, elapsed_hours=3)
+        with patch.object(d, "_force_context_restart", return_value=False):
+            d._check_context_pressure(run, elapsed_hours=3)
 
         directive_path = swarm / "dispatcher-directive.json"
         assert directive_path.exists()
@@ -1420,11 +1422,238 @@ class TestContextPressure:
         )
         (tmp_path / ".swarm").mkdir(parents=True, exist_ok=True)
 
-        d._check_context_pressure(run, elapsed_hours=15)
+        with patch.object(d, "_force_context_restart", return_value=False):
+            d._check_context_pressure(run, elapsed_hours=15)
 
         directive_path = tmp_path / ".swarm" / "dispatcher-directive.json"
         data = json.loads(directive_path.read_text())
         assert "/compact" in data["message"]
+
+    def test_context_critical_triggers_force_restart(self, dispatcher_setup):
+        """Context critical should attempt force-restart when agent is pressured."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        (tmp_path / ".swarm").mkdir(parents=True, exist_ok=True)
+
+        with patch.object(d, "_is_context_pressured", return_value=True), \
+             patch.object(d, "_force_context_restart", return_value=True) as mock_restart:
+            d._check_context_pressure(run, elapsed_hours=15)
+
+        mock_restart.assert_called_once_with(run)
+        assert run.context_directive_level == "context_critical"
+
+    def test_context_critical_skips_restart_if_agent_healthy(self, dispatcher_setup):
+        """Context critical should NOT force-restart if agent has >30% headroom."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True, exist_ok=True)
+        # Agent reports 60% remaining — healthy
+        (swarm / "orchestrator-checkpoint.json").write_text(
+            json.dumps({"context_window_remaining_pct": 0.60})
+        )
+
+        with patch.object(d, "_force_context_restart") as mock_restart:
+            d._check_context_pressure(run, elapsed_hours=15)
+
+        mock_restart.assert_not_called()
+        assert run.context_directive_level == "context_critical"
+        # Still sends the directive + alert (just not a restart)
+        assert len(msgs) >= 1
+
+    def test_force_context_restart_kills_and_relaunches(self, dispatcher_setup):
+        """Force context restart compacts, kills tmux, builds resume, relaunches."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True, exist_ok=True)
+        (swarm / "orchestrator-prompt.txt").write_text("original prompt")
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+            rigor="scientific",
+        )
+
+        with patch("voronoi.server.dispatcher.subprocess.run"), \
+             patch.object(d, "_launch_in_tmux") as mock_launch:
+            result = d._force_context_restart(run)
+
+        assert result is True
+        assert run.context_restarts == 1
+        assert run.context_directive_level == ""
+        mock_launch.assert_called_once()
+        # Resume prompt should have been written
+        resume_path = swarm / "orchestrator-prompt-resume.txt"
+        assert resume_path.exists()
+
+    def test_force_context_restart_respects_limit(self, dispatcher_setup):
+        """Force context restart should stop after max_context_restarts."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        d.config.max_context_restarts = 1
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True, exist_ok=True)
+        (swarm / "orchestrator-prompt.txt").write_text("original prompt")
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+            context_restarts=1,  # already used the one allowed
+        )
+
+        result = d._force_context_restart(run)
+        assert result is False
+        assert run.context_restarts == 1  # no increment
+
+    def test_warning_triggers_force_compact(self, dispatcher_setup):
+        """Context warning should immediately compact workspace."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        (tmp_path / ".swarm").mkdir(parents=True, exist_ok=True)
+
+        with patch("voronoi.server.compact.compact_workspace_state",
+                   return_value=True) as mock_compact:
+            d._check_context_pressure(run, elapsed_hours=11)
+
+        mock_compact.assert_called_once_with(tmp_path)
+        assert "compacted" in msgs[0].lower() or "warning" in msgs[0].lower()
+
+    def test_token_critical_triggers_force_restart(self, dispatcher_setup):
+        """Self-reported <=15% token budget should try force-restart."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True, exist_ok=True)
+        (swarm / "orchestrator-checkpoint.json").write_text(
+            json.dumps({"context_window_remaining_pct": 0.10})
+        )
+
+        with patch.object(d, "_force_context_restart", return_value=True) as mock_restart:
+            d._check_context_pressure(run, elapsed_hours=3)
+
+        mock_restart.assert_called_once_with(run)
+
+    def test_is_context_pressured_no_checkpoint(self, dispatcher_setup):
+        """No checkpoint → assume pressured (conservative)."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        (tmp_path / ".swarm").mkdir(parents=True, exist_ok=True)
+        assert d._is_context_pressured(run) is True
+
+    def test_is_context_pressured_healthy_agent(self, dispatcher_setup):
+        """Agent with >30% remaining → not pressured."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True, exist_ok=True)
+        (swarm / "orchestrator-checkpoint.json").write_text(
+            json.dumps({"context_window_remaining_pct": 0.50})
+        )
+        assert d._is_context_pressured(run) is False
+
+    def test_is_context_pressured_exhausted_agent(self, dispatcher_setup):
+        """Agent with ≤30% remaining → pressured."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True, exist_ok=True)
+        (swarm / "orchestrator-checkpoint.json").write_text(
+            json.dumps({"context_window_remaining_pct": 0.20})
+        )
+        assert d._is_context_pressured(run) is True
+
+    def test_is_context_pressured_uses_snapshot(self, dispatcher_setup):
+        """Ground-truth snapshot overrides self-reported pct."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True, exist_ok=True)
+        (swarm / "orchestrator-checkpoint.json").write_text(
+            json.dumps({
+                "context_window_remaining_pct": 0.80,  # says healthy
+                "context_snapshot": {
+                    "model_limit": 200000,
+                    "free_tokens": 30000,  # but only 15% free
+                },
+            })
+        )
+        assert d._is_context_pressured(run) is True
+
+    def test_resume_prompt_context_refresh_label(self, dispatcher_setup):
+        """Context refresh resume prompt should say CONTEXT REFRESH, not RESTART."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True, exist_ok=True)
+        (swarm / "orchestrator-prompt.txt").write_text("original")
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test question",
+            mode="discover",
+            rigor="scientific",
+            context_restarts=1,
+        )
+
+        path = d._build_resume_prompt(run)
+        content = path.read_text()
+        assert "CONTEXT REFRESH" in content
+        assert "Nothing failed" in content
+        assert "RESTART" not in content
 
 
 # ---------------------------------------------------------------------------
@@ -1813,6 +2042,7 @@ class TestPauseInvestigation:
         mock_inv.id = 1
         mock_inv.codename = "Synapse"
         mock_inv.started_at = time.time() - 7200  # 2 hours ago
+        mock_inv.completed_at = time.time() - 7200  # paused 2 hours ago
         mock_queue.get_paused.return_value = [mock_inv]
         mock_queue.resume.return_value = True
         d._queue = mock_queue
@@ -2367,3 +2597,155 @@ class TestCompletionTaskFallback:
             for call in mock_run.call_args_list:
                 cmd = call[0][0] if call[0] else call[1].get("args", [])
                 assert cmd[0] != "bd"
+
+
+# ---------------------------------------------------------------------------
+# Cleanup tests
+# ---------------------------------------------------------------------------
+
+class TestCleanupTmux:
+    """Tests for _cleanup_tmux session discovery."""
+
+    def test_reads_swarm_config_session(self, dispatcher_setup):
+        """Should try to kill the tmux_session from .swarm-config.json."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        config_path = tmp_path / ".swarm-config.json"
+        config_path.write_text(json.dumps({"tmux_session": "my-custom-swarm"}))
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="voronoi-inv-1",
+            question="test",
+            mode="discover",
+        )
+
+        calls = []
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            result = MagicMock(returncode=1, stdout="", stderr="")
+            # list-sessions returns empty
+            if cmd[0] == "tmux" and cmd[1] == "list-sessions":
+                result.returncode = 0
+                result.stdout = ""
+            return result
+
+        with patch("voronoi.server.dispatcher.subprocess.run", side_effect=fake_run):
+            d._cleanup_tmux(run)
+
+        # Should have tried to kill "my-custom-swarm"
+        killed = [c[3] for c in calls if len(c) >= 4 and c[1] == "kill-session"]
+        assert "my-custom-swarm" in killed
+
+    def test_kills_orchestrator_and_convention_sessions(self, dispatcher_setup):
+        """Should kill voronoi-inv-{id} and {ws_name}-swarm."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="voronoi-inv-1",
+            question="test",
+            mode="discover",
+        )
+
+        calls = []
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            result = MagicMock(returncode=1, stdout="", stderr="")
+            if cmd[0] == "tmux" and cmd[1] == "list-sessions":
+                result.returncode = 0
+                result.stdout = ""
+            return result
+
+        with patch("voronoi.server.dispatcher.subprocess.run", side_effect=fake_run):
+            d._cleanup_tmux(run)
+
+        killed = [c[3] for c in calls if len(c) >= 4 and c[1] == "kill-session"]
+        ws_name = tmp_path.name
+        assert "voronoi-inv-1" in killed
+        assert f"{ws_name}-swarm" in killed
+
+
+class TestCleanupWorktrees:
+    """Tests for _cleanup_worktrees on completion."""
+
+    def test_removes_swarm_directory(self, dispatcher_setup):
+        """Should remove the -swarm/ directory after completion."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        swarm_dir = tmp_path.parent / f"{tmp_path.name}-swarm"
+        swarm_dir.mkdir()
+        (swarm_dir / "agent-worker").mkdir()
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+
+        with patch("voronoi.server.dispatcher.subprocess.run"):
+            d._cleanup_worktrees(run)
+
+        assert not swarm_dir.exists()
+
+    def test_no_error_when_swarm_dir_missing(self, dispatcher_setup):
+        """Should not fail if -swarm/ directory doesn't exist."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+
+        # Should not raise
+        with patch("voronoi.server.dispatcher.subprocess.run"):
+            d._cleanup_worktrees(run)
+
+    def test_cleans_tmp_when_no_other_running(self, dispatcher_setup):
+        """Should clean ~/.voronoi/tmp when this is the last investigation."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        tmp_dir = d.config.base_dir / "tmp"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        (tmp_dir / "scratch.txt").write_text("test")
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        d.running = {}  # no running investigations
+
+        with patch("voronoi.server.dispatcher.subprocess.run"):
+            d._cleanup_worktrees(run)
+
+        # tmp dir should exist but be empty
+        assert tmp_dir.exists()
+        assert not list(tmp_dir.iterdir())
+
+    def test_removes_tmux_env_secrets(self, dispatcher_setup):
+        """Should remove .swarm/.tmux-env on cleanup."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(exist_ok=True)
+        env_file = swarm / ".tmux-env"
+        env_file.write_text("export GH_TOKEN=secret")
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+
+        with patch("voronoi.server.dispatcher.subprocess.run"):
+            d._cleanup_worktrees(run)
+
+        assert not env_file.exists()

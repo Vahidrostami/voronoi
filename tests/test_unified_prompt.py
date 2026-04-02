@@ -460,6 +460,22 @@ class TestContextEngineeringSections:
         assert "ALWAYS DELEGATE TO SCRIBE" in prompt
         assert "NEVER write the manuscript" in prompt
 
+    def test_manuscript_section_requires_latex(self):
+        """Orchestrator prompt must tell the orchestrator that Scribe writes LaTeX."""
+        prompt = build_orchestrator_prompt(
+            question="test", mode="discover", rigor="scientific",
+        )
+        assert "paper.tex" in prompt
+        assert "NEVER Markdown" in prompt or "not Markdown" in prompt.lower()
+
+    def test_manuscript_section_warns_against_markdown_briefing(self):
+        """Orchestrator must not tell scribe to write Markdown."""
+        prompt = build_orchestrator_prompt(
+            question="test", mode="discover", rigor="adaptive",
+        )
+        # The prompt should warn against contradictory briefings
+        assert "must not contradict" in prompt.lower() or "briefing" in prompt
+
 
 # ---------------------------------------------------------------------------
 # Warm-Start (multi-run continuation)

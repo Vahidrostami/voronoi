@@ -32,6 +32,7 @@ from voronoi.gateway.router import (
     handle_journal,
     handle_finding,
     handle_complete,
+    handle_complete_investigation,
     handle_review_investigation,
     handle_continue_investigation,
     handle_claims,
@@ -547,3 +548,77 @@ class TestReviewContinueClaims:
             text, _ = router.route("claims", ["Synapse"], "c1")
         assert text == "claims result"
         mock.assert_called_once_with(str(tmp_path), "Synapse")
+
+
+# ---------------------------------------------------------------------------
+# Complete investigation (accept from review)
+# ---------------------------------------------------------------------------
+
+class TestCompleteInvestigation:
+    def _setup_reviewed(self, tmp_path):
+        from voronoi.server.queue import InvestigationQueue, Investigation
+        q = InvestigationQueue(tmp_path / "queue.db")
+        inv_id = q.enqueue(Investigation(
+            chat_id="c1", question="Does L4 beat L1?",
+            slug="l4", codename="Serotonin", mode="discover",
+        ))
+        q.start(inv_id, str(tmp_path / "workspace"))
+        q.review(inv_id)
+        return q, inv_id
+
+    def test_accept_from_review(self, tmp_path):
+        q, inv_id = self._setup_reviewed(tmp_path)
+        with patch("voronoi.gateway.router._get_queue", return_value=q):
+            result = handle_complete_investigation(str(tmp_path), "Serotonin")
+        assert "accepted" in result
+        assert "closed" in result
+        inv = q.get(inv_id)
+        assert inv.status == "complete"
+
+    def test_already_complete(self, tmp_path):
+        from voronoi.server.queue import InvestigationQueue, Investigation
+        q = InvestigationQueue(tmp_path / "queue.db")
+        inv_id = q.enqueue(Investigation(
+            chat_id="c1", question="Q", slug="q", codename="Alpha", mode="discover",
+        ))
+        q.start(inv_id, str(tmp_path / "ws"))
+        q.complete(inv_id)
+        with patch("voronoi.gateway.router._get_queue", return_value=q):
+            result = handle_complete_investigation(str(tmp_path), "Alpha")
+        assert "already complete" in result
+
+    def test_wrong_status(self, tmp_path):
+        from voronoi.server.queue import InvestigationQueue, Investigation
+        q = InvestigationQueue(tmp_path / "queue.db")
+        inv_id = q.enqueue(Investigation(
+            chat_id="c1", question="Q", slug="q", codename="Beta", mode="discover",
+        ))
+        q.start(inv_id, str(tmp_path / "ws"))
+        with patch("voronoi.gateway.router._get_queue", return_value=q):
+            result = handle_complete_investigation(str(tmp_path), "Beta")
+        assert "running" in result
+
+    def test_not_found(self, tmp_path):
+        from voronoi.server.queue import InvestigationQueue
+        q = InvestigationQueue(tmp_path / "queue.db")
+        with patch("voronoi.gateway.router._get_queue", return_value=q):
+            result = handle_complete_investigation(str(tmp_path), "Ghost")
+        assert "not found" in result
+
+    def test_router_dispatches_complete_investigation(self, tmp_path):
+        """complete with a codename routes to handle_complete_investigation."""
+        router = CommandRouter(str(tmp_path))
+        with patch("voronoi.gateway.router.handle_complete_investigation",
+                    return_value="accepted") as mock:
+            text, _ = router.route("complete", ["Serotonin"], "c1")
+        assert text == "accepted"
+        mock.assert_called_once_with(str(tmp_path), "Serotonin")
+
+    def test_router_dispatches_complete_task(self, tmp_path):
+        """complete with a bd- id routes to handle_complete (task close)."""
+        router = CommandRouter(str(tmp_path))
+        with patch("voronoi.gateway.router.handle_complete",
+                    return_value="closed") as mock:
+            text, _ = router.route("complete", ["bd-42", "Done"], "c1")
+        assert text == "closed"
+        mock.assert_called_once_with(str(tmp_path), "bd-42", "Done")

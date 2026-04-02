@@ -206,7 +206,7 @@ class TestPauseResume:
         result = queue.get(inv_id)
         assert result.status == "paused"
         assert result.error == "auth expired"
-        assert result.completed_at is None
+        assert result.completed_at is not None  # records when pause happened
 
     def test_pause_only_running(self, queue):
         """Pausing a queued investigation should have no effect."""
@@ -363,3 +363,17 @@ class TestReviewAndContinue:
 
     def test_continue_nonexistent(self, queue):
         assert queue.continue_investigation(999) is None
+
+    def test_accept_from_review(self, queue):
+        inv_id = queue.enqueue(Investigation(chat_id="c1", question="Q", slug="q"))
+        queue.start(inv_id, "/tmp/ws")
+        queue.review(inv_id)
+        assert queue.accept(inv_id) is True
+        inv = queue.get(inv_id)
+        assert inv.status == "complete"
+
+    def test_accept_wrong_status(self, queue):
+        inv_id = queue.enqueue(Investigation(chat_id="c1", question="Q", slug="q"))
+        queue.start(inv_id, "/tmp/ws")
+        # Still running, can't accept
+        assert queue.accept(inv_id) is False

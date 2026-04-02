@@ -125,6 +125,8 @@ Central dispatch point for all user actions. Every Telegram command and programm
 | `handle_resume(project_dir, task_id) -> str` | Resumes a paused task |
 | `handle_resume_investigation(project_dir, inv_id_or_codename) -> str` | Resumes a paused/failed investigation |
 | `handle_add(project_dir, task_desc) -> str` | Creates new task |
+| `handle_complete(project_dir, task_id, reason) -> str` | Closes a Beads task (bd-xxx) |
+| `handle_complete_investigation(project_dir, id_or_codename) -> str` | Accepts and closes a reviewed investigation |
 | `handle_abort(project_dir, inv_id) -> str` | Aborts investigation |
 | `handle_pivot(project_dir, inv_id, new_question) -> str` | Pivots investigation question |
 
@@ -134,6 +136,7 @@ Central dispatch point for all user actions. Every Telegram command and programm
 |----------|--------|
 | `handle_review_investigation(project_dir, id_or_codename) -> str` | Show Claim Ledger in review format |
 | `handle_continue_investigation(project_dir, id_or_codename, feedback) -> str` | Create continuation run with PI feedback |
+| `handle_complete_investigation(project_dir, id_or_codename) -> str` | Accept and close a reviewed investigation |
 | `handle_claims(project_dir, id_or_codename) -> str` | Show current claim ledger state |
 
 These handlers interact with the Claim Ledger (`~/.voronoi/ledgers/<lineage_id>/claim-ledger.json`). The `continue` handler parses natural-language feedback for `lock C1`, `challenge C2: reason` patterns and updates the ledger before creating the continuation investigation.
@@ -542,6 +545,8 @@ Tries each strategy in order, stops at first success:
 3. **Pandoc** — markdown → PDF
 4. **fpdf2** — basic markdown → PDF
 5. **Fallback** — returns `.md` file
+
+After strategy 1 (pre-compiled) or 2 (LaTeX) succeeds, the result is also copied to the demo output directory (`demos/<name>/output/paper/`) if a single demo directory exists in the workspace. Markdown-based fallbacks (pandoc, fpdf2, .md) are NOT copied — the paper folder is reserved for publication-quality output.
 
 ### Report Sections (Standard/Analytical)
 

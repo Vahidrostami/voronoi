@@ -399,9 +399,14 @@ def build_orchestrator_prompt(
         "**Scribe** worker (`task_type: \"scribe\"`) with a briefing that lists:\n"
         "   - All completed findings and their locations\n"
         "   - The success criteria status\n"
-        "   - The target structure (e.g., academic paper sections)\n"
-        "2. The Scribe writes the deliverable in its own worktree with a full context window\n"
-        "3. After merge, verify the deliverable exists and dispatch the Evaluator\n\n"
+        "   - The output directory for the paper (from the project brief)\n"
+        "2. The Scribe writes **LaTeX** (`paper.tex`) — NEVER Markdown.\n"
+        "   Do NOT include instructions like 'write Markdown' or 'write deliverable.md' "
+        "in the scribe briefing. The Scribe's role file specifies LaTeX output — "
+        "your briefing must not contradict it.\n"
+        "3. After merge, verify `paper.tex` AND `paper.pdf` exist, then dispatch the Evaluator\n"
+        "4. The Scribe writes `.swarm/deliverable.md` as a SUMMARY for the convergence gate — "
+        "this is NOT the paper itself.  The paper is `paper.tex` + `paper.pdf`.\n\n"
         "**Why:** Your context is consumed by OODA cycles, experiment monitoring, and "
         "findings synthesis after hours of orchestration. The Scribe starts fresh with "
         "100% of its context available for writing — producing higher quality output "
@@ -660,6 +665,10 @@ SKILL_MAP: dict[str, list[str]] = {
         ".github/skills/evidence-system/SKILL.md",
         ".github/skills/context-management/SKILL.md",
     ],
+    "scribe": [
+        ".github/skills/compilation-protocol/SKILL.md",
+        ".github/skills/figure-generation/SKILL.md",
+    ],
     "paper": [
         ".github/skills/figure-generation/SKILL.md",
         ".github/skills/compilation-protocol/SKILL.md",
@@ -784,6 +793,24 @@ def build_worker_prompt(
     # 9. Extra instructions
     if extra_instructions:
         sections.append(f"\n## Additional Instructions\n\n{extra_instructions}\n")
+
+    # 9a. Scribe: LaTeX format enforcement (overrides any contradictory briefing)
+    if task_type == "scribe":
+        sections.append(
+            "\n## Output Format — MANDATORY\n\n"
+            "**Write LaTeX (`paper.tex`), NOT Markdown.**\n"
+            "Your role file specifies LaTeX output. This section reinforces it "
+            "because the orchestrator's briefing may inadvertently say 'Markdown' — "
+            "ignore any such instruction.\n\n"
+            "1. The paper MUST be named `paper.tex` — this is the Voronoi convention\n"
+            "2. Compile to `paper.pdf` using the compilation-protocol skill\n"
+            "3. Place the paper, PDF, and figures in the output directory specified "
+            "by the project brief (typically `demos/<name>/output/paper/`)\n"
+            "4. After the paper is complete, write `.swarm/deliverable.md` as a SHORT "
+            "summary (abstract + key findings) — this is the convergence signal, "
+            "NOT the paper itself\n"
+            "5. Copy `paper.pdf` to `.swarm/report.pdf` for Telegram delivery\n"
+        )
 
     # 9b. Experiment worker: anti-polling guidance
     if task_type in ("investigation", "experiment"):

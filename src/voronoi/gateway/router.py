@@ -36,6 +36,7 @@ __all__ = [
     "handle_reprioritize", "handle_pause", "handle_resume", "handle_add",
     "handle_resume_investigation",
     "handle_complete",
+    "handle_complete_investigation",
     "handle_review_investigation", "handle_continue_investigation", "handle_claims",
     "handle_abort", "handle_pivot", "handle_guide",
     "handle_discover", "handle_prove",
@@ -735,6 +736,34 @@ def handle_complete(project_dir: str, task_id: str, reason: str = "Completed") -
     return f"✅ Task `{task_id}` closed: {reason}"
 
 
+def handle_complete_investigation(project_dir: str, identifier: str) -> str:
+    """Accept and close an investigation that is in review status.
+
+    The identifier can be an investigation ID (integer) or a codename.
+    """
+    q = _get_queue(project_dir)
+    inv = _find_investigation(q, identifier)
+    if inv is None:
+        return f"❌ Investigation *{identifier}* not found."
+
+    label = inv.codename or f"#{inv.id}"
+
+    if inv.status == "complete":
+        return f"✅ *{label}* is already complete."
+
+    if inv.status != "review":
+        return (
+            f"❌ *{label}* is {inv.status} — "
+            f"can only accept from review."
+        )
+
+    ok = q.accept(inv.id)
+    if not ok:
+        return f"❌ Failed to close *{label}*."
+
+    return f"✅ *{label}* accepted and closed."
+
+
 def handle_review_investigation(project_dir: str, identifier: str) -> str:
     """Show the Claim Ledger for an investigation in review format.
 
@@ -1383,8 +1412,15 @@ class CommandRouter:
             elif sub == "add" and args:
                 return handle_add(self.project_dir, " ".join(args)), None
             elif sub == "complete" and args:
-                reason = " ".join(args[1:]) if len(args) > 1 else "Completed"
-                return handle_complete(self.project_dir, args[0], reason), None
+                # Detect task ID vs investigation codename/ID.
+                # Beads task IDs look like "bd-123"; investigation
+                # identifiers are plain integers or codenames.
+                arg = args[0]
+                is_beads_task = arg.startswith("bd-")
+                if is_beads_task:
+                    reason = " ".join(args[1:]) if len(args) > 1 else "Completed"
+                    return handle_complete(self.project_dir, arg, reason), None
+                return handle_complete_investigation(self.project_dir, arg), None
             elif sub == "abort":
                 return handle_abort(self.project_dir), None
             elif sub == "pivot" and args:

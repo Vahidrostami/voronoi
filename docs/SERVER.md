@@ -77,16 +77,17 @@ class Investigation:
  │complete│ │failed│ │paused│ │review│ │cancelled │
  └────────┘ └──┬───┘ └──┬───┘ └──┬───┘ └──────────┘
                │        │        │
-               └────┬───┘   continue_investigation()
-                    │            │
-                    │ resume()   │
-                    ▼            ▼
-               ┌───────┐    ┌───────┐
-               │running │    │queued │ (new investigation, same lineage)
-               └───────┘    └───────┘
+               └────┬───┘   continue_investigation() / accept()
+                    │            │              │
+                    │ resume()   │              │ accept()
+                    ▼            ▼              ▼
+               ┌───────┐    ┌───────┐    ┌────────┐
+               │running │    │queued │    │complete│
+               └───────┘    └───────┘    └────────┘
+                        (new inv, same lineage)
 ```
 
-The `review` state is entered when a science investigation (mode=discover/prove) converges successfully. The PI reviews claims, provides feedback, and can continue to a new round. Build-mode investigations skip `review` and go directly to `complete`.
+The `review` state is entered when a science investigation (mode=discover/prove) converges successfully. The PI reviews claims, provides feedback, and can continue to a new round (`continue_investigation`) or accept and close (`accept`). Build-mode investigations skip `review` and go directly to `complete`.
 
 ### InvestigationQueue API
 
@@ -105,6 +106,7 @@ class InvestigationQueue:
     def pause(self, investigation_id: int, reason: str) -> None: ...    # running → paused
     def resume(self, investigation_id: int) -> None: ...                # paused|failed → running
     def review(self, investigation_id: int) -> bool: ...                # running → review
+    def accept(self, investigation_id: int) -> bool: ...                # review → complete
     def continue_investigation(self, investigation_id: int,
                                feedback: str = "") -> int | None: ...  # review|complete → new queued
 
@@ -186,8 +188,9 @@ class DispatcherConfig:
     stall_minutes: int       # 45 — minutes without progress before warning
     pause_timeout_hours: int # 24 — auto-fail paused investigations after this
     context_advisory_hours: int   # 6 — "prioritize convergence" directive
-    context_warning_hours: int    # 10 — "delegate remaining work" directive
-    context_critical_hours: int   # 14 — "dispatch Scribe NOW" directive
+    context_warning_hours: int    # 10 — "delegate remaining work" + force compact
+    context_critical_hours: int   # 14 — force context restart
+    max_context_restarts: int     # 2 — max proactive context refreshes
 ```
 
 ### Copilot CLI Flags
@@ -248,6 +251,7 @@ class RunningInvestigation:
     eval_score: float         # Latest evaluator score
     retry_count: int
     stall_warned: bool
+    context_restarts: int         # Proactive context refreshes (separate from retry_count)
     status_message_id: int | None  # Telegram message ID for edit-in-place
 ```
 
@@ -369,10 +373,13 @@ The dispatcher syncs `criteria_status` from the orchestrator checkpoint into `su
 ### Completion Handling
 
 1. **Hard gate**: If any DESIGN_INVALID tasks are open, completion is blocked
-2. Clean up tmux sessions (orchestrator + swarm)
+2. Clean up tmux sessions — reads `.swarm-config.json` for the actual session name, enumerates live tmux sessions and kills any whose working directory is under the swarm directory
 3. On success: generate teaser via `ReportGenerator.build_teaser()`, generate PDF via `build_pdf()`, send teaser + document to Telegram
 4. On failure: extract log tail, send failure message via `format_failure()`
 5. Try GitHub publish if `gh` CLI available
+6. Clean up agent worktrees — prune git worktrees, remove worktree directories, remove the `-swarm/` directory
+7. Remove `.swarm/.tmux-env` secrets file from workspace
+8. Clean `~/.voronoi/tmp` if no other investigations are running
 
 ### Agent Restart
 
@@ -388,6 +395,22 @@ When tmux session dies:
 8. Rotate log file (preserve previous attempt's logs)
 9. Re-launch in tmux with the resume prompt
 10. On auth failure during launch: transition to `paused` (not exhausting retries)
+
+### Context Restart (Proactive)
+
+When the orchestrator becomes context-exhausted, directive files are unreliable because the agent may be stuck in a polling sleep and never read them. At `context_critical` level (time-based ≥14h or self-reported ≤15% window remaining), the dispatcher **force-restarts** the orchestrator:
+
+1. Compact workspace state (`compact_workspace_state()`)
+2. Kill the tmux session
+3. Build a fresh resume prompt from checkpoint + state digest
+4. Relaunch in tmux with clean context window
+5. Send Telegram notification
+
+Time-based restarts are **evidence-gated**: if the orchestrator's context snapshot shows >30% headroom, the force-restart is skipped (the agent is healthy enough to read the directive itself). Token-based restarts (≤15% self-reported) always trigger regardless of elapsed time. This prevents killing a healthy agent that happens to be running for a long time.
+
+This does NOT count against `max_retries` — it uses a separate `context_restarts` counter (limit: `max_context_restarts`, default 2). At `context_warning` level, the dispatcher force-compacts the workspace immediately (instead of waiting for the periodic 6h interval) to help the agent if it does read the directive.
+
+The resume prompt for context refreshes is distinct from crash restarts: it explicitly tells the agent the previous session was healthy, nothing failed, and to continue from the checkpoint without re-validating completed work.
 
 ### Investigation Resume
 
@@ -459,7 +482,7 @@ def build_orchestrator_prompt(
 | 11 | Workflow steps | Mode-specific OODA/iteration cycles |
 | 12 | Long-running processes | **NEVER block orchestrator** — delegate experiments to workers |
 | 13 | Code changes | **NEVER write >20 lines** — delegate coding to workers |
-| 14 | Manuscript delegation | **ALWAYS delegate to Scribe** |
+| 14 | Manuscript delegation | **ALWAYS delegate to Scribe** — Scribe writes LaTeX (`paper.tex`), NEVER Markdown |
 | 15 | Tools | bd commands, spawn-agent.sh, merge-agent.sh, figures |
 | 16 | Worker prompts | Role file inclusion, artifact contracts |
 | 17 | Rules | Concurrency limits, proofs, never edit worker code |
@@ -477,11 +500,23 @@ The prompt **references** `.github/agents/*.agent.md` files in the target worksp
 | Task Type | Skills Injected |
 |-----------|----------------|
 | `investigation`, `experiment` | `investigation-protocol`, `evidence-system`, `context-management` |
+| `scribe` | `compilation-protocol`, `figure-generation` |
 | `paper`, `compilation` | `figure-generation`, `compilation-protocol` |
 | `scout` | `deep-research` |
 | `exploration` | `deep-research`, `context-management` |
 
 Skills are referenced as paths (e.g., `.github/skills/deep-research/SKILL.md`) in the worker prompt. The agent reads them at task start.
+
+### Scribe Format Enforcement
+
+`build_worker_prompt()` injects an "Output Format — MANDATORY" section for `task_type="scribe"` that overrides any contradictory briefing with:
+- Write LaTeX (`paper.tex`), not Markdown
+- Compile to `paper.pdf` using the compilation-protocol skill
+- Place paper in the output directory from the project brief
+- Write `.swarm/deliverable.md` as a SHORT summary (convergence signal), not the paper
+- Copy `paper.pdf` to `.swarm/report.pdf` for Telegram delivery
+
+This prevents the orchestrator's LLM-generated briefing from accidentally telling the Scribe to write Markdown.
 
 ---
 

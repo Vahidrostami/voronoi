@@ -169,6 +169,23 @@ The `negative_result` status indicates a scientifically valid negative outcome: 
 | Scientific | + All hypotheses resolved, competing theory ruled out, novel prediction tested, no PARADIGM_STRESS |
 | Experimental | + All high-impact findings replicated, pre-reg compliance, power analysis documented |
 
+### Convergence Gate Script (`convergence-gate.sh`)
+
+The dispatcher runs `convergence-gate.sh` before writing `convergence.json`. It performs multi-signal validation:
+
+| Check | Rigor | Blocks | What it validates |
+|-------|-------|--------|-------------------|
+| 1 | All | Yes | `deliverable.md` exists |
+| 2 | Analytical+ | Yes | `eval-score.json` valid (0 < score ≤ 1) |
+| 3 | Analytical+ | Warn | `claim-evidence.json` integrity |
+| 4 | Scientific+ | Yes | No CONTESTED findings still open |
+| 5 | Scientific+ | Yes | All hypotheses resolved in belief map |
+| 6 | Analytical+ | Yes | Anti-fabrication audit |
+| 7 | Analytical+ | Yes/Warn | Simulation-bypass detection |
+| 8 | Analytical+ | Yes | Data invariants (min_csv_rows, etc.) |
+| 9 | All | Warn | Figure integrity (figure-lint if LaTeX present) |
+| 10 | All | Yes | Paper compilation: if `.tex` source or SC requires paper, `paper.pdf` must exist |
+
 ### Functions
 
 ```python

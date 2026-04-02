@@ -717,3 +717,77 @@ class TestNegativeResults:
         result = ReportGenerator._render_negative_results(findings)
         assert result is not None
         assert "Unclear" in result
+
+
+# ---------------------------------------------------------------------------
+# Demo output copy
+# ---------------------------------------------------------------------------
+
+class TestDemoOutputCopy:
+    def test_copies_precompiled_to_demo_output(self, tmp_path):
+        """Pre-compiled PDF is copied to demos/<name>/output/paper/."""
+        ws = tmp_path / "workspace"
+        swarm = ws / ".swarm"
+        swarm.mkdir(parents=True)
+        # Place a pre-compiled PDF in .swarm/
+        pdf = swarm / "report.pdf"
+        pdf.write_bytes(b"x" * 2000)  # >1000 bytes to pass size check
+        demo = ws / "demos" / "my-experiment"
+        demo.mkdir(parents=True)
+
+        rg = ReportGenerator(ws)
+        path = rg.build_pdf()
+
+        assert path is not None
+        assert path == pdf
+        paper_dir = demo / "output" / "paper"
+        assert paper_dir.exists()
+        assert (paper_dir / "report.pdf").exists()
+
+    @patch("voronoi.gateway.report._run_bd")
+    def test_no_copy_for_markdown_fallback(self, mock_bd, tmp_path):
+        """Markdown-generated PDFs should NOT be copied to paper dir."""
+        ws = tmp_path / "workspace"
+        swarm = ws / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "deliverable.md").write_text("# Paper")
+        demo = ws / "demos" / "my-experiment"
+        demo.mkdir(parents=True)
+        mock_bd.return_value = (0, json.dumps([]))
+
+        rg = ReportGenerator(ws)
+        path = rg.build_pdf()
+
+        assert path is not None
+        # Auto-generated output should NOT appear in paper dir
+        assert not list((demo / "output").glob("**/*")) if (demo / "output").exists() else True
+
+    def test_no_copy_without_demo(self, tmp_path):
+        """No demo directory => no copy attempted."""
+        ws = tmp_path / "workspace"
+        swarm = ws / ".swarm"
+        swarm.mkdir(parents=True)
+        pdf = swarm / "report.pdf"
+        pdf.write_bytes(b"x" * 2000)
+
+        rg = ReportGenerator(ws)
+        path = rg.build_pdf()
+
+        assert path is not None
+        assert not list(ws.glob("demos/*/output/paper/*"))
+
+    def test_no_copy_multiple_demos(self, tmp_path):
+        """Multiple demo directories => ambiguous, no copy."""
+        ws = tmp_path / "workspace"
+        swarm = ws / ".swarm"
+        swarm.mkdir(parents=True)
+        pdf = swarm / "report.pdf"
+        pdf.write_bytes(b"x" * 2000)
+        (ws / "demos" / "demo1").mkdir(parents=True)
+        (ws / "demos" / "demo2").mkdir(parents=True)
+
+        rg = ReportGenerator(ws)
+        path = rg.build_pdf()
+
+        assert path is not None
+        assert not list(ws.glob("demos/*/output/paper/*"))

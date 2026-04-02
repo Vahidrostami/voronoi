@@ -364,14 +364,15 @@ class InvestigationQueue:
     def pause(self, investigation_id: int, reason: str) -> None:
         """Pause a running investigation (e.g. auth expiry).
 
-        Transitions running → paused.  Does not set completed_at because
-        the investigation is expected to resume.
+        Transitions running → paused.  Sets completed_at to the current
+        time so _check_paused_timeouts can measure time-in-paused-state.
+        resume() clears completed_at when the investigation restarts.
         """
         with self._connect() as conn:
             conn.execute(
-                "UPDATE investigations SET status='paused', error=? "
+                "UPDATE investigations SET status='paused', error=?, completed_at=? "
                 "WHERE id=? AND status='running'",
-                (reason, investigation_id),
+                (reason, time.time(), investigation_id),
             )
 
     def resume(self, investigation_id: int) -> bool:
@@ -400,6 +401,19 @@ class InvestigationQueue:
             cursor = conn.execute(
                 "UPDATE investigations SET status='review', completed_at=? "
                 "WHERE id=? AND status='running'",
+                (time.time(), investigation_id),
+            )
+            return cursor.rowcount > 0
+
+    def accept(self, investigation_id: int) -> bool:
+        """Accept a reviewed investigation — transition review → complete.
+
+        Returns True if the status was changed.
+        """
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE investigations SET status='complete', completed_at=? "
+                "WHERE id=? AND status='review'",
                 (time.time(), investigation_id),
             )
             return cursor.rowcount > 0

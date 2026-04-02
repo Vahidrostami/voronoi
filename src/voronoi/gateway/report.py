@@ -1121,16 +1121,22 @@ class ReportGenerator:
             return None
 
     def build_pdf(self) -> Path | None:
-        """Generate a PDF.  Chains: pre-compiled \u2192 LaTeX \u2192 pandoc \u2192 fpdf2 \u2192 .md."""
-        # 1. Agent-compiled PDF
+        """Generate a PDF.  Chains: pre-compiled → LaTeX → pandoc → fpdf2 → .md."""
+        # 1. Agent-compiled PDF (publication-quality)
         result = self._try_precompiled_pdf()
         if result:
+            self._copy_to_demo_output(result)
             return result
 
-        # 2. LaTeX compilation
+        # 2. LaTeX compilation (publication-quality)
         result = self._try_latex_compile()
         if result:
+            self._copy_to_demo_output(result)
             return result
+
+        # Strategies below produce auto-generated output from markdown —
+        # adequate for Telegram delivery but NOT publication-quality.
+        # These are NOT copied to demos/*/output/paper/.
 
         # 3. Build markdown content for remaining strategies
         tex_main = self._find_latex_main()
@@ -1156,3 +1162,22 @@ class ReportGenerator:
 
         # 6. Fallback to .md
         return self._fallback_md_file(md, f"{filename}.md")
+
+    def _copy_to_demo_output(self, source: Path) -> None:
+        """Copy a publication-quality PDF to the demo output/paper/ directory.
+
+        Only called for pre-compiled or LaTeX-compiled PDFs — never for
+        auto-generated markdown conversions.  Looks for a single
+        ``demos/<name>/`` directory in the workspace and copies the file
+        into ``demos/<name>/output/paper/``.
+        """
+        try:
+            demo_dirs = [d for d in self.ws.glob("demos/*/") if d.is_dir()]
+            if len(demo_dirs) != 1:
+                return  # Ambiguous or no demo directory
+            paper_dir = demo_dirs[0] / "output" / "paper"
+            paper_dir.mkdir(parents=True, exist_ok=True)
+            dest = paper_dir / source.name
+            shutil.copy2(source, dest)
+        except OSError:
+            pass

@@ -317,6 +317,72 @@ if find "$WORKSPACE" -name '*.tex' -not -path '*/.git/*' 2>/dev/null | head -1 |
 fi
 
 # -------------------------------------------------------------------------
+# Check 10: Paper compilation verification
+# -------------------------------------------------------------------------
+# If a .tex file with \documentclass exists, paper.pdf MUST also exist.
+# This catches the case where the Scribe wrote LaTeX but it wasn't compiled,
+# or where deliverable.md was written as Markdown instead of the expected LaTeX.
+echo "  Checking paper compilation..."
+PAPER_CHECK=$(python3 -c "
+import sys, json
+from pathlib import Path
+ws = Path('$WORKSPACE')
+swarm = ws / '.swarm'
+
+# Find LaTeX source files
+tex_files = [f for f in ws.rglob('*.tex')
+             if '.git' not in str(f) and f.read_text(errors='ignore').count(r'\documentclass') > 0]
+
+# Check if success criteria mention paper/compilation
+paper_required_by_sc = False
+sc_file = swarm / 'success-criteria.json'
+if sc_file.exists():
+    try:
+        sc = json.load(open(sc_file))
+        for c in (sc if isinstance(sc, list) else []):
+            desc = str(c.get('description', '')).lower()
+            if any(kw in desc for kw in ('paper compil', 'paper.pdf', 'paper.tex', 'latex')):
+                paper_required_by_sc = True
+                if not c.get('met', False):
+                    print('FAIL:SC requires paper but criterion not met: ' + c.get('id', '?'))
+                    sys.exit(0)
+    except Exception:
+        pass
+
+if not tex_files and not paper_required_by_sc:
+    print('OK:no paper expected')
+    sys.exit(0)
+
+if tex_files:
+    # Find corresponding PDF
+    pdf_found = False
+    for tex in tex_files:
+        pdf = tex.with_suffix('.pdf')
+        if pdf.exists() and pdf.stat().st_size > 1000:
+            pdf_found = True
+            break
+    # Also check .swarm/report.pdf
+    if not pdf_found and (swarm / 'report.pdf').exists() and (swarm / 'report.pdf').stat().st_size > 1000:
+        pdf_found = True
+    if not pdf_found:
+        names = ', '.join(f.name for f in tex_files[:3])
+        print('FAIL:LaTeX source exists (' + names + ') but no compiled PDF found')
+    else:
+        print('OK:paper.tex compiled to PDF')
+elif paper_required_by_sc:
+    # SC says paper needed but no .tex source exists
+    print('FAIL:Success criteria require paper but no .tex source found')
+" 2>/dev/null || echo "WARN:paper_check_unavailable")
+
+if [[ "$PAPER_CHECK" == FAIL:* ]]; then
+    BLOCKERS="${BLOCKERS}\n  ✗ Paper: ${PAPER_CHECK#FAIL:}"
+elif [[ "$PAPER_CHECK" == WARN:* ]]; then
+    WARNINGS="${WARNINGS}\n  ⚠ Paper: ${PAPER_CHECK#WARN:}"
+else
+    echo "  ✓ Paper check passed (${PAPER_CHECK#OK:})"
+fi
+
+# -------------------------------------------------------------------------
 # Report
 # -------------------------------------------------------------------------
 echo ""

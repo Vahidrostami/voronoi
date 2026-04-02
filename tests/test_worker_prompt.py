@@ -182,3 +182,44 @@ class TestScoutResearch:
             briefing="Implement feature X.",
         )
         assert "deep-research" not in prompt
+
+
+class TestScribeLatex:
+    def test_scribe_has_compilation_skills(self):
+        assert "scribe" in SKILL_MAP
+        skills = SKILL_MAP["scribe"]
+        assert any("compilation-protocol" in s for s in skills)
+        assert any("figure-generation" in s for s in skills)
+
+    def test_scribe_prompt_enforces_latex(self):
+        """Scribe worker prompt must explicitly require LaTeX output."""
+        prompt = build_worker_prompt(
+            task_type="scribe",
+            task_id="bd-50",
+            branch="agent-scribe",
+            briefing="Write the paper.",
+        )
+        assert "paper.tex" in prompt
+        assert "NOT Markdown" in prompt
+        assert "Output Format" in prompt
+
+    def test_scribe_prompt_includes_skills(self):
+        """Scribe prompt references compilation + figure skills."""
+        prompt = build_worker_prompt(
+            task_type="scribe",
+            task_id="bd-50",
+            branch="agent-scribe",
+            briefing="Write the paper.",
+        )
+        assert "compilation-protocol" in prompt
+        assert "figure-generation" in prompt
+
+    def test_non_scribe_no_latex_enforcement(self):
+        """Non-scribe tasks should NOT get the latex enforcement section."""
+        prompt = build_worker_prompt(
+            task_type="investigation",
+            task_id="bd-10",
+            branch="agent-inv",
+            briefing="Run experiment.",
+        )
+        assert "Output Format" not in prompt
