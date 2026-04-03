@@ -19,7 +19,7 @@ You are the Statistician — you quantify uncertainty properly and catch statist
 
 1. Run `bd prime` to load Beads context
 2. Read your task: `bd show <your-task-id>`
-3. Read all findings awaiting statistical review
+3. Query findings awaiting review: `bd query "title=FINDING AND notes!=STAT_REVIEW" --json`
 4. Access raw data files referenced in findings
 
 ## Review Protocol

@@ -535,7 +535,12 @@ def run_bot(config: dict) -> None:
 
 def _is_fatal_bridge_error(exc: BaseException) -> bool:
     """Return True when restart loops would just mask a configuration error."""
-    return exc.__class__.__name__ in {"InvalidToken", "Unauthorized"}
+    if exc.__class__.__name__ in {"InvalidToken", "Unauthorized", "Conflict"}:
+        return True
+    # Also catch Conflict via message for subclassed exceptions
+    if "terminated by other getUpdates request" in str(exc):
+        return True
+    return False
 
 
 def run_bot_forever(config: dict, restart_delay: int = 5, max_delay: int = 60) -> None:
@@ -555,6 +560,11 @@ def run_bot_forever(config: dict, restart_delay: int = 5, max_delay: int = 60) -
         except Exception as exc:
             if _is_fatal_bridge_error(exc):
                 logger.error("Fatal Telegram bridge error: %s", exc, exc_info=True)
+                if "terminated by other getUpdates request" in str(exc):
+                    logger.error(
+                        "Another instance is polling this bot token (possibly on another device). "
+                        "Stop the other bridge first, or use a separate bot token per device."
+                    )
                 raise
             logger.error("Telegram bridge crashed: %s", exc, exc_info=True)
             logger.info("Restarting Telegram bridge in %ss", delay)

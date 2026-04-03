@@ -692,3 +692,231 @@ def _find_investigation(q, identifier: str):
         if inv.codename and inv.codename.lower() == identifier.lower():
             return inv
     return None
+
+
+# ---------------------------------------------------------------------------
+# ASK handler — mid-investigation Q&A
+# ---------------------------------------------------------------------------
+
+def handle_ask(project_dir: str, question: str) -> str:
+    """Answer a natural-language question about a running investigation.
+
+    Reads workspace artifacts (experiments.tsv, success-criteria.json,
+    belief-map.json, findings, task list) and synthesizes a conversational
+    answer.  No LLM needed — pattern-matches the question against available
+    data and builds a targeted response.
+
+    This is the key handler that lets users interact with running
+    investigations without terminal access.
+    """
+    q = _get_queue(project_dir)
+    running = q.get_running()
+    if not running:
+        return "Nothing running right now — there's nothing to ask about. Send a question to start an investigation."
+
+    # Collect context from all running investigations
+    sections: list[str] = []
+
+    for inv in running:
+        ws_path = inv.workspace_path
+        if not ws_path:
+            continue
+        ws = Path(ws_path)
+        label = inv.codename or f"#{inv.id}"
+
+        answer = _answer_from_workspace(ws, label, question)
+        if answer:
+            sections.append(answer)
+
+    if not sections:
+        return (
+            "I looked through the workspace but couldn't find enough data to answer that yet. "
+            "The agents may still be early in the investigation.\n\n"
+            "Try `/voronoi status` for an overview, or `/voronoi progress` for metrics."
+        )
+
+    return "\n\n".join(sections)
+
+
+def _answer_from_workspace(ws: Path, label: str, question: str) -> str:
+    """Synthesize an answer from workspace artifacts for a specific question."""
+    from voronoi.gateway.progress import (
+        _read_json, _read_all_experiment_rows,
+        format_duration, progress_bar,
+    )
+
+    q_lower = question.lower()
+    parts: list[str] = [f"*{label}*\n"]
+
+    # ── Gather all available data ──
+    swarm = ws / ".swarm"
+
+    # Experiments
+    exp_rows = _read_all_experiment_rows(ws)
+    keep = [r for r in exp_rows if r.get("status") == "keep"]
+    discard = [r for r in exp_rows if r.get("status") == "discard"]
+    crash = [r for r in exp_rows if r.get("status") == "crash"]
+
+    # Success criteria
+    criteria_data = _read_json(swarm / "success-criteria.json")
+    criteria: list[dict] = criteria_data if isinstance(criteria_data, list) else []
+    criteria_met = [c for c in criteria if c.get("met")]
+
+    # Belief map
+    belief_data = _read_json(swarm / "belief-map.json")
+    hypotheses: list[dict] = []
+    if isinstance(belief_data, dict):
+        hyps = belief_data.get("hypotheses", [])
+        if isinstance(hyps, dict):
+            hyps = list(hyps.values())
+        if isinstance(hyps, list):
+            hypotheses = [h for h in hyps if isinstance(h, dict)]
+
+    # Tasks
+    task_list: list[dict] = []
+    try:
+        code, output = _run_bd("list", "--json", cwd=str(ws))
+        if code == 0 and output.strip():
+            parsed = json.loads(output)
+            if isinstance(parsed, list):
+                task_list = parsed
+    except Exception:
+        pass
+
+    total_tasks = len(task_list)
+    closed_tasks = [t for t in task_list if t.get("status") == "closed"]
+    in_progress_tasks = [t for t in task_list if t.get("status") == "in_progress"]
+    failed_tasks = [t for t in task_list if "fail" in t.get("notes", "").lower() or "crash" in t.get("notes", "").lower()]
+
+    # Findings (from beads)
+    findings: list[dict] = [t for t in task_list if "finding" in t.get("title", "").lower() or "FINDING" in t.get("notes", "")]
+
+    # ── Answer based on question topic ──
+
+    # Questions about experiments or results
+    if _q_about(q_lower, ["experiment", "result", "data", "show", "found", "finding"]):
+        if not exp_rows and not findings:
+            parts.append("No experiment results yet — agents are still working.")
+        else:
+            if exp_rows:
+                parts.append(f"{len(exp_rows)} experiments run so far:")
+                if keep:
+                    parts.append(f"  ✓ {len(keep)} passed")
+                    for r in keep[:5]:
+                        desc = r.get("description", r.get("metric_name", ""))
+                        val = r.get("metric_value", "")
+                        if desc:
+                            detail = f"    • {desc}"
+                            if val:
+                                detail += f" (value: {val})"
+                            parts.append(detail)
+                if discard:
+                    parts.append(f"  ✗ {len(discard)} discarded")
+                if crash:
+                    parts.append(f"  💥 {len(crash)} crashed")
+            # Add relevant findings
+            for t in findings[:3]:
+                notes = t.get("notes", "")
+                title = t.get("title", "")
+                parts.append(f"\n★ {title}")
+                # Extract key metrics from notes
+                for line in notes.split("\n"):
+                    line_s = line.strip()
+                    if any(k in line_s.upper() for k in ["EFFECT_SIZE", "CI_95", "P_VALUE", "SAMPLE_SIZE"]):
+                        parts.append(f"  {line_s}")
+
+    # Questions about failures/crashes
+    elif _q_about(q_lower, ["fail", "crash", "error", "wrong", "problem", "issue"]):
+        issues: list[str] = []
+        if crash:
+            for r in crash[:5]:
+                desc = r.get("description", "unknown experiment")
+                issues.append(f"  💥 {desc} crashed")
+        if discard:
+            for r in discard[:5]:
+                desc = r.get("description", "unknown experiment")
+                issues.append(f"  ✗ {desc} discarded")
+        if failed_tasks:
+            for t in failed_tasks[:5]:
+                title = t.get("title", "unknown task")
+                issues.append(f"  ⚠ {title}")
+        if issues:
+            parts.append("Issues found:\n" + "\n".join(issues))
+        else:
+            parts.append("No failures or crashes so far — everything is running smoothly.")
+
+    # Questions about hypotheses/beliefs
+    elif _q_about(q_lower, ["hypothes", "belief", "theory", "leading", "which", "best", "worst"]):
+        if hypotheses:
+            parts.append("Current hypotheses:")
+            sorted_hyps = sorted(hypotheses, key=lambda h: float(h.get("posterior", h.get("prior", 0))), reverse=True)
+            for h in sorted_hyps[:5]:
+                name = h.get("name", h.get("label", "?"))
+                prior = h.get("prior", "?")
+                posterior = h.get("posterior", "")
+                status = h.get("status", "")
+                line = f"  • {name}: P={posterior or prior}"
+                if status:
+                    line += f" [{status}]"
+                parts.append(line)
+        else:
+            parts.append("No belief map yet — hypotheses haven't been formulated.")
+
+    # Questions about criteria/success/progress
+    elif _q_about(q_lower, ["criteri", "success", "progress", "track", "going", "on track"]):
+        if criteria:
+            parts.append(f"Success criteria: {len(criteria_met)}/{len(criteria)} met")
+            for c in criteria:
+                check = "✓" if c.get("met") else "○"
+                desc = c.get("description", "")[:60]
+                cid = c.get("id", "?")
+                parts.append(f"  {check} {cid}: {desc}")
+        else:
+            parts.append("No success criteria defined yet.")
+
+        if total_tasks > 0:
+            bar = progress_bar(len(closed_tasks), total_tasks)
+            parts.append(f"\n{bar}  {len(closed_tasks)}/{total_tasks} tasks")
+
+    # Questions about specific classifiers/models/methods
+    elif _q_about(q_lower, ["classifier", "model", "method", "algorithm", "knn", "k-nn",
+                             "logistic", "decision tree", "random forest", "svm", "neural",
+                             "threshold", "noise", "critical"]):
+        # Search experiments and findings for relevant mentions
+        relevant: list[str] = []
+        for r in exp_rows:
+            desc = r.get("description", "").lower()
+            metric = r.get("metric_name", "")
+            val = r.get("metric_value", "")
+            status = r.get("status", "")
+            if any(term in desc for term in q_lower.split() if len(term) > 3):
+                relevant.append(f"  • {r.get('description', '')} — {metric}={val} [{status}]")
+        if relevant:
+            parts.append("Relevant experiment results:\n" + "\n".join(relevant[:10]))
+        else:
+            parts.append("No specific results matching your query yet. The agents may still be running those experiments.")
+
+    # General "what's happening" / catch-all
+    else:
+        # Build a comprehensive overview
+        if exp_rows:
+            parts.append(f"{len(exp_rows)} experiments run ({len(keep)} passed, {len(discard)} discarded, {len(crash)} crashed).")
+        if criteria:
+            parts.append(f"Success criteria: {len(criteria_met)}/{len(criteria)} met.")
+        if hypotheses:
+            best = max(hypotheses, key=lambda h: float(h.get("posterior", h.get("prior", 0))))
+            name = best.get("name", best.get("label", ""))
+            conf = best.get("posterior", best.get("prior", ""))
+            if name:
+                parts.append(f"Leading hypothesis: {name} (P={conf}).")
+        if total_tasks > 0:
+            parts.append(f"Tasks: {len(closed_tasks)}/{total_tasks} done, {len(in_progress_tasks)} in progress.")
+        if not exp_rows and not criteria and not hypotheses and total_tasks == 0:
+            parts.append("The investigation is still in early stages — not much data yet.")
+
+    return "\n".join(parts)
+
+
+def _q_about(question: str, keywords: list[str]) -> bool:
+    """Check if a question is about any of the given keywords."""
+    return any(kw in question for kw in keywords)

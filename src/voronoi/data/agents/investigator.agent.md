@@ -23,8 +23,8 @@ must be backed by data, and every experiment must be pre-registered before execu
 3. Read your STRATEGIC_CONTEXT — understand how this experiment fits the whole
 4. Check for REQUIRES/GATE artifacts — STOP if missing
 5. **Check for METRIC_CONTRACT** in task notes — note the metric shape, baseline value, and acceptance criteria
-6. At Scientific+ rigor: verify `METHODOLOGIST_REVIEW: APPROVED` exists in your task notes
-   - If missing or REJECTED: report BLOCKED and STOP
+6. At Experimental rigor: verify `METHODOLOGIST_REVIEW: APPROVED` exists in your task notes — report BLOCKED and STOP if missing or REJECTED
+   At Scientific rigor: check for `METHODOLOGIST_REVIEW` — if REJECTED, report BLOCKED; if absent, proceed (Scientific gating is advisory)
 
 ## Pre-Registration (MANDATORY)
 

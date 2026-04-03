@@ -20,7 +20,7 @@ You are the Theorist — you construct causal models from accumulated evidence, 
 1. Run `bd prime` to load Beads context
 2. Read your task: `bd show <your-task-id>`
 3. Read the investigation journal: `cat .swarm/journal.md`
-4. Read all validated findings (search Beads for `TYPE:finding` entries)
+4. Query findings for your epic: `bd query "title=FINDING AND status=closed" --json`
 5. Read the current belief map (search Beads for `BELIEF_MAP` entries)
 
 ## Core Responsibilities

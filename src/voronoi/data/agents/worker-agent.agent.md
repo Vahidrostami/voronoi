@@ -82,21 +82,6 @@ LOOP (max 3 iterations per experiment variant):
 ### Progress Tracking
 - Log progress regularly: `bd update <id> --notes "what you did"`
 - If blocked: `bd update <id> --notes "BLOCKED: [reason]"`
-- On completion: `bd close <id> --reason "Completed: [summary]"`
-
-### Git Discipline — Commit Early, Commit Often
-- **Commit after every meaningful unit of work** — a new file, a completed function, a passing test.
-  Do NOT wait until "everything is done" to commit. If your context runs out before committing, ALL your work is lost.
-- Rule of thumb: commit every 5-10 tool calls, or after creating/editing each file.
-- Suggested cadence:
-  1. Create/edit a file → `git add -A && git commit -m "feat: <what you did>"`
-  2. Write a test → `git add -A && git commit -m "test: <what you tested>"`
-  3. Before any long operation → commit what you have
-  4. Before closing the task → final commit; if `origin` exists, push it
-- If `origin` exists, push before stopping: `git push origin <your-branch>`
-- If this workspace has no remote, do NOT create one just to satisfy this rule. Keep the commits local and record `NO_REMOTE` in Beads.
-- If push fails, rebase and retry
-- **If you sense you're running low on context** (many tool calls spent), immediately commit what you have. Push it if `origin` exists; otherwise leave the commit local and close the task with a `NO_REMOTE` note.
 
 ### Quality
 - Write tests for everything you build
@@ -134,27 +119,6 @@ bd update <your-task-id> --notes "SERENDIPITY:HIGH | DESCRIPTION:[what you found
 ```
 Do NOT pursue it without orchestrator approval. The orchestrator will decide resource allocation.
 
-## Artifact Contracts
-
-Tasks may have artifact contracts stored in Beads notes:
-
-- **`PRODUCES:file1, file2`** — Files you MUST create. The quality gate checks these exist before allowing merge.
-- **`REQUIRES:file1, file2`** — Files that must exist before you start. If missing, you are BLOCKED.
-- **`GATE:path/to/validation.json`** — A validation file that must exist and contain PASS verdicts before you begin.
-
-**Before closing a task**, verify all `PRODUCES` artifacts exist:
-```bash
-# Example: check your outputs
-ls -la path/to/expected/output.json
-```
-If you cannot create a required output, document why in Beads notes and do NOT close the task as successful.
-
-**Before starting work**, verify all `REQUIRES` and `GATE` artifacts:
-```bash
-# If blocked
-bd update <your-task-id> --notes "BLOCKED: Required artifact missing: <path>"
-```
-
 ## Completion Checklist — Build Tasks
 
 1. ✅ Verify loop passed (tests + lint + PRODUCES)
@@ -164,21 +128,6 @@ bd update <your-task-id> --notes "BLOCKED: Required artifact missing: <path>"
 5. ✅ Beads task closed with summary
 6. ✅ Changes pushed to remote
 7. ✅ STOP — do not continue to other tasks
-
-## Completion Checklist — Investigation Tasks
-
-1. ✅ Experiment executed per pre-registered design
-2. ✅ Verify loop passed (experiment ran, metric extracted, data committed)
-3. ✅ Raw data committed with SHA-256 hash recorded in Beads
-4. ✅ **Experiment script committed** to `experiments/` — the exact code that produced the data
-5. ✅ All `PRODUCES` artifacts exist (data files, result files)
-6. ✅ Sensitivity analysis completed (2+ parameter variations)
-7. ✅ Finding created in Beads with full evidence trail (TYPE:finding, effect size, CI, N, p-value, data hash, sensitivity results)
-8. ✅ **Numbers verified**: reported N matches actual data row count, effect size computed from raw data
-9. ✅ Append result row to `.swarm/experiments.tsv` (timestamp, task-id, branch, metric, value, status, description)
-10. ✅ Beads task closed with summary
-11. ✅ Changes pushed to remote
-12. ✅ STOP — do not continue to other tasks
 
 ## Anti-Fabrication Rules — MANDATORY
 

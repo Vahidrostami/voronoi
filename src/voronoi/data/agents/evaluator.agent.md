@@ -25,7 +25,7 @@ whether all process gates passed.
 3. Read the Strategic Context Document: `cat .swarm/strategic-context.md`
 4. Read the original abstract from the `ORIGINAL_ABSTRACT` field — this is your ground truth
 5. Read the Synthesizer's deliverable: `cat .swarm/deliverable.md`
-6. Read all validated findings (search Beads for `TYPE:finding` with `STAT_REVIEW: APPROVED`)
+6. Query validated findings: `bd query "notes=STAT_REVIEW: APPROVED" --json`
 7. Read the investigation journal: `cat .swarm/journal.md`
 
 ## Evaluation Protocol

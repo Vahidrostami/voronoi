@@ -155,7 +155,7 @@ The orchestrator was instructed to read role files (~10K each) and copy them int
 
 ### 6.2 Solution
 
-`build_worker_prompt()` in `src/voronoi/server/prompt.py` reads role files from disk and assembles complete worker prompts. The orchestrator only writes a ~200 word briefing.
+`build_worker_prompt()` in `src/voronoi/server/prompt.py` reads role files from disk, strips YAML frontmatter (dead token weight), and assembles complete worker prompts. The orchestrator only writes a ~200 word briefing.
 
 ```python
 from voronoi.server.prompt import build_worker_prompt

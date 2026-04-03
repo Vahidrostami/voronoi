@@ -36,13 +36,12 @@ Maps free-text user input to a workflow mode and rigor level. This is the first 
 
 ```python
 class WorkflowMode(Enum):
-    BUILD       # "build", "implement", "deploy", "refactor"
-    INVESTIGATE # "why", "root cause", "hypotheses"
-    EXPLORE     # "which best", "compare", "evaluate"
-    HYBRID      # "figure out and fix", "paper", "manuscript"
+    DISCOVER    # Open question — adaptive rigor
+    PROVE       # Specific hypothesis — full science gates
     STATUS      # "/voronoi status"
     RECALL      # "what did we learn", "previous finding"
     GUIDE       # Fallback — unclear intent
+    ASK         # Mid-investigation question — Q&A about running work
 ```
 
 ```python
@@ -89,14 +88,13 @@ Splits multi-phase prompts (e.g., "investigate X then build Y") into ordered pha
 | `_ANALYTICAL_SIGNALS` | "optimize", "measure", "metrics", "effect size" |
 | `_BUILD_SIGNALS` | "build", "implement", "deploy", "refactor" |
 | `_HYBRID_SIGNALS` | "paper", "manuscript", "figure out and fix" |
-| `_RECALL_SIGNALS` | "what did we learn", "previous finding" |
-
+| `_RECALL_SIGNALS` | "what did we learn", "previous finding" || `_ASK_SIGNALS` | "what have agents found", "any results yet", "how is it going", "update me on" |
 ### ClassifiedIntent Properties
 
 | Property | Type | Description |
 |----------|------|-------------|
 | `.is_science` | bool | True if mode is INVESTIGATE, EXPLORE, or HYBRID |
-| `.is_meta` | bool | True if mode is STATUS or RECALL |
+| `.is_meta` | bool | True if mode is STATUS, RECALL, GUIDE, or ASK |
 
 ---
 
@@ -111,6 +109,7 @@ Central dispatch point for all user actions. Every Telegram command and programm
 | Function | Returns |
 |----------|---------|
 | `handle_status(project_dir) -> str` | Queue status: queued, running, recent completed |
+| `handle_ask(project_dir, question) -> str` | Answer a natural-language question about a running investigation |
 | `handle_tasks(project_dir) -> str` | Open Beads tasks from active workspaces |
 | `handle_health(project_dir) -> str` | System health check (tmux, beads, git, disk) |
 | `handle_ready(project_dir) -> str` | Unblocked tasks ready for work |
@@ -438,12 +437,11 @@ def build_digest(
 
 Returns `(message_text, message_type)`. The message_type tells the delivery layer whether to edit-in-place (`MSG_TYPE_STATUS`) or send a new message (`MSG_TYPE_MILESTONE`).
 
-Produces a phase-aware message with adaptive sections:
-1. **Header**: `*Codename* · 2h 15min · Phase 4/8`
-2. **Narrative**: Synthesized from artifacts, or VOICE variant fallback
+Produces a **narrative-first** message with an optional metrics footer:
+1. **Header**: `*Codename* — 2h 15min`
+2. **Narrative paragraph**: Conversational summary merging phase description, agent activity, and "so what?" calibration into a single readable paragraph. Uses `_build_narrative_paragraph()` which synthesizes from artifacts, folds in agent count and pace, and adds context like "normal at this stage" or "results are looking strong."
 3. **Milestones**: `✓` completions, `★` findings, `⚠` problems (since last update)
-4. **Progress**: Bar only when `closed > 0`; task count only during early phases
-5. **Experiments**: From `.swarm/experiments.tsv`
+4. **Metrics footer**: Compact progress section with bar, experiments, criteria, quality — visually separated from the narrative
 6. **Criteria**: Adaptive — count with context label mid-run, full list in detail view
 7. **Quality**: Score with voice label ("solid" vs "improving")
 8. **Track assessment**: Only `off_track` always shown; `watch` suppressed in early phases
@@ -497,6 +495,42 @@ def estimate_remaining(elapsed_sec: float, done: int, total: int) -> str
 def phase_description(mode: str, phase: str, codename: str = "") -> str  # VOICE-rotated or static
 def phase_position(phase: str) -> tuple[int, int]     # Journey position (step, total)
 ```
+
+---
+
+## 8b. Mid-Investigation Q&A (`handlers_query.py` — `handle_ask`)
+
+### Purpose
+
+Lets users ask natural-language questions about running investigations and get answers without terminal access. Reads workspace artifacts (experiments.tsv, success-criteria.json, belief-map.json, task list, findings) and synthesizes a targeted response. No LLM needed — pattern-matches the question against available data.
+
+### Function
+
+```python
+def handle_ask(project_dir: str, question: str) -> str
+```
+
+**Invoked by**: `/voronoi ask <question>` command or ASK intent from free-text classification.
+
+**Returns**: A conversational answer synthesized from workspace artifacts. When no running investigations exist, returns a helpful redirect. When data is insufficient, suggests alternative commands.
+
+### Question Topic Detection
+
+| Question about... | Data sources used | Example |
+|-------------------|-------------------|---------|
+| Experiments/results | `experiments.tsv`, findings | "What have the experiments found?" |
+| Failures/crashes | `experiments.tsv` (crash/discard), task notes | "Why did experiment 3 fail?" |
+| Hypotheses/beliefs | `belief-map.json` | "Which hypothesis is leading?" |
+| Success criteria | `success-criteria.json`, tasks | "Are we on track?" |
+| Specific methods | `experiments.tsv` descriptions | "How are the classifiers doing?" |
+| General | All sources combined | "What's the latest?" |
+
+### Design Decisions
+
+- **No LLM in the path**: Deterministic, fast, no cost. Pattern matching on question keywords against workspace data.
+- **Multi-investigation**: Scans all running investigations and returns answers per codename.
+- **Graceful degradation**: When artifacts don't exist yet (early phases), says so explicitly rather than returning empty data.
+- **Read-only**: Never modifies workspace state. Safe to call at any time.
 
 ---
 

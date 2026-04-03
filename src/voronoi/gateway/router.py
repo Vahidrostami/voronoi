@@ -36,6 +36,7 @@ from voronoi.gateway.handlers_query import (  # noqa: F401
     handle_journal,
     handle_finding,
     handle_claims,
+    handle_ask,
 )
 from voronoi.gateway.handlers_mutate import (  # noqa: F401
     handle_reprioritize,
@@ -72,6 +73,7 @@ __all__ = [
     "handle_discover", "handle_prove",
     "handle_recall", "handle_belief", "handle_journal", "handle_finding",
     "handle_results", "handle_demo", "handle_details",
+    "handle_ask",
 ]
 
 
@@ -143,7 +145,8 @@ _HELP_MESSAGE = (
     "`/voronoi discover <question>`\n"
     "`/voronoi prove <hypothesis>`\n\n"
     "*Knowledge*\n"
-    "`/voronoi belief` · `journal` · `finding <id>` · `recall <query>`\n\n"
+    "`/voronoi belief` · `journal` · `finding <id>` · `recall <query>`\n"
+    "`/voronoi ask <question>` — ask about a running investigation\n\n"
     "*Steer*\n"
     "`/voronoi guide <msg>` · `pivot <msg>` · `abort`\n\n"
     "_In groups, @mention me or reply to my messages._"
@@ -282,6 +285,8 @@ class CommandRouter:
             elif sub == "claims":
                 arg = args[0] if args else ""
                 return handle_claims(self.project_dir, arg), None
+            elif sub == "ask" and args:
+                return handle_ask(self.project_dir, " ".join(args)), None
             else:
                 return f"❓ Unknown command: `{sub}`\nSend `/voronoi` for help.", None
         except Exception as e:
@@ -300,6 +305,8 @@ class CommandRouter:
 
         # Meta intents
         if intent.is_meta:
+            if intent.mode == WorkflowMode.ASK:
+                return handle_ask(self.project_dir, text), None
             if intent.mode == WorkflowMode.RECALL:
                 return handle_recall(self.project_dir, intent.summary), None
             if intent.mode == WorkflowMode.STATUS:

@@ -14,8 +14,8 @@ repeating dead-end approaches.
 
 ## Activation
 
-- **Investigate / Explore / Hybrid modes:** Always dispatched as Phase 0.
-- **Build mode:** Skipped (unless the orchestrator flags ambiguity).
+- **Analytical+ rigor** in Investigate / Explore / Hybrid modes: dispatched as Phase 0.
+- **Standard rigor / Build mode:** Skipped (unless the orchestrator flags ambiguity).
 
 ## Startup Sequence
 
@@ -34,7 +34,7 @@ repeating dead-end approaches.
 ### 2. Documentation Review
 - Read project README, DESIGN.md, and relevant docs
 - Check for prior investigation deliverables in `.swarm/`
-- Review any existing findings in Beads (`bd list --json | grep FINDING`)
+- Review any existing findings in Beads: `bd query "title=FINDING" --json`
 
 ### 3. Knowledge Synthesis
 - Identify what is already known vs. what needs discovery

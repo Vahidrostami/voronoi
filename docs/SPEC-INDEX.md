@@ -13,7 +13,7 @@
 | Free-text classification, greetings | [GATEWAY.md](GATEWAY.md) | §3 (Router — Free-Text Pipeline) |
 | Conversation memory, chat context | [GATEWAY.md](GATEWAY.md) | §5 (Memory) |
 | Knowledge recall, past findings | [GATEWAY.md](GATEWAY.md) | §6 (Knowledge) |
-| Progress digests, track assessment | [GATEWAY.md](GATEWAY.md) | §8 (Progress) |
+| Progress digests, track assessment | [GATEWAY.md](GATEWAY.md) | §8 (Progress) |\n| Mid-investigation Q&A, `/voronoi ask` | [GATEWAY.md](GATEWAY.md) | §8b (Ask Handler) |
 | Report/manuscript/PDF generation | [GATEWAY.md](GATEWAY.md) | §9 (Report) |
 | Telegram bridge, inline buttons, groups | [GATEWAY.md](GATEWAY.md) | §12 (Telegram Bridge) |
 | Investigation queue, lifecycle | [SERVER.md](SERVER.md) | §2 (Queue) |

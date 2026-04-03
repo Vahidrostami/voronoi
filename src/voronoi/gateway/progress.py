@@ -463,6 +463,67 @@ def _synthesize_narrative(
     return ". ".join(p.capitalize() if i == 0 else p for i, p in enumerate(parts)) + "."
 
 
+def _build_narrative_paragraph(
+    *,
+    workspace: Path,
+    phase: str,
+    mode: str,
+    codename: str,
+    task_snapshot: dict,
+    elapsed_sec: float,
+    in_progress: int,
+    closed: int,
+    total: int,
+    eval_score: float,
+    is_early: bool,
+) -> str:
+    """Build a conversational narrative paragraph — the core of the message.
+
+    Merges phase description, agent activity, and "so what?" calibration
+    into a single readable paragraph instead of separate metric lines.
+    """
+    # Get artifact-based synthesis first
+    synth = _synthesize_narrative(workspace, phase, task_snapshot, elapsed_sec)
+
+    # Get voice-based phase description
+    voice = phase_description(mode, phase, codename=codename)
+
+    parts: list[str] = []
+
+    # Lead with voice description or synthesis
+    if synth:
+        parts.append(synth)
+    else:
+        parts.append(voice)
+
+    # Add agent context inline (instead of a separate "N agents active" line)
+    if in_progress > 0 and closed == 0 and not is_early:
+        agent_word = "agent is" if in_progress == 1 else "agents are"
+        parts.append(f"{in_progress} {agent_word} working on it.")
+    elif in_progress > 0 and closed > 0:
+        remaining = total - closed
+        if remaining > 0:
+            parts.append(f"{in_progress} {'agent' if in_progress == 1 else 'agents'} still working; {remaining} tasks to go.")
+
+    # Add "so what?" calibration — tell the user if things are normal
+    if is_early and total > 0:
+        parts.append("Still setting up — nothing to worry about yet.")
+    elif phase == "investigating" and closed == 0 and total > 0:
+        parts.append("Experiments haven't reported back yet — normal at this stage.")
+    elif phase in ("reviewing", "synthesizing") and eval_score >= 0.75:
+        parts.append("Results are looking strong.")
+    elif phase == "converging":
+        parts.append("Final quality checks before wrapping up.")
+
+    # Pace info for long-running investigations (folded into narrative)
+    if elapsed_sec > 3600 and closed > 0:
+        pace_min = (elapsed_sec / 60) / closed
+        if pace_min >= 60:
+            parts.append(f"Averaging {format_duration(pace_min * 60)} per task.")
+
+    return " ".join(parts)
+
+
 def build_digest(
     *,
     codename: str,
@@ -475,17 +536,16 @@ def build_digest(
     eval_score: float = 0.0,
     compact: bool = False,
 ) -> tuple[str, str]:
-    """Build a phase-aware, milestone-driven digest message.
+    """Build a narrative-first, phase-aware digest message.
 
     Returns (message_text, message_type) where message_type is one of
     the MSG_TYPE_* constants, allowing the delivery layer to decide
     whether to edit-in-place or send a new message.
 
-    Adapts structure and detail level to the current phase and elapsed time:
-    - Early (setup/planning): set expectations, no empty progress bars
-    - Active (investigating): highlight achievements, show pace + ETA
-    - Late (reviewing/converging): focus on quality and criteria
-    - Complete: celebrate, summarize
+    Structure: narrative paragraph first (the "so what?"), then
+    optional milestone highlights, then a compact metrics footer.
+    Adapts to phase: early = set expectations, active = achievements,
+    late = quality, complete = celebrate.
 
     compact=True produces a shorter message suitable for periodic updates.
     compact=False produces the full detailed view (for /details command).
@@ -508,19 +568,23 @@ def build_digest(
     has_milestone = bool(findings or design_invalids or serendipities or rigor_changes)
 
     lines: list[str] = []
+    is_early = phase in ("starting", "scouting", "planning")
 
-    # ── Header: codename · elapsed · phase name ──
-    if phase:
-        lines.append(f"*{codename}* · {elapsed_str} · {phase}")
+    # ── Header: codename · elapsed ──
+    step, total_phases = phase_position(phase)
+    if phase and step > 0:
+        lines.append(f"*{codename}* — {elapsed_str}")
     else:
-        lines.append(f"*{codename}* · {elapsed_str}")
+        lines.append(f"*{codename}* — {elapsed_str}")
 
-    # ── Phase narrative: prefer synthesized narrative, fall back to voice ──
-    narrative = _synthesize_narrative(workspace, phase, task_snapshot, elapsed_sec)
-    if narrative:
-        lines.append(narrative)
-    else:
-        lines.append(phase_description(mode, phase, codename=codename))
+    # ── Narrative paragraph: conversational summary with "so what?" ──
+    narrative = _build_narrative_paragraph(
+        workspace=workspace, phase=phase, mode=mode, codename=codename,
+        task_snapshot=task_snapshot, elapsed_sec=elapsed_sec,
+        in_progress=in_progress, closed=closed, total=total,
+        eval_score=eval_score, is_early=is_early,
+    )
+    lines.append(narrative)
 
     # ── What happened since last update (achievements, not raw events) ──
     milestones: list[str] = []
@@ -560,68 +624,56 @@ def build_digest(
         for m in milestones:
             lines.append(m)
 
-    # ── Progress: adaptive to phase ──
-    is_early = phase in ("starting", "scouting", "planning")
+    # ── Metrics footer: compact progress section ──
+    footer_parts: list[str] = []
 
     if total > 0 and closed > 0:
-        # Show progress bar only when there's actual completion
         bar = progress_bar(closed, total)
-        lines.append(f"\n{bar}  {closed}/{total} tasks")
         eta = estimate_remaining(elapsed_sec, closed, total)
-        if eta:
-            lines.append(f"⏱ {eta}")
+        eta_suffix = f" · {eta}" if eta else ""
+        footer_parts.append(f"{bar}  {closed}/{total} tasks{eta_suffix}")
     elif total > 0 and is_early:
-        # Early phase: mention task count without an empty progress bar
-        lines.append(f"\n{total} tasks planned · agents getting started")
+        footer_parts.append(f"{total} tasks planned")
     elif total > 0:
-        # Work hasn't started completing yet — brief status
-        agent_note = f" · {in_progress} active" if in_progress > 0 else ""
-        lines.append(f"\n{total} tasks in pipeline{agent_note}")
+        footer_parts.append(f"{total} tasks in pipeline")
 
-    # ── Experiments (if any) ──
+    # Experiments — only add if not already covered in narrative
     exp_summary = _experiment_summary(workspace)
     if exp_summary:
-        lines.append(exp_summary)
+        footer_parts.append(exp_summary)
 
-    # ── Artifacts (detail view only) ──
+    # Artifacts (detail view only)
     if not compact:
         artifact_summary = _artifact_progress_summary(workspace)
         if artifact_summary:
-            lines.append(artifact_summary)
+            footer_parts.append(artifact_summary)
 
-    # ── Success criteria: adaptive display ──
-    criteria_summary = _criteria_summary(
+    # Success criteria — compact inline
+    criteria_summary_text = _criteria_summary(
         workspace, compact=compact, phase=phase,
         events_since_last=events_since_last,
     )
-    if criteria_summary:
-        lines.append(f"\n{criteria_summary}")
+    if criteria_summary_text:
+        footer_parts.append(criteria_summary_text)
 
-    # ── Quality score (when available) ──
+    # Quality score
     if eval_score > 0:
         label = VOICE_QUALITY_LABELS["high"] if eval_score >= 0.75 else (
             VOICE_QUALITY_LABELS["ok"] if eval_score >= 0.50
             else VOICE_QUALITY_LABELS["low"]
         )
-        lines.append(f"Quality: {eval_score:.2f} — {label}")
+        footer_parts.append(f"Quality: {eval_score:.2f} — {label}")
+
+    if footer_parts:
+        lines.append("")
+        lines.extend(footer_parts)
 
     # ── Track assessment: only surface real problems ──
     track_status, track_reason = assess_track_status(workspace, task_snapshot, eval_score)
     if track_status == "off_track":
         lines.append(f"\n⚠️ {track_reason}")
     elif track_status == "watch" and not is_early:
-        # Don't show "watch" warnings during early phases — it's normal
         lines.append(f"\n{track_reason}")
-
-    # ── Agent activity (brief) ──
-    if in_progress > 0:
-        lines.append(f"\n{in_progress} {'agent' if in_progress == 1 else 'agents'} active")
-
-    # ── Pace info for long-running investigations ──
-    if compact and elapsed_sec > 3600 and closed > 0:
-        pace_min = (elapsed_sec / 60) / closed
-        if pace_min >= 60:
-            lines.append(f"Averaging {format_duration(pace_min * 60)} per task")
 
     msg_type = MSG_TYPE_MILESTONE if has_milestone else MSG_TYPE_STATUS
     return "\n".join(lines), msg_type
@@ -658,28 +710,29 @@ def build_digest_whatsup(
         stuck = inv.get("agents_stuck", 0)
         question = inv.get("question", "")[:80]
 
-        # Header with phase name
-        if phase:
-            lines.append(f"*{label}* · {elapsed} · {phase}")
-        else:
-            lines.append(f"*{label}* · running for {elapsed}")
+        # Header
+        lines.append(f"*{label}* — {elapsed}")
         if question:
             preview = _clean_question_preview(question, 80)
             lines.append(f"_{preview}_")
 
-        # Phase description
-        if phase:
-            lines.append(phase_description(mode, phase, codename=label))
+        # Narrative: conversational description merging phase + agents
+        desc = phase_description(mode, phase, codename=label)
+        if in_prog > 0 and closed == 0:
+            if total > 0:
+                desc += f" {in_prog} {'agent' if in_prog == 1 else 'agents'} active, {total} tasks planned."
+            else:
+                desc += f" {in_prog} {'agent' if in_prog == 1 else 'agents'} active."
+        elif in_prog > 0 and closed > 0:
+            remaining = total - closed
+            if remaining > 0:
+                desc += f" {in_prog} {'agent' if in_prog == 1 else 'agents'} working; {remaining} to go."
+        lines.append(desc)
 
-        # Progress — adaptive
+        # Progress — only if there are completions
         if total > 0 and closed > 0:
             bar = progress_bar(closed, total)
             lines.append(f"{bar}  {closed}/{total} tasks")
-        elif total > 0:
-            agent_note = f" · {in_prog} active" if in_prog > 0 else ""
-            lines.append(f"{total} tasks planned{agent_note}")
-        else:
-            lines.append("Setting up — planning tasks")
 
         # Agent health (only mention problems)
         if stuck > 0:

@@ -161,6 +161,7 @@ graph TD
 |---------|-------------|
 | `/voronoi discover <question>` | Open exploration — adaptive rigor, creative agents |
 | `/voronoi prove <hypothesis>` | Structured hypothesis testing — full science gates |
+| `/voronoi ask <question>` | Ask about a running investigation — get answers without terminal access |
 | `/voronoi status` | Conversational status — what's happening? |
 | `/voronoi progress` | Are we on track? Metrics, criteria, belief map |
 | `/voronoi results [id]` | View past investigation results |

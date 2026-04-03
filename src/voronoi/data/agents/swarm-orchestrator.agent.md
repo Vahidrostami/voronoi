@@ -74,7 +74,7 @@ Classified as: [Mode] / [Rigor] rigor
 |------|----------|------------|------------|--------------|
 | Builder 🔨 | ✅ | ✅ | ✅ | ✅ |
 | Critic ⚖️ | ✅ (inline) | ✅ (inline) | ✅ (full agent) | ✅ (full agent) |
-| Scout 🔍 | — | — | ✅ | ✅ |
+| Scout 🔍 | — | ✅ | ✅ | ✅ |
 | Investigator 🔬 | — | ✅ | ✅ | ✅ |
 | Statistician 📊 | — | ✅ | ✅ | ✅ |
 | Synthesizer 🧩 | — | ✅ | ✅ | ✅ |

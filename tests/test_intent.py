@@ -135,6 +135,52 @@ class TestFreeTextScience:
 
 
 # ---------------------------------------------------------------------------
+# ASK intent — mid-investigation questions
+# ---------------------------------------------------------------------------
+
+class TestAskIntent:
+    """Test ASK intent classification for mid-investigation questions."""
+
+    def test_ask_command(self):
+        r = classify("/voronoi ask what have the agents found so far?")
+        assert r.mode == WorkflowMode.ASK
+        assert r.confidence == 1.0
+
+    def test_what_have_agents_found(self):
+        r = classify("What have the agents found so far?")
+        assert r.mode == WorkflowMode.ASK
+
+    def test_any_results_yet(self):
+        r = classify("Any results yet?")
+        assert r.mode == WorkflowMode.ASK
+
+    def test_what_does_the_data_show(self):
+        r = classify("What does the data show about the experiments?")
+        assert r.mode == WorkflowMode.ASK
+
+    def test_how_is_it_going(self):
+        r = classify("How are things going so far?")
+        assert r.mode == WorkflowMode.ASK
+
+    def test_update_me_on_progress(self):
+        r = classify("Update me on the progress")
+        assert r.mode == WorkflowMode.ASK
+
+    def test_which_classifiers_are_best(self):
+        r = classify("Which classifiers are showing the best results so far?")
+        assert r.mode == WorkflowMode.ASK
+
+    def test_can_you_summarize_findings(self):
+        r = classify("Can you summarize the findings so far?")
+        assert r.mode == WorkflowMode.ASK
+
+    def test_ask_is_meta(self):
+        r = classify("What have we found so far?")
+        assert r.is_meta is True
+        assert r.is_science is False
+
+
+# ---------------------------------------------------------------------------
 # Edge cases
 # ---------------------------------------------------------------------------
 

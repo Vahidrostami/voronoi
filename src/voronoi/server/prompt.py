@@ -138,7 +138,7 @@ def build_orchestrator_prompt(
                 "- Dispatch Scout first → wait for `.swarm/scout-brief.md`\n"
                 "- Dispatch Theorist + Methodologist before investigators\n"
                 "- Every investigation task MUST have pre-registration\n"
-                "- Methodologist approval required before dispatch\n"
+                "- Scientific rigor: Methodologist review is advisory; Experimental rigor: approval required before dispatch\n"
             )
             # Human gate instructions for high-rigor investigations
             sections.append(
@@ -226,32 +226,24 @@ def build_orchestrator_prompt(
         "calibration iteration caps.\n"
     )
 
-    # -- OODA Protocol (collapsed from 4 sections) ------------------------
+    # -- OODA Protocol (lean — role file has the full protocol) --------
     sections.append(
         "\n## OODA Protocol\n\n"
         "Your role file (`.github/agents/swarm-orchestrator.agent.md`) has the full "
-        "checkpoint-based OODA protocol, targeted query patterns, and context budget.\n\n"
-        "**Each cycle:**\n"
-        f"1. Read checkpoint + `.swarm/brief-digest.md` (NOT the full `{prompt_path}`)\n"
-        "2. Read `.swarm/dispatcher-directive.json` if it exists — obey it:\n"
-        "   - `context_advisory`: prioritize convergence\n"
-        "   - `context_warning`: run `/compact` NOW to recover context budget, then delegate remaining work\n"
-        "   - `context_critical`: run `/compact` NOW, write checkpoint, dispatch Scribe immediately\n"
-        "3. Run `/context` and include the snapshot in your checkpoint (`context_snapshot` field).\n"
-        "   Extract: model, model_limit, total_used, system_tokens, message_tokens, free_tokens, buffer_tokens.\n"
-        "   This gives the dispatcher ground-truth token data for pressure directives.\n"
-        "4. Run targeted `bd query` (NEVER `bd list --json` in routine cycles)\n"
-        "5. Orient → Decide → Act\n"
-        "6. Write checkpoint (with context_snapshot), update belief map\n\n"
-        "**At startup only:** Read `{prompt_path}` completely, then extract critical "
-        "constraints into `.swarm/brief-digest.md` (~50 lines): success criteria, "
-        "experimental design, hard constraints, mandated entry point. After that, "
-        "work from checkpoint + brief-digest.\n\n"
+        "checkpoint-based OODA protocol.  Follow it precisely.\n\n"
+        "**Dispatcher integration (not in role file):**\n"
+        "- Read `.swarm/dispatcher-directive.json` each cycle — obey it:\n"
+        "  - `context_advisory`: prioritize convergence\n"
+        "  - `context_warning`: run `/compact` NOW, then delegate remaining work\n"
+        "  - `context_critical`: run `/compact` NOW, write checkpoint, dispatch Scribe immediately\n"
+        "- Run `/context` each cycle and include the snapshot in your checkpoint (`context_snapshot` field).\n"
+        "  This gives the dispatcher ground-truth token data for pressure directives.\n\n"
+        f"**Brief-digest rule:** At startup, read `{prompt_path}` fully, then extract "
+        "critical constraints into `.swarm/brief-digest.md` (~50 lines). After that, "
+        f"work from checkpoint + brief-digest (NOT the full `{prompt_path}`).\n\n"
         "**On resume (checkpoint exists):** Read ONLY: (1) checkpoint, (2) brief-digest, "
-        "(3) dispatcher-directive, (4) `bd ready`. Do NOT re-read the agent definition, "
-        "belief map, paper files, experiments log, eval score, or other artifacts "
-        "unless the checkpoint indicates they changed. Each unnecessary file read "
-        "at startup wastes context that you need for OODA cycles later.\n"
+        "(3) dispatcher-directive, (4) `bd ready`. Do NOT re-read agent definitions, "
+        "belief map, or other artifacts unless the checkpoint indicates they changed.\n"
     )
 
     # -- Success criteria ---------------------------------------------------
@@ -825,51 +817,24 @@ def build_worker_prompt(
             "your context window for zero value\n"
         )
 
-    # 10. Self-verification protocol (Reflection pass + test loop)
+    # 10. Findings commit reminder (parametric — role file owns verify loop)
     sections.append(
-        "\n## Self-Verification — MANDATORY BEFORE CLOSING\n\n"
-        "Before closing your task, run this verification sequence:\n\n"
-        "**Step 1: Test loop (iterate until pass)**\n"
-        "```bash\n"
-        "# Run tests relevant to your work\n"
-        "pytest <your-test-files> -x -q  # or the project's test command\n"
-        "```\n"
-        "If tests FAIL: read the failure output, fix the code, re-run. "
-        "Repeat up to 3 times.\n"
-        "If tests PASS: proceed to Step 2.\n"
-        "If still failing after 3 attempts: update Beads:\n"
-        "```bash\n"
-        f"bd update {task_id} --notes 'VERIFY_EXHAUSTED:3 attempts, last error: <error>'\n"
-        "```\n"
-        "Do NOT close the task — the orchestrator will triage.\n\n"
-        "**Step 2: Self-review checklist**\n"
-        "Before closing, verify:\n"
-        "1. All PRODUCES artifacts exist and are non-empty\n"
-        "2. Reported metrics match the actual data (re-read your output files)\n"
-        "3. No hardcoded test values or simulated data\n"
-        "4. If a remote named `origin` exists, all commits are pushed to your branch. "
-        "If no remote exists in this workspace, keep the commits local and report `NO_REMOTE` in Beads instead of inventing a remote.\n\n"
-        "If any check fails, fix it now — do NOT close the task.\n\n"
-        "**Step 3: Incremental findings commit**\n"
-        "If you discovered findings during your work, ensure they are recorded "
-        "in Beads notes BEFORE closing. Do not rely on context memory — "
-        "write observations to Beads as you go:\n"
+        "\n## Record Findings Before Closing\n\n"
+        "Write observations to Beads as you go — do not rely on context memory:\n"
         "```bash\n"
         f"bd update {task_id} --notes 'OBSERVATION:<what you found>'\n"
         "```\n"
     )
 
-    # 11. Git discipline (always included)
+    # 11. Git discipline (parametric branch/task — role file owns commit cadence)
     sections.append(
-        "\n## Git Discipline — CRITICAL\n\n"
-        "Commit after every meaningful unit of work — a new file, a completed function, "
-        "a passing test. Do NOT wait until everything is done.\n"
+        "\n## Git Discipline\n\n"
+        f"Your branch: `{branch}`\n"
         f"After each milestone: `git add -A && git commit -m '[msg]'`\n"
         f"If `origin` exists: `git push origin {branch}`\n"
-        "If no `origin` exists: keep the commit local, Do NOT create a remote just to satisfy this rule, "
-        f"and record `NO_REMOTE` in `bd update {task_id} --notes 'NO_REMOTE: local-only workspace'`.\n"
+        f"If no `origin` exists: commit locally, record `NO_REMOTE` in "
+        f"`bd update {task_id} --notes 'NO_REMOTE: local-only workspace'`.\n"
         f"When done: `bd close {task_id} --reason '...'`\n"
-        f"If `origin` exists: `git push origin {branch}`\n"
     )
 
     return "\n".join(sections)
@@ -877,6 +842,10 @@ def build_worker_prompt(
 
 def _read_role_file(filename: str, workspace_path: str = "") -> str:
     """Read a role definition file from the agents directory.
+
+    Strips YAML frontmatter (``---`` ... ``---``) before returning,
+    since the frontmatter metadata is not useful as prompt text and
+    wastes context tokens.
 
     Searches:
     1. workspace_path/.github/agents/ (runtime investigation workspace)
@@ -892,7 +861,19 @@ def _read_role_file(filename: str, workspace_path: str = "") -> str:
     for p in candidates:
         if p.exists():
             try:
-                return p.read_text()
+                content = p.read_text()
+                return _strip_frontmatter(content)
             except OSError:
                 continue
     return ""
+
+
+def _strip_frontmatter(text: str) -> str:
+    """Remove YAML frontmatter (``---`` delimited) from a markdown file."""
+    if not text.startswith("---"):
+        return text
+    end = text.find("\n---", 3)
+    if end == -1:
+        return text
+    # Skip past the closing --- and any blank line after it
+    return text[end + 4:].lstrip("\n")

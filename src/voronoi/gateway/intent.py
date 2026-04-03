@@ -16,12 +16,13 @@ from typing import Optional
 
 
 class WorkflowMode(Enum):
-    """Voronoi workflow modes — two science modes + three meta modes."""
+    """Voronoi workflow modes — two science modes + four meta modes."""
     DISCOVER = "discover"      # Open question — adaptive rigor
     PROVE = "prove"            # Specific hypothesis — full science gates
     STATUS = "status"          # Meta: query swarm state
     RECALL = "recall"          # Meta: search knowledge store
     GUIDE = "guide"            # Meta: operator guidance
+    ASK = "ask"                # Meta: question about a running investigation
 
 
 class RigorLevel(Enum):
@@ -46,7 +47,8 @@ class ClassifiedIntent:
 
     @property
     def is_meta(self) -> bool:
-        return self.mode in (WorkflowMode.STATUS, WorkflowMode.RECALL, WorkflowMode.GUIDE)
+        return self.mode in (WorkflowMode.STATUS, WorkflowMode.RECALL,
+                             WorkflowMode.GUIDE, WorkflowMode.ASK)
 
 
 # ---------------------------------------------------------------------------
@@ -63,6 +65,7 @@ _COMMAND_PATTERNS: list[tuple[re.Pattern, WorkflowMode, Optional[RigorLevel]]] =
     (re.compile(r"^/voronoi\s+prove\b", re.I), WorkflowMode.PROVE, RigorLevel.SCIENTIFIC),
     (re.compile(r"^/voronoi\s+guide\b", re.I), WorkflowMode.GUIDE, None),
     (re.compile(r"^/voronoi\s+pivot\b", re.I), WorkflowMode.GUIDE, None),
+    (re.compile(r"^/voronoi\s+ask\b", re.I), WorkflowMode.ASK, None),
 ]
 
 # PROVE signals — specific hypothesis, controlled experiments, structured validation
@@ -148,6 +151,25 @@ _RECALL_SIGNALS = [
     r"\bwhat\s+do\s+we\s+know\s+about\b",
 ]
 
+# ASK signals — questions about a currently running investigation's progress,
+# findings, experiment results, or agent activity. These are NOT new science
+# questions; they ask about what the agents have found/done so far.
+_ASK_SIGNALS = [
+    r"\bhow\s+(are|is)\s+(the|things|it)\s+(going|progressing|looking)\b",
+    r"\bwhat\s+have\s+(the\s+)?(agents?|they|we)\s+(found|discovered|learned)\s+so\s+far\b",
+    r"\bwhat\s+(are|is)\s+the\s+(current|latest)\s+(results?|findings?|status)\b",
+    r"\bany\s+(results?|findings?|progress)\s+(yet|so\s+far)\b",
+    r"\bwhat\s+happened\s+with\b",
+    r"\bwhy\s+did\s+(experiment|task|agent)\b.*\b(fail|crash|stop)\b",
+    r"\bwhat\s+(does|do)\s+the\s+(data|results?|experiments?)\s+(show|say|suggest|indicate)\b",
+    r"\bcan\s+you\s+(summarize|explain|tell\s+me)\b.*\b(findings?|results?|progress)\b",
+    r"\b(show|tell)\s+me\s+(about|what)\b.*\b(so\s+far|current|latest|right\s+now)\b",
+    r"\bwhat\s+did\s+(the\s+)?(experiment|agent|team)\s+(find|discover|show|produce)\b",
+    r"\bare\s+(there|any)\s+(any\s+)?(results?|findings?|conclusions?)\b",
+    r"\bwhich\s+(experiments?|classifiers?|models?)\s+(are|is|were|was)\s+(best|worst|failing|passing|showing)\b",
+    r"\bupdate\s+(me|us)\s+(on|about)\b",
+]
+
 
 def _count_matches(text: str, patterns: list[str]) -> int:
     """Count how many patterns match in the text."""
@@ -194,6 +216,18 @@ def classify(text: str) -> ClassifiedIntent:
     prove_score = _count_matches(text, _PROVE_SIGNALS)
     discover_score = _count_matches(text, _DISCOVER_SIGNALS)
     recall_score = _count_matches(text, _RECALL_SIGNALS)
+    ask_score = _count_matches(text, _ASK_SIGNALS)
+
+    # ASK — mid-investigation questions about current progress/findings
+    # Must dominate other signals to avoid misclassification
+    if ask_score > 0 and ask_score >= discover_score and ask_score >= prove_score:
+        return ClassifiedIntent(
+            mode=WorkflowMode.ASK,
+            rigor=RigorLevel.ADAPTIVE,
+            confidence=min(0.6 + ask_score * 0.15, 0.95),
+            summary=_make_summary(text),
+            original_text=text,
+        )
 
     # PROVE if strong prove signals dominate
     if prove_score >= 2 or (prove_score >= 1 and discover_score == 0):

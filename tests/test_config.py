@@ -49,6 +49,20 @@ class TestLoadDotenv:
     def test_nonexistent_file(self):
         load_dotenv(Path("/nonexistent/.env"))  # Should not raise
 
+    def test_override_overwrites_existing(self, tmp_path, monkeypatch):
+        env_file = tmp_path / ".env"
+        env_file.write_text("TEST_VAR_VORONOI=new_value\n")
+        monkeypatch.setenv("TEST_VAR_VORONOI", "old_value")
+        load_dotenv(env_file, override=True)
+        assert os.environ.get("TEST_VAR_VORONOI") == "new_value"
+
+    def test_override_false_preserves_existing(self, tmp_path, monkeypatch):
+        env_file = tmp_path / ".env"
+        env_file.write_text("TEST_VAR_VORONOI=new_value\n")
+        monkeypatch.setenv("TEST_VAR_VORONOI", "old_value")
+        load_dotenv(env_file, override=False)
+        assert os.environ.get("TEST_VAR_VORONOI") == "old_value"
+
 
 class TestSaveChatId:
     def test_save_and_get(self, tmp_path):

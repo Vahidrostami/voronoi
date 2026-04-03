@@ -18,10 +18,11 @@ flowchart TB
     end
 
     subgraph Gateway["Gateway Layer"]
-        INTENT["Intent Classifier\nintent.py\nmode + rigor"]
+        INTENT["Intent Classifier\nintent.py\nmode + rigor + ASK"]
         ROUTER["Command Router\nrouter.py"]
         CONFIG["Config\nconfig.py"]
         MEM["Conversation Memory\nmemory.py"]
+        ASK_H["Ask Handler\nhandlers_query.py\nmid-investigation Q&A"]
     end
 
     subgraph Server["Server Layer"]

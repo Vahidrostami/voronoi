@@ -24,7 +24,7 @@ the final output artifact that directly addresses the user's original request.
 2. Read your task: `bd show <your-task-id>`
 3. Read the Strategic Context Document: `cat .swarm/strategic-context.md`
 4. Read the investigation journal: `cat .swarm/journal.md`
-5. Read all validated findings (search Beads for `TYPE:finding` entries with `STAT_REVIEW: APPROVED`)
+5. Query validated findings: `bd query "notes=STAT_REVIEW: APPROVED" --json`
 6. Read the current belief map (search Beads for `BELIEF_MAP` entries)
 7. Read the original abstract/prompt from the Strategic Context Document's `ORIGINAL_ABSTRACT` field
 

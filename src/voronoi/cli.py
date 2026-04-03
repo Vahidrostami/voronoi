@@ -609,11 +609,14 @@ def _server_start(args: argparse.Namespace) -> None:
         print("Server not initialized. Run: voronoi server init")
         sys.exit(1)
 
-    # Load .env from ~/.voronoi/ if it exists
+    # Load .env from ~/.voronoi/ if it exists.
+    # Use override=True so the server .env is authoritative — it must
+    # win over any stale value that leaked from repo-root .env files or
+    # parent-shell exports (the most common multi-device misconfiguration).
     env_file = config.base_dir / ".env"
     if env_file.exists():
         from voronoi.gateway.config import load_dotenv
-        load_dotenv(env_file)
+        load_dotenv(env_file, override=True)
         print(f"  ✓ Loaded {env_file}")
 
     # Verify bot token is available

@@ -14,8 +14,16 @@ from pathlib import Path
 logger = logging.getLogger("voronoi.config")
 
 
-def load_dotenv(env_path: Path | None = None) -> None:
-    """Load .env file into os.environ (only sets vars not already set)."""
+def load_dotenv(env_path: Path | None = None, *, override: bool = False) -> None:
+    """Load .env file into os.environ.
+
+    Args:
+        env_path: Explicit path to .env file.  When *None*, searches cwd
+            and the repo root for the first .env that exists.
+        override: When *True*, values in the file overwrite existing
+            environment variables.  Default (*False*) preserves existing
+            values (first-wins semantics).
+    """
     if env_path is None:
         for candidate in [Path.cwd() / ".env", Path(__file__).parent.parent.parent.parent / ".env"]:
             if candidate.exists():
@@ -42,7 +50,7 @@ def load_dotenv(env_path: Path | None = None) -> None:
                         value = value[: value.index(" #")].strip()
                     elif "\t#" in value:
                         value = value[: value.index("\t#")].strip()
-                if key not in os.environ:
+                if override or key not in os.environ:
                     os.environ[key] = value
 
 

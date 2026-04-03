@@ -90,6 +90,18 @@ class TestBuildWorkerPrompt:
         assert "git push" in prompt
         assert "bd close bd-1" in prompt
 
+    def test_git_discipline_only_pushes_when_origin_exists(self):
+        prompt = build_worker_prompt(
+            task_type="build",
+            task_id="bd-3",
+            branch="agent-conditional",
+            briefing="Test task.",
+        )
+
+        assert "git commit -m '[msg]'`" in prompt
+        assert "If `origin` exists: `git push origin agent-conditional`" in prompt
+        assert "git commit -m '[msg]' && git push origin agent-conditional" not in prompt
+
     def test_git_discipline_handles_local_only_workspace(self, tmp_path):
         workspace = tmp_path / "local-only"
         workspace.mkdir()
@@ -102,9 +114,9 @@ class TestBuildWorkerPrompt:
             workspace_path=str(workspace),
         )
 
-        assert "If no remote exists in this workspace" in prompt
+        assert "no `origin` exists" in prompt
         assert "NO_REMOTE" in prompt
-        assert "Do NOT create" in prompt
+        assert "commit locally" in prompt
 
     def test_extra_instructions(self):
         prompt = build_worker_prompt(
@@ -125,6 +137,16 @@ class TestBuildWorkerPrompt:
         )
         assert "figure-generation" in prompt
         assert "compilation-protocol" in prompt
+
+    def test_methodologist_prompt_excludes_already_reviewed_designs(self):
+        prompt = build_worker_prompt(
+            task_type="review_method",
+            task_id="bd-77",
+            branch="agent-method",
+            briefing="Review pending experiment designs.",
+        )
+
+        assert 'notes=PRE_REG AND notes!=METHODOLOGIST_REVIEW AND status!=closed' in prompt
 
 
 class TestRoleMappings:

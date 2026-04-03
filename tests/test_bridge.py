@@ -37,6 +37,7 @@ from voronoi.gateway.router import (
     handle_review_investigation,
     handle_continue_investigation,
     handle_claims,
+    handle_ask,
 )
 
 
@@ -157,6 +158,24 @@ class TestBridgeSupervision:
 
         assert sleeps == []
 
+    def test_run_bot_forever_fails_fast_on_conflict(self, monkeypatch):
+        module = _load_bridge_module()
+        sleeps = []
+
+        class Conflict(Exception):
+            pass
+
+        def fake_run_bot(config):
+            raise Conflict("terminated by other getUpdates request")
+
+        monkeypatch.setattr(module, "run_bot", fake_run_bot)
+        monkeypatch.setattr(module.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+        with pytest.raises(Conflict):
+            module.run_bot_forever({"bot_token": "test"}, restart_delay=2, max_delay=10)
+
+        assert sleeps == []
+
 
 # ---------------------------------------------------------------------------
 # Existing handlers (regression)
@@ -167,27 +186,42 @@ class TestHandlers:
         # status is now an alias for whatsup — conversational
         swarm_dir = tmp_path / ".swarm"
         swarm_dir.mkdir(parents=True, exist_ok=True)
-        result = handle_status(str(tmp_path))
+        mock_q = MagicMock()
+        mock_q.get_running.return_value = []
+        mock_q.get_queued.return_value = []
+        with patch("voronoi.gateway.handlers_query._get_queue", return_value=mock_q):
+            result = handle_status(str(tmp_path))
         # Should return something (buddy style - no running = simple msg)
         assert isinstance(result, str)
         assert len(result) > 0
 
     def test_handle_whatsup_no_running(self, tmp_path):
-        result = handle_whatsup(str(tmp_path))
+        mock_q = MagicMock()
+        mock_q.get_running.return_value = []
+        mock_q.get_queued.return_value = []
+        with patch("voronoi.gateway.handlers_query._get_queue", return_value=mock_q):
+            result = handle_whatsup(str(tmp_path))
         # Either nothing or queued items — both are valid
         assert isinstance(result, str)
         assert len(result) > 0
 
     def test_handle_howsitgoing_no_running(self, tmp_path):
-        result = handle_howsitgoing(str(tmp_path))
+        with patch("voronoi.gateway.handlers_query._get_active_workspaces", return_value=[]):
+            result = handle_howsitgoing(str(tmp_path))
         assert "Nothing running" in result
 
     def test_handle_tasks_no_running(self, tmp_path):
-        result = handle_tasks(str(tmp_path))
+        mock_q = MagicMock()
+        mock_q.get_running.return_value = []
+        with patch("voronoi.gateway.handlers_query._get_queue", return_value=mock_q):
+            result = handle_tasks(str(tmp_path))
         assert "No running investigations" in result
 
     def test_handle_ready_no_running(self, tmp_path):
-        result = handle_ready(str(tmp_path))
+        mock_q = MagicMock()
+        mock_q.get_running.return_value = []
+        with patch("voronoi.gateway.handlers_query._get_queue", return_value=mock_q):
+            result = handle_ready(str(tmp_path))
         assert "No unblocked tasks ready" in result
 
     def test_handle_health_no_sessions(self, tmp_path):
@@ -198,13 +232,15 @@ class TestHandlers:
 
     def test_handle_guide(self, tmp_path):
         (tmp_path / ".swarm").mkdir(parents=True)
-        result = handle_guide(str(tmp_path), "focus on H1")
+        with patch("voronoi.gateway.handlers_mutate._get_active_workspaces", return_value=[]):
+            result = handle_guide(str(tmp_path), "focus on H1")
         assert "Guidance noted" in result
         assert (tmp_path / ".swarm" / "operator-guidance.md").exists()
 
     def test_handle_pivot(self, tmp_path):
         (tmp_path / ".swarm").mkdir(parents=True)
-        result = handle_pivot(str(tmp_path), "new direction")
+        with patch("voronoi.gateway.handlers_mutate._get_active_workspaces", return_value=[]):
+            result = handle_pivot(str(tmp_path), "new direction")
         assert "Pivot recorded" in result
 
     def test_handle_abort(self, tmp_path):
@@ -312,14 +348,16 @@ class TestKnowledgeHandlers:
         assert "1. local" in result
 
     def test_handle_belief_no_file(self, tmp_path):
-        result = handle_belief(str(tmp_path))
+        with patch("voronoi.gateway.handlers_query._get_active_workspaces", return_value=[]):
+            result = handle_belief(str(tmp_path))
         assert "No belief map" in result
 
     def test_handle_belief_with_file(self, tmp_path):
         swarm = tmp_path / ".swarm"
         swarm.mkdir(parents=True)
         (swarm / "belief-map.md").write_text("H1: P=0.7")
-        result = handle_belief(str(tmp_path))
+        with patch("voronoi.gateway.handlers_query._get_active_workspaces", return_value=[]):
+            result = handle_belief(str(tmp_path))
         assert "H1" in result
 
     def test_handle_belief_dict_keyed_hypotheses(self, tmp_path):
@@ -332,20 +370,23 @@ class TestKnowledgeHandlers:
                 "H2": "Just a string",
             },
         }))
-        result = handle_belief(str(tmp_path))
+        with patch("voronoi.gateway.handlers_query._get_active_workspaces", return_value=[]):
+            result = handle_belief(str(tmp_path))
         assert "Encoding helps" in result
         assert "Just a string" in result
         assert "Belief Map" in result
 
     def test_handle_journal_no_file(self, tmp_path):
-        result = handle_journal(str(tmp_path))
+        with patch("voronoi.gateway.handlers_query._get_active_workspaces", return_value=[]):
+            result = handle_journal(str(tmp_path))
         assert "No journal" in result
 
     def test_handle_journal_with_file(self, tmp_path):
         swarm = tmp_path / ".swarm"
         swarm.mkdir(parents=True)
         (swarm / "journal.md").write_text("## Round 1\nFound something interesting")
-        result = handle_journal(str(tmp_path))
+        with patch("voronoi.gateway.handlers_query._get_active_workspaces", return_value=[]):
+            result = handle_journal(str(tmp_path))
         assert "Found something" in result
 
     @patch("voronoi.gateway.handlers_query._run_bd")
@@ -472,6 +513,124 @@ class TestHumanGateBridgeCommands:
         text = bridge.format_human_gate_command_reply("approve", ["42"], None)
 
         assert "Dispatcher unavailable" in text
+
+
+# ---------------------------------------------------------------------------
+# ASK handler — mid-investigation Q&A
+# ---------------------------------------------------------------------------
+
+class TestAskHandler:
+    """Test handle_ask for mid-investigation questions."""
+
+    def test_ask_no_running(self, tmp_path):
+        """When nothing is running, ask returns a helpful message."""
+        mock_q = MagicMock()
+        mock_q.get_running.return_value = []
+        with patch("voronoi.gateway.handlers_query._get_queue", return_value=mock_q):
+            result = handle_ask(str(tmp_path), "what are the results?")
+        assert "Nothing running" in result or "nothing to ask" in result.lower()
+
+    def test_ask_with_experiments(self, tmp_path):
+        """Ask about experiments when experiments.tsv exists."""
+        from voronoi.server.queue import InvestigationQueue, Investigation
+
+        q = InvestigationQueue(tmp_path / "queue.db")
+        ws = tmp_path / "workspace"
+        (ws / ".swarm").mkdir(parents=True)
+        (ws / ".swarm" / "experiments.tsv").write_text(
+            "timestamp\ttask_id\tbranch\tmetric_name\tmetric_value\tstatus\tdescription\n"
+            "2026-01-01\tbd-1\tagent-1\tacc\t0.92\tkeep\tk-NN baseline\n"
+            "2026-01-01\tbd-2\tagent-1\tacc\t0.45\tdiscard\tlogistic broken\n"
+        )
+        inv_id = q.enqueue(Investigation(
+            chat_id="c1", question="Test Q", slug="ask-test",
+            codename="Melatonin", mode="discover",
+        ))
+        q.start(inv_id, str(ws))
+
+        with patch("voronoi.gateway.handlers_query._get_queue", return_value=q):
+            result = handle_ask(str(tmp_path), "What have the experiments found?")
+
+        assert "Melatonin" in result
+        assert "2 experiments" in result
+        assert "passed" in result or "✓" in result
+
+    def test_ask_about_hypotheses(self, tmp_path):
+        """Ask about hypotheses with belief-map.json."""
+        from voronoi.server.queue import InvestigationQueue, Investigation
+
+        q = InvestigationQueue(tmp_path / "queue.db")
+        ws = tmp_path / "workspace"
+        (ws / ".swarm").mkdir(parents=True)
+        (ws / ".swarm" / "belief-map.json").write_text(json.dumps({
+            "hypotheses": [
+                {"name": "GABA encoding", "prior": 0.3, "posterior": 0.85, "status": "tested"},
+                {"name": "Random baseline", "prior": 0.5, "posterior": 0.15, "status": "tested"},
+            ]
+        }))
+        inv_id = q.enqueue(Investigation(
+            chat_id="c1", question="Test Q", slug="ask-hyp",
+            codename="Dopamine", mode="discover",
+        ))
+        q.start(inv_id, str(ws))
+
+        with patch("voronoi.gateway.handlers_query._get_queue", return_value=q):
+            result = handle_ask(str(tmp_path), "Which hypothesis is leading?")
+
+        assert "Dopamine" in result
+        assert "GABA" in result
+
+    def test_ask_about_failures(self, tmp_path):
+        """Ask about failures when experiments crashed."""
+        from voronoi.server.queue import InvestigationQueue, Investigation
+
+        q = InvestigationQueue(tmp_path / "queue.db")
+        ws = tmp_path / "workspace"
+        (ws / ".swarm").mkdir(parents=True)
+        (ws / ".swarm" / "experiments.tsv").write_text(
+            "timestamp\ttask_id\tbranch\tmetric_name\tmetric_value\tstatus\tdescription\n"
+            "2026-01-01\tbd-1\tagent-1\tacc\t0.0\tcrash\tSVM experiment\n"
+        )
+        inv_id = q.enqueue(Investigation(
+            chat_id="c1", question="Test Q", slug="ask-fail",
+            codename="Cortisol", mode="discover",
+        ))
+        q.start(inv_id, str(ws))
+
+        with patch("voronoi.gateway.handlers_query._get_queue", return_value=q):
+            result = handle_ask(str(tmp_path), "Why did any experiments fail?")
+
+        assert "Cortisol" in result
+        assert "crash" in result.lower()
+
+    def test_ask_about_criteria(self, tmp_path):
+        """Ask about success criteria."""
+        from voronoi.server.queue import InvestigationQueue, Investigation
+
+        q = InvestigationQueue(tmp_path / "queue.db")
+        ws = tmp_path / "workspace"
+        (ws / ".swarm").mkdir(parents=True)
+        (ws / ".swarm" / "success-criteria.json").write_text(json.dumps([
+            {"id": "SC1", "description": "Find critical noise %", "met": True},
+            {"id": "SC2", "description": "Determine universality", "met": False},
+        ]))
+        inv_id = q.enqueue(Investigation(
+            chat_id="c1", question="Test Q", slug="ask-crit",
+            codename="Serotonin", mode="discover",
+        ))
+        q.start(inv_id, str(ws))
+
+        with patch("voronoi.gateway.handlers_query._get_queue", return_value=q):
+            result = handle_ask(str(tmp_path), "How is the progress on success criteria?")
+
+        assert "Serotonin" in result
+        assert "1/2" in result
+
+    def test_ask_via_router(self, tmp_path):
+        """Router should route /voronoi ask to handle_ask."""
+        router = CommandRouter(str(tmp_path))
+        text, _ = router.route("ask", ["What", "results", "so", "far?"], "chat1")
+        assert isinstance(text, str)
 
 
 # ---------------------------------------------------------------------------

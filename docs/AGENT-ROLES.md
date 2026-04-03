@@ -203,6 +203,10 @@ Score output: `.swarm/eval-score.json`
 
 **Scientific+ activation.** Reviews experimental designs.
 
+**Gate power**:
+- **Experimental**: Mandatory — no investigation proceeds without approval
+- **Scientific**: Advisory — orchestrator can override with documented note
+
 **Responsibilities**:
 - Review pre-registrations before execution
 - Conduct power analysis

@@ -151,6 +151,13 @@ class TestScienceSections:
         )
         assert "pre-registration" in prompt.lower()
 
+    def test_prove_scientific_methodologist_review_is_advisory(self):
+        prompt = build_orchestrator_prompt(
+            question="test", mode="prove", rigor="scientific",
+        )
+        assert "Scientific rigor: Methodologist review is advisory" in prompt
+        assert "Methodologist approval required before dispatch" not in prompt
+
     def test_prove_has_eval_score(self):
         prompt = build_orchestrator_prompt(
             question="test", mode="prove", rigor="scientific",

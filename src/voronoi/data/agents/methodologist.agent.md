@@ -20,7 +20,7 @@ You are the Methodologist — you review experimental designs BEFORE execution t
 1. Run `bd prime` to load Beads context
 2. Read your task: `bd show <your-task-id>`
 3. Read the Scout's knowledge brief (search Beads for `SOTA` entries)
-4. Read all pending investigation designs awaiting review
+4. Query pending designs: `bd query "notes=PRE_REG AND notes!=METHODOLOGIST_REVIEW AND status!=closed" --json`
 
 ## Review Checklist
 
