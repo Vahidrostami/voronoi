@@ -134,6 +134,8 @@ Removes demo artifacts from the current directory.
 3. Copies `.env.example` to `~/.voronoi/.env`
 4. Creates `objects/`, `active/`, and `tmp/` directories
 
+Beads is **not** initialized at the server level — each investigation workspace gets its own `.beads/` directory when provisioned (see §5 Workspace in SERVER.md).
+
 ### `voronoi server start`
 
 1. Loads config from `~/.voronoi/config.json`
