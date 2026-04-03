@@ -182,6 +182,75 @@ class TestProgressMonitoring:
         assert "FINDING" in events[0]["msg"]
         assert "bd-5" in run.notified_findings
 
+    def test_serendipity_detection_from_notes(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+
+        tasks = [
+            {"id": "bd-8", "title": "Investigate latency",
+             "notes": "SERENDIPITY: Cache hit rate correlates with memory pressure"},
+        ]
+        events = d._check_findings(run, tasks)
+
+        serendipity = [e for e in events if e["type"] == "serendipity"]
+        assert len(serendipity) == 1
+        assert "Unexpected observation" in serendipity[0]["msg"]
+        assert "Cache hit rate" in serendipity[0]["msg"]
+        assert "serendipity:bd-8" in run.notified_findings
+
+    def test_serendipity_not_duplicated(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+
+        tasks = [
+            {"id": "bd-8", "title": "Investigate latency",
+             "notes": "SERENDIPITY: Something unexpected"},
+        ]
+        d._check_findings(run, tasks)
+        events2 = d._check_findings(run, tasks)  # second call
+        serendipity = [e for e in events2 if e["type"] == "serendipity"]
+        assert len(serendipity) == 0  # not duplicated
+
+    def test_rigor_escalation_notification(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+            rigor="adaptive",
+            last_rigor="adaptive",
+        )
+
+        # Write checkpoint with escalated rigor
+        (swarm / "orchestrator-checkpoint.json").write_text(json.dumps({
+            "phase": "investigating",
+            "rigor": "scientific",
+            "eval_score": 0.0,
+        }))
+
+        events = d._detect_phase(run)
+        rigor_events = [e for e in events if e["type"] == "rigor_escalation"]
+        assert len(rigor_events) == 1
+        assert "scientific" in rigor_events[0]["msg"]
+        assert run.last_rigor == "scientific"
+
     def test_progress_bar_format(self, dispatcher_setup):
         d, msgs, docs, tmp_path = dispatcher_setup
         run = RunningInvestigation(
@@ -232,6 +301,43 @@ class TestProgressMonitoring:
         # Science investigations go to review, not complete
         mock_queue.review.assert_called_once_with(1)
         assert len(msgs) >= 1
+
+    def test_handle_completion_negative_result(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        mock_queue = MagicMock()
+        d._queue = mock_queue
+
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "deliverable.md").write_text("# Null Result\nHypothesis not supported.")
+        (swarm / "convergence.json").write_text(json.dumps({
+            "status": "negative_result",
+            "converged": True,
+            "reason": "Hypothesis falsified — d=0.02, p=0.78",
+        }))
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="Does X improve Y?",
+            mode="discover",
+            codename="Synapse",
+        )
+        run.task_snapshot = {"bd-1": {"status": "closed", "title": "Experiment"}}
+        run.eval_score = 0.78
+
+        mock_inv = MagicMock()
+        mock_inv.lineage_id = None
+        mock_inv.cycle_number = 1
+        mock_queue.get.return_value = mock_inv
+
+        with patch("voronoi.server.dispatcher.subprocess.run"):
+            d._handle_completion(run)
+
+        # Should use format_negative_result, not format_failure
+        assert any("negative result" in m.lower() for m in msgs)
+        assert not any("didn't make it" in m for m in msgs)
 
     def test_handle_completion_failed_calls_fail(self, dispatcher_setup):
         """When tmux exits without deliverable, should call queue.fail()."""
@@ -2749,3 +2855,242 @@ class TestCleanupWorktrees:
             d._cleanup_worktrees(run)
 
         assert not env_file.exists()
+
+
+# ---------------------------------------------------------------------------
+# Continuation dispatch tests
+# ---------------------------------------------------------------------------
+
+
+class TestContinuationDispatch:
+    """Test that /voronoi continue reuses workspace and injects warm-start."""
+
+    def test_prepare_continuation_archives_and_clears_stale_files(self, dispatcher_setup):
+        """Archived artifacts should not remain live in the next round."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "deliverable.md").write_text("# Old deliverable\n")
+        (swarm / "events.jsonl").write_text('{"event":"finding"}\n')
+        (swarm / "convergence.json").write_text('{"status":"converged"}')
+
+        mock_queue = MagicMock()
+        mock_queue.get.return_value = SimpleNamespace(
+            id=1,
+            cycle_number=1,
+            lineage_id=None,
+        )
+        d._queue = mock_queue
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+
+        with patch("voronoi.server.dispatcher.subprocess.run"):
+            d.prepare_continuation(run)
+
+        archive_dir = swarm / "archive" / "run-1"
+        assert (archive_dir / "deliverable.md").exists()
+        assert (archive_dir / "events.jsonl").exists()
+        assert not (swarm / "deliverable.md").exists()
+        assert not (swarm / "events.jsonl").exists()
+        assert not (swarm / "convergence.json").exists()
+
+    def test_prepare_continuation_prevents_stale_completion(self, dispatcher_setup):
+        """A reused workspace must not look complete before the new round starts."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "deliverable.md").write_text("# Old deliverable\n")
+
+        mock_queue = MagicMock()
+        mock_queue.get.return_value = SimpleNamespace(
+            id=1,
+            cycle_number=1,
+            lineage_id=None,
+        )
+        d._queue = mock_queue
+
+        prior_run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+            rigor="adaptive",
+        )
+
+        with patch("voronoi.server.dispatcher.subprocess.run"):
+            d.prepare_continuation(prior_run)
+
+        continued_run = RunningInvestigation(
+            investigation_id=2,
+            workspace_path=tmp_path,
+            tmux_session="test-2",
+            question="test",
+            mode="discover",
+            rigor="adaptive",
+        )
+
+        assert d._is_complete(continued_run) is False
+
+    def test_continue_reuses_workspace(self, dispatcher_setup):
+        """Continuation with existing workspace should NOT provision a new one."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+
+        # Create a fake existing workspace
+        ws = tmp_path / "active" / "inv-1-test"
+        ws.mkdir(parents=True)
+        (ws / ".swarm").mkdir()
+
+        mock_queue = MagicMock()
+        inv = SimpleNamespace(
+            id=2, chat_id="c1", question="Does X work?",
+            slug="does-x-work", mode="discover", rigor="scientific",
+            codename="Dopamine", workspace_path=str(ws),
+            investigation_type="lab", parent_id=1, lineage_id=1,
+            cycle_number=2, pi_feedback="test more cases",
+        )
+        parent_inv = SimpleNamespace(
+            id=1, chat_id="c1", question="Does X work?",
+            slug="does-x-work", mode="discover", rigor="scientific",
+            codename="Dopamine", workspace_path=str(ws),
+            investigation_type="lab", parent_id=None, lineage_id=1,
+            cycle_number=1, pi_feedback="",
+        )
+        mock_queue.get.side_effect = lambda id: parent_inv if id == 1 else inv
+        mock_queue.get_demo_source.return_value = None
+        d._queue = mock_queue
+
+        mock_ws_mgr = MagicMock()
+        d._workspace_mgr = mock_ws_mgr
+
+        with patch.object(d, '_launch_in_tmux'), \
+             patch.object(d, '_build_prompt', return_value="prompt"), \
+             patch.object(d, 'prepare_continuation') as mock_prep:
+            d._launch_investigation(inv)
+
+        # Should NOT have called provision_lab or provision_repo
+        mock_ws_mgr.provision_lab.assert_not_called()
+        mock_ws_mgr.provision_repo.assert_not_called()
+        # Should call prepare_continuation
+        mock_prep.assert_called_once()
+        # Workspace path in queue.start should be the old one
+        mock_queue.start.assert_called_once_with(2, str(ws))
+
+    def test_continue_provisions_fresh_when_workspace_missing(self, dispatcher_setup):
+        """If continuation workspace is gone, fall back to fresh provisioning."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+
+        mock_queue = MagicMock()
+        inv = SimpleNamespace(
+            id=2, chat_id="c1", question="Does X work?",
+            slug="does-x-work", mode="discover", rigor="scientific",
+            codename="Dopamine", workspace_path="/nonexistent/path",
+            investigation_type="lab", parent_id=1, lineage_id=1,
+            cycle_number=2, pi_feedback="",
+        )
+        mock_queue.get.return_value = inv
+        mock_queue.get_demo_source.return_value = None
+        d._queue = mock_queue
+
+        new_ws = tmp_path / "active" / "inv-2-does-x-work"
+        new_ws.mkdir(parents=True)
+        mock_ws_mgr = MagicMock()
+        mock_ws_mgr.provision_lab.return_value = SimpleNamespace(path=str(new_ws))
+        d._workspace_mgr = mock_ws_mgr
+
+        with patch.object(d, '_launch_in_tmux'), \
+             patch.object(d, '_build_prompt', return_value="prompt"), \
+             patch.object(d, '_patch_swarm_config'):
+            d._launch_investigation(inv)
+
+        # Should provision fresh since workspace is missing
+        mock_ws_mgr.provision_lab.assert_called_once()
+
+    def test_continue_injects_warm_start_context(self, dispatcher_setup):
+        """Continuation prompt should include warm-start context."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+
+        # Create ledger for warm-start
+        from voronoi.science.claims import ClaimLedger, save_ledger, PROVENANCE_RUN_EVIDENCE
+        ledger = ClaimLedger()
+        ledger.add_claim("L4 > L1", PROVENANCE_RUN_EVIDENCE, effect_summary="d=0.8")
+        ledger.assert_claim("C1")
+        save_ledger(1, ledger, base_dir=tmp_path)
+
+        inv = SimpleNamespace(
+            id=2, chat_id="c1", question="Does X work?",
+            slug="does-x-work", mode="discover", rigor="scientific",
+            codename="Dopamine", workspace_path=str(tmp_path),
+            investigation_type="lab", parent_id=1, lineage_id=1,
+            cycle_number=2, pi_feedback="Control for tokenizer differences",
+        )
+
+        mock_queue = MagicMock()
+        mock_queue.get.return_value = inv
+        d._queue = mock_queue
+
+        prompt = d._build_prompt(inv, Path(tmp_path))
+
+        assert "Round 2" in prompt
+        assert "Continuation" in prompt
+        assert "L4 > L1" in prompt
+        assert "Control for tokenizer" in prompt
+
+    def test_fresh_investigation_no_warm_start(self, dispatcher_setup):
+        """Non-continuation should NOT include warm-start context."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+
+        inv = SimpleNamespace(
+            id=1, chat_id="c1", question="Does X work?",
+            slug="does-x-work", mode="discover", rigor="scientific",
+            codename="Dopamine", workspace_path=str(tmp_path),
+            investigation_type="lab", parent_id=None, lineage_id=1,
+            cycle_number=1, pi_feedback="",
+        )
+
+        mock_queue = MagicMock()
+        mock_queue.get.return_value = inv
+        d._queue = mock_queue
+
+        prompt = d._build_prompt(inv, Path(tmp_path))
+
+        assert "Continuation" not in prompt
+        assert "PI Feedback" not in prompt
+
+    def test_review_message_uses_cycle_number(self, dispatcher_setup):
+        """Review message should show cycle_number, not improvement_rounds."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+
+        mock_queue = MagicMock()
+        inv = SimpleNamespace(
+            id=1, codename="Dopamine", cycle_number=3,
+            lineage_id=1,
+        )
+        mock_queue.get.return_value = inv
+        d._queue = mock_queue
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+            codename="Dopamine",
+        )
+        run.improvement_rounds = 1  # Should NOT be used
+        run.eval_score = 0.85
+
+        from voronoi.science.claims import ClaimLedger
+        ledger = ClaimLedger()
+
+        msg = d._build_review_message(run, ledger)
+        assert "Round 3" in msg
+        assert "Round 1" not in msg

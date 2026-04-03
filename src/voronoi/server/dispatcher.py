@@ -28,8 +28,15 @@ from voronoi.gateway.progress import (
     MODE_EMOJI, MODE_VERB,
     MSG_TYPE_MILESTONE, MSG_TYPE_STATUS,
     format_launch, format_complete, format_failure, format_alert,
-    format_restart, format_pause, format_duration, phase_description,
+    format_negative_result, format_restart, format_pause,
+    format_duration, phase_description,
     build_digest,
+)
+from voronoi.server.tmux import (
+    ensure_copilot_auth,
+    launch_in_tmux,
+    cleanup_tmux,
+    EFFORT_BY_RIGOR,
 )
 
 logger = logging.getLogger("voronoi.dispatcher")
@@ -86,6 +93,7 @@ class RunningInvestigation:
     context_directive_level: str = ""  # Last directive level sent
     context_restarts: int = 0  # Proactive context refreshes (separate from retry_count)
     status_message_id: int | None = None  # Telegram message ID for edit-in-place
+    last_rigor: str = ""  # Track rigor escalation in DISCOVER mode
 
     @property
     def label(self) -> str:
@@ -264,20 +272,61 @@ class InvestigationDispatcher:
     def _launch_investigation(self, inv) -> None:
         from voronoi.server.repo_url import extract_repo_url
 
-        repo_ref = extract_repo_url(inv.question) if inv.investigation_type == "repo" else None
-        if repo_ref:
-            ws = self.workspace_mgr.provision_repo(inv.id, repo_ref, inv.slug)
+        # --- Continuation detection: reuse workspace from prior round ---
+        is_continuation = (
+            inv.parent_id is not None
+            and inv.workspace_path
+            and Path(inv.workspace_path).is_dir()
+        )
+
+        if is_continuation:
+            workspace_path = Path(inv.workspace_path)
+            logger.info("Continuation round %d for #%d — reusing workspace %s",
+                        inv.cycle_number, inv.id, workspace_path)
+
+            # Prepare workspace: archive .swarm/, tag boundary, prune worktrees
+            parent_inv = self.queue.get(inv.parent_id)
+            if parent_inv:
+                parent_run = RunningInvestigation(
+                    investigation_id=parent_inv.id,
+                    workspace_path=workspace_path,
+                    tmux_session="",
+                    question=parent_inv.question,
+                    mode=parent_inv.mode,
+                    codename=parent_inv.codename,
+                    chat_id=parent_inv.chat_id,
+                    rigor=parent_inv.rigor or "adaptive",
+                )
+                self.prepare_continuation(parent_run)
+
+            # Refresh templates (agents, skills, scripts)
+            self.workspace_mgr._voronoi_init(workspace_path)
+
+            # Update queue with confirmed workspace path
+            self.queue.start(inv.id, str(workspace_path))
         else:
-            ws = self.workspace_mgr.provision_lab(inv.id, inv.slug, inv.question)
+            # Fresh workspace — normal provisioning
+            if is_continuation is False and inv.parent_id is not None and inv.workspace_path:
+                # Workspace was expected but is missing — warn and provision fresh
+                logger.warning(
+                    "Continuation workspace missing for #%d (expected %s) — provisioning fresh",
+                    inv.id, inv.workspace_path,
+                )
 
-        workspace_path = Path(ws.path)
+            repo_ref = extract_repo_url(inv.question) if inv.investigation_type == "repo" else None
+            if repo_ref:
+                ws = self.workspace_mgr.provision_repo(inv.id, repo_ref, inv.slug)
+            else:
+                ws = self.workspace_mgr.provision_lab(inv.id, inv.slug, inv.question)
 
-        # Copy demo files into workspace if this investigation originated from a demo
-        demo_info = self.queue.get_demo_source(inv.id)
-        if demo_info:
-            self._copy_demo_files(demo_info, workspace_path)
+            workspace_path = Path(ws.path)
 
-        self.queue.start(inv.id, ws.path)
+            # Copy demo files into workspace if this investigation originated from a demo
+            demo_info = self.queue.get_demo_source(inv.id)
+            if demo_info:
+                self._copy_demo_files(demo_info, workspace_path)
+
+            self.queue.start(inv.id, ws.path)
 
         # Patch .swarm-config.json with rigor-mapped effort level
         rigor = getattr(inv, 'rigor', 'scientific') or 'scientific'
@@ -321,6 +370,19 @@ class InvestigationDispatcher:
         rigor = getattr(inv, 'rigor', 'scientific') or 'scientific'
         label = inv.codename or f"#{inv.id}"
 
+        prior_context = None
+        if inv.parent_id is not None:
+            from voronoi.server.prompt import build_warm_start_context
+            pi_feedback = getattr(inv, 'pi_feedback', '') or ''
+            lineage_id = inv.lineage_id or inv.parent_id
+            prior_context = build_warm_start_context(
+                lineage_id=lineage_id,
+                cycle_number=inv.cycle_number,
+                pi_feedback=pi_feedback,
+                base_dir=self.config.base_dir,
+                workspace=workspace_path,
+            )
+
         return build_orchestrator_prompt(
             question=inv.question,
             mode=inv.mode,
@@ -328,6 +390,7 @@ class InvestigationDispatcher:
             workspace_path=str(workspace_path),
             codename=label,
             max_agents=self.config.max_agents,
+            prior_context=prior_context,
         )
 
     def _patch_swarm_config(self, workspace_path: Path, rigor: str) -> None:
@@ -367,36 +430,8 @@ class InvestigationDispatcher:
             logger.warning("Failed to patch .swarm-config.json: %s", e)
 
     def _ensure_copilot_auth(self) -> None:
-        """Verify Copilot/GitHub auth is valid before launching an agent.
-
-        Copilot CLI authenticates via an interactive OAuth device flow
-        (/login command) which produces tokens that expire.  On a
-        long-running server we cannot re-authenticate interactively, so
-        this method detects expiry early and raises immediately instead
-        of wasting retry attempts on the same expired token.
-
-        Raises RuntimeError if authentication is missing or expired.
-        """
-        # If an explicit token env var is set, trust it (PATs don't expire mid-session)
-        for var in ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"):
-            if os.environ.get(var):
-                logger.debug("Auth: using %s environment variable", var)
-                return
-
-        # Check gh CLI auth status (Copilot CLI can piggyback on gh's stored token)
-        if shutil.which("gh"):
-            result = subprocess.run(
-                ["gh", "auth", "status"],
-                capture_output=True, text=True, timeout=15,
-            )
-            if result.returncode == 0:
-                return
-
-        raise RuntimeError(
-            "GitHub/Copilot authentication expired. "
-            "Re-authenticate on the server with 'copilot' → /login or 'gh auth login', "
-            "or set GITHUB_TOKEN / COPILOT_GITHUB_TOKEN env var with a PAT for unattended use."
-        )
+        """Delegate to tmux module."""
+        ensure_copilot_auth()
 
     # Rigor → Copilot CLI --effort mapping
     _EFFORT_BY_RIGOR: dict[str, str] = {
@@ -408,122 +443,15 @@ class InvestigationDispatcher:
     def _launch_in_tmux(self, session: str, workspace_path: Path,
                         prompt_file: Path | None = None,
                         rigor: str = "") -> None:
-        agent_cmd = self.config.agent_command
-        agent_flags = self.config.agent_flags
-        parts = agent_cmd.split()
-        if not parts:
-            raise RuntimeError(f"agent_command is empty: '{agent_cmd}'")
-        agent_bin = parts[0]
-        if not shutil.which(agent_bin):
-            raise RuntimeError(f"Agent CLI not found: {agent_bin}")
-        if agent_bin == "copilot":
-            self._ensure_copilot_auth()
-
-        # Orchestrator gets its own model; workers use worker_model via spawn-agent.sh
-        model_flag = ""
-        if self.config.orchestrator_model:
-            model_flag = f" --model {shlex.quote(self.config.orchestrator_model)}"
-
-        # --effort scaled by rigor level
-        effort = self._EFFORT_BY_RIGOR.get(rigor, "medium")
-        effort_flag = f" --effort {effort}"
-
-        # --share for clean audit trail
-        share_path = workspace_path / ".swarm" / "session.md"
-        share_flag = f" --share {shlex.quote(str(share_path))}"
-
-        log_path = workspace_path / ".swarm" / "agent.log"
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Use the provided prompt file, or fall back to the default
-        if prompt_file is None:
-            prompt_file = workspace_path / ".swarm" / "orchestrator-prompt.txt"
-
-        # Kill any stale tmux session with the same name to avoid sending
-        # commands into an old shell (race between session-death detection
-        # and relaunch).
-        subprocess.run(
-            ["tmux", "kill-session", "-t", session],
-            capture_output=True, timeout=10,
-        )
-
-        result = subprocess.run(
-            ["tmux", "new-session", "-d", "-s", session, "-c", str(workspace_path)],
-            capture_output=True,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"Failed to create tmux session '{session}': "
-                f"{result.stderr.decode(errors='replace').strip()}"
-            )
-        # Enable tmux pane logging so we can inspect crashes after the fact.
-        subprocess.run(
-            ["tmux", "pipe-pane", "-t", session,
-             f"cat >> {shlex.quote(str(log_path))}"],
-            capture_output=True, timeout=10,
-        )
-        # Launch the agent.  The prompt is read from a file via shell
-        # redirection to avoid ARG_MAX / tmux send-keys buffer issues
-        # with large prompts.  shlex.quote prevents command injection.
-        safe_ws = shlex.quote(str(workspace_path))
-        safe_cmd = agent_cmd
-        safe_flags = agent_flags
-        safe_prompt = shlex.quote(str(prompt_file))
-
-        # Inject auth/state env vars into the tmux shell.
-        #
-        # tmux set-environment only affects *new* windows/panes, NOT the
-        # shell already running in the initial pane created by new-session.
-        # This meant env vars like GH_TOKEN never reached the copilot
-        # process, causing auth failures on long-running servers.
-        #
-        # Fix: write vars to a temporary env file inside .swarm/ and
-        # source it in the command line.  The file path (not contents)
-        # appears in pipe-pane logs, keeping secrets out of logs (INV-31).
-        # COPILOT_HOME and GH_HOST matter for long-running servers because
-        # restarted tmux sessions must resolve the same stored Copilot state
-        # directory and GitHub host as the parent process. TMPDIR/TMP/TEMP
-        # keep worker-side tests and scratch files inside ~/.voronoi/tmp
-        # instead of the system temp dir.
-        env_file = workspace_path / ".swarm" / ".tmux-env"
-        env_lines: list[str] = []
-        for var in (
-            "GH_TOKEN",
-            "GITHUB_TOKEN",
-            "COPILOT_GITHUB_TOKEN",
-            "COPILOT_HOME",
-            "GH_HOST",
-            "TMPDIR",
-            "TMP",
-            "TEMP",
-        ):
-            val = os.environ.get(var)
-            if val:
-                env_lines.append(f"export {var}={shlex.quote(val)}")
-                # Also set in session env for any future panes/windows
-                subprocess.run(
-                    ["tmux", "set-environment", "-t", session, var, val],
-                    capture_output=True, timeout=10,
-                )
-        if env_lines:
-            # Write with restricted permissions from the start to avoid
-            # a window where secrets are world-readable (umask race).
-            fd = os.open(str(env_file), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            try:
-                os.write(fd, ("\n".join(env_lines) + "\n").encode())
-            finally:
-                os.close(fd)
-            source_cmd = f"source {shlex.quote(str(env_file))} && "
-        else:
-            source_cmd = ""
-
-        subprocess.run(
-            ["tmux", "send-keys", "-t", session,
-             f'cd {safe_ws} && {source_cmd}{safe_cmd} {safe_flags}{model_flag}'
-             f'{effort_flag}{share_flag} '
-             f'-p "$(cat {safe_prompt})" ; exit',
-             "Enter"],
-            capture_output=True, timeout=10,
+        """Delegate to tmux module."""
+        launch_in_tmux(
+            session=session,
+            workspace_path=workspace_path,
+            agent_command=self.config.agent_command,
+            agent_flags=self.config.agent_flags,
+            orchestrator_model=self.config.orchestrator_model,
+            prompt_file=prompt_file,
+            rigor=rigor,
         )
 
     def _copy_demo_files(self, demo_info: tuple[str, str], workspace_path: Path) -> None:
@@ -1214,9 +1142,9 @@ class InvestigationDispatcher:
         for task in tasks:
             tid = task.get("id", "")
             title = task.get("title", "")
+            notes = task.get("notes", "")
             if "FINDING" in title.upper() and tid not in run.notified_findings:
                 run.notified_findings.add(tid)
-                notes = task.get("notes", "")
                 effect = ""
                 for line in notes.split("\n"):
                     if any(k in line.upper() for k in ("EFFECT_SIZE", "CI_95", "VALENCE")):
@@ -1225,6 +1153,24 @@ class InvestigationDispatcher:
                 if effect:
                     msg += f"\n{effect}"
                 events.append({"type": "finding", "msg": msg})
+
+            # Surface serendipitous observations to the human
+            serendipity_key = f"serendipity:{tid}"
+            if serendipity_key not in run.notified_findings and "SERENDIPITY" in notes.upper():
+                run.notified_findings.add(serendipity_key)
+                # Extract the serendipity description from notes
+                desc = ""
+                for line in notes.split("\n"):
+                    if "SERENDIPITY" in line.upper():
+                        desc = line.split(":", 1)[-1].strip() if ":" in line else line.strip()
+                        break
+                if not desc:
+                    desc = title
+                events.append({
+                    "type": "serendipity",
+                    "msg": f"🔮 *Unexpected observation*\n{desc}\n"
+                           f"_An agent found something outside the original scope._",
+                })
         return events
 
     def _check_sentinel(self, run: RunningInvestigation) -> list[dict]:
@@ -1482,6 +1428,22 @@ class InvestigationDispatcher:
             except (TypeError, ValueError):
                 pass
 
+            # Detect rigor escalation (DISCOVER mode adaptive → scientific)
+            checkpoint_rigor = checkpoint.get("rigor", "")
+            if isinstance(checkpoint_rigor, str) and checkpoint_rigor:
+                if (run.last_rigor
+                        and checkpoint_rigor != run.last_rigor
+                        and run.mode == "discover"):
+                    from voronoi.gateway.progress import RIGOR_DESCRIPTIONS
+                    desc = RIGOR_DESCRIPTIONS.get(checkpoint_rigor, checkpoint_rigor)
+                    events.append({
+                        "type": "rigor_escalation",
+                        "msg": f"📐 *Rigor escalated* → {checkpoint_rigor}\n"
+                               f"_{desc}_\n"
+                               f"The investigation shifted from exploration to structured testing.",
+                    })
+                run.last_rigor = checkpoint_rigor
+
         if (ws / ".swarm" / "deliverable.md").exists():
             run.phase = "complete"
         elif (ws / ".swarm" / "convergence.json").exists():
@@ -1616,11 +1578,12 @@ class InvestigationDispatcher:
         """Check the structured event log for notable activity."""
         events: list[dict] = []
         try:
-            from voronoi.server.events import summarize_events
+            from voronoi.server.events import read_events
             total_count = 0
             total_tokens = 0
             total_failures = 0
             latest_ts = run.last_event_ts
+            serendipity_events: list = []
 
             roots = [run.workspace_path]
             swarm_dir = self._swarm_dir(run.workspace_path)
@@ -1633,18 +1596,33 @@ class InvestigationDispatcher:
             for root in roots:
                 key = str(root.resolve())
                 since = run.last_event_ts_by_path.get(key, run.last_event_ts)
-                summary = summarize_events(root, since=since)
-                if summary["count"] == 0:
+                raw = read_events(root, since=since, max_events=500)
+                if not raw:
                     continue
-                total_count += summary["count"]
-                total_tokens += summary["total_tokens"]
-                total_failures += summary["failures"]
-                latest_ts = max(latest_ts, summary["last_event_ts"])
-                run.last_event_ts_by_path[key] = summary["last_event_ts"]
+                total_count += len(raw)
+                for e in raw:
+                    total_tokens += e.tokens_used
+                    if e.status == "fail":
+                        total_failures += 1
+                    if e.event == "serendipity":
+                        serendipity_events.append(e)
+                latest_ts = max(latest_ts, raw[-1].ts)
+                run.last_event_ts_by_path[key] = raw[-1].ts
 
             if total_count == 0:
                 return events
             run.last_event_ts = latest_ts
+
+            # Surface serendipity events as milestone notifications
+            for sev in serendipity_events:
+                skey = f"serendipity_ev:{sev.task_id}:{sev.detail[:60]}"
+                if skey not in run.notified_findings:
+                    run.notified_findings.add(skey)
+                    events.append({
+                        "type": "serendipity",
+                        "msg": f"🔮 *Unexpected observation*\n{sev.detail}\n"
+                               f"_Agent {sev.agent} noticed something outside the plan._",
+                    })
 
             # Report failures
             if total_failures > 0:
@@ -1898,6 +1876,21 @@ class InvestigationDispatcher:
         logger.info("Voronoi %s (#%d) complete: %d/%d tasks in %.1fmin",
                     run.label, run.investigation_id, closed, total_tasks, elapsed)
 
+        # Detect valid negative result from convergence status
+        is_negative_result = False
+        conv_reason = ""
+        conv_path = run.workspace_path / ".swarm" / "convergence.json"
+        if conv_path.exists():
+            try:
+                conv_data = json.loads(conv_path.read_text())
+                if isinstance(conv_data, dict):
+                    status = conv_data.get("status", "")
+                    if isinstance(status, str) and status.lower() == "negative_result":
+                        is_negative_result = True
+                        conv_reason = conv_data.get("reason", "")
+            except (json.JSONDecodeError, OSError):
+                pass
+
         # Science investigations go to review for PI feedback;
         # build-mode investigations complete immediately.
         is_science = run.mode in ("discover", "prove")
@@ -1906,16 +1899,27 @@ class InvestigationDispatcher:
         else:
             self.queue.complete(run.investigation_id)
 
-        # Build teaser + report
+        # Send appropriate completion message
         from voronoi.gateway.report import ReportGenerator
         rg = ReportGenerator(run.workspace_path, mode=run.mode, rigor=run.rigor)
-        teaser = rg.build_teaser(
-            run.investigation_id, run.question,
-            total_tasks, closed, elapsed,
-            mode=run.mode,
-            codename=run.codename,
-        )
-        self.send_message(teaser)
+        if is_negative_result:
+            neg_msg = format_negative_result(
+                codename=run.label,
+                elapsed_sec=time.time() - run.started_at,
+                closed=closed,
+                total=total_tasks,
+                eval_score=run.eval_score,
+                reason=conv_reason,
+            )
+            self.send_message(neg_msg)
+        else:
+            teaser = rg.build_teaser(
+                run.investigation_id, run.question,
+                total_tasks, closed, elapsed,
+                mode=run.mode,
+                codename=run.codename,
+            )
+            self.send_message(teaser)
 
         # Generate PDF/MD and send as document
         report_path = rg.build_pdf()
@@ -1928,6 +1932,16 @@ class InvestigationDispatcher:
                 )
 
         self._try_publish(run)
+
+        # Sync findings to federated knowledge index
+        try:
+            from voronoi.gateway.knowledge import FederatedKnowledge
+            fk = FederatedKnowledge(self.config.base_dir / "knowledge.db")
+            fk.sync_findings(
+                str(run.investigation_id), run.codename, run.workspace_path,
+            )
+        except Exception as e:
+            logger.debug("Federated knowledge sync failed: %s", e)
 
         # Clean up agent worktrees (the -swarm/ directory)
         self._cleanup_worktrees(run)
@@ -2551,89 +2565,8 @@ class InvestigationDispatcher:
         return resume_file
 
     def _cleanup_tmux(self, run: RunningInvestigation) -> None:
-        """Kill all tmux sessions associated with this investigation.
-
-        Uses multiple strategies to find sessions:
-        1. The recorded tmux_session name (voronoi-inv-{id})
-        2. Convention-based names ({workspace}-swarm, -workers)
-        3. The tmux_session from .swarm-config.json in the workspace
-        4. Enumerate all sessions and kill any whose name is a prefix
-           match for the workspace slug
-        """
-        ws_name = run.workspace_path.name
-        sessions_to_kill: set[str] = set()
-
-        # 1. Main orchestrator session
-        sessions_to_kill.add(run.tmux_session)
-
-        # 2. Convention-based names
-        for suffix in ["-swarm", "-workers"]:
-            sessions_to_kill.add(f"{ws_name}{suffix}")
-
-        # 3. Read actual tmux_session from .swarm-config.json
-        config_path = run.workspace_path / ".swarm-config.json"
-        if config_path.exists():
-            try:
-                data = json.loads(config_path.read_text())
-                cfg_session = data.get("tmux_session", "")
-                if cfg_session:
-                    sessions_to_kill.add(cfg_session)
-            except (json.JSONDecodeError, OSError):
-                pass
-
-        # 4. Enumerate live tmux sessions and kill any that belong to
-        #    this investigation (prefix match on workspace slug or
-        #    are windows of a matching session).
-        try:
-            result = subprocess.run(
-                ["tmux", "list-sessions", "-F", "#{session_name}"],
-                capture_output=True, text=True, timeout=10,
-            )
-            if result.returncode == 0:
-                # Build prefix set from workspace name components.
-                # e.g. "inv-1-coupled-decisions" → match sessions starting
-                # with "inv-1-", "inv1", or the workspace name itself.
-                slug_prefix = ws_name.split("-swarm")[0]  # in case ws_name is already swarm dir
-                for session_name in result.stdout.strip().splitlines():
-                    name = session_name.strip()
-                    if not name:
-                        continue
-                    # Skip the user's own sessions (session "0", single digits)
-                    if name.isdigit():
-                        continue
-                    # Match against known session names
-                    if name in sessions_to_kill:
-                        continue  # already in the kill list
-                    # Check if this session's worktree is under our swarm dir
-                    swarm_dir = run.workspace_path.parent / f"{slug_prefix}-swarm"
-                    if swarm_dir.exists():
-                        try:
-                            cwd_result = subprocess.run(
-                                ["tmux", "display-message", "-t", name,
-                                 "-p", "#{pane_current_path}"],
-                                capture_output=True, text=True, timeout=5,
-                            )
-                            if cwd_result.returncode == 0:
-                                pane_cwd = cwd_result.stdout.strip()
-                                if pane_cwd.startswith(str(swarm_dir)):
-                                    sessions_to_kill.add(name)
-                        except (subprocess.TimeoutExpired, OSError):
-                            pass
-        except (subprocess.TimeoutExpired, OSError):
-            pass
-
-        # Kill all identified sessions
-        for session in sessions_to_kill:
-            try:
-                subprocess.run(
-                    ["tmux", "kill-session", "-t", session],
-                    capture_output=True, timeout=10,
-                )
-            except (subprocess.TimeoutExpired, OSError):
-                pass
-
-        logger.info("Cleaned up tmux sessions for %s (killed %d)",
-                    run.label, len(sessions_to_kill))
+        """Delegate to tmux module."""
+        cleanup_tmux(run.tmux_session, run.workspace_path)
 
     def _try_publish(self, run: RunningInvestigation) -> None:
         try:
@@ -2952,8 +2885,10 @@ class InvestigationDispatcher:
     def _build_review_message(self, run: RunningInvestigation,
                               ledger) -> str:
         """Build the Telegram review message from the claim ledger."""
+        inv = self.queue.get(run.investigation_id)
+        cycle_num = inv.cycle_number if inv else (run.improvement_rounds or 1)
         lines = [
-            f"🔬 *{run.label}* — Round {run.improvement_rounds or 1} complete "
+            f"🔬 *{run.label}* — Round {cycle_num} complete "
             f"(eval: {run.eval_score:.2f})\n",
         ]
 
@@ -3010,7 +2945,7 @@ class InvestigationDispatcher:
             "deliverable.md", "belief-map.json", "orchestrator-checkpoint.json",
             "success-criteria.json", "experiments.tsv", "eval-score.json",
             "convergence.json", "claim-evidence.json", "report.pdf",
-            "state-digest.md", "scout-brief.md",
+            "state-digest.md", "scout-brief.md", "events.jsonl",
         ]
         for fname in files_to_archive:
             src = swarm / fname
@@ -3022,8 +2957,8 @@ class InvestigationDispatcher:
 
         # 3. Clean .swarm/ for fresh orchestrator (keep reusable files)
         files_to_remove = [
-            "orchestrator-checkpoint.json", "convergence.json",
-            "eval-score.json", "dispatcher-directive.json",
+            "deliverable.md", "events.jsonl", "orchestrator-checkpoint.json",
+            "convergence.json", "eval-score.json", "dispatcher-directive.json",
             "human-gate.json", "state-digest.md",
         ]
         for fname in files_to_remove:
@@ -3034,8 +2969,8 @@ class InvestigationDispatcher:
                 except OSError:
                     pass
 
-        # Keep: belief-map.json, experiments.tsv, success-criteria.json,
-        #        deliverable.md (for warm-start reference), events.jsonl
+        # Keep: belief-map.json, experiments.tsv, success-criteria.json.
+        # Archived state remains available under .swarm/archive/run-N/.
 
         # 4. Prune git worktrees
         try:

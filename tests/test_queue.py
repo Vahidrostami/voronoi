@@ -311,8 +311,10 @@ class TestReviewAndContinue:
         assert new_inv.status == "queued"
         assert new_inv.parent_id == inv_id
         assert new_inv.cycle_number == 2
-        assert "PI Feedback" in new_inv.question
-        assert "test more" in new_inv.question
+        # Feedback stored in pi_feedback, NOT appended to question
+        assert new_inv.pi_feedback == "test more"
+        assert "PI Feedback" not in new_inv.question
+        assert new_inv.question == "Q"
         assert new_inv.workspace_path == "/tmp/ws"
         # Original transitions to complete
         assert queue.get(inv_id).status == "complete"
@@ -377,3 +379,38 @@ class TestReviewAndContinue:
         queue.start(inv_id, "/tmp/ws")
         # Still running, can't accept
         assert queue.accept(inv_id) is False
+
+    def test_continue_stores_pi_feedback_separately(self, queue):
+        """PI feedback should be stored in pi_feedback field, not question."""
+        inv_id = queue.enqueue(Investigation(chat_id="c1", question="Does X work?", slug="q"))
+        queue.start(inv_id, "/tmp/ws")
+        queue.complete(inv_id)
+        new_id = queue.continue_investigation(inv_id, "increase sample size to N=500")
+        new_inv = queue.get(new_id)
+        assert new_inv.pi_feedback == "increase sample size to N=500"
+        assert new_inv.question == "Does X work?"
+        assert "PI Feedback" not in new_inv.question
+
+    def test_continue_no_feedback(self, queue):
+        """Continuation without feedback should have empty pi_feedback."""
+        inv_id = queue.enqueue(Investigation(chat_id="c1", question="Q", slug="q"))
+        queue.start(inv_id, "/tmp/ws")
+        queue.complete(inv_id)
+        new_id = queue.continue_investigation(inv_id)
+        new_inv = queue.get(new_id)
+        assert new_inv.pi_feedback == ""
+        assert new_inv.question == "Q"
+
+    def test_continue_strips_legacy_feedback_from_question(self, queue):
+        """If the question had old-style feedback appended, strip it."""
+        inv_id = queue.enqueue(Investigation(
+            chat_id="c1",
+            question="Does X work?\n\n## PI Feedback (Round 1)\nold feedback",
+            slug="q",
+        ))
+        queue.start(inv_id, "/tmp/ws")
+        queue.complete(inv_id)
+        new_id = queue.continue_investigation(inv_id, "new feedback")
+        new_inv = queue.get(new_id)
+        assert new_inv.question == "Does X work?"
+        assert new_inv.pi_feedback == "new feedback"

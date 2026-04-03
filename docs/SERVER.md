@@ -2,7 +2,7 @@
 
 > Investigation queue, dispatcher, workspace provisioning, sandbox isolation, prompt building, publishing.
 
-**TL;DR**: `queue.py` = SQLite lifecycle (queued→running→complete). `dispatcher.py` polls queue, provisions workspaces, launches tmux+copilot, monitors progress. `prompt.py` = single source of truth for all orchestrator prompts. `workspace.py` provisions with git clone/worktree. `sandbox.py` = optional Docker. All in `src/voronoi/server/`.
+**TL;DR**: `queue.py` = SQLite lifecycle (queued→running→complete). `dispatcher.py` polls queue, provisions workspaces, monitors progress; delegates tmux to `tmux.py`. `snapshot.py` = read-only workspace state capture (shared by dispatcher + gateway). `prompt.py` = single source of truth for all orchestrator prompts. `workspace.py` provisions with git clone/worktree. `sandbox.py` = optional Docker. All in `src/voronoi/server/`.
 
 ## 1. Module Map
 
@@ -11,11 +11,15 @@ src/voronoi/server/
 ├── __init__.py       # Re-exports extract_repo_url
 ├── queue.py          # SQLite investigation queue (lifecycle management)
 ├── dispatcher.py     # Provisions workspaces, launches agents, monitors progress
+├── tmux.py           # TMux session launch, auth check, cleanup
+├── snapshot.py       # WorkspaceSnapshot — read-only .swarm/ state capture
 ├── prompt.py         # Unified orchestrator prompt builder
 ├── workspace.py      # Workspace provisioning (clone, worktree, init)
 ├── sandbox.py        # Docker sandbox isolation
 ├── runner.py         # Server config, queue runner, slug generation
 ├── publisher.py      # GitHub publishing of investigation results
+├── compact.py        # Workspace state compaction
+├── events.py         # Structured event log
 └── repo_url.py       # GitHub URL parsing from free text
 ```
 
@@ -295,17 +299,17 @@ class InvestigationDispatcher:
    - Check if tmux session still alive
    - Get events via `_check_progress()`:
      - `_diff_tasks()` — compares task snapshot for new/started/completed tasks
-     - `_check_findings()` — detects new FINDING tasks (deduplicates via notified set)
+     - `_check_findings()` — detects new FINDING tasks and SERENDIPITY notes (deduplicates via notified set)
      - `_check_design_invalid()` — detects DESIGN_INVALID flags in open tasks
      - `_check_sentinel()` — experiment contract validation (see SCIENCE.md §10):
        - Detects missing contract after 1h at Analytical+ rigor
        - Triggers on contract change, output production, phase transition, or periodic timer
        - Runs phase gate validation when orchestrator checkpoint phase changes
        - Writes `sentinel_violation` directive on failure
-     - `_detect_phase()` — classifies phase from workspace file artifacts
+     - `_detect_phase()` — classifies phase from workspace file artifacts; detects rigor escalation from checkpoint
      - `_check_paradigm_stress()` — detects contradictions (Scientific+ only)
      - `_check_heartbeat_stalls()` — detects agent inactivity via heartbeat files
-     - `_check_event_log()` — reads `.swarm/events.jsonl` for failures and token spend
+     - `_check_event_log()` — reads `.swarm/events.jsonl` for failures, token spend, and serendipity events
    - Send digest via `build_digest()` (single narrative message, not per-event)
    - Check for timeout, stall, completion
    - Handle dead agents: try restart or mark failed
@@ -322,9 +326,10 @@ At Scientific and Experimental rigor, the orchestrator can pause for human appro
 The dispatcher reads `.swarm/events.jsonl` (written by workers and orchestrator) via `_check_event_log()` for:
 - **Failure counts**: Alerts when multiple tool calls or tests are failing
 - **Token accumulation**: Logs when token spend exceeds 50K since last poll
+- **Serendipity events**: Surfaces unexpected observations as milestone notifications to the human
 - **Stall detection**: Combined with heartbeat checks for comprehensive activity monitoring
 
-See `src/voronoi/server/events.py` for the `SwarmEvent` dataclass and convenience loggers.
+See `src/voronoi/server/events.py` for the `SwarmEvent` dataclass and convenience loggers (`log_serendipity()`, `log_finding()`, etc.).
 
 ### Event-Driven Digests (Two-Tier Delivery)
 
@@ -333,7 +338,7 @@ The dispatcher batches events since last update into a single `build_digest()` c
 | Type | Delivery | Notification? | Triggers |
 |------|----------|:---:|----------|
 | `MSG_TYPE_STATUS` | Edit existing message | No | Task changes, progress |
-| `MSG_TYPE_MILESTONE` | New message | Yes | Findings, design_invalid |
+| `MSG_TYPE_MILESTONE` | New message | Yes | Findings, design_invalid, serendipity, rigor escalation |
 
 The dispatcher tracks `status_message_id` per investigation. Status updates silently edit the last status message. Milestones always send a new message (clearing the tracked ID so the next status creates a fresh one). When `edit_message` callback is not available (e.g., non-Telegram frontends), all messages are sent as new messages.
 
@@ -374,12 +379,14 @@ The dispatcher syncs `criteria_status` from the orchestrator checkpoint into `su
 
 1. **Hard gate**: If any DESIGN_INVALID tasks are open, completion is blocked
 2. Clean up tmux sessions — reads `.swarm-config.json` for the actual session name, enumerates live tmux sessions and kills any whose working directory is under the swarm directory
-3. On success: generate teaser via `ReportGenerator.build_teaser()`, generate PDF via `build_pdf()`, send teaser + document to Telegram
-4. On failure: extract log tail, send failure message via `format_failure()`
-5. Try GitHub publish if `gh` CLI available
-6. Clean up agent worktrees — prune git worktrees, remove worktree directories, remove the `-swarm/` directory
-7. Remove `.swarm/.tmux-env` secrets file from workspace
-8. Clean `~/.voronoi/tmp` if no other investigations are running
+3. **Negative result detection**: If convergence.json status is `negative_result`, send `format_negative_result()` instead of the standard teaser. This presents valid null findings as legitimate science rather than failure.
+4. On success: generate teaser via `ReportGenerator.build_teaser()`, generate PDF via `build_pdf()`, send teaser + document to Telegram
+5. On failure: extract log tail, send failure message via `format_failure()`
+6. **Federated knowledge sync**: Sync findings to `~/.voronoi/knowledge.db` for cross-investigation search
+7. Try GitHub publish if `gh` CLI available
+8. Clean up agent worktrees — prune git worktrees, remove worktree directories, remove the `-swarm/` directory
+9. Remove `.swarm/.tmux-env` secrets file from workspace
+10. Clean `~/.voronoi/tmp` if no other investigations are running
 
 ### Agent Restart
 
@@ -411,6 +418,17 @@ Time-based restarts are **evidence-gated**: if the orchestrator's context snapsh
 This does NOT count against `max_retries` — it uses a separate `context_restarts` counter (limit: `max_context_restarts`, default 2). At `context_warning` level, the dispatcher force-compacts the workspace immediately (instead of waiting for the periodic 6h interval) to help the agent if it does read the directive.
 
 The resume prompt for context refreshes is distinct from crash restarts: it explicitly tells the agent the previous session was healthy, nothing failed, and to continue from the checkpoint without re-validating completed work.
+
+### Continuation Dispatch
+
+When a continuation investigation is dequeued (detected by `inv.parent_id is not None` and `inv.workspace_path` existing on disk), the dispatcher skips fresh provisioning and instead:
+1. Reuses the existing workspace directory
+2. Calls `prepare_continuation()` to archive `.swarm/` state, tag the git boundary, clear stale completion/event artifacts from active `.swarm/`, prune worktrees, and write immutability invariants
+3. Refreshes templates via `_voronoi_init()`
+4. Builds a warm-start prompt via `build_warm_start_context()` — injecting claim ledger summary, PI feedback from `inv.pi_feedback`, immutable artifact paths, and artifact manifest
+5. Passes `prior_context` to `build_orchestrator_prompt()` so the orchestrator sees Round N context
+
+If the workspace directory is missing (e.g. user cleaned up), the dispatcher falls back to fresh provisioning with a warning log.
 
 ### Investigation Resume
 
@@ -462,6 +480,7 @@ def build_orchestrator_prompt(
     output_dir: str = "",
     max_agents: int = 4,
     safe: bool = False,
+    prior_context: dict | None = None,  # warm-start data from prior runs
 ) -> str
 ```
 
@@ -488,6 +507,7 @@ def build_orchestrator_prompt(
 | 17 | Rules | Concurrency limits, proofs, never edit worker code |
 | 18 | Rigor rules | Analytical/scientific/experimental enforcement |
 | 19 | Eval score | `.swarm/eval-score.json` output format |
+| 20 | Warm-Start Brief | Continuation context: round number, claim ledger, PI feedback, immutable paths, artifact manifest (only for `prior_context != None`) |
 
 ### Key Design Principle
 

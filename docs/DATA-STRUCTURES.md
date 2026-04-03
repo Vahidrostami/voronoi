@@ -78,6 +78,9 @@ class Investigation:
     github_url: str | None
     parent_id: int | None
     demo_source: str | None
+    lineage_id: int | None        # Root investigation ID for claim ledger scoping
+    cycle_number: int             # Iteration round within a lineage (1, 2, 3...)
+    pi_feedback: str              # PI feedback for this continuation round (empty for root)
     created_at: float
     started_at: float | None
     completed_at: float | None

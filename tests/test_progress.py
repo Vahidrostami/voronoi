@@ -8,7 +8,8 @@ from pathlib import Path
 
 from voronoi.gateway.progress import (
     format_launch, format_complete, format_failure, format_alert,
-    format_restart, format_pause, format_duration, progress_bar, estimate_remaining,
+    format_negative_result, format_restart, format_pause,
+    format_duration, progress_bar, estimate_remaining,
     build_digest, build_digest_whatsup, assess_track_status,
     phase_description, phase_position, _synthesize_narrative,
     VOICE_PHASE_VARIANTS, MSG_TYPE_MILESTONE, MSG_TYPE_STATUS,
@@ -72,6 +73,21 @@ class TestBuddyFormatters:
         assert format_duration(300) == "5min"
         assert format_duration(3600) == "1h"
         assert format_duration(5400) == "1h 30min"
+
+    def test_format_negative_result(self):
+        msg = format_negative_result("Synapse", 7200, 12, 15, eval_score=0.78,
+                                     reason="Hypothesis falsified with d=0.02")
+        assert "Synapse" in msg
+        assert "negative result" in msg.lower()
+        assert "rigorously" in msg.lower()
+        assert "0.78" in msg
+        assert "falsified" in msg
+
+    def test_format_negative_result_no_score(self):
+        msg = format_negative_result("Synapse", 3600, 8, 10)
+        assert "Synapse" in msg
+        assert "negative result" in msg.lower()
+        assert "0." not in msg  # no score line when score=0
 
 
 class TestProgressBar:
@@ -218,6 +234,40 @@ class TestBuildDigest:
         assert "Experiment" in msg
         assert "1 good" in msg
         assert "Observed artifacts" in msg
+
+
+    def test_digest_with_serendipity(self, tmp_path):
+        msg, msg_type = build_digest(
+            codename="Synapse",
+            mode="discover",
+            phase="investigating",
+            elapsed_sec=5400,
+            task_snapshot={"t1": {"status": "in_progress", "notes": ""}},
+            workspace=tmp_path,
+            events_since_last=[
+                {"type": "serendipity",
+                 "msg": "🔮 *Unexpected observation*\nMemory leak correlates with GC pauses\n_Agent investigator noticed something outside the plan._"},
+            ],
+        )
+        assert "🔮" in msg
+        assert "Memory leak" in msg
+        assert msg_type == MSG_TYPE_MILESTONE
+
+    def test_digest_with_rigor_escalation(self, tmp_path):
+        msg, msg_type = build_digest(
+            codename="Synapse",
+            mode="discover",
+            phase="investigating",
+            elapsed_sec=7200,
+            task_snapshot={"t1": {"status": "in_progress", "notes": ""}},
+            workspace=tmp_path,
+            events_since_last=[
+                {"type": "rigor_escalation",
+                 "msg": "📐 *Rigor escalated* → scientific\n_pre-registration · hypothesis testing_"},
+            ],
+        )
+        assert "📐" in msg
+        assert msg_type == MSG_TYPE_MILESTONE
 
 
 class TestBuildDigestWhatsup:

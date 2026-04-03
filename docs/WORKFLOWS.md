@@ -371,8 +371,10 @@ Run 2: REVIEW → COMPLETE
 | Mechanism | Where | What it does |
 |-----------|-------|-------------|
 | `review` status | queue.py | Pauses after convergence for PI feedback |
+| `pi_feedback` field | queue.py | Stores PI feedback separately from the question (never mutates question) |
 | Claim Ledger | claims.py | Cross-run scientific state with provenance |
 | Warm-Start Brief | prompt.py | Loads prior claims + PI feedback into new round |
+| Continuation dispatch | dispatcher.py | Detects `parent_id`, reuses workspace, calls `prepare_continuation()` |
 | Workspace reuse | dispatcher.py | Same git repo, archived `.swarm/`, git tags at boundaries |
 | Immutability | gates.py | Locked claims' artifacts can't be modified |
 | Self-critique | claims.py | Auto-identifies weaknesses before showing PI |
@@ -380,12 +382,18 @@ Run 2: REVIEW → COMPLETE
 ### Workspace Handoff Between Runs
 
 When `/continue` is triggered:
-1. Git tag `run-<N>-complete` marks the boundary
-2. `.swarm/` state archived to `.swarm/archive/run-<N>/`
-3. Checkpoint and convergence files cleared for fresh orchestrator
-4. Belief map, experiments.tsv, success criteria carried forward
-5. Worktrees pruned
-6. Locked claims' artifacts written as `file_unchanged` invariants
+1. Dispatcher detects `inv.parent_id` is set and existing `workspace_path` exists on disk
+2. Dispatcher calls `prepare_continuation()` on the prior round's run state:
+   a. Git tag `run-<N>-complete` marks the boundary
+   b. `.swarm/` state archived to `.swarm/archive/run-<N>/`
+  c. Stale run-state files cleared from active `.swarm/` for the fresh orchestrator
+    This includes `deliverable.md`, `events.jsonl`, checkpoint, convergence, and eval artifacts so the next round does not inherit a false-complete state or replay old events.
+   d. Belief map, experiments.tsv, success criteria carried forward
+   e. Worktrees pruned
+   f. Locked claims' artifacts written as `file_unchanged` invariants
+3. `_voronoi_init()` refreshes templates (agents, skills, scripts)
+4. `_build_prompt()` calls `build_warm_start_context()` to inject claim ledger, PI feedback, immutable paths, and artifact manifest into the orchestrator prompt
+5. If workspace directory is missing (user cleaned up), falls back to fresh provisioning with a warning
 
 ### Runs Are Additive
 

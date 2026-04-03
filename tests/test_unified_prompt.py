@@ -204,6 +204,7 @@ class TestDispatcherUsesSharedBuilder:
         inv.mode = "investigate"
         inv.rigor = "scientific"
         inv.codename = "Dopamine"
+        inv.parent_id = None
 
         prompt = d._build_prompt(inv, tmp_path)
 
@@ -222,6 +223,7 @@ class TestDispatcherUsesSharedBuilder:
         inv.mode = "build"
         inv.rigor = "standard"
         inv.codename = ""
+        inv.parent_id = None
 
         with patch("voronoi.server.prompt.build_orchestrator_prompt") as mock_build:
             mock_build.return_value = "test prompt"

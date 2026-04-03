@@ -2,23 +2,28 @@
 
 > Intent classification, command routing, conversation memory, knowledge recall, reporting, and Telegram integration.
 
-**TL;DR**: `intent.py` classifies text → mode+rigor. `router.py` dispatches all commands via `CommandRouter` class + free-text handler. `memory.py` = per-chat SQLite. `knowledge.py` searches past findings. `report.py` generates teasers, reports, manuscripts, and PDFs (LaTeX→pandoc→fpdf2 chain). `progress.py` builds narrative digest updates (replaces per-event streaming). `telegram-bridge.py` adds inline buttons, group support, singleton lock. All in `src/voronoi/gateway/`.
+**TL;DR**: `intent.py` classifies text → mode+rigor. `router.py` dispatches commands via `CommandRouter` class + free-text handler, delegating to `handlers_query.py`, `handlers_mutate.py`, and `handlers_workflow.py`. `memory.py` = per-chat SQLite. `knowledge.py` searches past findings. `report.py` generates teasers, reports, manuscripts, and PDFs (via `evidence.py` for data extraction and `pdf.py` for rendering). `progress.py` builds narrative digest updates. `telegram-bridge.py` adds inline buttons, group support, singleton lock. All in `src/voronoi/gateway/`.
 
 ## 1. Module Map
 
 ```
 src/voronoi/gateway/
-├── __init__.py       # Empty — namespace package
-├── intent.py         # Intent classifier: text → mode + rigor
-├── router.py         # Central command router for all user actions
-├── config.py         # Configuration loading (.env, .swarm-config.json)
-├── memory.py         # Per-chat SQLite conversation memory
-├── knowledge.py      # Knowledge store recall (search past findings)
-├── literature.py     # Semantic Scholar API integration
-├── progress.py       # Progress formatting helpers (Telegram)
-├── report.py         # Report/manuscript generation from workspace
-├── codename.py       # Brain-themed codename generator
-└── handoff.py        # Science → engineering handoff protocol
+├── __init__.py            # Empty — namespace package
+├── intent.py              # Intent classifier: text → mode + rigor
+├── router.py              # Central command router (thin dispatch layer)
+├── handlers_query.py      # Read-only status/progress/knowledge handlers
+├── handlers_mutate.py     # Task/investigation state change handlers
+├── handlers_workflow.py   # Investigation enqueue (discover/prove/demo)
+├── config.py              # Configuration loading (.env, .swarm-config.json)
+├── memory.py              # Per-chat SQLite conversation memory
+├── knowledge.py           # Knowledge store recall (search past findings)
+├── literature.py          # Semantic Scholar API integration
+├── progress.py            # Progress formatting helpers (Telegram)
+├── report.py              # Report/manuscript generation facade
+├── evidence.py            # Evidence extraction and rendering
+├── pdf.py                 # PDF generation strategy chain
+├── codename.py            # Brain-themed codename generator
+└── handoff.py             # Science → engineering handoff protocol
 ```
 
 ## 2. Intent Classifier (`intent.py`)
@@ -109,7 +114,7 @@ Central dispatch point for all user actions. Every Telegram command and programm
 | `handle_tasks(project_dir) -> str` | Open Beads tasks from active workspaces |
 | `handle_health(project_dir) -> str` | System health check (tmux, beads, git, disk) |
 | `handle_ready(project_dir) -> str` | Unblocked tasks ready for work |
-| `handle_recall(project_dir, query) -> str` | Knowledge store search results |
+| `handle_recall(project_dir, query) -> str` | Workspace recall plus cross-investigation findings |
 | `handle_belief(project_dir) -> str` | Current belief map |
 | `handle_journal(project_dir) -> str` | Investigation journal |
 | `handle_finding(project_dir, finding_id) -> str` | Single finding detail |
@@ -139,7 +144,7 @@ Central dispatch point for all user actions. Every Telegram command and programm
 | `handle_complete_investigation(project_dir, id_or_codename) -> str` | Accept and close a reviewed investigation |
 | `handle_claims(project_dir, id_or_codename) -> str` | Show current claim ledger state |
 
-These handlers interact with the Claim Ledger (`~/.voronoi/ledgers/<lineage_id>/claim-ledger.json`). The `continue` handler parses natural-language feedback for `lock C1`, `challenge C2: reason` patterns and updates the ledger before creating the continuation investigation.
+These handlers interact with the Claim Ledger (`~/.voronoi/ledgers/<lineage_id>/claim-ledger.json`). The `continue` handler parses natural-language feedback for `lock C1`, `challenge C2: reason` patterns and updates the ledger before creating the continuation investigation. PI feedback is stored in the `pi_feedback` field on `Investigation` — it is NOT appended to the question text. The dispatcher reads `pi_feedback` to build the warm-start prompt context.
 
 ### Workflow Handlers
 
@@ -260,7 +265,7 @@ class ConversationMemory:
 
 ### Purpose
 
-Search past findings and evidence from completed investigations. Powers the `/recall` command.
+Search past findings and evidence from the current workspace plus completed investigations. Powers the `/recall` command.
 
 ### Finding Data Structure
 
@@ -300,6 +305,21 @@ class KnowledgeStore:
 - **Keyword scoring**: Weighted word overlap on title + notes, boosted for completed findings and investigations.
 
 Weighted combination: 60% keyword + 40% BM25. Falls back to keyword-only if FTS5 is unavailable.
+
+### FederatedKnowledge API
+
+```python
+class FederatedKnowledge:
+    def __init__(self, db_path: Path | None = None): ...
+    def sync_findings(self, investigation_id: str, codename: str, workspace: Path) -> int: ...
+    def search(self, query: str, max_results: int = 10) -> list[Finding]: ...
+    def format_search_response(self, query: str, max_results: int = 5) -> str: ...
+```
+
+**Cross-investigation search**: Persistent SQLite index at `~/.voronoi/knowledge.db`. The dispatcher syncs findings from every completed investigation via `sync_findings()`. `/recall` first searches the active workspace, then appends non-duplicate cross-investigation findings from the federated index. Search queries return findings with `codename:task_id` composite IDs. The index prefers FTS5 when available and falls back to `LIKE` search on SQLite builds without FTS5. This enables:
+- Detecting redundant work across investigations
+- Surfacing prior findings when starting new investigations
+- Building a cumulative knowledge base that grows with each completed study
 
 ---
 

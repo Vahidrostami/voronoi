@@ -35,6 +35,7 @@ class Investigation:
     demo_source: Optional[str] = None  # demo name:path for demo-originated investigations
     lineage_id: Optional[int] = None   # root investigation ID for claim ledger scoping
     cycle_number: int = 1              # iteration round within a lineage
+    pi_feedback: str = ""               # PI feedback for continuation rounds
     created_at: float = field(default_factory=time.time)
     started_at: Optional[float] = None
     completed_at: Optional[float] = None
@@ -115,6 +116,10 @@ CREATE INDEX IF NOT EXISTS idx_inv_repo ON investigations(repo);
 _MIGRATION_ADD_LINEAGE = """
 ALTER TABLE investigations ADD COLUMN lineage_id INTEGER;
 ALTER TABLE investigations ADD COLUMN cycle_number INTEGER NOT NULL DEFAULT 1;
+"""
+
+_MIGRATION_ADD_PI_FEEDBACK = """
+ALTER TABLE investigations ADD COLUMN pi_feedback TEXT NOT NULL DEFAULT '';
 """
 
 _MIGRATION_ADD_REVIEW_STATUS = """
@@ -221,6 +226,11 @@ class InvestigationQueue:
                 )
             except sqlite3.IntegrityError:
                 conn.executescript(_MIGRATION_ADD_REVIEW_STATUS)
+            # Migrate existing databases that lack pi_feedback column
+            try:
+                conn.execute("SELECT pi_feedback FROM investigations LIMIT 1")
+            except sqlite3.OperationalError:
+                conn.executescript(_MIGRATION_ADD_PI_FEEDBACK)
         finally:
             conn.close()
 
@@ -257,12 +267,13 @@ class InvestigationQueue:
             cursor = conn.execute(
                 "INSERT INTO investigations "
                 "(chat_id, status, investigation_type, repo, question, slug, "
-                " mode, rigor, codename, parent_id, lineage_id, cycle_number, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " mode, rigor, codename, parent_id, lineage_id, cycle_number, "
+                " pi_feedback, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (inv.chat_id, "queued", inv.investigation_type, inv.repo,
                  inv.question, inv.slug, inv.mode, inv.rigor,
                  inv.codename, inv.parent_id, inv.lineage_id,
-                 inv.cycle_number, inv.created_at),
+                 inv.cycle_number, inv.pi_feedback, inv.created_at),
             )
             inv_id: int = cursor.lastrowid  # type: ignore[assignment]
             # Assign a deterministic codename if none was provided
@@ -423,7 +434,8 @@ class InvestigationQueue:
         """Create a continuation investigation from a completed or reviewed one.
 
         Creates a new investigation with:
-        - Same question (+ feedback appended if given)
+        - Same question (original, never mutated)
+        - pi_feedback stores the PI's feedback for this round
         - parent_id set to the current investigation
         - Same lineage_id (for claim ledger scoping)
         - Incremented cycle_number
@@ -437,9 +449,10 @@ class InvestigationQueue:
         if inv.status not in ("review", "complete"):
             return None
 
-        question = inv.question
-        if feedback:
-            question = f"{question}\n\n## PI Feedback (Round {inv.cycle_number})\n{feedback}"
+        # Use the original question — feedback goes in pi_feedback, not
+        # appended to the question.  Strip any prior-round feedback that
+        # was appended by older code.
+        question = inv.question.split("\n\n## PI Feedback")[0]
 
         lineage = inv.lineage_id or investigation_id
 
@@ -449,13 +462,14 @@ class InvestigationQueue:
             investigation_type=inv.investigation_type,
             repo=inv.repo,
             question=question,
-            slug=make_slug(inv.question),
+            slug=make_slug(question),
             mode=inv.mode,
             rigor=inv.rigor,
             codename=inv.codename,  # keep same codename across rounds
             parent_id=investigation_id,
             lineage_id=lineage,
             cycle_number=inv.cycle_number + 1,
+            pi_feedback=feedback,
         )
         new_id = self.enqueue(new_inv)
 
@@ -616,6 +630,11 @@ class InvestigationQueue:
             cycle_number = row["cycle_number"] or 1
         except (IndexError, KeyError):
             pass
+        pi_feedback = ""
+        try:
+            pi_feedback = row["pi_feedback"] or ""
+        except (IndexError, KeyError):
+            pass
         return Investigation(
             id=row["id"],
             chat_id=row["chat_id"],
@@ -634,6 +653,7 @@ class InvestigationQueue:
             demo_source=demo_source,
             lineage_id=lineage_id,
             cycle_number=cycle_number,
+            pi_feedback=pi_feedback,
             created_at=row["created_at"],
             started_at=row["started_at"],
             completed_at=row["completed_at"],

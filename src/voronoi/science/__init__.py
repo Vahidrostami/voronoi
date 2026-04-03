@@ -1,10 +1,11 @@
 """Science gate enforcement — the backbone of Voronoi's rigor system.
 
-4 modules:
-  - _helpers.py: Beads queries, consistency checks, finding interpretation
+5 modules:
+  - consistency.py: Beads queries, consistency checks, paradigm stress, finding interpretation
   - convergence.py: Belief map, checkpoint, convergence detection
   - fabrication.py: Anti-fabrication verification, simulation bypass
   - gates.py: Dispatch/merge gates, pre-registration, invariants, calibration
+  - claims.py: Cross-run claim ledger, provenance, objections
 
 All public symbols re-exported here for ``from voronoi.science import X``.
 """
@@ -25,7 +26,7 @@ from voronoi.science.convergence import (
 )
 
 # --- Helpers (consistency, paradigm stress, interpretation, claim-evidence) ---
-from voronoi.science._helpers import (
+from voronoi.science.consistency import (
     ClaimEvidence,
     ClaimEvidenceRegistry,
     ConsistencyConflict,

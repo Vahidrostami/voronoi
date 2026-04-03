@@ -24,29 +24,29 @@ from pathlib import Path
 from voronoi.beads import run_bd as _run_bd
 from voronoi.utils import clean_finding_title as _clean_finding_title
 from voronoi.utils import extract_field as _parse_note_value
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _which(cmd: str) -> bool:
-    """Check if a command is available on PATH."""
-    return shutil.which(cmd) is not None
-
-
-def _latin1_safe(text: str) -> str:
-    """Replace non-latin1 characters for built-in PDF fonts."""
-    return (text
-            .replace("\u2014", "-")
-            .replace("\u2013", "-")
-            .replace("\u2022", "*")
-            .replace("\u2018", "'")
-            .replace("\u2019", "'")
-            .replace("\u201c", '"')
-            .replace("\u201d", '"')
-            .replace("\u2026", "...")
-            .encode("latin-1", "replace").decode("latin-1"))
+from voronoi.gateway.evidence import (
+    get_findings,
+    render_findings_table,
+    render_findings_interpreted,
+    pick_headline,
+    valence_emoji,
+    render_evidence_chain,
+    render_limitations,
+    render_cross_finding_comparison,
+    render_negative_results,
+    humanize_stats,
+)
+from voronoi.gateway.pdf import (
+    find_precompiled_pdf,
+    find_latex_main,
+    compile_latex,
+    find_pandoc,
+    latex_to_markdown,
+    try_pandoc_pdf,
+    try_fpdf2,
+    latin1_safe as _latin1_safe,
+    which as _which,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -129,70 +129,19 @@ class ReportGenerator:
         return None
 
     def _get_findings(self) -> list[dict]:
-        """Extract FINDING tasks from Beads with interpretation metadata."""
+        """Delegate to evidence module with caching."""
         if self._findings_cache is not None:
             return self._findings_cache
-
-        code, stdout = _run_bd("list", "--json", cwd=str(self.ws))
-        if code != 0:
-            self._findings_cache = []
-            return self._findings_cache
-        try:
-            tasks = json.loads(stdout)
-        except (json.JSONDecodeError, ValueError):
-            self._findings_cache = []
-            return self._findings_cache
-
-        findings: list[dict] = []
-        for t in tasks:
-            title = t.get("title", "")
-            if "FINDING" not in title.upper():
-                continue
-            notes = t.get("notes", "")
-            f: dict = {"title": title, "id": t.get("id", "?"),
-                       "notes": notes}
-            for key in ("EFFECT_SIZE", "CI_95", "N", "STAT_TEST",
-                        "VALENCE", "P", "ROBUST", "STAT_REVIEW",
-                        "INTERPRETATION", "PRACTICAL_SIGNIFICANCE",
-                        "SUPPORTS_HYPOTHESIS", "CONDITIONS"):
-                val = _parse_note_value(notes, key)
-                if val:
-                    f[key.lower()] = val
-            # Auto-compute interpretation if not provided by Statistician
-            if "interpretation" not in f or "practical_significance" not in f:
-                from voronoi.science import interpret_finding
-                interp = interpret_finding(t)
-                if "practical_significance" not in f:
-                    f["practical_significance"] = interp["practical_significance"]
-                if "ci_quality" not in f:
-                    f["ci_quality"] = interp["ci_quality"]
-                if "strength_label" not in f:
-                    f["strength_label"] = interp["strength_label"]
-                if "interpretation" not in f and interp["interpretation_text"]:
-                    f["interpretation"] = interp["interpretation_text"]
-            findings.append(f)
-
-        self._findings_cache = findings
+        self._findings_cache = get_findings(self.ws)
         return self._findings_cache
 
     # ------------------------------------------------------------------
-    # Shared renderers
+    # Shared renderers — delegate to evidence module
     # ------------------------------------------------------------------
 
     @staticmethod
     def _render_findings_table(findings: list[dict], placeholder: str = "\u2014") -> list[str]:
-        """Render a markdown findings table with strength indicators."""
-        rows = ["| # | Finding | Effect | CI | N | Test | Verdict | Strength |",
-                "|---|---------|--------|----|---|------|---------|----------|"]
-        for i, f in enumerate(findings, 1):
-            title = _clean_finding_title(f["title"])
-            effect = f.get("effect_size", placeholder)
-            ci = f.get("ci_95", placeholder)
-            n = f.get("n", placeholder)
-            test = f.get("stat_test", placeholder)
-            valence = f.get("valence", placeholder)
-            strength = f.get("strength_label", f.get("practical_significance", placeholder))
-            rows.append(f"| {i} | {title} | {effect} | {ci} | {n} | {test} | {valence} | {strength} |")
+        return render_findings_table(findings, placeholder)
         return rows
 
     @staticmethod

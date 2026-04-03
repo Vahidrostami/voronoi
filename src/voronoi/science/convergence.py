@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from voronoi.utils import extract_field
-from voronoi.science import _helpers
+from voronoi.science import consistency as _helpers
 
 logger = logging.getLogger("voronoi.science")
 

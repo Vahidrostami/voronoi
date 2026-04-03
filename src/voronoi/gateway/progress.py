@@ -501,9 +501,11 @@ def build_digest(
     findings = [e for e in events_since_last if e.get("type") == "finding"]
     new_tasks = [e for e in events_since_last if e.get("type") == "task_new"]
     design_invalids = [e for e in events_since_last if e.get("type") == "design_invalid"]
+    serendipities = [e for e in events_since_last if e.get("type") == "serendipity"]
+    rigor_changes = [e for e in events_since_last if e.get("type") == "rigor_escalation"]
 
     # Determine if this update contains a milestone worth a new notification
-    has_milestone = bool(findings or design_invalids)
+    has_milestone = bool(findings or design_invalids or serendipities or rigor_changes)
 
     lines: list[str] = []
 
@@ -540,6 +542,16 @@ def build_digest(
     if design_invalids:
         for d in design_invalids:
             milestones.append(f"⚠ {_extract_task_title(d)}")
+    if serendipities:
+        for s in serendipities:
+            raw = s.get("msg", "")
+            desc = raw.replace("🔮 *Unexpected observation*\n", "").split("\n")[0].strip()
+            milestones.append(f"🔮 {desc}")
+    if rigor_changes:
+        for r in rigor_changes:
+            raw = r.get("msg", "")
+            desc = raw.replace("📐 *Rigor escalated*", "").split("\n")[0].strip()
+            milestones.append(f"📐 Rigor escalated{desc}")
     if new_tasks and not completed and not findings:
         milestones.append(f"Planned {len(new_tasks)} new tasks")
 
@@ -873,5 +885,25 @@ def format_pause(codename: str, reason: str, elapsed_sec: float,
     lines.append(
         "\nFix the issue, then send `/voronoi resume` to continue."
     )
+    return "\n".join(lines)
+
+
+def format_negative_result(codename: str, elapsed_sec: float,
+                           closed: int, total: int,
+                           eval_score: float = 0.0,
+                           reason: str = "") -> str:
+    """Format a valid negative result — rigorous science, not failure."""
+    elapsed = format_duration(elapsed_sec)
+    lines = [
+        f"🔬 *{codename}* — valid negative result ({elapsed}, "
+        f"{closed}/{total} tasks).\n",
+        "The hypothesis was tested rigorously and found unsupported. "
+        "This is a legitimate scientific outcome.\n",
+    ]
+    if reason:
+        lines.append(f"_{reason}_\n")
+    if eval_score > 0:
+        lines.append(f"Methodology quality: {eval_score:.2f}")
+    lines.append("\nReport attached — includes evidence chain and what was learned.")
     return "\n".join(lines)
 

@@ -28,6 +28,7 @@ from voronoi.gateway.router import (
     handle_abort,
     handle_discover,
     handle_prove,
+    handle_recall,
     handle_belief,
     handle_journal,
     handle_finding,
@@ -235,8 +236,8 @@ class TestHandlers:
 # ---------------------------------------------------------------------------
 
 class TestScienceHandlers:
-    @patch("voronoi.gateway.router.InvestigationQueue", autospec=True)
-    @patch("voronoi.gateway.router.make_slug", return_value="test-slug")
+    @patch("voronoi.gateway.handlers_workflow.InvestigationQueue", autospec=True)
+    @patch("voronoi.gateway.handlers_workflow.make_slug", return_value="test-slug")
     def test_handle_discover(self, mock_slug, mock_queue_cls, tmp_path):
         mock_q = MagicMock()
         mock_q.enqueue.return_value = 1
@@ -248,8 +249,8 @@ class TestScienceHandlers:
         assert "is live" in result
         assert "discovery" in result
 
-    @patch("voronoi.gateway.router.InvestigationQueue", autospec=True)
-    @patch("voronoi.gateway.router.make_slug", return_value="test-slug")
+    @patch("voronoi.gateway.handlers_workflow.InvestigationQueue", autospec=True)
+    @patch("voronoi.gateway.handlers_workflow.make_slug", return_value="test-slug")
     def test_handle_prove(self, mock_slug, mock_queue_cls, tmp_path):
         mock_q = MagicMock()
         mock_q.enqueue.return_value = 2
@@ -267,6 +268,49 @@ class TestScienceHandlers:
 # ---------------------------------------------------------------------------
 
 class TestKnowledgeHandlers:
+    @patch("voronoi.gateway.handlers_query._get_federated_knowledge")
+    @patch("voronoi.gateway.handlers_query._get_knowledge")
+    def test_handle_recall_uses_federated_results(self, mock_get_knowledge, mock_get_federated, tmp_path):
+        local_store = MagicMock()
+        local_store.search_findings.return_value = []
+        local_store.format_recall_response.return_value = "📚 No findings match: _cache_"
+        mock_get_knowledge.return_value = local_store
+
+        federated_store = MagicMock()
+        federated_finding = MagicMock()
+        federated_finding.title = "FINDING: Cache improves throughput"
+        federated_finding.format_telegram.return_value = "*Beta:bd-2*: Cache improves throughput"
+        federated_store.search.return_value = [federated_finding]
+        mock_get_federated.return_value = federated_store
+
+        result = handle_recall(str(tmp_path), "cache")
+
+        assert "cross-investigation" in result
+        assert "Cache improves throughput" in result
+        assert "No findings match" not in result
+
+    @patch("voronoi.gateway.handlers_query._get_federated_knowledge")
+    @patch("voronoi.gateway.handlers_query._get_knowledge")
+    def test_handle_recall_deduplicates_federated_titles(self, mock_get_knowledge, mock_get_federated, tmp_path):
+        local_store = MagicMock()
+        local_finding = MagicMock()
+        local_finding.title = "FINDING: Cache improves throughput"
+        local_store.search_findings.return_value = [local_finding]
+        local_store.format_recall_response.return_value = "📚 *1 finding(s)* for: _cache_\n\n1. local"
+        mock_get_knowledge.return_value = local_store
+
+        federated_store = MagicMock()
+        federated_finding = MagicMock()
+        federated_finding.title = "FINDING: Cache improves throughput"
+        federated_finding.format_telegram.return_value = "*Beta:bd-2*: Cache improves throughput"
+        federated_store.search.return_value = [federated_finding]
+        mock_get_federated.return_value = federated_store
+
+        result = handle_recall(str(tmp_path), "cache")
+
+        assert "cross-investigation" not in result
+        assert "1. local" in result
+
     def test_handle_belief_no_file(self, tmp_path):
         result = handle_belief(str(tmp_path))
         assert "No belief map" in result
@@ -304,7 +348,7 @@ class TestKnowledgeHandlers:
         result = handle_journal(str(tmp_path))
         assert "Found something" in result
 
-    @patch("voronoi.gateway.router._run_bd")
+    @patch("voronoi.gateway.handlers_query._run_bd")
     def test_handle_finding(self, mock_bd, tmp_path):
         (tmp_path / ".beads").mkdir()
         task = {"id": "bd-42", "title": "FINDING: Cache works", "status": "closed",
@@ -314,7 +358,7 @@ class TestKnowledgeHandlers:
         assert "bd-42" in result
         assert "Cache works" in result
 
-    @patch("voronoi.gateway.router._run_bd")
+    @patch("voronoi.gateway.handlers_query._run_bd")
     def test_handle_finding_not_found(self, mock_bd, tmp_path):
         (tmp_path / ".beads").mkdir()
         mock_bd.return_value = (1, "not found")
@@ -361,21 +405,21 @@ class TestCommandRouter:
 
     def test_route_complete(self, tmp_path):
         router = CommandRouter(str(tmp_path))
-        with patch("voronoi.gateway.router._run_bd") as mock_bd:
+        with patch("voronoi.gateway.handlers_mutate._run_bd") as mock_bd:
             mock_bd.return_value = (0, "")
             text, _ = router.route("complete", ["bd-42", "Done", "work"], "chat1")
         assert "bd-42" in text
         assert "closed" in text
 
     def test_handle_complete_with_default_reason(self, tmp_path):
-        with patch("voronoi.gateway.router._run_bd") as mock_bd:
+        with patch("voronoi.gateway.handlers_mutate._run_bd") as mock_bd:
             mock_bd.return_value = (0, "")
             result = handle_complete(str(tmp_path), "bd-1")
         assert "Completed" in result
         assert "bd-1" in result
 
     def test_handle_complete_failure(self, tmp_path):
-        with patch("voronoi.gateway.router._run_bd") as mock_bd:
+        with patch("voronoi.gateway.handlers_mutate._run_bd") as mock_bd:
             mock_bd.return_value = (1, "not found")
             result = handle_complete(str(tmp_path), "bd-99")
         assert "Failed" in result
@@ -484,7 +528,7 @@ class TestReviewContinueClaims:
 
     def test_review_shows_claims(self, tmp_path):
         q, inv_id = self._setup_investigation(tmp_path)
-        with patch("voronoi.gateway.router._get_queue", return_value=q):
+        with patch("voronoi.gateway.handlers_mutate._get_queue", return_value=q):
             result = handle_review_investigation(str(tmp_path), "Synapse")
         assert "Synapse" in result
         assert "C1" in result
@@ -494,20 +538,20 @@ class TestReviewContinueClaims:
         q = MagicMock()
         q.get.return_value = None
         q.get_recent.return_value = []
-        with patch("voronoi.gateway.router._get_queue", return_value=q):
+        with patch("voronoi.gateway.handlers_mutate._get_queue", return_value=q):
             result = handle_review_investigation(str(tmp_path), "Nonexistent")
         assert "not found" in result
 
     def test_claims_shows_ledger(self, tmp_path):
         q, inv_id = self._setup_investigation(tmp_path)
-        with patch("voronoi.gateway.router._get_queue", return_value=q):
+        with patch("voronoi.gateway.handlers_query._get_queue", return_value=q):
             result = handle_claims(str(tmp_path), "Synapse")
         assert "C1" in result
         assert "C2" in result
 
     def test_continue_creates_new_run(self, tmp_path):
         q, inv_id = self._setup_investigation(tmp_path)
-        with patch("voronoi.gateway.router._get_queue", return_value=q):
+        with patch("voronoi.gateway.handlers_mutate._get_queue", return_value=q):
             result = handle_continue_investigation(str(tmp_path), "Synapse",
                                                     "Test multilingual")
         assert "Round 2" in result
@@ -521,7 +565,7 @@ class TestReviewContinueClaims:
         ))
         q.start(inv_id, str(tmp_path))
         # Still running, can't continue
-        with patch("voronoi.gateway.router._get_queue", return_value=q):
+        with patch("voronoi.gateway.handlers_mutate._get_queue", return_value=q):
             result = handle_continue_investigation(str(tmp_path), "Test")
         assert "running" in result.lower()
 
@@ -568,7 +612,7 @@ class TestCompleteInvestigation:
 
     def test_accept_from_review(self, tmp_path):
         q, inv_id = self._setup_reviewed(tmp_path)
-        with patch("voronoi.gateway.router._get_queue", return_value=q):
+        with patch("voronoi.gateway.handlers_mutate._get_queue", return_value=q):
             result = handle_complete_investigation(str(tmp_path), "Serotonin")
         assert "accepted" in result
         assert "closed" in result
@@ -583,7 +627,7 @@ class TestCompleteInvestigation:
         ))
         q.start(inv_id, str(tmp_path / "ws"))
         q.complete(inv_id)
-        with patch("voronoi.gateway.router._get_queue", return_value=q):
+        with patch("voronoi.gateway.handlers_mutate._get_queue", return_value=q):
             result = handle_complete_investigation(str(tmp_path), "Alpha")
         assert "already complete" in result
 
@@ -594,14 +638,14 @@ class TestCompleteInvestigation:
             chat_id="c1", question="Q", slug="q", codename="Beta", mode="discover",
         ))
         q.start(inv_id, str(tmp_path / "ws"))
-        with patch("voronoi.gateway.router._get_queue", return_value=q):
+        with patch("voronoi.gateway.handlers_mutate._get_queue", return_value=q):
             result = handle_complete_investigation(str(tmp_path), "Beta")
         assert "running" in result
 
     def test_not_found(self, tmp_path):
         from voronoi.server.queue import InvestigationQueue
         q = InvestigationQueue(tmp_path / "queue.db")
-        with patch("voronoi.gateway.router._get_queue", return_value=q):
+        with patch("voronoi.gateway.handlers_mutate._get_queue", return_value=q):
             result = handle_complete_investigation(str(tmp_path), "Ghost")
         assert "not found" in result
 

@@ -72,7 +72,7 @@ class TestParseNoteValue:
 # ---------------------------------------------------------------------------
 
 class TestTeaser:
-    @patch("voronoi.gateway.report._run_bd")
+    @patch("voronoi.gateway.evidence._run_bd")
     def test_teaser_with_findings(self, mock_bd, workspace):
         findings = [
             {"id": "bd-5", "title": "FINDING: EWC cuts forgetting 34%",
@@ -90,7 +90,7 @@ class TestTeaser:
         assert "18min" in teaser
         assert "report attached" in teaser.lower()
 
-    @patch("voronoi.gateway.report._run_bd")
+    @patch("voronoi.gateway.evidence._run_bd")
     def test_teaser_no_findings(self, mock_bd, workspace):
         mock_bd.return_value = (0, json.dumps([]))
 
@@ -100,7 +100,7 @@ class TestTeaser:
         assert "COMPLETE" in teaser
         assert "0 finding" in teaser
 
-    @patch("voronoi.gateway.report._run_bd")
+    @patch("voronoi.gateway.evidence._run_bd")
     def test_teaser_bd_failure(self, mock_bd, workspace):
         mock_bd.return_value = (1, "")
 
@@ -109,7 +109,7 @@ class TestTeaser:
 
         assert "COMPLETE" in teaser
 
-    @patch("voronoi.gateway.report._run_bd")
+    @patch("voronoi.gateway.evidence._run_bd")
     def test_headline_picks_largest_effect(self, mock_bd, workspace):
         findings = [
             {"id": "bd-1", "title": "FINDING: Small effect",
@@ -129,7 +129,7 @@ class TestTeaser:
         headline_idx = next(i for i, l in enumerate(lines) if "big one" in l)
         assert "Large effect" in lines[headline_idx + 1]
 
-    @patch("voronoi.gateway.report._run_bd")
+    @patch("voronoi.gateway.evidence._run_bd")
     def test_headline_not_duplicated_in_all_findings(self, mock_bd, workspace):
         findings = [
             {"id": "bd-1", "title": "FINDING: Alpha",
@@ -155,7 +155,7 @@ class TestTeaser:
 # ---------------------------------------------------------------------------
 
 class TestMarkdown:
-    @patch("voronoi.gateway.report._run_bd")
+    @patch("voronoi.gateway.evidence._run_bd")
     def test_markdown_full_report(self, mock_bd, workspace):
         findings = [
             {"id": "bd-5", "title": "FINDING: EWC works",
@@ -174,7 +174,7 @@ class TestMarkdown:
         # New structured sections
         assert "Detailed Conclusion" in md or "Conclusion" in md
 
-    @patch("voronoi.gateway.report._run_bd")
+    @patch("voronoi.gateway.evidence._run_bd")
     def test_markdown_has_interpretation(self, mock_bd, workspace):
         findings = [
             {"id": "bd-5", "title": "FINDING: EWC works",
@@ -189,7 +189,7 @@ class TestMarkdown:
         assert "Finding 1" in md
         assert "Effect size" in md or "Verdict" in md
 
-    @patch("voronoi.gateway.report._run_bd")
+    @patch("voronoi.gateway.evidence._run_bd")
     def test_markdown_has_limitations_for_fragile(self, mock_bd, workspace):
         findings = [
             {"id": "bd-5", "title": "FINDING: Fragile result",
@@ -203,7 +203,7 @@ class TestMarkdown:
         assert "Limitations" in md
         assert "Fragile" in md or "fragile" in md
 
-    @patch("voronoi.gateway.report._run_bd")
+    @patch("voronoi.gateway.evidence._run_bd")
     def test_markdown_has_negative_results(self, mock_bd, workspace):
         findings = [
             {"id": "bd-5", "title": "FINDING: Strategy A works",
@@ -219,7 +219,7 @@ class TestMarkdown:
         assert "Negative" in md
         assert "Strategy B fails" in md
 
-    @patch("voronoi.gateway.report._run_bd")
+    @patch("voronoi.gateway.evidence._run_bd")
     def test_markdown_cross_finding_comparison(self, mock_bd, workspace):
         findings = [
             {"id": "bd-5", "title": "FINDING: Large effect",
@@ -235,7 +235,7 @@ class TestMarkdown:
         assert "Comparative" in md
         assert "strongest" in md.lower() or "larger" in md.lower()
 
-    @patch("voronoi.gateway.report._run_bd")
+    @patch("voronoi.gateway.evidence._run_bd")
     def test_markdown_minimal(self, mock_bd, tmp_path):
         """Workspace with no .swarm files."""
         (tmp_path / ".swarm").mkdir()
@@ -246,7 +246,7 @@ class TestMarkdown:
 
         assert "Investigation Report" in md
 
-    @patch("voronoi.gateway.report._run_bd")
+    @patch("voronoi.gateway.evidence._run_bd")
     def test_markdown_belief_json(self, mock_bd, workspace):
         """Test belief map from JSON format."""
         (workspace / ".swarm" / "belief-map.md").unlink()
@@ -269,7 +269,7 @@ class TestMarkdown:
 # ---------------------------------------------------------------------------
 
 class TestPDF:
-    @patch("voronoi.gateway.report._run_bd")
+    @patch("voronoi.gateway.evidence._run_bd")
     def test_fallback_to_md(self, mock_bd, workspace):
         """When fpdf2 is not available, fall back to .md file."""
         mock_bd.return_value = (0, json.dumps([]))
@@ -282,7 +282,7 @@ class TestPDF:
             assert path.exists()
             assert path.suffix in (".pdf", ".md")
 
-    @patch("voronoi.gateway.report._run_bd")
+    @patch("voronoi.gateway.evidence._run_bd")
     def test_pdf_generation(self, mock_bd, workspace):
         """Test PDF generation when fpdf2 is available."""
         mock_bd.return_value = (0, json.dumps([
@@ -376,7 +376,7 @@ class TestFormatDetection:
 # ---------------------------------------------------------------------------
 
 class TestManuscriptMarkdown:
-    @patch("voronoi.gateway.report._run_bd")
+    @patch("voronoi.gateway.evidence._run_bd")
     def test_manuscript_uses_deliverable(self, mock_bd, tmp_path):
         swarm = tmp_path / ".swarm"
         swarm.mkdir()
@@ -401,7 +401,7 @@ class TestManuscriptMarkdown:
         assert "Appendix A: Evidence Summary" in md
         assert "EWC works" in md
 
-    @patch("voronoi.gateway.report._run_bd")
+    @patch("voronoi.gateway.evidence._run_bd")
     def test_manuscript_skeleton_without_deliverable(self, mock_bd, tmp_path):
         swarm = tmp_path / ".swarm"
         swarm.mkdir()
@@ -421,7 +421,7 @@ class TestManuscriptMarkdown:
         assert "Replay helps" in md
         assert "Methods" in md
 
-    @patch("voronoi.gateway.report._run_bd")
+    @patch("voronoi.gateway.evidence._run_bd")
     def test_teaser_says_manuscript_with_rigor(self, mock_bd, tmp_path):
         swarm = tmp_path / ".swarm"
         swarm.mkdir()
@@ -432,14 +432,14 @@ class TestManuscriptMarkdown:
         teaser = rg.build_teaser(1, "test", 5, 5, 10)
         assert "manuscript" in teaser.lower()
 
-    @patch("voronoi.gateway.report._run_bd")
+    @patch("voronoi.gateway.evidence._run_bd")
     def test_teaser_says_report_when_not_manuscript(self, mock_bd, workspace):
         mock_bd.return_value = (0, json.dumps([]))
         rg = ReportGenerator(workspace, rigor="adaptive")
         teaser = rg.build_teaser(1, "test", 5, 5, 10)
         assert "report" in teaser.lower()
 
-    @patch("voronoi.gateway.report._run_bd")
+    @patch("voronoi.gateway.evidence._run_bd")
     def test_pdf_named_manuscript(self, mock_bd, tmp_path):
         swarm = tmp_path / ".swarm"
         swarm.mkdir()
@@ -457,14 +457,14 @@ class TestManuscriptMarkdown:
 # ---------------------------------------------------------------------------
 
 class TestAutoMarkdown:
-    @patch("voronoi.gateway.report._run_bd")
+    @patch("voronoi.gateway.evidence._run_bd")
     def test_auto_markdown_report(self, mock_bd, workspace):
         mock_bd.return_value = (0, json.dumps([]))
         rg = ReportGenerator(workspace, rigor="adaptive")
         md = rg.build_auto_markdown()
         assert "Investigation Report" in md
 
-    @patch("voronoi.gateway.report._run_bd")
+    @patch("voronoi.gateway.evidence._run_bd")
     def test_auto_markdown_manuscript(self, mock_bd, tmp_path):
         swarm = tmp_path / ".swarm"
         swarm.mkdir()
@@ -480,7 +480,7 @@ class TestAutoMarkdown:
 # ---------------------------------------------------------------------------
 
 class TestFindingsCache:
-    @patch("voronoi.gateway.report._run_bd")
+    @patch("voronoi.gateway.evidence._run_bd")
     def test_findings_cached_across_calls(self, mock_bd, workspace):
         mock_bd.return_value = (0, json.dumps([
             {"id": "bd-1", "title": "FINDING: X", "notes": "VALENCE:positive"},
@@ -500,7 +500,7 @@ class TestFindingsCache:
 # ---------------------------------------------------------------------------
 
 class TestBeliefNarrative:
-    @patch("voronoi.gateway.report._run_bd")
+    @patch("voronoi.gateway.evidence._run_bd")
     def test_belief_narrative_trajectory(self, mock_bd, tmp_path):
         swarm = tmp_path / ".swarm"
         swarm.mkdir()
@@ -530,7 +530,7 @@ class TestBeliefNarrative:
         assert "1 refuted" in narrative
         assert "1 inconclusive" in narrative
 
-    @patch("voronoi.gateway.report._run_bd")
+    @patch("voronoi.gateway.evidence._run_bd")
     def test_belief_narrative_falls_back_to_md(self, mock_bd, workspace):
         """When belief-map.md exists, prefer it."""
         mock_bd.return_value = (0, json.dumps([]))
@@ -546,7 +546,7 @@ class TestBeliefNarrative:
 # ---------------------------------------------------------------------------
 
 class TestEvidenceChain:
-    @patch("voronoi.gateway.report._run_bd")
+    @patch("voronoi.gateway.evidence._run_bd")
     def test_evidence_chain_rendering(self, mock_bd, tmp_path):
         swarm = tmp_path / ".swarm"
         swarm.mkdir()
@@ -578,7 +578,7 @@ class TestEvidenceChain:
         assert "not cited" in chain.lower() or "orphan" in chain.lower()
         assert "50%" in chain
 
-    @patch("voronoi.gateway.report._run_bd")
+    @patch("voronoi.gateway.evidence._run_bd")
     def test_evidence_chain_none_without_file(self, mock_bd, tmp_path):
         (tmp_path / ".swarm").mkdir()
         mock_bd.return_value = (0, json.dumps([]))
@@ -591,7 +591,7 @@ class TestEvidenceChain:
 # ---------------------------------------------------------------------------
 
 class TestLimitations:
-    @patch("voronoi.gateway.report._run_bd")
+    @patch("voronoi.gateway.evidence._run_bd")
     def test_limitations_from_fragile(self, mock_bd, workspace):
         mock_bd.return_value = (0, json.dumps([]))
         rg = ReportGenerator(workspace)
@@ -603,7 +603,7 @@ class TestLimitations:
         assert lim is not None
         assert "Fragile" in lim
 
-    @patch("voronoi.gateway.report._run_bd")
+    @patch("voronoi.gateway.evidence._run_bd")
     def test_limitations_from_wide_ci(self, mock_bd, workspace):
         mock_bd.return_value = (0, json.dumps([]))
         rg = ReportGenerator(workspace)
@@ -615,7 +615,7 @@ class TestLimitations:
         assert lim is not None
         assert "Imprecise" in lim
 
-    @patch("voronoi.gateway.report._run_bd")
+    @patch("voronoi.gateway.evidence._run_bd")
     def test_limitations_from_inconclusive_hypothesis(self, mock_bd, tmp_path):
         swarm = tmp_path / ".swarm"
         swarm.mkdir()
@@ -744,7 +744,7 @@ class TestDemoOutputCopy:
         assert paper_dir.exists()
         assert (paper_dir / "report.pdf").exists()
 
-    @patch("voronoi.gateway.report._run_bd")
+    @patch("voronoi.gateway.evidence._run_bd")
     def test_no_copy_for_markdown_fallback(self, mock_bd, tmp_path):
         """Markdown-generated PDFs should NOT be copied to paper dir."""
         ws = tmp_path / "workspace"

@@ -729,28 +729,37 @@ voronoi/
 ├── utils.py                # Shared field extraction, note parsing, title cleaning
 ├── science/                # Science gate enforcement (subpackage)
 │   ├── __init__.py         # Re-exports all public symbols
-│   ├── _helpers.py         # Beads queries, consistency, interpretation, I/O
+│   ├── consistency.py      # Beads queries, consistency, paradigm stress, interpretation
 │   ├── convergence.py      # Belief map, checkpoint, convergence detection
 │   ├── fabrication.py      # Anti-fabrication, simulation bypass
 │   ├── gates.py            # Dispatch/merge gates, pre-reg, invariants, calibration
 │   └── claims.py           # Claim Ledger — cross-run scientific state
 ├── gateway/
 │   ├── intent.py           # Free-text → mode + rigor classification
-│   ├── router.py           # Command dispatch (investigate · demo · status · guide)
+│   ├── router.py           # Command dispatch (thin layer, delegates to handlers)
+│   ├── handlers_query.py   # Read-only status/progress/knowledge handlers
+│   ├── handlers_mutate.py  # Task/investigation state changes
+│   ├── handlers_workflow.py # Investigation enqueue (discover/prove/demo)
 │   ├── config.py           # .env + .swarm-config.json loading
 │   ├── memory.py           # Conversation history (SQLite)
 │   ├── knowledge.py        # Knowledge store queries
 │   ├── progress.py         # Progress bar formatting, phase labels
-│   ├── report.py           # Teaser + PDF generation
+│   ├── report.py           # Report/manuscript generation facade
+│   ├── evidence.py         # Evidence extraction and rendering
+│   ├── pdf.py              # PDF generation strategy chain
 │   ├── codename.py         # Brain-themed codenames
 │   └── handoff.py          # Voronoi → Anton/MVCHA fix handoff
 └── server/
     ├── prompt.py           # ⭐ Unified orchestrator prompt builder
     ├── queue.py            # Investigation queue (SQLite, atomic claiming)
-    ├── dispatcher.py       # Launch · progress poll · timeout · completion
+    ├── dispatcher.py       # Progress poll · timeout · completion
+    ├── tmux.py             # TMux session launch, auth, cleanup
+    ├── snapshot.py         # WorkspaceSnapshot — read-only .swarm/ state
     ├── workspace.py        # Provision lab/repo workspaces + .github/ fallback
     ├── runner.py           # Server config, slug generation
     ├── publisher.py        # GitHub repo publishing
+    ├── compact.py          # Workspace state compaction
+    ├── events.py           # Structured event log
     ├── sandbox.py          # Docker sandbox config
     └── repo_url.py         # GitHub URL extraction
 ```

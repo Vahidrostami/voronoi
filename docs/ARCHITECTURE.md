@@ -36,8 +36,11 @@ The system is organized into four layers, each with clear responsibilities and b
 ┌──────────────────────▼──────────────────────────────┐
 │                   Gateway Layer                      │
 │   intent.py · router.py · config.py · memory.py     │
+│   handlers_query.py · handlers_mutate.py             │
+│   handlers_workflow.py                               │
 │   knowledge.py · literature.py · progress.py        │
-│   report.py · codename.py · handoff.py              │
+│   report.py · evidence.py · pdf.py                   │
+│   codename.py · handoff.py                           │
 └──────────────────────┬──────────────────────────────┘
                        │
 ┌──────────────────────▼──────────────────────────────┐
@@ -45,6 +48,7 @@ The system is organized into four layers, each with clear responsibilities and b
 │   queue.py · dispatcher.py · prompt.py              │
 │   workspace.py · sandbox.py · runner.py             │
 │   publisher.py · repo_url.py · events.py            │
+│   tmux.py · snapshot.py · compact.py                │
 └──────────────────────┬──────────────────────────────┘
                        │
 ┌──────────────────────▼──────────────────────────────┐
