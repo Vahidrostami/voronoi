@@ -231,10 +231,15 @@ class KnowledgeStore:
                 data = json.loads(belief_json.read_text())
                 lines = ["*Belief Map*\n"]
                 for h in data.get("hypotheses", []):
-                    name = h.get("name", "?")
-                    prior = h.get("prior", "?")
-                    status = h.get("status", "?")
-                    lines.append(f"• {name}: P={prior} [{status}]")
+                    name = h.get("name") or h.get("id") or "?"
+                    confidence = h.get("confidence", "")
+                    status = h.get("status", "untested")
+                    label = confidence.upper() if confidence else f"P={h.get('prior', '?')}"
+                    entry = f"• {name}: {label} [{status}]"
+                    rationale = h.get("rationale", "")
+                    if rationale:
+                        entry += f"\n  {rationale}"
+                    lines.append(entry)
                 return "\n".join(lines)
             except (json.JSONDecodeError, ValueError):
                 return belief_json.read_text().strip()

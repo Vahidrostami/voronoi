@@ -201,6 +201,9 @@ def update_belief_map(
     posterior: Any = None,
     evidence_ids: Any = None,
     status: str = "",
+    confidence: str = "",
+    rationale: str = "",
+    next_test: str = "",
 ) -> dict[str, Any]:
     """Update a hypothesis in the belief map with validated references.
 
@@ -211,18 +214,37 @@ def update_belief_map(
     name : str
         Human-readable hypothesis description.
     posterior : float
-        Updated probability (0.0–1.0).
+        Updated probability (0.0–1.0). Legacy — prefer ``confidence``.
     evidence_ids : list[str]
         Beads task IDs that support/refute this hypothesis.
     status : str
         Hypothesis status (e.g. 'testing', 'confirmed', 'refuted').
+    confidence : str
+        Ordinal confidence tier: unknown, hunch, supported, strong, resolved.
+        Preferred over raw posterior for prioritization.
+    rationale : str
+        Why the agent believes this — evidence-linked reasoning.
+        Required when changing confidence or status.
+    next_test : str
+        What experiment or analysis would change confidence.
     """
-    from voronoi.science.convergence import Hypothesis, load_belief_map, save_belief_map
+    from voronoi.science.convergence import (
+        CONFIDENCE_TIERS,
+        VALID_CONFIDENCE_TIERS,
+        Hypothesis,
+        load_belief_map,
+        save_belief_map,
+    )
 
     hypothesis_id = require_non_empty(hypothesis_id, "hypothesis_id")
 
     if posterior is not None:
         posterior = require_probability(posterior, "posterior")
+    if confidence and confidence not in VALID_CONFIDENCE_TIERS:
+        raise ValidationError(
+            f"confidence must be one of {sorted(VALID_CONFIDENCE_TIERS)}, "
+            f"got '{confidence}'"
+        )
     workspace = _workspace_path()
     validated_evidence: list[str] | None = None
     if evidence_ids is not None:
@@ -240,6 +262,11 @@ def update_belief_map(
     hypothesis = next((item for item in belief_map.hypotheses if item.id == hypothesis_id), None)
     if hypothesis is None:
         initial_posterior = posterior if posterior is not None else 0.5
+        initial_confidence = confidence or ("unknown" if posterior is None else "")
+        # Infer confidence from posterior when not explicitly set
+        if not initial_confidence and posterior is not None:
+            from voronoi.science.convergence import _infer_confidence_from_posterior
+            initial_confidence = _infer_confidence_from_posterior(posterior)
         hypothesis = Hypothesis(
             id=hypothesis_id,
             name=name or hypothesis_id,
@@ -247,6 +274,9 @@ def update_belief_map(
             posterior=initial_posterior,
             status=status or "untested",
             evidence=validated_evidence or [],
+            confidence=initial_confidence,
+            rationale=rationale,
+            next_test=next_test,
         )
         belief_map.hypotheses.append(hypothesis)
     else:
@@ -258,11 +288,18 @@ def update_belief_map(
             hypothesis.status = status
         if validated_evidence is not None:
             hypothesis.evidence = validated_evidence
+        if confidence:
+            hypothesis.confidence = confidence
+        if rationale:
+            hypothesis.rationale = rationale
+        if next_test:
+            hypothesis.next_test = next_test
 
     save_belief_map(workspace, belief_map)
 
     return {
         "hypothesis_id": hypothesis_id,
+        "confidence": hypothesis.confidence,
         "posterior": hypothesis.posterior,
         "evidence_count": len(hypothesis.evidence),
         "status": "updated",

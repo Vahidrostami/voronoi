@@ -12,6 +12,8 @@ All public symbols re-exported here for ``from voronoi.science import X``.
 
 # --- Convergence (+ belief map + checkpoint) ---
 from voronoi.science.convergence import (
+    CONFIDENCE_TIERS,
+    VALID_CONFIDENCE_TIERS,
     BeliefMap,
     ConvergenceResult,
     Hypothesis,
@@ -110,6 +112,7 @@ from voronoi.science.claims import (
 
 __all__ = [
     # Convergence + belief map + checkpoint
+    "CONFIDENCE_TIERS", "VALID_CONFIDENCE_TIERS",
     "Hypothesis", "BeliefMap", "load_belief_map", "save_belief_map",
     "OrchestratorCheckpoint", "load_checkpoint", "save_checkpoint", "format_checkpoint_for_prompt",
     "ConvergenceResult", "check_convergence", "write_convergence",

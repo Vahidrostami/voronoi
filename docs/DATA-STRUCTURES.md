@@ -303,10 +303,13 @@ class Hypothesis:
     name: str
     prior: float
     posterior: float
-    status: str                 # active | confirmed | rejected | merged
+    status: str                 # untested | testing | confirmed | refuted | merged
     evidence: list[str]
     testability: float
     impact: float
+    confidence: str             # unknown | hunch | supported | strong | resolved
+    rationale: str              # Evidence-linked reasoning for current confidence
+    next_test: str              # What would change confidence
 ```
 
 ### ConvergenceResult (`science/convergence.py`)
@@ -511,7 +514,10 @@ CREATE TABLE conversation_state (
       "status": "confirmed",
       "evidence": ["bd-18", "bd-22"],
       "testability": 0.9,
-      "impact": 0.95
+      "impact": 0.95,
+      "confidence": "strong",
+      "rationale": "bd-18 showed 2.3x improvement in cross-lever recall; bd-22 replicated with different encoder architecture",
+      "next_test": "Test on out-of-distribution domains to check generalization"
     }
   ]
 }

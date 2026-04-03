@@ -18,6 +18,32 @@ from voronoi.science import consistency as _helpers
 
 logger = logging.getLogger("voronoi.science")
 
+# Confidence tiers — ordinal scale that LLMs can reliably distinguish.
+# Maps tier name → uncertainty value for information-gain prioritization.
+CONFIDENCE_TIERS: dict[str, float] = {
+    "unknown": 1.0,
+    "hunch": 0.7,
+    "supported": 0.4,
+    "strong": 0.15,
+    "resolved": 0.0,
+}
+
+VALID_CONFIDENCE_TIERS = frozenset(CONFIDENCE_TIERS)
+
+
+def _infer_confidence_from_posterior(posterior: float) -> str:
+    """Infer a confidence tier from a legacy posterior value."""
+    uncertainty = 1.0 - abs(posterior - 0.5) * 2
+    if uncertainty >= 0.85:
+        return "unknown"
+    if uncertainty >= 0.55:
+        return "hunch"
+    if uncertainty >= 0.25:
+        return "supported"
+    if uncertainty >= 0.05:
+        return "strong"
+    return "resolved"
+
 
 # ===================================================================
 # Belief Map
@@ -33,10 +59,21 @@ class Hypothesis:
     evidence: list[str] = field(default_factory=list)
     testability: float = 0.5
     impact: float = 0.5
+    confidence: str = ""       # unknown | hunch | supported | strong | resolved
+    rationale: str = ""        # Evidence-linked reasoning for current confidence
+    next_test: str = ""        # What experiment/analysis would change confidence
 
     @property
     def uncertainty(self) -> float:
+        # Prefer confidence tier when available; fall back to posterior math
+        if self.confidence and self.confidence in CONFIDENCE_TIERS:
+            return CONFIDENCE_TIERS[self.confidence]
         return 1.0 - abs(self.posterior - 0.5) * 2
+
+    @property
+    def display_name(self) -> str:
+        """Name with fallback to id — never returns empty string."""
+        return self.name or self.id or "?"
 
     @property
     def information_gain(self) -> float:
@@ -109,11 +146,19 @@ def load_belief_map(workspace: Path) -> BeliefMap:
         for h in raw_hyps:
             if not isinstance(h, dict):
                 continue
+            posterior = h.get("posterior", h.get("prior", 0.5))
+            confidence = h.get("confidence", "")
+            # Infer confidence from posterior for legacy data missing the field
+            if not confidence:
+                confidence = _infer_confidence_from_posterior(float(posterior))
             bm.hypotheses.append(Hypothesis(
                 id=h.get("id", ""), name=h.get("name", ""),
-                prior=h.get("prior", 0.5), posterior=h.get("posterior", h.get("prior", 0.5)),
+                prior=h.get("prior", 0.5), posterior=posterior,
                 status=h.get("status", "untested"), evidence=h.get("evidence", []),
                 testability=h.get("testability", 0.5), impact=h.get("impact", 0.5),
+                confidence=confidence,
+                rationale=h.get("rationale", ""),
+                next_test=h.get("next_test", ""),
             ))
         # Persist migration so subsequent reads don't re-trigger warnings
         if migrated:

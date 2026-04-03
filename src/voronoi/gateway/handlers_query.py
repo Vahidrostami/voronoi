@@ -590,6 +590,29 @@ def handle_recall(project_dir: str, query: str) -> str:
     return "\n\n".join(section for section in sections if section)
 
 
+def _format_hypothesis(h: dict) -> str:
+    """Format a single hypothesis dict for Telegram display."""
+    name = h.get("name") or h.get("id") or "?"
+    confidence = h.get("confidence", "")
+    status = h.get("status", "untested")
+    rationale = h.get("rationale", "")
+    next_test = h.get("next_test", "")
+
+    tier_icons = {
+        "unknown": "❓", "hunch": "🤔", "supported": "📊",
+        "strong": "💪", "resolved": "✅" if status == "confirmed" else "❌",
+    }
+    icon = tier_icons.get(confidence, "❓")
+    label = confidence.upper() if confidence else status.upper()
+
+    line = f"{icon} *{name}*: {label}"
+    if rationale:
+        line += f"\n  _{rationale}_"
+    if next_test:
+        line += f"\n  Next: {next_test}"
+    return line
+
+
 def handle_belief(project_dir: str) -> str:
     search_dirs = [ws for ws, _ in _get_active_workspaces(project_dir)]
     search_dirs.append(project_dir)
@@ -608,14 +631,14 @@ def handle_belief(project_dir: str) -> str:
                         lines = []
                         for h in hyps:
                             if isinstance(h, dict):
-                                lines.append(f"- {h.get('name', '?')}: P={h.get('prior', '?')} [{h.get('status', '?')}]")
+                                lines.append(_format_hypothesis(h))
                             elif isinstance(h, str):
                                 lines.append(f"- {h}")
-                        content = "\n".join(lines) if lines else content
+                        content = "\n\n".join(lines) if lines else content
                     except (json.JSONDecodeError, ValueError, TypeError):
                         pass
-                return f"📊 *Belief Map*\n\n{content}"
-    return "📊 No belief map found. Start an investigation to generate one."
+                return f"🧠 *Belief Map*\n\n{content}"
+    return "🧠 No belief map found. Start an investigation to generate one."
 
 
 def handle_journal(project_dir: str, max_lines: int = 30) -> str:

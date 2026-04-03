@@ -8,6 +8,7 @@ import pytest
 from voronoi.science import (
     AntiFabricationResult,
     BeliefMap,
+    CONFIDENCE_TIERS,
     CalibrationResult,
     ConsistencyConflict,
     ConvergenceResult,
@@ -259,6 +260,65 @@ class TestBeliefMap:
         assert len(loaded.hypotheses) == 1
         assert loaded.hypotheses[0].posterior == 0.8
         assert loaded.hypotheses[0].status == "confirmed"
+
+    def test_confidence_tier_uncertainty(self):
+        """Confidence tier should drive uncertainty, not posterior."""
+        h = Hypothesis(id="H1", name="test", prior=0.5, posterior=0.9,
+                       confidence="unknown")
+        assert h.uncertainty == pytest.approx(1.0)
+        h2 = Hypothesis(id="H2", name="test", prior=0.5, posterior=0.5,
+                        confidence="strong")
+        assert h2.uncertainty == pytest.approx(0.15)
+
+    def test_confidence_tier_fallback_to_posterior(self):
+        """Without confidence tier, fall back to posterior-based uncertainty."""
+        h = Hypothesis(id="H1", name="test", prior=0.5, posterior=0.5)
+        assert h.uncertainty == pytest.approx(1.0)
+        assert h.confidence == ""
+
+    def test_display_name_fallback(self):
+        """display_name should fall back to id when name is empty."""
+        h = Hypothesis(id="H1", name="", prior=0.5, posterior=0.5)
+        assert h.display_name == "H1"
+        h2 = Hypothesis(id="H2", name="Encoding helps", prior=0.5, posterior=0.5)
+        assert h2.display_name == "Encoding helps"
+
+    def test_confidence_tiers_all_valid(self):
+        """All confidence tiers should have defined uncertainty values."""
+        for tier, uncertainty in CONFIDENCE_TIERS.items():
+            h = Hypothesis(id="H1", name="test", prior=0.5, posterior=0.5,
+                           confidence=tier)
+            assert h.uncertainty == pytest.approx(uncertainty)
+
+    def test_save_and_load_with_confidence(self, tmp_path):
+        """New fields should roundtrip through save/load."""
+        bm = BeliefMap(cycle=1)
+        bm.add_hypothesis(Hypothesis(
+            id="H1", name="Microbiome drives response",
+            prior=0.5, posterior=0.5,
+            confidence="supported",
+            rationale="bd-18 showed enrichment in responders (p=0.02)",
+            next_test="Germ-free mice experiment",
+        ))
+        save_belief_map(tmp_path, bm)
+        loaded = load_belief_map(tmp_path)
+        h = loaded.hypotheses[0]
+        assert h.confidence == "supported"
+        assert h.rationale == "bd-18 showed enrichment in responders (p=0.02)"
+        assert h.next_test == "Germ-free mice experiment"
+
+    def test_load_legacy_infers_confidence(self, tmp_path):
+        """Legacy data without confidence field should get it inferred from posterior."""
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "belief-map.json").write_text(json.dumps({
+            "hypotheses": [
+                {"id": "H1", "name": "test", "prior": 0.5, "posterior": 0.5},
+                {"id": "H2", "name": "test2", "prior": 0.5, "posterior": 0.95},
+            ]
+        }))
+        bm = load_belief_map(tmp_path)
+        assert bm.hypotheses[0].confidence == "unknown"  # posterior=0.5 → max uncertainty
+        assert bm.hypotheses[1].confidence == "strong"    # posterior=0.95 → near resolved
 
     def test_load_missing(self, tmp_path):
         bm = load_belief_map(tmp_path)

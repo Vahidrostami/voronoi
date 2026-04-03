@@ -95,26 +95,47 @@ def validate_pre_registration(task_notes: str, rigor: str) -> tuple[bool, list[s
 
 ### Purpose
 
-Tracks hypothesis probabilities across OODA cycles. Drives information-gain prioritization — the orchestrator pursues hypotheses with highest expected information gain.
+Tracks hypotheses across OODA cycles with evidence-linked reasoning. Drives information-gain prioritization — the orchestrator pursues hypotheses with highest expected information gain. Each hypothesis records not just a confidence level but **why** the agent believes it and **what would change their mind**.
+
+### Confidence Tiers
+
+Instead of raw probabilities, hypotheses use ordinal confidence tiers that LLMs can reliably distinguish:
+
+| Tier | Meaning | Uncertainty | When to use |
+|------|---------|:-----------:|-------------|
+| `unknown` | No idea either way | 1.0 | Initial hypothesis, no evidence gathered |
+| `hunch` | Slight lean, minimal evidence | 0.7 | After literature scan or domain reasoning |
+| `supported` | Evidence points this way | 0.4 | After one or more experiments/analyses |
+| `strong` | Multiple independent lines agree | 0.15 | Multiple confirmations from different methods |
+| `resolved` | Confirmed or refuted | 0.0 | Final state — investigation for this hypothesis is done |
+
+Agents MUST provide a `rationale` when changing confidence or status, explaining what evidence drove the change.
 
 ### Data Structures
 
 ```python
+CONFIDENCE_TIERS: dict[str, float] = {
+    "unknown": 1.0, "hunch": 0.7, "supported": 0.4, "strong": 0.15, "resolved": 0.0,
+}
+
 @dataclass
 class Hypothesis:
     id: str
     name: str
-    prior: float           # Initial probability [0, 1]
-    posterior: float        # Updated probability [0, 1]
-    status: str            # active | confirmed | rejected | merged
+    prior: float           # Initial probability [0, 1] (legacy, kept for compat)
+    posterior: float        # Updated probability [0, 1] (legacy, kept for compat)
+    status: str            # untested | testing | confirmed | refuted | merged
     evidence: list[str]    # Finding IDs supporting/refuting
     testability: float     # How easily tested [0, 1]
     impact: float          # How important if true [0, 1]
+    confidence: str        # Ordinal tier: unknown | hunch | supported | strong | resolved
+    rationale: str         # Why the agent believes this — evidence chain
+    next_test: str         # What experiment/analysis would change confidence
 
     @property
-    def uncertainty(self) -> float: ...        # Entropy measure
+    def uncertainty(self) -> float: ...        # From confidence tier (preferred) or posterior
     @property
-    def information_gain(self) -> float: ...   # Expected info gain
+    def information_gain(self) -> float: ...   # uncertainty × impact × testability
 ```
 
 ```python
@@ -131,6 +152,8 @@ class BeliefMap:
 `.swarm/belief-map.json` — read/written by orchestrator at each OODA cycle.
 
 **Schema contract**: `hypotheses` MUST be a JSON array of objects (not an object map keyed by ID). Both the Python loader and the shell convergence gate validate this on load. Non-conforming data (e.g., object maps) is automatically migrated to the array format and **persisted back to disk** so subsequent reads don't re-trigger migration warnings.
+
+Legacy data without `confidence`/`rationale`/`next_test` fields is accepted — the loader infers `confidence` from `posterior` and defaults `rationale`/`next_test` to empty strings.
 
 ### Functions
 

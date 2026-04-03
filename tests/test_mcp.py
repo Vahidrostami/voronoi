@@ -556,6 +556,51 @@ class TestUpdateBeliefMap:
             with pytest.raises(ValidationError, match="Unknown evidence task"):
                 update_belief_map(hypothesis_id="H1", evidence_ids=["bd-404"])
 
+    def test_create_with_confidence(self, tmp_path):
+        from voronoi.mcp.tools_swarm import update_belief_map
+
+        with patch.dict(os.environ, {"VORONOI_WORKSPACE": str(tmp_path)}):
+            result = update_belief_map(
+                hypothesis_id="H1",
+                name="Microbiome drives response",
+                confidence="hunch",
+                rationale="Literature suggests correlation",
+                next_test="Run 16S rRNA analysis",
+            )
+        assert result["confidence"] == "hunch"
+        bm = json.loads((tmp_path / ".swarm" / "belief-map.json").read_text())
+        h1 = next(h for h in bm["hypotheses"] if h["id"] == "H1")
+        assert h1["confidence"] == "hunch"
+        assert h1["rationale"] == "Literature suggests correlation"
+        assert h1["next_test"] == "Run 16S rRNA analysis"
+
+    def test_invalid_confidence_rejected(self, tmp_path):
+        from voronoi.mcp.tools_swarm import update_belief_map
+
+        with patch.dict(os.environ, {"VORONOI_WORKSPACE": str(tmp_path)}):
+            with pytest.raises(ValidationError, match="confidence must be one of"):
+                update_belief_map(hypothesis_id="H1", confidence="very_sure")
+
+    def test_update_confidence_preserves_other_fields(self, tmp_path):
+        from voronoi.mcp.tools_swarm import update_belief_map
+
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "belief-map.json").write_text(json.dumps({
+            "hypotheses": [{"id": "H1", "name": "test", "posterior": 0.5,
+                            "confidence": "unknown", "rationale": "initial"}]
+        }))
+
+        with patch.dict(os.environ, {"VORONOI_WORKSPACE": str(tmp_path)}):
+            update_belief_map(hypothesis_id="H1", confidence="supported",
+                              rationale="bd-18 confirmed (p=0.02)")
+
+        bm = json.loads((swarm / "belief-map.json").read_text())
+        h1 = next(h for h in bm["hypotheses"] if h["id"] == "H1")
+        assert h1["confidence"] == "supported"
+        assert h1["rationale"] == "bd-18 confirmed (p=0.02)"
+        assert h1["name"] == "test"  # preserved
+
 
 class TestUpdateSuccessCriteria:
     def test_create_criterion(self, tmp_path):

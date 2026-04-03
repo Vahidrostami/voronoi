@@ -233,13 +233,19 @@ class ReportGenerator:
             return None
         lines = []
         for h in data.get("hypotheses", []):
-            lines.append(
-                f"- **{h.get('name', '?')}**: P={h.get('prior', '?')} [{h.get('status', '?')}]"
-            )
+            name = h.get("name") or h.get("id") or "?"
+            confidence = h.get("confidence", "")
+            status = h.get("status", "untested")
+            label = confidence.upper() if confidence else f"P={h.get('prior', '?')}"
+            entry = f"- **{name}**: {label} [{status}]"
+            rationale = h.get("rationale", "")
+            if rationale:
+                entry += f"\n  _{rationale}_"
+            lines.append(entry)
         return "\n".join(lines) if lines else None
 
     def _render_belief_narrative(self) -> str | None:
-        """Render belief map with prior->posterior trajectory and evidence links."""
+        """Render belief map with confidence tiers, rationale, and evidence links."""
         belief_json = self._read_file(".swarm", "belief-map.json")
         if not belief_json:
             return self._render_belief_map()
@@ -258,30 +264,41 @@ class ReportGenerator:
         inconclusive = []
 
         for h in hypotheses:
-            name = h.get("name", "?")
-            prior = h.get("prior", "?")
-            posterior = h.get("posterior", prior)
+            name = h.get("name") or h.get("id") or "?"
+            confidence = h.get("confidence", "")
             status = h.get("status", "untested")
             evidence = h.get("evidence", [])
+            rationale = h.get("rationale", "")
+            next_test = h.get("next_test", "")
 
-            # Build trajectory arrow
-            try:
-                p_val = float(prior)
-                q_val = float(posterior)
-                if q_val > p_val + 0.1:
-                    arrow = "\u2191"  # up arrow
-                elif q_val < p_val - 0.1:
-                    arrow = "\u2193"  # down arrow
-                else:
-                    arrow = "\u2192"  # right arrow (stable)
-            except (ValueError, TypeError):
-                arrow = "\u2192"
+            # Confidence badge
+            if confidence:
+                conf_label = confidence.upper()
+            else:
+                prior = h.get("prior", "?")
+                posterior = h.get("posterior", prior)
+                try:
+                    p_val = float(prior)
+                    q_val = float(posterior)
+                    if q_val > p_val + 0.1:
+                        arrow = "\u2191"
+                    elif q_val < p_val - 0.1:
+                        arrow = "\u2193"
+                    else:
+                        arrow = "\u2192"
+                except (ValueError, TypeError):
+                    arrow = "\u2192"
+                conf_label = f"P({prior}) {arrow} P({posterior})"
 
             evidence_str = ""
             if evidence:
                 evidence_str = f" (evidence: {', '.join(evidence[:3])})"
 
-            entry = f"- **{name}**: P({prior}) {arrow} P({posterior}) [{status}]{evidence_str}"
+            entry = f"- **{name}**: {conf_label} [{status}]{evidence_str}"
+            if rationale:
+                entry += f"\n  _{rationale}_"
+            if next_test:
+                entry += f"\n  Next: {next_test}"
             lines.append(entry)
 
             if status == "confirmed":

@@ -244,9 +244,13 @@ class TestHandlers:
         assert "Pivot recorded" in result
 
     def test_handle_abort(self, tmp_path):
-        result = handle_abort(str(tmp_path))
+        mock_q = MagicMock()
+        mock_q.get_queued.return_value = []
+        with patch("voronoi.gateway.handlers_mutate._get_queue", return_value=mock_q), \
+             patch("voronoi.gateway.handlers_mutate._get_active_workspaces", return_value=[]):
+            result = handle_abort(str(tmp_path))
         assert "Abort requested" in result
-        # Should write abort signal to global fallback when no active investigations
+        # Should write abort signal to global fallback
         assert (Path.home() / ".voronoi" / ".swarm" / "abort-signal").exists()
         # Clean up
         (Path.home() / ".voronoi" / ".swarm" / "abort-signal").unlink(missing_ok=True)
@@ -254,17 +258,17 @@ class TestHandlers:
     def test_handle_abort_cancels_queued(self, tmp_path):
         """Abort should cancel queued investigations via the queue."""
         from voronoi.server.queue import InvestigationQueue, Investigation
-        q = InvestigationQueue(Path.home() / ".voronoi" / "queue.db")
-        # Enqueue a test investigation
+        q = InvestigationQueue(tmp_path / "test-queue.db")
         inv = Investigation(chat_id="test", question="test q", slug="abort-test",
                             mode="discover", rigor="adaptive")
         inv_id = q.enqueue(inv)
-        result = handle_abort(str(tmp_path))
+        with patch("voronoi.gateway.handlers_mutate._get_queue", return_value=q), \
+             patch("voronoi.gateway.handlers_mutate._get_active_workspaces", return_value=[]):
+            result = handle_abort(str(tmp_path))
         assert "Abort requested" in result
-        # Clean up
-        stored = q.get(inv_id)
-        if stored and stored.status == "queued":
-            q.cancel(inv_id)
+        assert "Cancelled 1" in result
+        # Clean up global abort signal
+        (Path.home() / ".voronoi" / ".swarm" / "abort-signal").unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------

@@ -58,11 +58,23 @@ Before integrating ANY new finding:
 
 ### 3. Belief Map Updates
 
-After integrating findings, update the belief map:
+After integrating findings, update the belief map using confidence tiers and evidence-linked reasoning:
 
+```python
+voronoi_update_belief_map(
+  hypothesis_id="H1",
+  name="Encoding enables cross-lever discovery",
+  confidence="supported",  # unknown | hunch | supported | strong | resolved
+  rationale="bd-18 showed 2.3x improvement; consistent with bd-22 encoder results",
+  next_test="Test on out-of-distribution domains",
+  evidence_ids=["bd-18", "bd-22"],
+  status="testing"
+)
+```
+
+Also record summary in Beads notes:
 ```bash
 bd update <belief-map-id> --notes "UPDATED:cycle-N | HYPOTHESES_TOTAL:X | TESTED:Y | REMAINING:Z"
-bd update <belief-map-id> --notes "H1:[name] | STATUS:<status> | P:0.X | EVIDENCE:[finding-ids]"
 ```
 
 ### 4. Claim-Evidence Registry — MANDATORY

@@ -89,9 +89,34 @@ For investigation tasks, prioritize hypotheses by:
 ```
 priority(H) = uncertainty(H) × impact(H) × testability(H)
 ```
-- `uncertainty(H)` = 1 - |prior - 0.5| × 2
-- `impact(H)` = downstream tasks/hypotheses depending on H
-- `testability(H)` = Methodologist's assessment
+
+### Confidence Tiers (use instead of raw probabilities)
+
+| Tier | Uncertainty | When to use |
+|------|:-----------:|-------------|
+| `unknown` | 1.0 | Initial hypothesis — no evidence gathered yet |
+| `hunch` | 0.7 | After literature scan or domain reasoning |
+| `supported` | 0.4 | After one or more experiments/analyses confirm |
+| `strong` | 0.15 | Multiple independent lines of evidence agree |
+| `resolved` | 0.0 | Confirmed or refuted — done |
+
+When updating via MCP, **always provide**:
+- `confidence`: one of the tiers above
+- `rationale`: why you believe this — cite specific findings
+- `next_test`: what experiment would change your confidence
+
+Example:
+```
+voronoi_update_belief_map(
+  hypothesis_id="H2",
+  name="Gut microbiome drives immunotherapy response",
+  confidence="supported",
+  rationale="bd-18 showed Bacteroides enrichment in responders (p=0.02); bd-22 mouse FMT model confirms (n=20, d=0.8)",
+  next_test="Test with germ-free mice to rule out confounding diet effects",
+  evidence_ids=["bd-18", "bd-22"],
+  status="testing"
+)
+```
 
 Build tasks use simple P1/P2/P3 priority ordering.
 
@@ -200,7 +225,8 @@ tail -5 .swarm/experiments.tsv
 
 ### Orient
 - Classify events from the query results
-- Update belief map posteriors based on findings
+- Update belief map using confidence tiers (unknown→hunch→supported→strong→resolved)
+- Always include `rationale` explaining what evidence drove the change
 - Check convergence criteria against checkpoint
 - Check for paradigm stress (3+ contradictions)
 

@@ -416,9 +416,13 @@ def _synthesize_narrative(
                         best_conf = conf
                         best = h
             if best and best_conf > 0:
-                name = best.get("name", best.get("label", ""))
+                name = best.get("name") or best.get("id") or ""
+                confidence = best.get("confidence", "")
                 if name:
-                    leading_hyp = f"{name} (P={best_conf:.2f})"
+                    if confidence:
+                        leading_hyp = f"{name} ({confidence})"
+                    else:
+                        leading_hyp = f"{name} (P={best_conf:.2f})"
 
     # Task counts
     total_tasks = len(task_snapshot)
