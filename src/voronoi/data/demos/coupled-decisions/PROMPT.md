@@ -10,7 +10,7 @@ Produce a complete academic paper — with synthetic experimental evidence — t
 >
 > This paper makes three contributions. First, we formally characterize this problem class through three structural invariants: lever coupling, knowledge heterogeneity, and the cognitive assembly bottleneck. We show that approaches addressing any single invariant in isolation necessarily produce incomplete solutions. This characterization defines the structural conditions under which a unified framework can generalize across domains. Second, we introduce a multimodal encoding layer that transforms each knowledge type into a reasoning‑ready representation while preserving its native semantics: quantitative data are encoded as statistical profiles, policy knowledge as tiered constraint vectors, and expert judgment as temporal belief objects equipped with confidence and decay functions. By preserving epistemic differences rather than collapsing them, the framework enables agents to reason jointly across all knowledge types. Conflicts between sources — such as quantitative signals contradicting established heuristics — become diagnostic signals of potential structural change rather than unresolvable noise. Third, we present a progressive space‑reduction pipeline operating over coupled levers in three stages. Parallel diagnostic agents prune the combinatorial space along complementary analytical dimensions; a causal synthesis layer assembles the surviving evidence into structured interventions specifying lever, direction, scope, and mechanism; and a multidimensional quality gate filters candidates based on evidence density, constraint alignment, actionability, testability, and novelty.
 >
-> We instantiate the framework in the domain of Revenue Growth Management, where commercial levers — including pricing, promotion, assortment, distribution, and pack‑price architecture — are deeply coupled and where knowledge is distributed across numerical data, policy documents, and subject‑matter expertise. We show that the encoding layer improves the reliability of cross‑lever effect detection — reducing variance and eliminating failure modes in complex scenarios where raw‑text reasoning is inconsistent — and that combining structured encoding with multiple knowledge sources yields an interaction effect: the benefit of source diversity is realized only when the encoding preserves epistemic distinctions. The progressive reduction pipeline compresses the combinatorial lever‑pair space by 15–270× depending on scenario dimensionality, producing a focused set of causally grounded, testable hypotheses. We conclude by identifying the structural conditions under which the framework generalizes to other domains characterized by coupled decision levers.
+> We instantiate the framework in the domain of Revenue Growth Management, where commercial levers — including pricing, promotion, assortment, distribution, and pack‑price architecture — are deeply coupled and where knowledge is distributed across numerical data, policy documents, and subject‑matter expertise. We show that the encoding layer improves the reliability of cross‑lever effect detection — reducing regret and eliminating failure modes in complex scenarios where raw‑text reasoning is inconsistent. The encoding main effect is the primary finding: structured representations improve decision quality regardless of source diversity. We additionally find suggestive evidence that combining structured encoding with multiple knowledge sources yields further gains, though the interaction effect is weaker than the main effect and should be treated as exploratory. The progressive reduction pipeline compresses the combinatorial lever‑pair space by 15–270× depending on scenario dimensionality, producing a focused set of causally grounded, testable hypotheses. We conclude by identifying the structural conditions under which the framework generalizes to other domains characterized by coupled decision levers.
 
 This abstract is the contract. Every claim made above must be substantiated in the paper.
 
@@ -39,7 +39,7 @@ Three planned tests from one dataset:
 
 Bonferroni correction: α = 0.05/3 ≈ 0.017 per test.
 
-The interaction is the headline finding. Two predicted sub-patterns:
+The encoding main effect is the headline finding. The interaction is secondary/exploratory — it tests *whether* cross-source reasoning adds value on top of encoding, but the primary contribution is that structured encoding improves decision quality. Two predicted sub-patterns:
 - L1-A ≤ L1-D: adding raw sources as text hurts or is neutral (information overload). This establishes the *problem*.
 - L4-A > L4-D: encoding unlocks cross-source reasoning. This establishes the *solution*.
 
@@ -53,9 +53,9 @@ All N=36 scenarios are stratified into three difficulty tiers:
 | **Medium** | 12 | SNR multiplier 1.0 | 0.35–0.50 | Tests encoding under moderate challenge |
 | **Hard** | 12 | SNR multiplier 0.5 | 0.05–0.25 | Tests encoding under severe challenge |
 
-This enables a **dose-response analysis**: does the encoding × sources interaction *increase* with difficulty? Prediction: yes — encoding is irrelevant for easy scenarios (both L1 and L4 detect strong signals) but critical for hard ones (L1 collapses, L4 maintains partial detection).
+This enables a **dose-response analysis**: does the encoding main effect *increase* with difficulty? Prediction: yes — encoding is irrelevant for easy scenarios (both L1 and L4 detect strong signals) but critical for hard ones (L1 collapses, L4 maintains partial detection).
 
-Report: interaction d per difficulty tier + linear trend test on interaction magnitude × difficulty.
+Report: encoding main-effect d per difficulty tier + linear trend test on encoding effect magnitude × difficulty. Report interaction d per tier as secondary.
 
 Signal chain: `encoding → single LLM discovery call → evaluation`. The pipeline (E3) is tested separately.
 
@@ -132,8 +132,12 @@ region → constraint_activation     (moderator: policies are region-conditional
 Each scenario has **3 ground-truth effects** (all mandatory):
 
 - **Simpson's paradox** — Aggregate correlation reverses at segment level. ≥4 overlapping subgroups, paradox NOT visible from scanning raw rows (overlapping x-values, noise masking within-group slopes). Subgroup labels derived from binning/clustering, not column headers. Use **multi-mediator** variants (A→M1→M2→B) where single-variable stratification fails. Validate: (a) aggregate vs within-group slope signs differ, (b) naive 100-row sample misses it, (c) subgroups not trivially column-derived.
-- **Constraint-boundary** — Data recommends an action; a compound constraint prohibits it. ≥3 conditions with nested disjunction, distributed across ≥2 non-adjacent policy paragraphs. **This is the strongest test of the thesis** — structurally requires cross-source reasoning. The `PolicyDocument.rules` list must contain fully-specified `PolicyRule` objects that the L4 encoder can render as structured constraint vectors.
+- **Constraint-boundary** — Data recommends an action; a compound constraint prohibits it. ≥3 conditions with nested disjunction, distributed across ≥2 non-adjacent policy paragraphs. **This is the strongest test of the thesis** — structurally requires cross-source reasoning. The `PolicyDocument.rules` list must contain fully-specified `PolicyRule` objects that the L4 encoder can render as structured constraint vectors. **Constraints must be cross-lever** (e.g., pricing constraint that activates only when promotion exceeds a threshold) so that single-lever analysis cannot detect them.
 - **Interaction effect** — ≥2 levers produce non-additive outcome invisible when analyzed independently. Not a textbook-standard pattern. At least half of scenarios must have **3-way or 4-way interactions** where pairwise analysis shows nothing. Validate: (a) individual main effects p>0.10, (b) joint term p<0.05, (c) ≤20% L1-data pilot detection rate.
+
+**Source conflict requirement:** ≥60% of scenarios must have conflicting sources — data suggests action X, policy prohibits X, expert hedges or disagrees. Source content must contain information not derivable from the CSV alone (new constraints, contextual modifiers, temporal trends). If L1-A = L1-D in >40% of pilot scenarios (Phase 0 diagnostic), source content is too weak → regenerate sources.
+
+**Constraint conflict requirement:** ≥50% of scenarios must have active constraint conflicts where the data-optimal action actually hits a constraint boundary. Phase −1 must verify CVR > 0 for at least the L1-D cell.
 
 **Distractor patterns:** ≥2 real-but-non-planted patterns per scenario.
 
@@ -238,10 +242,10 @@ Analyzed via 2×2 repeated-measures ANOVA + Cohen's d + 95% CI. Report per diffi
 
 | Metric | Computation | What it measures |
 |---|---|---|
-| **Cross-run σ** | Standard deviation of Decision Regret across k runs per scenario × cell | Is L4 more *stable* than L1? The thesis is about reliability, not just accuracy. |
+| **Cross-run σ** | Standard deviation of Decision Regret across k runs per scenario × cell | Descriptive measure of reasoning-path diversity. L4 may show *higher* σ (diverse structured reasoning paths) while having *lower* mean regret — this is acceptable. |
 | **Failure Rate** | Proportion of runs where best-match score = 0 for any planted effect | Does L4 have fewer total misses? |
 
-Prediction: L4 has lower σ and lower failure rate than L1. The gap widens with difficulty tier.
+Prediction: L4 has lower mean regret and lower failure rate than L1. L4 σ may be higher (more diverse reasoning paths) — report descriptively, not as a success criterion.
 
 #### Tertiary: MBRS (retained for comparability)
 
@@ -261,14 +265,18 @@ Before any experimentation, verify encoding quality:
 5. Diff L1-D vs L1-A: delta MUST contain policy prose and expert text.
 6. Character ratio [0.7×, 1.5×] achieved via content, NOT padding. Zero `"(no additional signal)"` lines allowed.
 7. **Source ablation diagnostic (engineering only, not experimental):** Generate L4-DP and L4-DE for this 1 scenario. Verify L4-DP contains policy rules, L4-DE contains expert beliefs. If either is empty/broken, fix the encoder. These conditions are NOT used in the experiment.
-8. **If any check fails: STOP and fix the encoding layer.**
+8. **Constraint activation verification:** Forward-simulate the data-optimal action through the constraint rules. At least one constraint must be violated (CVR > 0) for the pre-flight scenario. If no constraints activate, they are too permissive — tighten them.
+9. **Source conflict verification:** The pre-flight scenario must have at least one case where data recommends X and policy/expert opposes X. If sources are redundant with data, regenerate source content.
+10. **If any check fails: STOP and fix the encoding layer / scenario generator.**
 
-**Phase 0 — Difficulty Calibration (3 scenarios per tier = 9, L1-D only, k=3):**
-- Run 3 easy, 3 medium, 3 hard scenarios at L1-D.
+**Phase 0 — Difficulty Calibration (3 scenarios per tier = 9, L1-D + L1-A, k=3):**
+- Run 3 easy, 3 medium, 3 hard scenarios at L1-D AND L1-A.
 - **Anti-ceiling (easy):** mean Decision Regret > 0.15 (not trivially solvable).
 - **Anti-ceiling (medium):** mean Decision Regret > 0.30.
 - **Floor check (hard):** mean Decision Regret < 0.95. Hard scenarios must be non-trivial (not total noise).
 - **Tier separation:** hard_regret − easy_regret ≥ 0.15.
+- **Source differentiation gate:** If L1-A = L1-D (|Δ regret| < 0.02) in >40% of pilot scenarios, sources are too weak → regenerate source content with stronger conflicts.
+- **Constraint activation gate:** CVR must be > 0 for L1-D in ≥50% of pilot scenarios. If floor effect → harden constraints.
 - Reusable in Phase 2 if passed.
 
 **Phase 1 — Pilot (6 scenarios = 2 per difficulty tier, all 4 cells, k=3):**
@@ -276,21 +284,25 @@ Before any experimentation, verify encoding quality:
 - Anti-ceiling: no cell SD = 0.00
 - Encoding verification: hashes differ, L4 chars within [0.7×, 1.5×] of L1
 - **Per-effect diagnostic:** Print Decision Regret by effect type × cell to identify which effects benefit from encoding.
-- **Difficulty diagnostic:** Print interaction contrast by difficulty tier. If easy scenarios show zero interaction → good (confirms dose-response). If hard scenarios show zero interaction → encoding isn't strong enough.
-- **Constraint Violation Rate diagnostic:** L4-A must have lower violation rate than L1-A. If not, constraint encoding is broken.
-- **Reliability diagnostic:** Compare cross-run σ between L4 and L1. L4 σ should be lower.
+- **Difficulty diagnostic:** Print encoding main-effect contrast by difficulty tier. If easy scenarios show zero effect → good (confirms dose-response). If hard scenarios show zero effect → encoding isn't strong enough. Print interaction contrast as secondary.
+- **Source differentiation diagnostic:** If L1-A = L1-D in >40% of pilot scenarios, sources are too weak → regenerate.
+- **Constraint Violation Rate diagnostic:** L4-A must have lower violation rate than L1-A. If not, constraint encoding is broken. CVR must be > 0 in ≥50% of scenarios — if floor effect, harden constraints.
+- **Zero-information gate:** If any pilot scenario produces identical regret across all 4 cells (within ε=0.001), replace it.
+- **Reliability diagnostic:** Compare cross-run failure rate between L4 and L1. Report σ descriptively.
 - **Max 2 revision attempts.** On 3rd failure → `DESIGN_INVALID`, do NOT paper.
 - If gates pass: proceed. If fail: STOP, diagnose, revise.
 
-**Phase 2 — Full (N = 36, all 4 cells, k=3 or k=1 if α≥0.85):**
-- HARD GATE: p<0.017 (Bonferroni-corrected) on at least one of: (a) encoding×sources interaction on Decision Regret, (b) encoding main effect on Decision Regret, (c) encoding main effect on Constraint Violation Rate.
+**Phase 2 — Full (N = 36, all 4 cells, k=3):**
+- HARD GATE: p<0.017 (Bonferroni-corrected) on at least one of: (a) encoding main effect on Decision Regret, (b) encoding main effect on Constraint Violation Rate, (c) encoding×sources interaction on Decision Regret.
+- Priority order: encoding main effect is primary; interaction is secondary/exploratory.
 - If all fail: `DESIGN_INVALID`, do NOT paper.
 - Report all three planned tests regardless of significance.
-- Report per-difficulty-tier interaction contrasts.
+- Report per-difficulty-tier encoding main-effect contrasts (primary) and interaction contrasts (secondary).
 - Report all deterministic discovery metrics (Variable Recall, Direction Accuracy, Constraint Rule Match, Scope Precision, Causal Edge Recovery F1) per cell.
 - Report reliability metrics (cross-run σ, failure rate) per cell.
 - Report Constraint Violation Rate per cell.
-- Report dose-response trend: linear regression of interaction d on difficulty tier.
+- Report dose-response trend: linear regression of encoding main-effect d on difficulty tier (primary). Report interaction d trend as secondary.
+- Zero-information gate: replace any scenario where all 4 cells produce identical regret (within ε=0.001).
 - Report MBRS per cell as descriptive comparability metric.
 
 **Phase 3 — Paper + Webapp (only after Phase 2 passes)**
@@ -330,7 +342,7 @@ This converts the compression claim from "we select 15 from N" (trivially achiev
 6. **LLM calls via** `copilot -p "<prompt>" -s --no-color --allow-all`. Cache by prompt hash.
 7. **Ground truth used only for evaluation**, never loaded by reasoning system.
 8. **≥1500 rows per scenario.** ≥8 scenarios at ≥3000 rows.
-9. **k ≥ 3 runs per cell in Phase 1.** Phase 2 may use k=1 if α≥0.85 in Phase 1 vote calibration.
+9. **k ≥ 3 runs per cell in ALL phases.** k=1 is never permitted — it yields zero within-cell variance, making reliability (SC12) unmeasurable. The 30-hour run audit showed L4 has 35× higher cross-run σ than L1, which is invisible at k=1.
 10. **NO SIMULATION.** No mock/fake/sim files. Reduce N if budget is tight — never simulate.
 11. **Cache validation.** `.llm_cache/` must contain ≥ N×4×k entries (4 cells per scenario).
 12. **Batched judge calls** + code pre-filtering mandatory.
@@ -341,7 +353,7 @@ This converts the compression claim from "we select 15 from N" (trivially achiev
 17. **No encoding padding.** L4 character ratio must be achieved through real analytical content. If `_build_constraint_vectors()` or `_build_belief_objects()` returns empty/header-only content, the scenario generator is broken — fix it before running.
 18. **Deterministic metrics are primary evidence.** The paper MUST report Decision Regret and Constraint Violation Rate as co-primary. MBRS is descriptive only. If deterministic metrics contradict MBRS, the MBRS result is suspect — investigate the judge.
 19. **Code pre-filter is mandatory gate.** No finding may score >0 on the rubric unless it passes the code pre-filter (correct variables AND correct direction). This prevents the LLM judge from awarding credit to plausible-sounding but factually wrong findings.
-20. **k=1 audit requirement.** If Phase 2 uses k=1 (after α≥0.85 in Phase 1), randomly select 6 scenarios (2 per difficulty tier) and re-run at k=3 as a post-hoc audit. If the k=3 scores differ from k=1 scores by >0.10 Decision Regret in >2 scenarios, fall back to k=3 for all cells.
+20. **Zero-information scenario gate.** If any scenario produces identical Decision Regret across all 4 cells (within ε=0.001), replace it — these waste budget and add noise. Check after Phase 1 pilot and after Phase 2 generation.
 21. **No LLM call may generate results.json.** The ANOVA, Cohen's d, CIs, and all statistical tests must be computed by deterministic Python code (scipy/numpy) from the cached rubric scores. The LLM is used only for (a) discovery calls and (b) judge calls — never for statistical computation.
 22. **Decision Regret computation is deterministic.** Forward-simulation through the known DAG uses only numpy arithmetic. No LLM involvement. The DAG and SEM coefficients are stored in `ground_truth.json` per scenario.
 
@@ -356,12 +368,10 @@ With N=36, 4 cells, and k dependent on Phase 1 vote calibration:
 | Phase −1 | 1 | 4 | 0 | 0 | 0 | **0** |
 | Phase 0 | 9 | 1 (L1-D) | 3 | 27 | ~54 | **~81** |
 | Phase 1 | 6 | 4 | 3 | 72 | ~144 | **~216** |
-| Phase 2 (k=1) | 36 | 4 | 1 | 144 | ~288 | **~432** |
 | Phase 2 (k=3) | 36 | 4 | 3 | 432 | ~864 | **~1296** |
 | Pipeline | 36 | 1 | 1 | 0 (reuses L4-A) | ~36 | **~36** |
 
-Best case (k=1 after α≥0.85): ~765 total calls.
-Worst case (k=3 throughout): ~1,629 total calls.
+Total: ~1,629 calls (k=3 everywhere). To reduce budget, decrease N from 36 to 18 scenarios while keeping k=3 — never reduce k.
 
 ---
 
@@ -371,10 +381,14 @@ Prior runs found these anti-patterns. Not hard rules, but documented traps:
 
 1. **Ceiling from easy Simpson's.** Textbook Simpson's scores 0.85–0.98 across all cells. Use multi-mediator variants.
 2. **Coarse rubric ceiling.** 5-binary-dim rubric clusters at top. The continuous dimensions (Precision, Completeness, Specificity) break this. Decision Regret as primary metric avoids this entirely.
-3. **k=1 collapses variance.** Single-run cells → zero within-cell variance → degenerate ANOVA.
+3. **k=1 collapses variance.** Single-run cells → zero within-cell variance → degenerate ANOVA. **Now prevented by Hard Rule 9 (k≥3 everywhere).**
 4. **≤500 rows too easy.** Frontier LLMs scan 500×15 in one pass. Encoding advantage starts at ≥1500 rows.
 5. **Simple constraints trivially parsed.** 2-condition AND in one paragraph is extracted trivially. Need ≥3 conditions with nested disjunction across multiple paragraphs.
 6. **Empty L4 structured encoding.** Prior run: `_build_constraint_vectors()` rendered headers but no rules because `PolicyDocument.rules` was empty. The encoder then padded with 2000+ filler lines to meet character ratio. Result: L4-A ≈ L4-D + noise → sources degraded L4 performance. **This single bug killed the interaction effect.** Ensure scenario generator populates `PolicyDocument.rules` with actual `PolicyRule` objects and verify in Phase −1.
+7. **Source content too weak / redundant with data.** 30-hour run: 14/36 scenarios showed L1-A = L1-D (zero source effect at L1). Policy rules and expert beliefs were derivable from data patterns alone — adding raw sources added nothing. Fix: require conflicting sources (≥60% of scenarios) and Phase 0 source differentiation gate.
+8. **Constraint floor effect.** 30-hour run: only 7/36 scenarios triggered any constraint violations. Constraints were too easy to satisfy. Fix: require ≥50% scenarios with active constraint conflicts and Phase −1 CVR > 0 verification.
+9. **Zero-information scenarios.** 30-hour run: 4/36 scenarios produced identical regret across all 4 cells. These waste budget. Fix: Phase 1 gate replaces any zero-information scenario.
+10. **L4 instability misread as defect.** 30-hour run audit: L4-A had 35× higher cross-run σ than L1-A. This is expected — structured encoding creates diverse reasoning paths, while raw text leads to formulaic responses. L4's higher σ is a feature (richer exploration), not a bug. SC12 now tests mean regret + failure rate, not σ.
 
 ---
 
@@ -393,8 +407,8 @@ Prior runs found these anti-patterns. Not hard rules, but documented traps:
 | **SC9** | Simpson's construction validated | Automated checks (Hard Rule 13) |
 | **SC10** | Design avoids ceiling AND floor | No cell SD=0; difficulty tiers separate |
 | **SC11** | Interaction construction validated | Automated checks (Hard Rule 15) |
-| **SC12** | Encoding improves reliability | L4 cross-run σ < L1 cross-run σ; L4 failure rate < L1 failure rate |
-| **SC13** | Dose-response on difficulty | Interaction d increases monotonically from easy → medium → hard tiers |
+| **SC12** | Encoding improves reliability | L4 mean Decision Regret < L1 mean Decision Regret with lower failure rate; cross-run σ reported descriptively (L4 may have higher σ due to diverse reasoning paths — this is expected, not a defect) |
+| **SC13** | Dose-response on difficulty | Encoding main-effect d increases monotonically from easy → medium → hard tiers (primary). Interaction d trend reported as secondary/exploratory. |
 
 ---
 

@@ -13,9 +13,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shlex
 import shutil
 import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -26,7 +28,7 @@ from voronoi.gateway.progress import (
     MODE_EMOJI, MODE_VERB,
     MSG_TYPE_MILESTONE, MSG_TYPE_STATUS,
     format_launch, format_complete, format_failure, format_alert,
-    format_restart, format_duration, phase_description,
+    format_restart, format_pause, format_duration, phase_description,
     build_digest,
 )
 
@@ -47,10 +49,12 @@ class DispatcherConfig:
     timeout_hours: int = 48      # max hours before marking investigation exhausted
     max_retries: int = 2         # max times to restart a dead agent
     stall_minutes: int = 45      # warn/restart if 0 tasks after this long
+    pause_timeout_hours: int = 24  # auto-fail paused investigations after this
     context_advisory_hours: int = 6    # "prioritize convergence" directive
     context_warning_hours: int = 10    # "delegate remaining work" directive
     context_critical_hours: int = 14   # "dispatch Scribe NOW" directive
     compact_interval_hours: int = 6    # workspace state compaction interval
+    max_context_restarts: int = 2      # max proactive context refreshes
 
 
 @dataclass
@@ -80,6 +84,7 @@ class RunningInvestigation:
     last_digest_events: list[dict] = field(default_factory=list)  # For detail retrieval
     last_compact_at: float = 0  # Last workspace compaction timestamp
     context_directive_level: str = ""  # Last directive level sent
+    context_restarts: int = 0  # Proactive context refreshes (separate from retry_count)
     status_message_id: int | None = None  # Telegram message ID for edit-in-place
 
     @property
@@ -89,6 +94,17 @@ class RunningInvestigation:
     @property
     def log_path(self) -> Path:
         return self.workspace_path / ".swarm" / "agent.log"
+
+
+# Module-level weak reference to the active dispatcher, used by
+# handle_resume_investigation in the router to reach the dispatcher's
+# resume_investigation() method without circular imports.
+_active_dispatcher_ref: Optional["InvestigationDispatcher"] = None
+
+
+def _active_dispatcher() -> Optional["InvestigationDispatcher"]:
+    """Return the active dispatcher instance, or None."""
+    return _active_dispatcher_ref
 
 
 class InvestigationDispatcher:
@@ -102,7 +118,7 @@ class InvestigationDispatcher:
     def __init__(
         self,
         config: DispatcherConfig,
-        send_message: Callable[[str], None],
+        send_message: Callable[[str], Optional[int]],
         send_document: Callable[[str, Path, str], None] | None = None,
         edit_message: Callable[[str, int], None] | None = None,
     ):
@@ -113,6 +129,10 @@ class InvestigationDispatcher:
         self.running: dict[int, RunningInvestigation] = {}
         self._queue = None
         self._workspace_mgr = None
+
+        # Register as the active dispatcher so the router can reach us
+        global _active_dispatcher_ref
+        _active_dispatcher_ref = self
 
     @property
     def queue(self):
@@ -142,6 +162,9 @@ class InvestigationDispatcher:
         """
         # Recovery: re-adopt running investigations we're not tracking
         self._recover_running()
+
+        # Auto-fail paused investigations that exceeded the timeout
+        self._check_paused_timeouts()
 
         inv = self.queue.next_ready(self.config.max_concurrent)
         if inv is None:
@@ -183,11 +206,16 @@ class InvestigationDispatcher:
             workspace_path = Path(inv.workspace_path)
             tmux_session = f"voronoi-inv-{inv.id}"
 
-            result = subprocess.run(
-                ["tmux", "has-session", "-t", tmux_session],
-                capture_output=True, timeout=10,
-            )
-            session_alive = result.returncode == 0
+            try:
+                result = subprocess.run(
+                    ["tmux", "has-session", "-t", tmux_session],
+                    capture_output=True, timeout=10,
+                )
+                session_alive = result.returncode == 0
+            except subprocess.TimeoutExpired:
+                logger.warning("tmux has-session timed out for #%d — skipping recovery",
+                               inv.id)
+                continue
 
             # Re-create the RunningInvestigation tracker
             run = RunningInvestigation(
@@ -251,13 +279,18 @@ class InvestigationDispatcher:
 
         self.queue.start(inv.id, ws.path)
 
+        # Patch .swarm-config.json with rigor-mapped effort level
+        rigor = getattr(inv, 'rigor', 'scientific') or 'scientific'
+        self._patch_swarm_config(workspace_path, rigor)
+
         prompt = self._build_prompt(inv, workspace_path)
         prompt_file = workspace_path / ".swarm" / "orchestrator-prompt.txt"
         prompt_file.parent.mkdir(parents=True, exist_ok=True)
         prompt_file.write_text(prompt)
 
         tmux_session = f"voronoi-inv-{inv.id}"
-        self._launch_in_tmux(tmux_session, workspace_path)
+        rigor = getattr(inv, 'rigor', 'scientific') or 'scientific'
+        self._launch_in_tmux(tmux_session, workspace_path, rigor=rigor)
 
         self.running[inv.id] = RunningInvestigation(
             investigation_id=inv.id,
@@ -297,6 +330,42 @@ class InvestigationDispatcher:
             max_agents=self.config.max_agents,
         )
 
+    def _patch_swarm_config(self, workspace_path: Path, rigor: str) -> None:
+        """Patch .swarm-config.json with rigor-derived effort and role permissions."""
+        config_path = workspace_path / ".swarm-config.json"
+        try:
+            if config_path.exists():
+                data = json.loads(config_path.read_text())
+            else:
+                data = {}
+            effort = self._EFFORT_BY_RIGOR.get(rigor, "medium")
+            data["effort"] = effort
+            data.setdefault("role_permissions", {
+                "scout": "--allow-all --deny-tool=write",
+                "review_critic": "--allow-all --deny-tool=write",
+                "review_stats": "--allow-all --deny-tool=write",
+                "review_method": "--allow-all --deny-tool=write",
+            })
+            if self.config.worker_model:
+                data["worker_model"] = self.config.worker_model
+            config_path.write_text(json.dumps(data, indent=2))
+
+            # Write .github/mcp-config.json for Copilot CLI MCP auto-discovery
+            mcp_config_path = workspace_path / ".github" / "mcp-config.json"
+            mcp_config_path.parent.mkdir(parents=True, exist_ok=True)
+            mcp_config = {
+                "mcpServers": {
+                    "voronoi": {
+                        "command": sys.executable or shutil.which("python3") or "python3",
+                        "args": ["-m", "voronoi.mcp"],
+                        "env": {"VORONOI_WORKSPACE": "."},
+                    }
+                }
+            }
+            mcp_config_path.write_text(json.dumps(mcp_config, indent=2))
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning("Failed to patch .swarm-config.json: %s", e)
+
     def _ensure_copilot_auth(self) -> None:
         """Verify Copilot/GitHub auth is valid before launching an agent.
 
@@ -329,8 +398,16 @@ class InvestigationDispatcher:
             "or set GITHUB_TOKEN / COPILOT_GITHUB_TOKEN env var with a PAT for unattended use."
         )
 
+    # Rigor → Copilot CLI --effort mapping
+    _EFFORT_BY_RIGOR: dict[str, str] = {
+        "adaptive": "high",
+        "scientific": "high",
+        "experimental": "xhigh",
+    }
+
     def _launch_in_tmux(self, session: str, workspace_path: Path,
-                        prompt_file: Path | None = None) -> None:
+                        prompt_file: Path | None = None,
+                        rigor: str = "") -> None:
         agent_cmd = self.config.agent_command
         agent_flags = self.config.agent_flags
         parts = agent_cmd.split()
@@ -347,6 +424,14 @@ class InvestigationDispatcher:
         if self.config.orchestrator_model:
             model_flag = f" --model {shlex.quote(self.config.orchestrator_model)}"
 
+        # --effort scaled by rigor level
+        effort = self._EFFORT_BY_RIGOR.get(rigor, "medium")
+        effort_flag = f" --effort {effort}"
+
+        # --share for clean audit trail
+        share_path = workspace_path / ".swarm" / "session.md"
+        share_flag = f" --share {shlex.quote(str(share_path))}"
+
         log_path = workspace_path / ".swarm" / "agent.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -354,10 +439,23 @@ class InvestigationDispatcher:
         if prompt_file is None:
             prompt_file = workspace_path / ".swarm" / "orchestrator-prompt.txt"
 
+        # Kill any stale tmux session with the same name to avoid sending
+        # commands into an old shell (race between session-death detection
+        # and relaunch).
         subprocess.run(
+            ["tmux", "kill-session", "-t", session],
+            capture_output=True, timeout=10,
+        )
+
+        result = subprocess.run(
             ["tmux", "new-session", "-d", "-s", session, "-c", str(workspace_path)],
             capture_output=True,
         )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"Failed to create tmux session '{session}': "
+                f"{result.stderr.decode(errors='replace').strip()}"
+            )
         # Enable tmux pane logging so we can inspect crashes after the fact.
         subprocess.run(
             ["tmux", "pipe-pane", "-t", session,
@@ -372,20 +470,57 @@ class InvestigationDispatcher:
         safe_flags = agent_flags
         safe_prompt = shlex.quote(str(prompt_file))
 
-        # Inject auth-related env vars into the tmux session environment.
-        # Uses tmux set-environment instead of inline export commands to
-        # prevent secrets from being captured by pipe-pane logging (INV-31).
-        for var in ("GH_TOKEN", "GITHUB_TOKEN", "COPILOT_GITHUB_TOKEN"):
+        # Inject auth/state env vars into the tmux shell.
+        #
+        # tmux set-environment only affects *new* windows/panes, NOT the
+        # shell already running in the initial pane created by new-session.
+        # This meant env vars like GH_TOKEN never reached the copilot
+        # process, causing auth failures on long-running servers.
+        #
+        # Fix: write vars to a temporary env file inside .swarm/ and
+        # source it in the command line.  The file path (not contents)
+        # appears in pipe-pane logs, keeping secrets out of logs (INV-31).
+        # COPILOT_HOME and GH_HOST matter for long-running servers because
+        # restarted tmux sessions must resolve the same stored Copilot state
+        # directory and GitHub host as the parent process. TMPDIR/TMP/TEMP
+        # keep worker-side tests and scratch files inside ~/.voronoi/tmp
+        # instead of the system temp dir.
+        env_file = workspace_path / ".swarm" / ".tmux-env"
+        env_lines: list[str] = []
+        for var in (
+            "GH_TOKEN",
+            "GITHUB_TOKEN",
+            "COPILOT_GITHUB_TOKEN",
+            "COPILOT_HOME",
+            "GH_HOST",
+            "TMPDIR",
+            "TMP",
+            "TEMP",
+        ):
             val = os.environ.get(var)
             if val:
+                env_lines.append(f"export {var}={shlex.quote(val)}")
+                # Also set in session env for any future panes/windows
                 subprocess.run(
                     ["tmux", "set-environment", "-t", session, var, val],
                     capture_output=True, timeout=10,
                 )
+        if env_lines:
+            # Write with restricted permissions from the start to avoid
+            # a window where secrets are world-readable (umask race).
+            fd = os.open(str(env_file), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            try:
+                os.write(fd, ("\n".join(env_lines) + "\n").encode())
+            finally:
+                os.close(fd)
+            source_cmd = f"source {shlex.quote(str(env_file))} && "
+        else:
+            source_cmd = ""
 
         subprocess.run(
             ["tmux", "send-keys", "-t", session,
-             f'cd {safe_ws} && {safe_cmd} {safe_flags}{model_flag} '
+             f'cd {safe_ws} && {source_cmd}{safe_cmd} {safe_flags}{model_flag}'
+             f'{effort_flag}{share_flag} '
              f'-p "$(cat {safe_prompt})" ; exit',
              "Enter"],
             capture_output=True, timeout=10,
@@ -417,8 +552,9 @@ class InvestigationDispatcher:
         self.check_human_gates()
 
         completed_ids = []
+        paused_ids = []
 
-        for inv_id, run in self.running.items():
+        for inv_id, run in list(self.running.items()):
             now = time.time()
             if now - run.last_update_at < self.config.progress_interval:
                 continue
@@ -426,6 +562,9 @@ class InvestigationDispatcher:
 
             # Read eval_score from workspace if available
             self._refresh_eval_score(run)
+
+            # Sync checkpoint criteria_status → success-criteria.json
+            self._sync_criteria_from_checkpoint(run)
 
             result = subprocess.run(
                 ["tmux", "has-session", "-t", run.tmux_session],
@@ -491,9 +630,21 @@ class InvestigationDispatcher:
                         logger.info("Investigation #%d paused at human gate",
                                     inv_id)
                         continue  # don't add to completed_ids
-                    # Classify the exit before deciding to retry
+                    # Check for auth failure — pause instead of burning retries
                     log_tail = self._read_log_tail(run)
-                    is_clean = self._looks_like_clean_agent_exit(log_tail)
+                    if self._looks_like_auth_failure(log_tail):
+                        logger.warning("Investigation #%d paused — auth failure detected",
+                                       inv_id)
+                        paused_ids.append(inv_id)
+                        continue  # don't add to completed_ids
+                    # Check if orchestrator exited intentionally while workers run.
+                    # If checkpoint has active_workers and any are still alive,
+                    # defer restart until workers finish.
+                    if self._has_active_workers(run):
+                        logger.info("Investigation #%d orchestrator idle — "
+                                    "workers still running, deferring restart",
+                                    inv_id)
+                        continue  # don't add to completed_ids
                     # Try to restart the agent instead of giving up
                     if self._try_restart(run):
                         reason = "restarted"
@@ -513,6 +664,10 @@ class InvestigationDispatcher:
                     self._handle_completion(run)
                 logger.info("Investigation #%d finished (%s)", inv_id, reason)
                 completed_ids.append(inv_id)
+
+        for inv_id in paused_ids:
+            run = self.running[inv_id]
+            self._pause_investigation(run, "Copilot/GitHub auth expired")
 
         for inv_id in completed_ids:
             del self.running[inv_id]
@@ -588,6 +743,52 @@ class InvestigationDispatcher:
                 }
             logger.info("Restored %d tasks for #%d", len(run.task_snapshot),
                         run.investigation_id)
+
+    def _sync_criteria_from_checkpoint(self, run: RunningInvestigation) -> None:
+        """Sync criteria_status from orchestrator checkpoint into success-criteria.json.
+
+        The orchestrator agent updates ``checkpoint.criteria_status`` (a dict
+        mapping criterion IDs to booleans) but may never write those updates
+        back to the canonical ``success-criteria.json`` (a list of dicts with
+        ``met`` fields). This method only promotes criteria to met when the
+        checkpoint indicates progress; it never clears a met criterion from the
+        canonical file because the checkpoint may be stale or partial.
+
+        Called each poll cycle after ``_refresh_eval_score()``.
+        """
+        cp_path = run.workspace_path / ".swarm" / "orchestrator-checkpoint.json"
+        sc_path = run.workspace_path / ".swarm" / "success-criteria.json"
+        if not cp_path.exists() or not sc_path.exists():
+            return
+        try:
+            cp = json.loads(cp_path.read_text())
+            if not isinstance(cp, dict):
+                return
+            cs = cp.get("criteria_status")
+            if not isinstance(cs, dict) or not cs:
+                return
+            criteria = json.loads(sc_path.read_text())
+            if not isinstance(criteria, list) or not criteria:
+                return
+        except (json.JSONDecodeError, OSError):
+            return
+
+        changed = False
+        for item in criteria:
+            if not isinstance(item, dict):
+                continue
+            cid = item.get("id", "")
+            if cid in cs and bool(cs[cid]) and not bool(item.get("met")):
+                item["met"] = True
+                changed = True
+
+        if changed:
+            try:
+                sc_path.write_text(json.dumps(criteria, indent=2))
+                logger.debug("Synced criteria_status → success-criteria.json for #%d",
+                             run.investigation_id)
+            except OSError:
+                pass
 
     def _check_criteria_progress(self, run: RunningInvestigation,
                                   elapsed_hours: float) -> None:
@@ -710,14 +911,26 @@ class InvestigationDispatcher:
 
     def _check_context_pressure(self, run: RunningInvestigation,
                                 elapsed_hours: float) -> None:
-        """Check time-based and self-reported context pressure."""
+        """Check time-based and self-reported context pressure.
+
+        Time-based thresholds are evidence-gated: if the orchestrator's
+        context snapshot shows >30% headroom, we skip the force-restart
+        and just write the directive (the agent is healthy enough to read it).
+        Token-based thresholds (from checkpoint) always trigger regardless
+        of elapsed time.
+        """
         # Time-based thresholds (escalating)
         if (elapsed_hours >= self.config.context_critical_hours
                 and run.context_directive_level != "context_critical"):
             run.context_directive_level = "context_critical"
             self._write_directive(run, "context_critical",
-                f"{int(elapsed_hours)}h elapsed. Write checkpoint and dispatch "
-                f"Scribe NOW or risk session loss.")
+                f"{int(elapsed_hours)}h elapsed. Run /compact NOW to recover context budget, "
+                f"write checkpoint, and dispatch Scribe immediately or risk session loss.")
+            # Only force-restart if the agent is actually context-pressured.
+            # If the snapshot shows >30% headroom, the agent can read the directive itself.
+            if self._is_context_pressured(run):
+                if self._force_context_restart(run):
+                    return
             self.send_message(format_alert(
                 run.label,
                 f"Context critical — {int(elapsed_hours)}h elapsed. "
@@ -727,12 +940,20 @@ class InvestigationDispatcher:
               and run.context_directive_level not in ("context_warning", "context_critical")):
             run.context_directive_level = "context_warning"
             self._write_directive(run, "context_warning",
-                f"{int(elapsed_hours)}h elapsed. Delegate ALL remaining work "
-                f"to fresh agents.")
+                f"{int(elapsed_hours)}h elapsed. Run /compact NOW to recover context budget, "
+                f"then delegate ALL remaining work to fresh agents.")
+            # Force-compact immediately instead of waiting for the 6h interval
+            try:
+                from voronoi.server.compact import compact_workspace_state
+                if compact_workspace_state(run.workspace_path):
+                    logger.info("Force-compacted workspace for %s at context_warning",
+                                run.label)
+            except Exception as e:
+                logger.debug("Force-compact failed for %s: %s", run.label, e)
             self.send_message(format_alert(
                 run.label,
                 f"Context warning — {int(elapsed_hours)}h elapsed. "
-                f"Directive sent to delegate remaining work."
+                f"Workspace compacted. Directive sent to delegate remaining work."
             ))
         elif (elapsed_hours >= self.config.context_advisory_hours
               and not run.context_directive_level):
@@ -752,7 +973,33 @@ class InvestigationDispatcher:
             cp = json.loads(cp_path.read_text())
             if not isinstance(cp, dict):
                 return
-            remaining = cp.get("context_window_remaining_pct", 0)
+
+            # Prefer ground-truth snapshot over self-reported estimate
+            snapshot = cp.get("context_snapshot")
+            if isinstance(snapshot, dict) and snapshot.get("model_limit", 0) > 0:
+                limit = snapshot["model_limit"]
+                free = snapshot.get("free_tokens", 0)
+                remaining = free / limit if limit else 0
+                # Log context snapshot event for timeline analysis
+                try:
+                    from voronoi.server.events import log_context_snapshot
+                    log_context_snapshot(
+                        run.workspace_path,
+                        agent="orchestrator",
+                        cycle=cp.get("cycle", 0),
+                        model=snapshot.get("model", ""),
+                        model_limit=limit,
+                        total_used=snapshot.get("total_used", 0),
+                        system_tokens=snapshot.get("system_tokens", 0),
+                        message_tokens=snapshot.get("message_tokens", 0),
+                        free_tokens=free,
+                        buffer_tokens=snapshot.get("buffer_tokens", 0),
+                    )
+                except Exception:
+                    pass  # non-critical logging
+            else:
+                remaining = cp.get("context_window_remaining_pct", 0)
+
             if not remaining or remaining <= 0:
                 return  # orchestrator didn't report
 
@@ -761,7 +1008,10 @@ class InvestigationDispatcher:
                 run.context_directive_level = "context_critical"
                 self._write_directive(run, "context_critical",
                     "Context window nearly exhausted (self-reported). "
-                    "Dispatch Scribe and write checkpoint NOW.")
+                    "Run /compact NOW, dispatch Scribe, and write checkpoint.")
+                # Force-restart: agent is too exhausted to act on directives
+                if self._force_context_restart(run):
+                    return
                 self.send_message(format_alert(
                     run.label,
                     f"Context critical — orchestrator reports {remaining:.0%} "
@@ -772,9 +1022,111 @@ class InvestigationDispatcher:
                 run.context_directive_level = "context_warning"
                 self._write_directive(run, "context_warning",
                     "Context window below 30% (self-reported). "
-                    "Delegate remaining work to fresh agents.")
+                    "Run /compact NOW, then delegate remaining work to fresh agents.")
         except (json.JSONDecodeError, OSError):
             pass
+
+    def _is_context_pressured(self, run: RunningInvestigation) -> bool:
+        """Check if the orchestrator is actually context-pressured.
+
+        Reads the context_snapshot or context_window_remaining_pct from
+        the checkpoint.  Returns True if the agent reports ≤30% remaining,
+        or if no snapshot is available (assume the worst).
+        """
+        cp_path = run.workspace_path / ".swarm" / "orchestrator-checkpoint.json"
+        if not cp_path.exists():
+            return True  # no data → assume pressured
+        try:
+            cp = json.loads(cp_path.read_text())
+            if not isinstance(cp, dict):
+                return True
+
+            snapshot = cp.get("context_snapshot")
+            if isinstance(snapshot, dict) and snapshot.get("model_limit", 0) > 0:
+                limit = snapshot["model_limit"]
+                free = snapshot.get("free_tokens", 0)
+                remaining = free / limit if limit else 0
+            else:
+                remaining = cp.get("context_window_remaining_pct", 0)
+
+            if not remaining or remaining <= 0:
+                return True  # no data → assume pressured
+
+            return remaining <= 0.30
+        except (json.JSONDecodeError, OSError):
+            return True  # can't read → assume pressured
+
+    def _force_context_restart(self, run: RunningInvestigation) -> bool:
+        """Force-restart the orchestrator to refresh its context window.
+
+        Called when context_critical is reached (time-based or token-based).
+        The agent is likely too exhausted to read directive files, so we
+        kill it and restart with a fresh resume prompt.
+
+        Uses a separate counter (context_restarts) from crash retries
+        (retry_count) because these are proactive refreshes, not failures.
+
+        Returns True if the restart was successful.
+        """
+        if run.context_restarts >= self.config.max_context_restarts:
+            logger.warning("Investigation #%d exhausted %d context restarts",
+                           run.investigation_id, run.context_restarts)
+            return False
+
+        run.context_restarts += 1
+
+        logger.info("Force context restart for #%d (context restart %d/%d)",
+                    run.investigation_id, run.context_restarts,
+                    self.config.max_context_restarts)
+
+        # Compact workspace state first so the resume prompt has fresh data
+        try:
+            from voronoi.server.compact import compact_workspace_state
+            compact_workspace_state(run.workspace_path)
+        except Exception:
+            pass
+
+        # Kill the current agent session
+        subprocess.run(
+            ["tmux", "kill-session", "-t", run.tmux_session],
+            capture_output=True, timeout=10,
+        )
+
+        # Build resume prompt and relaunch
+        prompt_file = run.workspace_path / ".swarm" / "orchestrator-prompt.txt"
+        if not prompt_file.exists():
+            logger.error("Prompt file missing for #%d — cannot context-restart",
+                         run.investigation_id)
+            return False
+
+        resume_file = self._build_resume_prompt(run)
+
+        # Rotate the log file
+        if run.log_path.exists():
+            suffix = f".ctx-{run.context_restarts}.log"
+            try:
+                run.log_path.rename(run.log_path.with_suffix(suffix))
+            except OSError:
+                pass
+
+        try:
+            self._launch_in_tmux(run.tmux_session, run.workspace_path,
+                                 prompt_file=resume_file, rigor=run.rigor)
+            run.stall_warned = False
+            run.context_directive_level = ""
+
+            self.send_message(format_restart(
+                run.label,
+                attempt=run.context_restarts,
+                max_retries=self.config.max_context_restarts,
+                log_tail="",
+                clean_exit=True,
+            ))
+            logger.info("Context restart successful for %s", run.label)
+            return True
+        except Exception as e:
+            logger.error("Failed context restart for %s: %s", run.label, e)
+            return False
 
     def _maybe_compact_workspace(self, run: RunningInvestigation) -> None:
         """Periodically compact workspace state files."""
@@ -807,7 +1159,17 @@ class InvestigationDispatcher:
                          run.investigation_id, code)
         events.extend(self._check_findings(run, tasks))
         events.extend(self._check_design_invalid(run, tasks))
+        events.extend(self._check_sentinel(run))
         events.extend(self._detect_phase(run))
+
+        # Sync findings to cross-run Claim Ledger
+        if tasks:
+            try:
+                self._sync_findings_to_ledger(run, tasks)
+            except Exception as e:
+                logger.debug("Claim ledger sync failed for #%d: %s",
+                             run.investigation_id, e)
+
         return events
 
     def _diff_tasks(self, run: RunningInvestigation, tasks: list[dict]) -> list[dict]:
@@ -822,12 +1184,12 @@ class InvestigationDispatcher:
 
             old = run.task_snapshot.get(tid)
             if old is None and run.task_snapshot:
-                events.append({"type": "task_new", "msg": f"📋 New: *{title}*"})
+                events.append({"type": "task_new", "msg": f"📋 Queued: *{title}*"})
             elif old and old["status"] != status:
                 if status == "closed":
-                    events.append({"type": "task_done", "msg": f"✅ Done: *{title}*"})
+                    events.append({"type": "task_done", "msg": f"✅ Wrapped up: *{title}*"})
                 elif status == "in_progress" and old["status"] != "in_progress":
-                    events.append({"type": "task_started", "msg": f"⚡ Working: *{title}*"})
+                    events.append({"type": "task_started", "msg": f"⚡ Picked up: *{title}*"})
 
         run.task_snapshot = current
 
@@ -864,6 +1226,212 @@ class InvestigationDispatcher:
                     msg += f"\n{effect}"
                 events.append({"type": "finding", "msg": msg})
         return events
+
+    def _check_sentinel(self, run: RunningInvestigation) -> list[dict]:
+        """Run experiment sentinel audit if a contract exists.
+
+        Checks are event-driven (contract file mtime changed) plus periodic
+        (every ``sentinel_interval_hours`` from config, default 6h).
+        If the sentinel finds critical failures, it autonomously flags
+        ``DESIGN_INVALID`` and sends an alert.
+
+        Also detects:
+        - Missing contract after first hour (at Analytical+ rigor)
+        - Phase transitions via orchestrator checkpoint
+        """
+        events: list[dict] = []
+        contract_path = run.workspace_path / ".swarm" / "experiment-contract.json"
+        audit_path = run.workspace_path / ".swarm" / "sentinel-audit.json"
+
+        # --- Missing contract detection ---
+        # At Analytical+ rigor, if the orchestrator has created experiment tasks
+        # but no contract after 1 hour, alert.
+        if not contract_path.exists():
+            elapsed_hours = (time.time() - run.started_at) / 3600
+            if (elapsed_hours >= 1.0
+                    and run.rigor in ("adaptive", "scientific", "experimental")
+                    and self._has_experiment_tasks(run)
+                    and not getattr(run, "_sentinel_missing_contract_warned", False)):
+                run._sentinel_missing_contract_warned = True  # type: ignore[attr-defined]
+                events.append({
+                    "type": "design_invalid",
+                    "msg": (
+                        "\U0001f6a8 *SENTINEL WARNING* — No experiment contract found\n"
+                        "  Experiment tasks exist but `.swarm/experiment-contract.json` "
+                        "is missing. The sentinel cannot validate outputs without a contract. "
+                        "Write the contract NOW."
+                    ),
+                })
+                # Write directive to force orchestrator to act
+                directive_path = run.workspace_path / ".swarm" / "dispatcher-directive.json"
+                directive_path.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    directive_path.write_text(json.dumps({
+                        "level": "sentinel_violation",
+                        "message": (
+                            "SENTINEL WARNING: No experiment contract found after 1+ hour. "
+                            "Write .swarm/experiment-contract.json before dispatching more workers. "
+                            "See the Experiment Contract section in your prompt for the schema."
+                        ),
+                        "action": "write_contract",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    }, indent=2))
+                except OSError:
+                    pass
+            return events
+
+        # --- Phase transition detection via checkpoint ---
+        checkpoint_path = run.workspace_path / ".swarm" / "checkpoint.json"
+        checkpoint_phase = ""
+        if checkpoint_path.exists():
+            try:
+                cp = json.loads(checkpoint_path.read_text())
+                checkpoint_phase = cp.get("phase", "") if isinstance(cp, dict) else ""
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        last_audited_phase = ""
+        if audit_path.exists():
+            try:
+                prev = json.loads(audit_path.read_text())
+                last_audited_phase = prev.get("_last_phase", "") if isinstance(prev, dict) else ""
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        phase_changed = bool(checkpoint_phase and checkpoint_phase != last_audited_phase)
+
+        # Decide whether to run: on contract change or periodically
+        try:
+            contract_mtime = contract_path.stat().st_mtime
+        except OSError:
+            return events
+
+        last_audit_time = 0.0
+        if audit_path.exists():
+            try:
+                last_audit_time = audit_path.stat().st_mtime
+            except OSError:
+                pass
+
+        sentinel_interval = getattr(self.config, "sentinel_interval_hours", 6) * 3600
+        now = time.time()
+        contract_changed = contract_mtime > last_audit_time
+        periodic_due = (now - last_audit_time) > sentinel_interval
+
+        # Also trigger if any output file declared in the contract was recently modified
+        output_changed = False
+        try:
+            from voronoi.science.gates import load_experiment_contract
+            contract = load_experiment_contract(run.workspace_path)
+            if contract:
+                for ro in contract.required_outputs:
+                    p = run.workspace_path / ro.get("path", "")
+                    if p.exists():
+                        try:
+                            if p.stat().st_mtime > last_audit_time:
+                                output_changed = True
+                                break
+                        except OSError:
+                            pass
+        except Exception:
+            contract = None
+
+        if not (contract_changed or periodic_due or output_changed or phase_changed):
+            return events
+
+        # Run the audit
+        trigger = ("phase_transition" if phase_changed else
+                   "contract_changed" if contract_changed else
+                   "output_produced" if output_changed else "periodic")
+        try:
+            from voronoi.science.gates import validate_experiment_contract
+            result = validate_experiment_contract(
+                run.workspace_path, contract=contract, trigger=trigger)
+        except Exception as exc:
+            logger.debug("Sentinel audit failed for #%d: %s",
+                         run.investigation_id, exc)
+            return events
+
+        # If phase changed, also run phase gate validation
+        if phase_changed and contract and last_audited_phase:
+            try:
+                from voronoi.science.gates import validate_phase_gate
+                pg_result = validate_phase_gate(
+                    run.workspace_path, contract, last_audited_phase, checkpoint_phase)
+                if not pg_result.passed:
+                    for f in pg_result.critical_failures:
+                        if f not in result.critical_failures:
+                            result.critical_failures.append(f)
+                    result.passed = result.passed and pg_result.passed
+                    result.checks.extend(pg_result.checks)
+            except Exception:
+                pass
+
+        # Persist phase in audit for next comparison
+        try:
+            audit_file = run.workspace_path / ".swarm" / "sentinel-audit.json"
+            if audit_file.exists():
+                audit_data = json.loads(audit_file.read_text())
+                if isinstance(audit_data, dict):
+                    audit_data["_last_phase"] = checkpoint_phase
+                    audit_file.write_text(json.dumps(audit_data, indent=2))
+        except (json.JSONDecodeError, OSError):
+            pass
+
+        if not result.passed:
+            summary = result.failure_summary
+            events.append({
+                "type": "design_invalid",
+                "msg": (
+                    f"\U0001f6a8 *SENTINEL ALERT* — Experiment contract violated\n"
+                    f"  {summary}"
+                ),
+            })
+            logger.warning(
+                "Sentinel audit FAILED for #%d: %s",
+                run.investigation_id, summary,
+            )
+
+            # Write a dispatcher directive so the orchestrator is FORCED to act
+            # on its next OODA cycle (the orchestrator already obeys directives).
+            directive_path = run.workspace_path / ".swarm" / "dispatcher-directive.json"
+            directive_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                directive_path.write_text(json.dumps({
+                    "level": "sentinel_violation",
+                    "message": (
+                        "SENTINEL ALERT: Experiment contract violated. "
+                        "Read .swarm/sentinel-audit.json for details. "
+                        "This IS a DESIGN_INVALID event — do NOT create a separate "
+                        "DESIGN_INVALID task. The sentinel has already flagged it. "
+                        "Do NOT proceed to the next phase or dispatch new workers. "
+                        "Dispatch Methodologist for post-mortem, then create a REVISE task."
+                    ),
+                    "action": "stop_and_fix",
+                    "sentinel_failures": result.critical_failures,
+                    "timestamp": result.timestamp,
+                }, indent=2))
+            except OSError:
+                pass
+        else:
+            logger.info(
+                "Sentinel audit PASSED for #%d (trigger=%s, %d checks)",
+                run.investigation_id, trigger, len(result.checks),
+            )
+
+        return events
+
+    def _has_experiment_tasks(self, run: RunningInvestigation) -> bool:
+        """Check if task_snapshot contains experiment-type tasks."""
+        for t in run.task_snapshot.values():
+            notes = t.get("notes", "")
+            title = t.get("title", "").lower()
+            if any(kw in title for kw in ("experiment", "phase", "baseline", "pilot",
+                                           "factorial", "ablation", "benchmark")):
+                return True
+            if "TASK_TYPE=investigation" in notes or "TASK_TYPE=experiment" in notes:
+                return True
+        return False
 
     def _check_design_invalid(self, run: RunningInvestigation,
                                tasks: list[dict] | None = None) -> list[dict]:
@@ -1012,8 +1580,8 @@ class InvestigationDispatcher:
                 run.notified_paradigm_stress = True
                 events.append({
                     "type": "paradigm_stress",
-                    "msg": f"⚠️ *PARADIGM STRESS* — {result.contradiction_count} "
-                           f"contradictions detected. Working model may need revision.",
+                    "msg": f"⚠️ *Paradigm stress* — {result.contradiction_count} "
+                           f"contradictions found. The working model might need a rethink.",
                 })
         except Exception as e:
             logger.debug("Paradigm stress check failed: %s", e)
@@ -1157,6 +1725,23 @@ class InvestigationDispatcher:
                 return True
         return False
 
+    _CONVERGED_STATUSES = frozenset({
+        "converged", "exhausted", "diminishing_returns", "negative_result",
+    })
+
+    @staticmethod
+    def _convergence_status_ok(data: dict) -> bool:
+        """Check if convergence.json data indicates completion.
+
+        Case-insensitive: agents may write 'CONVERGED' or 'converged'.
+        """
+        if data.get("converged", False):
+            return True
+        status = data.get("status", "")
+        if isinstance(status, str):
+            return status.lower() in InvestigationDispatcher._CONVERGED_STATUSES
+        return False
+
     def _is_complete(self, run: RunningInvestigation) -> bool:
         # HARD GATE: never complete while DESIGN_INVALID tasks are open
         if self._has_open_design_invalid(run):
@@ -1171,9 +1756,8 @@ class InvestigationDispatcher:
             if conv.exists():
                 try:
                     data = json.loads(conv.read_text())
-                    if isinstance(data, dict):
-                        return data.get("converged", False) or \
-                            data.get("status") in ("converged", "exhausted", "diminishing_returns", "negative_result")
+                    if isinstance(data, dict) and self._convergence_status_ok(data):
+                        return True
                 except (json.JSONDecodeError, OSError):
                     pass
             # Deliverable exists but no convergence signal — attempt to
@@ -1184,9 +1768,8 @@ class InvestigationDispatcher:
             if conv.exists():
                 try:
                     data = json.loads(conv.read_text())
-                    if isinstance(data, dict):
-                        return data.get("converged", False) or \
-                            data.get("status") in ("converged", "exhausted", "diminishing_returns", "negative_result")
+                    if isinstance(data, dict) and self._convergence_status_ok(data):
+                        return True
                 except (json.JSONDecodeError, OSError):
                     pass
             return False
@@ -1194,8 +1777,8 @@ class InvestigationDispatcher:
         if conv.exists():
             try:
                 data = json.loads(conv.read_text())
-                if isinstance(data, dict):
-                    return data.get("status") in ("converged", "exhausted", "diminishing_returns", "negative_result")
+                if isinstance(data, dict) and self._convergence_status_ok(data):
+                    return True
             except (json.JSONDecodeError, OSError):
                 pass
         return False
@@ -1261,6 +1844,25 @@ class InvestigationDispatcher:
         total_tasks = len(run.task_snapshot)
         closed = sum(1 for t in run.task_snapshot.values() if t["status"] == "closed")
 
+        # If task_snapshot is empty (e.g. after dispatcher restart), try to
+        # restore from beads so the completion message isn't misleading (0/0).
+        if total_tasks == 0:
+            try:
+                result = subprocess.run(
+                    ["bd", "list", "--json"],
+                    capture_output=True, text=True, timeout=10,
+                    cwd=str(run.workspace_path),
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    tasks = json.loads(result.stdout)
+                    if isinstance(tasks, list):
+                        total_tasks = len(tasks)
+                        closed = sum(1 for t in tasks
+                                     if isinstance(t, dict) and t.get("status") == "closed")
+            except (subprocess.TimeoutExpired, json.JSONDecodeError,
+                    FileNotFoundError, OSError):
+                pass
+
         # Always clean up tmux sessions on completion
         self._cleanup_tmux(run)
 
@@ -1295,7 +1897,14 @@ class InvestigationDispatcher:
 
         logger.info("Voronoi %s (#%d) complete: %d/%d tasks in %.1fmin",
                     run.label, run.investigation_id, closed, total_tasks, elapsed)
-        self.queue.complete(run.investigation_id)
+
+        # Science investigations go to review for PI feedback;
+        # build-mode investigations complete immediately.
+        is_science = run.mode in ("discover", "prove")
+        if is_science:
+            self._transition_to_review(run)
+        else:
+            self.queue.complete(run.investigation_id)
 
         # Build teaser + report
         from voronoi.gateway.report import ReportGenerator
@@ -1320,6 +1929,78 @@ class InvestigationDispatcher:
 
         self._try_publish(run)
 
+        # Clean up agent worktrees (the -swarm/ directory)
+        self._cleanup_worktrees(run)
+
+    def _cleanup_worktrees(self, run: RunningInvestigation) -> None:
+        """Remove agent worktrees after investigation completion.
+
+        The swarm directory (active/<slug>-swarm/) contains git worktrees
+        created by spawn-agent.sh for each worker agent.  After completion,
+        these should be pruned and the directory removed.
+        """
+        ws = run.workspace_path
+        swarm_dir = ws.parent / f"{ws.name}-swarm"
+
+        # 1. Prune stale worktrees from git's perspective
+        try:
+            subprocess.run(
+                ["git", "worktree", "prune"],
+                cwd=str(ws), capture_output=True, timeout=30,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+
+        # 2. Remove individual worktree directories via git worktree remove
+        if swarm_dir.exists():
+            try:
+                for child in sorted(swarm_dir.iterdir()):
+                    if child.is_dir() and (child / ".git").exists():
+                        try:
+                            subprocess.run(
+                                ["git", "worktree", "remove", "--force", str(child)],
+                                cwd=str(ws), capture_output=True, timeout=30,
+                            )
+                        except (subprocess.TimeoutExpired, OSError):
+                            pass
+            except OSError:
+                pass
+
+            # 3. Remove the swarm directory if empty or only has stale content
+            try:
+                remaining = list(swarm_dir.iterdir())
+                if not remaining:
+                    swarm_dir.rmdir()
+                else:
+                    # Force remove — worktrees are expendable after completion
+                    shutil.rmtree(swarm_dir, ignore_errors=True)
+            except OSError:
+                pass
+
+            logger.info("Cleaned up worktrees for %s", run.label)
+
+        # 4. Clean secrets file from workspace
+        env_file = ws / ".swarm" / ".tmux-env"
+        if env_file.exists():
+            try:
+                env_file.unlink()
+            except OSError:
+                pass
+
+        # 5. Clean shared tmp directory if no other investigations are running
+        if not self.running or (
+            len(self.running) == 1
+            and run.investigation_id in self.running
+        ):
+            tmp_dir = self.config.base_dir / "tmp"
+            if tmp_dir.exists():
+                try:
+                    shutil.rmtree(tmp_dir, ignore_errors=True)
+                    tmp_dir.mkdir(exist_ok=True)
+                    logger.info("Cleaned tmp directory")
+                except OSError:
+                    pass
+
     def _read_log_tail(self, run: RunningInvestigation, *, lines: int = 20) -> str:
         """Return the last N log lines for diagnostics."""
         if not run.log_path.exists():
@@ -1330,18 +2011,127 @@ class InvestigationDispatcher:
             return ""
         return "\n".join(raw.strip().splitlines()[-lines:])
 
+    def _normalize_log_tail(self, log_tail: str) -> str:
+        """Normalize tmux/copilot log output for heuristic matching."""
+        if not log_tail:
+            return ""
+
+        normalized = log_tail.lower().replace("\r", "\n")
+        normalized = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", " ", normalized)
+        normalized = re.sub(r"\x1b\][^\x07]*(?:\x07|\x1b\\)", " ", normalized)
+        normalized = re.sub(r"\[\?[0-9;]*[a-z]", " ", normalized)
+        normalized = re.sub(r"\[<[^\s]+", " ", normalized)
+        normalized = "".join(
+            ch if ch.isprintable() or ch.isspace() else " "
+            for ch in normalized
+        )
+        normalized = re.sub(r"[^a-z0-9/_:+.-]+", " ", normalized)
+        normalized = re.sub(r"\s+", " ", normalized)
+        return normalized.strip()
+
     def _looks_like_clean_agent_exit(self, log_tail: str) -> bool:
         """Heuristically detect a normal Copilot CLI shutdown."""
-        if not log_tail:
+        lowered = self._normalize_log_tail(log_tail)
+        if not lowered:
             return False
-        lowered = log_tail.lower()
         markers = (
             "logout",
-            "total session time:",
-            "total usage est:",
-            "breakdown by ai model:",
+            "total session time",
+            "total usage est",
+            "breakdown by ai model",
         )
         return sum(marker in lowered for marker in markers) >= 2
+
+    def _has_active_workers(self, run: RunningInvestigation) -> bool:
+        """Check if the orchestrator exited with workers still running.
+
+        Reads the checkpoint for ``active_workers`` and checks if any of
+        those tmux windows are still alive in the swarm session.  Also
+        checks for orphaned copilot processes whose cwd is inside the
+        workspace (workers that survived after tmux cleanup).  If so,
+        the orchestrator intentionally exited to conserve context and
+        should NOT be restarted until the workers finish.
+        """
+        cp_path = run.workspace_path / ".swarm" / "orchestrator-checkpoint.json"
+        if not cp_path.exists():
+            return False
+        try:
+            cp = json.loads(cp_path.read_text())
+            if not isinstance(cp, dict):
+                return False
+        except (json.JSONDecodeError, OSError):
+            return False
+
+        workers = cp.get("active_workers", [])
+        if not workers:
+            return False
+
+        # Check if any of the listed workers have a live tmux window
+        swarm_session = run.tmux_session + "-swarm"
+        for worker in workers:
+            try:
+                result = subprocess.run(
+                    ["tmux", "has-session", "-t", swarm_session],
+                    capture_output=True, timeout=5,
+                )
+                if result.returncode != 0:
+                    continue
+                # Session exists — check for a window matching this worker
+                result = subprocess.run(
+                    ["tmux", "list-windows", "-t", swarm_session, "-F",
+                     "#{window_name}"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if result.returncode == 0:
+                    windows = result.stdout.strip().splitlines()
+                    if any(worker in w for w in windows):
+                        logger.debug("Worker %s still alive for %s",
+                                     worker, run.label)
+                        return True
+            except (subprocess.TimeoutExpired, OSError):
+                continue
+
+        # Fallback: check for orphaned copilot processes whose cwd is
+        # inside this workspace (workers that outlived their tmux window).
+        ws_str = str(run.workspace_path)
+        try:
+            result = subprocess.run(
+                ["pgrep", "-fa", self.config.agent_command],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0:
+                for line in result.stdout.strip().splitlines():
+                    if ws_str in line:
+                        logger.debug("Orphaned worker process for %s: %s",
+                                     run.label, line[:120])
+                        return True
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            pass
+
+        # No live workers found — workers finished, proceed with restart
+        logger.info("All active_workers done for %s, proceeding with restart",
+                    run.label)
+        return False
+
+    def _looks_like_auth_failure(self, log_tail: str) -> bool:
+        """Detect auth-related failures in agent log output."""
+        lowered = self._normalize_log_tail(log_tail)
+        if not lowered:
+            return False
+        auth_markers = (
+            "authenticate",
+            "copilot login",
+            "gh auth login",
+            "copilot_github_token",
+            "gh_token",
+            "github_token",
+            "oauth token",
+            "fine-grained personal access token",
+            "authentication required",
+            "credentials",
+            "/login",
+        )
+        return sum(marker in lowered for marker in auth_markers) >= 2
 
     def _classify_incomplete_exit(self, run: RunningInvestigation) -> str:
         """Describe why a dead agent session is incomplete."""
@@ -1423,6 +2213,14 @@ class InvestigationDispatcher:
                          run.investigation_id)
             return False
 
+        # Compact workspace state BEFORE building resume prompt so the
+        # state digest is fresh (avoids stale 0/13-met vs 7/13-met mismatches)
+        try:
+            from voronoi.server.compact import compact_workspace_state
+            compact_workspace_state(run.workspace_path)
+        except Exception:
+            pass
+
         # Write a NEW minimal resume prompt (don't append to the old one)
         resume_file = self._build_resume_prompt(run)
 
@@ -1436,28 +2234,135 @@ class InvestigationDispatcher:
 
         try:
             self._launch_in_tmux(run.tmux_session, run.workspace_path,
-                                 prompt_file=resume_file)
+                                 prompt_file=resume_file, rigor=run.rigor)
             run.stall_warned = False
             run.context_directive_level = ""
             return True
         except RuntimeError as e:
             if "authentication" in str(e).lower():
-                logger.error("Auth expired for #%d — skipping remaining retries: %s",
+                logger.error("Auth expired for #%d — pausing: %s",
                              run.investigation_id, e)
-                run.retry_count = self.config.max_retries
-                self.send_message(format_alert(
-                    run.label,
-                    "Copilot auth expired. SSH into the server and run:\n"
-                    "• `copilot` → `/login`\n"
-                    "• `gh auth login`\n\n"
-                    "Then retry with /spawn"
-                ))
+                # Don't burn retries — pause so operator can fix and /resume
+                run.retry_count -= 1  # undo the increment at top of method
+                self._pause_investigation(run, "Copilot/GitHub auth expired")
             else:
                 logger.error("Failed to restart #%d: %s", run.investigation_id, e)
             return False
         except Exception as e:
             logger.error("Failed to restart #%d: %s", run.investigation_id, e)
             return False
+
+    # ------------------------------------------------------------------
+    # Pause / Resume
+    # ------------------------------------------------------------------
+
+    def _pause_investigation(self, run: RunningInvestigation, reason: str) -> None:
+        """Pause a running investigation due to a recoverable error.
+
+        Transitions the queue status to 'paused', cleans up tmux,
+        removes from self.running, and notifies via Telegram.
+        """
+        self._cleanup_tmux(run)
+        self.queue.pause(run.investigation_id, reason)
+
+        total_tasks = len(run.task_snapshot)
+        closed = sum(1 for t in run.task_snapshot.values() if t["status"] == "closed")
+        elapsed_sec = time.time() - run.started_at
+
+        self.send_message(format_pause(
+            codename=run.label,
+            reason=reason,
+            elapsed_sec=elapsed_sec,
+            closed=closed,
+            total=total_tasks,
+        ))
+
+        # Remove from running so poll_progress skips it
+        self.running.pop(run.investigation_id, None)
+        logger.info("Investigation #%d (%s) paused: %s",
+                     run.investigation_id, run.label, reason)
+
+    def resume_investigation(self, investigation_id: int) -> str:
+        """Resume a paused or failed investigation.
+
+        Validates workspace, rebuilds resume prompt, relaunches agent.
+        Returns a status message for the user.
+        """
+        inv = self.queue.get(investigation_id)
+        if inv is None:
+            return f"❌ Investigation #{investigation_id} not found."
+        if inv.status not in ("paused", "failed"):
+            return f"❌ Investigation #{investigation_id} is {inv.status} — can only resume paused or failed."
+
+        if not inv.workspace_path or not Path(inv.workspace_path).exists():
+            return f"❌ Workspace for #{investigation_id} no longer exists."
+
+        workspace_path = Path(inv.workspace_path)
+        prompt_file = workspace_path / ".swarm" / "orchestrator-prompt.txt"
+        if not prompt_file.exists():
+            return f"❌ Orchestrator prompt missing for #{investigation_id} — cannot resume."
+
+        # Transition queue status
+        if not self.queue.resume(investigation_id):
+            return f"❌ Failed to resume #{investigation_id} — status may have changed."
+
+        # Build tracker
+        tmux_session = f"voronoi-inv-{inv.id}"
+        run = RunningInvestigation(
+            investigation_id=inv.id,
+            workspace_path=workspace_path,
+            tmux_session=tmux_session,
+            question=inv.question,
+            mode=inv.mode,
+            codename=inv.codename,
+            chat_id=inv.chat_id,
+            rigor=inv.rigor or "adaptive",
+            started_at=time.time(),
+            retry_count=0,
+        )
+
+        # Restore task snapshot for accurate progress
+        self._restore_task_snapshot(run)
+
+        # Build resume prompt and launch
+        resume_file = self._build_resume_prompt(run)
+        try:
+            self._launch_in_tmux(run.tmux_session, run.workspace_path,
+                                 prompt_file=resume_file, rigor=run.rigor)
+        except Exception as e:
+            logger.error("Failed to resume #%d: %s", inv.id, e)
+            self.queue.fail(inv.id, f"Resume launch failed: {e}")
+            return f"❌ Failed to launch #{investigation_id}: {e}"
+
+        self.running[inv.id] = run
+        label = inv.codename or f"#{inv.id}"
+        self.send_message(f"▶️ *{label}* resumed — agent relaunched.")
+        logger.info("Investigation #%d (%s) resumed", inv.id, label)
+        return f"▶️ *{label}* resumed."
+
+    def _check_paused_timeouts(self) -> None:
+        """Auto-fail paused investigations that exceeded pause_timeout_hours."""
+        try:
+            paused = self.queue.get_paused()
+        except Exception:
+            return
+        for inv in paused:
+            paused_since = inv.completed_at or inv.started_at
+            if not paused_since:
+                continue
+            paused_hours = (time.time() - paused_since) / 3600
+            if paused_hours >= self.config.pause_timeout_hours:
+                logger.warning("Paused investigation #%d timed out after %.1fh",
+                               inv.id, paused_hours)
+                # Transition paused → running → failed (resume clears error first)
+                self.queue.resume(inv.id)
+                self.queue.fail(inv.id,
+                                f"Paused for {int(paused_hours)}h without resume — auto-failed")
+                label = inv.codename or f"#{inv.id}"
+                self.send_message(format_alert(
+                    label,
+                    f"Was paused for {int(paused_hours)}h with no /resume — auto-failed."
+                ))
 
     def _build_resume_prompt(self, run: RunningInvestigation) -> Path:
         """Build a resume prompt for a restarted session.
@@ -1466,9 +2371,14 @@ class InvestigationDispatcher:
         checkpoint state, remaining tasks, and clear next actions.
         The restarted agent starts with a clean context window.
         """
+        if run.retry_count > 0:
+            restart_label = f"RESTART (attempt {run.retry_count}/{self.config.max_retries})"
+        elif run.context_restarts > 0:
+            restart_label = f"CONTEXT REFRESH ({run.context_restarts}/{self.config.max_context_restarts})"
+        else:
+            restart_label = "RESUME (operator-initiated)"
         lines: list[str] = [
-            "You are the Voronoi swarm orchestrator. This is a RESTART "
-            f"(attempt {run.retry_count}/{self.config.max_retries}).\n",
+            f"You are the Voronoi swarm orchestrator. This is a {restart_label}.\n",
             f"**Codename:** {run.label}",
             f"**Mode:** {run.mode} | **Rigor:** {run.rigor}\n",
         ]
@@ -1487,18 +2397,34 @@ class InvestigationDispatcher:
         )
 
         lines.append("## Critical Rules for This Restart\n")
-        lines.append(
-            "- All previous experimental work is preserved in the workspace.\n"
-            "- Do NOT re-run experiments that already produced results.\n"
-            "- Read `.swarm/brief-digest.md` instead of re-reading full PROMPT.md.\n"
-            "- Work from the checkpoint and state digest below.\n"
-            "- Poll `.swarm/dispatcher-directive.json` each OODA cycle.\n"
-            "- ALWAYS delegate manuscript writing to a Scribe worker.\n"
-            "- Use `bd query` for targeted task lookups, never `bd list --json`.\n"
-            "- Dispatch workers via `./scripts/spawn-agent.sh`.\n"
-            "- Merge completed work via `./scripts/merge-agent.sh`.\n"
-            "- Before convergence, run: `./scripts/convergence-gate.sh . " + run.rigor + "`\n"
-        )
+        if run.context_restarts > 0 and run.retry_count == 0:
+            lines.append(
+                "**CONTEXT REFRESH** — your previous session was healthy but ran out "
+                "of context window. Nothing failed. All work is intact.\n"
+                "- Do NOT re-validate or re-check completed experiments.\n"
+                "- Do NOT re-read files already summarized in the checkpoint/digest.\n"
+                "- Pick up EXACTLY where you left off from the checkpoint below.\n"
+                "- Read `.swarm/brief-digest.md` for compressed project state.\n"
+                "- Poll `.swarm/dispatcher-directive.json` each OODA cycle.\n"
+                "- ALWAYS delegate manuscript writing to a Scribe worker.\n"
+                "- Use `bd query` for targeted task lookups, never `bd list --json`.\n"
+                "- Dispatch workers via `./scripts/spawn-agent.sh`.\n"
+                "- Merge completed work via `./scripts/merge-agent.sh`.\n"
+                "- Before convergence, run: `./scripts/convergence-gate.sh . " + run.rigor + "`\n"
+            )
+        else:
+            lines.append(
+                "- All previous experimental work is preserved in the workspace.\n"
+                "- Do NOT re-run experiments that already produced results.\n"
+                "- Read `.swarm/brief-digest.md` instead of re-reading full PROMPT.md.\n"
+                "- Work from the checkpoint and state digest below.\n"
+                "- Poll `.swarm/dispatcher-directive.json` each OODA cycle.\n"
+                "- ALWAYS delegate manuscript writing to a Scribe worker.\n"
+                "- Use `bd query` for targeted task lookups, never `bd list --json`.\n"
+                "- Dispatch workers via `./scripts/spawn-agent.sh`.\n"
+                "- Merge completed work via `./scripts/merge-agent.sh`.\n"
+                "- Before convergence, run: `./scripts/convergence-gate.sh . " + run.rigor + "`\n"
+            )
 
         # Human gate status
         gate_path = run.workspace_path / ".swarm" / "human-gate.json"
@@ -1580,15 +2506,43 @@ class InvestigationDispatcher:
             except OSError:
                 pass
 
-        # Directive
+        # Convergence-aware directive: if checkpoint shows near-convergence,
+        # tell the agent to skip the full role file and just verify + commit.
+        near_convergence = False
+        if cp_path.exists():
+            try:
+                cp_data = json.loads(cp_path.read_text())
+                if isinstance(cp_data, dict):
+                    phase = str(cp_data.get("phase", "")).lower()
+                    blockers = cp_data.get("blockers", "")
+                    remaining = cp_data.get("remaining", [])
+                    no_blockers = not blockers or "none" in str(blockers).lower()
+                    few_remaining = isinstance(remaining, list) and len(remaining) <= 3
+                    if ("converg" in phase or "final" in phase) and no_blockers and few_remaining:
+                        near_convergence = True
+            except (json.JSONDecodeError, OSError):
+                pass
+
         lines.append("## What To Do Now\n")
-        lines.append(
-            "1. Read `.swarm/orchestrator-checkpoint.json` for full state\n"
-            "2. Run `bd ready --json` to see remaining tasks\n"
-            "3. If all experiments are done, **dispatch a Scribe worker** for the manuscript\n"
-            "4. If `.swarm/brief-digest.md` exists, read it for critical constraints\n"
-            "5. **Conserve context** — delegate writing to workers, keep your session lean\n"
-        )
+        if near_convergence:
+            lines.append(
+                "**NEAR-CONVERGENCE RESTART — keep this session lean:**\n"
+                "1. Do NOT read `.github/agents/swarm-orchestrator.agent.md` — you already know the protocol\n"
+                "2. Read ONLY: checkpoint (above) + `bd ready` + dispatcher-directive\n"
+                "3. Verify convergence: run `./scripts/convergence-gate.sh . " + run.rigor + "`\n"
+                "4. If gate passes: commit, close remaining beads, write convergence.json\n"
+                "5. If gate fails: fix the specific blocker, then re-run gate\n"
+                "6. Do NOT re-read paper, belief map, eval score, or claim-evidence unless gate fails\n"
+            )
+        else:
+            lines.append(
+                "1. Read `.swarm/orchestrator-checkpoint.json` for full state\n"
+                "2. Run `bd ready --json` to see remaining tasks\n"
+                "3. If all experiments are done, **dispatch a Scribe worker** for the manuscript\n"
+                "4. If `.swarm/brief-digest.md` exists, read it for critical constraints\n"
+                "5. **Conserve context** — delegate writing to workers, keep your session lean\n"
+                "6. Do NOT re-read files already summarized in the checkpoint above\n"
+            )
 
         resume_file = run.workspace_path / ".swarm" / "orchestrator-prompt-resume.txt"
         resume_file.write_text("\n".join(lines))
@@ -1597,20 +2551,89 @@ class InvestigationDispatcher:
         return resume_file
 
     def _cleanup_tmux(self, run: RunningInvestigation) -> None:
-        """Kill all tmux sessions associated with this investigation."""
-        # Kill the main orchestrator session
-        subprocess.run(
-            ["tmux", "kill-session", "-t", run.tmux_session],
-            capture_output=True, timeout=10,
-        )
-        # Kill the swarm worker session (convention: <workspace-name>-swarm)
+        """Kill all tmux sessions associated with this investigation.
+
+        Uses multiple strategies to find sessions:
+        1. The recorded tmux_session name (voronoi-inv-{id})
+        2. Convention-based names ({workspace}-swarm, -workers)
+        3. The tmux_session from .swarm-config.json in the workspace
+        4. Enumerate all sessions and kill any whose name is a prefix
+           match for the workspace slug
+        """
         ws_name = run.workspace_path.name
+        sessions_to_kill: set[str] = set()
+
+        # 1. Main orchestrator session
+        sessions_to_kill.add(run.tmux_session)
+
+        # 2. Convention-based names
         for suffix in ["-swarm", "-workers"]:
-            subprocess.run(
-                ["tmux", "kill-session", "-t", f"{ws_name}{suffix}"],
-                capture_output=True, timeout=10,
+            sessions_to_kill.add(f"{ws_name}{suffix}")
+
+        # 3. Read actual tmux_session from .swarm-config.json
+        config_path = run.workspace_path / ".swarm-config.json"
+        if config_path.exists():
+            try:
+                data = json.loads(config_path.read_text())
+                cfg_session = data.get("tmux_session", "")
+                if cfg_session:
+                    sessions_to_kill.add(cfg_session)
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        # 4. Enumerate live tmux sessions and kill any that belong to
+        #    this investigation (prefix match on workspace slug or
+        #    are windows of a matching session).
+        try:
+            result = subprocess.run(
+                ["tmux", "list-sessions", "-F", "#{session_name}"],
+                capture_output=True, text=True, timeout=10,
             )
-        logger.info("Cleaned up tmux sessions for %s", run.label)
+            if result.returncode == 0:
+                # Build prefix set from workspace name components.
+                # e.g. "inv-1-coupled-decisions" → match sessions starting
+                # with "inv-1-", "inv1", or the workspace name itself.
+                slug_prefix = ws_name.split("-swarm")[0]  # in case ws_name is already swarm dir
+                for session_name in result.stdout.strip().splitlines():
+                    name = session_name.strip()
+                    if not name:
+                        continue
+                    # Skip the user's own sessions (session "0", single digits)
+                    if name.isdigit():
+                        continue
+                    # Match against known session names
+                    if name in sessions_to_kill:
+                        continue  # already in the kill list
+                    # Check if this session's worktree is under our swarm dir
+                    swarm_dir = run.workspace_path.parent / f"{slug_prefix}-swarm"
+                    if swarm_dir.exists():
+                        try:
+                            cwd_result = subprocess.run(
+                                ["tmux", "display-message", "-t", name,
+                                 "-p", "#{pane_current_path}"],
+                                capture_output=True, text=True, timeout=5,
+                            )
+                            if cwd_result.returncode == 0:
+                                pane_cwd = cwd_result.stdout.strip()
+                                if pane_cwd.startswith(str(swarm_dir)):
+                                    sessions_to_kill.add(name)
+                        except (subprocess.TimeoutExpired, OSError):
+                            pass
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+
+        # Kill all identified sessions
+        for session in sessions_to_kill:
+            try:
+                subprocess.run(
+                    ["tmux", "kill-session", "-t", session],
+                    capture_output=True, timeout=10,
+                )
+            except (subprocess.TimeoutExpired, OSError):
+                pass
+
+        logger.info("Cleaned up tmux sessions for %s (killed %d)",
+                    run.label, len(sessions_to_kill))
 
     def _try_publish(self, run: RunningInvestigation) -> None:
         try:
@@ -1785,9 +2808,260 @@ class InvestigationDispatcher:
                 pass
         try:
             self._launch_in_tmux(run.tmux_session, run.workspace_path,
-                                 prompt_file=resume_file)
+                                 prompt_file=resume_file, rigor=run.rigor)
             run.stall_warned = False
             run.context_directive_level = ""
             logger.info("Restarted %s after human gate decision", run.label)
         except Exception as e:
             logger.error("Failed to restart %s after gate: %s", run.label, e)
+
+    # ------------------------------------------------------------------
+    # Claim Ledger — cross-run scientific state
+    # ------------------------------------------------------------------
+
+    def _sync_findings_to_ledger(self, run: RunningInvestigation,
+                                 tasks: list[dict] | None = None) -> None:
+        """Sync new Beads findings into the Claim Ledger for this lineage.
+
+        Called during progress polling. Only processes findings not yet synced.
+        Provenance is inferred from task type/title.
+        """
+        inv = self.queue.get(run.investigation_id)
+        if inv is None or inv.lineage_id is None:
+            return
+
+        if tasks is None:
+            from voronoi.beads import run_bd_json
+            code, parsed = run_bd_json("list", "--json", cwd=str(run.workspace_path))
+            if code != 0 or not isinstance(parsed, list):
+                return
+            tasks = parsed
+
+        from voronoi.science.claims import (
+            PROVENANCE_RETRIEVED_PRIOR,
+            PROVENANCE_RUN_EVIDENCE,
+            ClaimArtifact,
+            load_ledger,
+            save_ledger,
+        )
+        from voronoi.utils import extract_field
+
+        ledger = load_ledger(inv.lineage_id, base_dir=self.config.base_dir)
+        synced_ids = {f_id for c in ledger.claims for f_id in c.supporting_findings}
+
+        new_claims = False
+        for task in tasks:
+            tid = task.get("id", "")
+            title = task.get("title", "")
+            notes = task.get("notes", "")
+
+            if "FINDING" not in title.upper():
+                continue
+            if tid in synced_ids:
+                continue
+
+            # Determine provenance from task context
+            title_lower = title.lower()
+            if "scout" in title_lower or "literature" in title_lower or "prior" in title_lower:
+                provenance = PROVENANCE_RETRIEVED_PRIOR
+            else:
+                provenance = PROVENANCE_RUN_EVIDENCE
+
+            # Extract quantitative summary
+            effect = extract_field(notes, "EFFECT_SIZE")
+            n = extract_field(notes, "N") or extract_field(notes, "SAMPLE_SIZE")
+            sample_summary = f"N={n}" if n else None
+
+            # Extract data file as artifact
+            artifacts = []
+            data_file = extract_field(notes, "DATA_FILE")
+            if data_file:
+                sha = extract_field(notes, "SHA256") or extract_field(notes, "DATA_HASH")
+                artifacts.append(ClaimArtifact(
+                    path=data_file,
+                    artifact_type="data",
+                    sha256=sha or None,
+                    git_tag=f"run-{inv.cycle_number}-complete" if inv.cycle_number > 1 else None,
+                    description=f"Data for {title}",
+                ))
+
+            # Clean statement from FINDING prefix
+            statement = title
+            for prefix in ("FINDING:", "FINDING -", "FINDING"):
+                if statement.upper().startswith(prefix):
+                    statement = statement[len(prefix):].strip()
+                    break
+
+            ledger.add_claim(
+                statement=statement,
+                provenance=provenance,
+                source_cycle=inv.cycle_number,
+                supporting_findings=[tid],
+                effect_summary=effect or None,
+                sample_summary=sample_summary,
+                artifacts=artifacts,
+            )
+            new_claims = True
+
+        if new_claims:
+            save_ledger(inv.lineage_id, ledger, base_dir=self.config.base_dir)
+
+    def _transition_to_review(self, run: RunningInvestigation) -> None:
+        """Transition a completed science investigation to review status.
+
+        Generates self-critique, syncs final findings to ledger, and sends
+        the review message to Telegram.
+        """
+        inv = self.queue.get(run.investigation_id)
+        if inv is None:
+            return
+
+        # Final sync of all findings
+        self._sync_findings_to_ledger(run)
+
+        # Generate self-critique
+        if inv.lineage_id is not None:
+            from voronoi.science.claims import generate_self_critique, load_ledger, save_ledger
+            ledger = load_ledger(inv.lineage_id, base_dir=self.config.base_dir)
+
+            # Promote provisional claims to asserted (run converged successfully)
+            for claim in ledger.claims:
+                if claim.status == "provisional" and claim.source_cycle == inv.cycle_number:
+                    try:
+                        ledger.assert_claim(claim.id)
+                    except (ValueError, KeyError):
+                        pass
+
+            critiques = generate_self_critique(ledger)
+            for obj in critiques:
+                ledger.objections.append(obj)
+
+            save_ledger(inv.lineage_id, ledger, base_dir=self.config.base_dir)
+
+            # Build review message with claims
+            review_text = self._build_review_message(run, ledger)
+            self.send_message(review_text)
+        else:
+            self.send_message(
+                f"🔬 *{run.label}* converged — ready for review.\n"
+                f"Reply with feedback or send `/voronoi continue {run.label}` to iterate."
+            )
+
+        self.queue.review(run.investigation_id)
+
+    def _build_review_message(self, run: RunningInvestigation,
+                              ledger) -> str:
+        """Build the Telegram review message from the claim ledger."""
+        lines = [
+            f"🔬 *{run.label}* — Round {run.improvement_rounds or 1} complete "
+            f"(eval: {run.eval_score:.2f})\n",
+        ]
+
+        # Show claims
+        for claim in ledger.claims:
+            if claim.status == "retired":
+                continue
+            badge = {"locked": "🔒", "replicated": "🔒🔒", "challenged": "⚡",
+                     "asserted": "✅", "provisional": "❓"
+                     }.get(claim.status, "•")
+            ev = f" ({claim.effect_summary})" if claim.effect_summary else ""
+            lines.append(f"{badge} {claim.id}: {claim.statement}{ev}")
+
+        # Show self-critique warnings
+        surfaced = [o for o in ledger.objections if o.status == "surfaced"]
+        if surfaced:
+            lines.append("\n⚠️ *Self-identified weaknesses:*")
+            for obj in surfaced[:5]:
+                lines.append(f"  • {obj.concern}")
+
+        lines.append(
+            "\nReply with your feedback, or:\n"
+            f"`/voronoi continue {run.label}` — run another round\n"
+            f"`/voronoi complete {run.label}` — accept and close"
+        )
+        return "\n".join(lines)
+
+    def prepare_continuation(self, run: RunningInvestigation) -> None:
+        """Prepare the workspace for a continuation run.
+
+        Archives .swarm/ state, tags the git boundary, prunes worktrees,
+        and writes immutability invariants for locked claims.
+        """
+        ws = run.workspace_path
+        swarm = ws / ".swarm"
+
+        inv = self.queue.get(run.investigation_id)
+        cycle_num = inv.cycle_number if inv else 1
+
+        # 1. Git tag the run boundary
+        tag_name = f"run-{cycle_num}-complete"
+        try:
+            subprocess.run(
+                ["git", "tag", "-f", tag_name],
+                cwd=str(ws), capture_output=True, timeout=30,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            logger.debug("Failed to create git tag %s", tag_name)
+
+        # 2. Archive .swarm/ state
+        archive_dir = swarm / "archive" / f"run-{cycle_num}"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        files_to_archive = [
+            "deliverable.md", "belief-map.json", "orchestrator-checkpoint.json",
+            "success-criteria.json", "experiments.tsv", "eval-score.json",
+            "convergence.json", "claim-evidence.json", "report.pdf",
+            "state-digest.md", "scout-brief.md",
+        ]
+        for fname in files_to_archive:
+            src = swarm / fname
+            if src.exists():
+                try:
+                    shutil.copy2(src, archive_dir / fname)
+                except OSError:
+                    pass
+
+        # 3. Clean .swarm/ for fresh orchestrator (keep reusable files)
+        files_to_remove = [
+            "orchestrator-checkpoint.json", "convergence.json",
+            "eval-score.json", "dispatcher-directive.json",
+            "human-gate.json", "state-digest.md",
+        ]
+        for fname in files_to_remove:
+            p = swarm / fname
+            if p.exists():
+                try:
+                    p.unlink()
+                except OSError:
+                    pass
+
+        # Keep: belief-map.json, experiments.tsv, success-criteria.json,
+        #        deliverable.md (for warm-start reference), events.jsonl
+
+        # 4. Prune git worktrees
+        try:
+            subprocess.run(
+                ["git", "worktree", "prune"],
+                cwd=str(ws), capture_output=True, timeout=30,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+
+        # 5. Write immutability invariants for locked claims
+        if inv and inv.lineage_id is not None:
+            from voronoi.science.claims import load_ledger
+            ledger = load_ledger(inv.lineage_id, base_dir=self.config.base_dir)
+            immutable_paths = ledger.get_immutable_paths()
+            if immutable_paths:
+                from voronoi.science.gates import load_invariants, save_invariants, Invariant
+                existing = load_invariants(ws)
+                # Add file_unchanged invariants for locked claim artifacts
+                for path in immutable_paths:
+                    inv_id = f"IMMUTABLE_{path.replace('/', '_').upper()}"
+                    if not any(i.id == inv_id for i in existing):
+                        existing.append(Invariant(
+                            id=inv_id,
+                            description=f"Do not modify locked claim artifact: {path}",
+                            check_type="file_unchanged",
+                            params={"paths": [path], "since_tag": tag_name},
+                        ))
+                save_invariants(ws, existing)

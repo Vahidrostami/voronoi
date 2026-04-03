@@ -196,3 +196,184 @@ class TestFollowUp:
         ))
         result = queue.get(id2)
         assert result.parent_id == id1
+
+
+class TestPauseResume:
+    def test_pause_running(self, queue):
+        inv_id = queue.enqueue(Investigation(chat_id="c1", question="Q", slug="q"))
+        queue.start(inv_id, "/tmp/ws")
+        queue.pause(inv_id, "auth expired")
+        result = queue.get(inv_id)
+        assert result.status == "paused"
+        assert result.error == "auth expired"
+        assert result.completed_at is not None  # records when pause happened
+
+    def test_pause_only_running(self, queue):
+        """Pausing a queued investigation should have no effect."""
+        inv_id = queue.enqueue(Investigation(chat_id="c1", question="Q", slug="q"))
+        queue.pause(inv_id, "reason")
+        result = queue.get(inv_id)
+        assert result.status == "queued"
+
+    def test_resume_paused(self, queue):
+        inv_id = queue.enqueue(Investigation(chat_id="c1", question="Q", slug="q"))
+        queue.start(inv_id, "/tmp/ws")
+        queue.pause(inv_id, "auth expired")
+        assert queue.resume(inv_id) is True
+        result = queue.get(inv_id)
+        assert result.status == "running"
+        assert result.error is None
+        assert result.started_at is not None
+
+    def test_resume_failed(self, queue):
+        inv_id = queue.enqueue(Investigation(chat_id="c1", question="Q", slug="q"))
+        queue.start(inv_id, "/tmp/ws")
+        queue.fail(inv_id, "crashed")
+        assert queue.resume(inv_id) is True
+        result = queue.get(inv_id)
+        assert result.status == "running"
+        assert result.error is None
+
+    def test_resume_wrong_status(self, queue):
+        """Resuming a completed investigation should return False."""
+        inv_id = queue.enqueue(Investigation(chat_id="c1", question="Q", slug="q"))
+        queue.start(inv_id, "/tmp/ws")
+        queue.complete(inv_id)
+        assert queue.resume(inv_id) is False
+        assert queue.get(inv_id).status == "complete"
+
+    def test_get_paused(self, queue):
+        id1 = queue.enqueue(Investigation(chat_id="c1", question="Q1", slug="q1"))
+        id2 = queue.enqueue(Investigation(chat_id="c1", question="Q2", slug="q2"))
+        queue.start(id1, "/ws1")
+        queue.start(id2, "/ws2")
+        queue.pause(id1, "auth")
+        paused = queue.get_paused()
+        assert len(paused) == 1
+        assert paused[0].id == id1
+
+    def test_format_status_shows_paused(self, queue):
+        inv_id = queue.enqueue(Investigation(chat_id="c1", question="Q", slug="q"))
+        queue.start(inv_id, "/ws")
+        queue.pause(inv_id, "auth expired")
+        status = queue.format_status()
+        assert "Paused" in status
+        assert "auth expired" in status
+
+    def test_pause_resume_cycle(self, queue):
+        """Pause → resume → pause → resume should work."""
+        inv_id = queue.enqueue(Investigation(chat_id="c1", question="Q", slug="q"))
+        queue.start(inv_id, "/tmp/ws")
+        queue.pause(inv_id, "auth")
+        assert queue.get(inv_id).status == "paused"
+        queue.resume(inv_id)
+        assert queue.get(inv_id).status == "running"
+        queue.pause(inv_id, "auth again")
+        assert queue.get(inv_id).status == "paused"
+        queue.resume(inv_id)
+        assert queue.get(inv_id).status == "running"
+
+    def test_paused_not_counted_as_running(self, queue):
+        """Paused investigations should not count toward max_concurrent."""
+        id1 = queue.enqueue(Investigation(chat_id="c1", question="Q1", slug="q1"))
+        id2 = queue.enqueue(Investigation(chat_id="c1", question="Q2", slug="q2"))
+        id3 = queue.enqueue(Investigation(chat_id="c1", question="Q3", slug="q3"))
+        queue.start(id1, "/ws1")
+        queue.start(id2, "/ws2")
+        queue.pause(id1, "auth")
+        # With max_concurrent=2, only 1 running, so should get next
+        ready = queue.next_ready(max_concurrent=2)
+        assert ready is not None
+        assert ready.id == id3
+
+
+class TestReviewAndContinue:
+    def test_review_running_investigation(self, queue):
+        inv_id = queue.enqueue(Investigation(chat_id="c1", question="Q", slug="q"))
+        queue.start(inv_id, "/tmp/ws")
+        assert queue.review(inv_id) is True
+        result = queue.get(inv_id)
+        assert result.status == "review"
+        assert result.completed_at is not None
+
+    def test_review_wrong_status(self, queue):
+        inv_id = queue.enqueue(Investigation(chat_id="c1", question="Q", slug="q"))
+        assert queue.review(inv_id) is False  # can't review queued
+
+    def test_continue_from_review(self, queue):
+        inv_id = queue.enqueue(Investigation(chat_id="c1", question="Q", slug="q"))
+        queue.start(inv_id, "/tmp/ws")
+        queue.review(inv_id)
+        new_id = queue.continue_investigation(inv_id, "test more")
+        assert new_id is not None
+        # New investigation
+        new_inv = queue.get(new_id)
+        assert new_inv.status == "queued"
+        assert new_inv.parent_id == inv_id
+        assert new_inv.cycle_number == 2
+        assert "PI Feedback" in new_inv.question
+        assert "test more" in new_inv.question
+        assert new_inv.workspace_path == "/tmp/ws"
+        # Original transitions to complete
+        assert queue.get(inv_id).status == "complete"
+
+    def test_continue_from_complete(self, queue):
+        inv_id = queue.enqueue(Investigation(chat_id="c1", question="Q", slug="q"))
+        queue.start(inv_id, "/tmp/ws")
+        queue.complete(inv_id)
+        new_id = queue.continue_investigation(inv_id)
+        assert new_id is not None
+        new_inv = queue.get(new_id)
+        assert new_inv.parent_id == inv_id
+        assert new_inv.cycle_number == 2
+
+    def test_continue_wrong_status(self, queue):
+        inv_id = queue.enqueue(Investigation(chat_id="c1", question="Q", slug="q"))
+        queue.start(inv_id, "/tmp/ws")
+        assert queue.continue_investigation(inv_id) is None  # running, not reviewable
+
+    def test_continue_preserves_codename(self, queue):
+        inv_id = queue.enqueue(Investigation(
+            chat_id="c1", question="Q", slug="q", codename="Dopamine"))
+        queue.start(inv_id, "/tmp/ws")
+        queue.complete(inv_id)
+        new_id = queue.continue_investigation(inv_id)
+        new_inv = queue.get(new_id)
+        assert new_inv.codename == "Dopamine"
+
+    def test_lineage_chain(self, queue):
+        """Three rounds should share the same lineage_id."""
+        id1 = queue.enqueue(Investigation(chat_id="c1", question="Q", slug="q"))
+        inv1 = queue.get(id1)
+        assert inv1.lineage_id == id1  # root sets lineage to self
+
+        queue.start(id1, "/ws")
+        queue.complete(id1)
+        id2 = queue.continue_investigation(id1, "round 2 feedback")
+        inv2 = queue.get(id2)
+        assert inv2.lineage_id == id1
+        assert inv2.cycle_number == 2
+
+        queue.start(id2, "/ws")
+        queue.complete(id2)
+        id3 = queue.continue_investigation(id2, "round 3 feedback")
+        inv3 = queue.get(id3)
+        assert inv3.lineage_id == id1
+        assert inv3.cycle_number == 3
+
+    def test_continue_nonexistent(self, queue):
+        assert queue.continue_investigation(999) is None
+
+    def test_accept_from_review(self, queue):
+        inv_id = queue.enqueue(Investigation(chat_id="c1", question="Q", slug="q"))
+        queue.start(inv_id, "/tmp/ws")
+        queue.review(inv_id)
+        assert queue.accept(inv_id) is True
+        inv = queue.get(inv_id)
+        assert inv.status == "complete"
+
+    def test_accept_wrong_status(self, queue):
+        inv_id = queue.enqueue(Investigation(chat_id="c1", question="Q", slug="q"))
+        queue.start(inv_id, "/tmp/ws")
+        # Still running, can't accept
+        assert queue.accept(inv_id) is False

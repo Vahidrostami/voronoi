@@ -7,6 +7,7 @@ from pathlib import Path
 from voronoi.server.events import (
     SwarmEvent,
     append_event,
+    log_context_snapshot,
     log_finding,
     log_test_result,
     log_tool_call,
@@ -88,6 +89,23 @@ class TestConvenienceLoggers:
         events = read_events(tmp_path)
         assert events[0].event == "verify_step"
         assert "produces_check" in events[0].detail
+
+    def test_log_context_snapshot(self, tmp_path):
+        log_context_snapshot(
+            tmp_path, agent="orchestrator", cycle=5,
+            model="claude-opus-4.6", model_limit=200000,
+            total_used=50000, system_tokens=22600,
+            message_tokens=27300, free_tokens=109600,
+            buffer_tokens=40400,
+        )
+        events = read_events(tmp_path)
+        assert len(events) == 1
+        assert events[0].event == "context_snapshot"
+        assert events[0].tokens_used == 50000
+        assert "cycle=5" in events[0].detail
+        assert "claude-opus-4.6" in events[0].detail
+        assert "sys=22600" in events[0].detail
+        assert "free=109600" in events[0].detail
 
 
 class TestReadEvents:

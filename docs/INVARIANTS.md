@@ -2,7 +2,7 @@
 
 > Rules that MUST never be violated. Reference during code review, debugging, and development.
 
-**TL;DR**: 30 invariants. Key ones: prompt.py is sole prompt builder (INV-01). Roles only in .github/ files (INV-02). Orchestrator never enters worktrees (INV-03). Atomic queue claiming (INV-06). Rigor only escalates (INV-08). Baseline-first (INV-09). EVA before finding (INV-12). No simulation bypass (INV-16). Push before session end (INV-25).
+**TL;DR**: 41 invariants. Key ones: prompt.py is sole prompt builder (INV-01). Roles only in .github/ files (INV-02). Orchestrator never enters worktrees (INV-03). Atomic queue claiming (INV-06). Rigor only escalates (INV-08). Baseline-first (INV-09). EVA before finding (INV-12). No simulation bypass (INV-16). Push before session end (INV-25). Plan review before dispatch at Analytical+ (INV-35). Experiment contract before workers (INV-39). Sentinel audit cannot be bypassed (INV-40). Missing contract warning (INV-41).
 
 ## 1. Architectural Invariants
 
@@ -149,3 +149,35 @@ When a human gate is pending (`.swarm/human-gate.json` with `status: "pending"`)
 
 ### INV-34: Negative-Result Completion
 An investigation that produces valid experimental results that falsify the hypothesis is a completed investigation, not a failed one. The convergence system MUST support a `negative_result` status distinct from `failed` and `exhausted`.
+
+---
+
+## 10. Iterative Science Invariants
+
+### INV-35: Locked Claim Immutability
+Locked claims' supporting artifacts (code, data, results) MUST NOT be modified in subsequent runs. Enforced by `file_unchanged` invariant check in the convergence gate. The dispatcher writes these invariants automatically during workspace continuation preparation.
+
+### INV-36: Claim Ledger Lineage Scoping
+The Claim Ledger is scoped to a lineage (parent_id chain). A new unrelated question MUST create a new ledger. Claims MUST NOT contaminate across lineages. The `lineage_id` field on Investigation determines which ledger to use.
+
+### INV-37: Model Prior Disclosure
+Claims tagged `model_prior` MUST NOT appear as established findings in deliverables without explicit disclosure. The prompt builder flags these for the orchestrator. The Claim Ledger tracks provenance to ensure this.
+
+### INV-38: Continuation Artifact Preservation
+Continuation runs MUST NOT regenerate data that locked claims depend on. New data MUST be created in separate files/directories. The warm-start brief lists immutable paths and instructs the orchestrator accordingly.
+
+### INV-35: Plan Review Before Dispatch (Analytical+)
+At Analytical rigor and above, the orchestrator MUST submit its task decomposition for plan review BEFORE dispatching investigation workers. The Critic (and at higher rigor, Theorist and Methodologist) reviews the plan and writes a verdict to `.swarm/plan-review.json`. The orchestrator MUST revise the plan if the verdict is REVISE or RESTRUCTURE. Only one review round is permitted — no iterative loops. At Standard rigor (build tasks), plan review is skipped.
+
+---
+
+## 11. Experiment Sentinel Invariants
+
+### INV-39: Experiment Contract Before Workers
+At Analytical rigor and above, the orchestrator MUST write `.swarm/experiment-contract.json` after experiment design and BEFORE dispatching investigation workers. The contract declares the independent variable, conditions, and machine-readable validity checks. The dispatcher enforces this structurally — it does not rely on the orchestrator to validate outputs.
+
+### INV-40: Sentinel Audit Cannot Be Bypassed
+The dispatcher Sentinel runs autonomously. The orchestrator MUST NOT delete, modify, or ignore `.swarm/sentinel-audit.json`. If the Sentinel flags a critical failure, the orchestrator MUST treat it as a DESIGN_INVALID event and dispatch a Methodologist for post-mortem — it MUST NOT proceed to the next phase or declare convergence while sentinel failures are unresolved.
+
+### INV-41: Missing Contract Warning
+At Analytical+ rigor, if experiment-type tasks exist but no `.swarm/experiment-contract.json` has been written after 1 hour, the dispatcher MUST warn and write a `sentinel_violation` directive. The orchestrator MUST NOT dispatch additional experiment workers until the contract is written.

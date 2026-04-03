@@ -54,10 +54,17 @@ class GitHubPublisher:
             return True, url
 
         # Repo might already exist — try just pushing
-        code2, _ = _run_cmd([
+        code2, output2 = _run_cmd([
             "git", "remote", "add", "voronoi-lab",
             f"https://github.com/{full_repo}.git",
         ], cwd=workspace_path)
+
+        if code2 != 0:
+            # Remote may already exist — try updating the URL instead
+            _run_cmd([
+                "git", "remote", "set-url", "voronoi-lab",
+                f"https://github.com/{full_repo}.git",
+            ], cwd=workspace_path)
 
         default_branch = resolve_git_default_branch(workspace_path)
 

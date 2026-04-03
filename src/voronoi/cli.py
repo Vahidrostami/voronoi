@@ -18,8 +18,8 @@ FRAMEWORK_DIRS = ["scripts"]
 # Top-level template files (written from data/templates/)
 TEMPLATE_FILES = ["CLAUDE.md", "AGENTS.md"]
 
-# Runtime subdirectories to copy into target .github/ (agent definitions, prompts, skills)
-GITHUB_SUBDIRS = ["agents", "prompts", "skills"]
+# Runtime subdirectories to copy into target .github/ (agent definitions, prompts, skills, instructions, hooks)
+GITHUB_SUBDIRS = ["agents", "prompts", "skills", "instructions", "hooks"]
 
 # Files that should never be overwritten during upgrade
 USER_OWNED = {"CLAUDE.md", "AGENTS.md"}
@@ -67,6 +67,42 @@ def _ensure_executable(directory: Path) -> None:
         return
     for sh_file in directory.rglob("*.sh"):
         sh_file.chmod(sh_file.stat().st_mode | 0o755)
+
+
+def _current_python_command() -> str:
+    """Return the Python interpreter that should launch the MCP sidecar."""
+    return sys.executable or shutil.which("python3") or "python3"
+
+
+def _write_mcp_config(github_dst: Path) -> None:
+    """Write Copilot CLI MCP auto-discovery config for the current environment."""
+    mcp_config_path = github_dst / "mcp-config.json"
+    mcp_config = {
+        "mcpServers": {
+            "voronoi": {
+                "command": _current_python_command(),
+                "args": ["-m", "voronoi.mcp"],
+                "env": {"VORONOI_WORKSPACE": "."},
+            }
+        }
+    }
+    mcp_config_path.write_text(json.dumps(mcp_config, indent=2))
+
+
+def _server_tmp_dir(base_dir: Path) -> Path:
+    """Return the dedicated temp root for server subprocesses."""
+    return base_dir / "tmp"
+
+
+def _server_runtime_env(base_dir: Path) -> dict[str, str]:
+    """Build a subprocess environment rooted in the server temp directory."""
+    tmp_dir = _server_tmp_dir(base_dir)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    env = os.environ.copy()
+    for var in ("TMPDIR", "TMP", "TEMP"):
+        env[var] = str(tmp_dir)
+    return env
 
 
 def _build_orchestrator_prompt(
@@ -139,7 +175,12 @@ def cmd_init(args: argparse.Namespace) -> None:
         src = github_src / subdir
         if src.is_dir():
             _copy_dir(src, github_dst / subdir)
-    print("  ✓ .github/ (agents, prompts, skills)")
+
+    _write_mcp_config(github_dst)
+    # Make hook scripts executable
+    hooks_dst = github_dst / "hooks"
+    _ensure_executable(hooks_dst)
+    print("  ✓ .github/ (agents, prompts, skills, instructions, hooks, mcp)")
 
     # Copy runtime constitution templates
     templates_dir = _resolve_templates_dir(data)
@@ -204,7 +245,11 @@ def cmd_upgrade(args: argparse.Namespace) -> None:
         dst = github_dst / subdir
         if src.is_dir():
             _copy_dir(src, dst)
-    print("  ✓ .github/ (agents, prompts, skills replaced)")
+    _write_mcp_config(github_dst)
+    # Make hook scripts executable
+    hooks_dst = github_dst / "hooks"
+    _ensure_executable(hooks_dst)
+    print("  ✓ .github/ (agents, prompts, skills, instructions, hooks, mcp replaced)")
 
     # User-owned files: only copy if missing
     templates_dir = _resolve_templates_dir(data)
@@ -482,6 +527,7 @@ def _server_init(args: argparse.Namespace) -> None:
     config.base_dir.mkdir(parents=True, exist_ok=True)
     (config.base_dir / "objects").mkdir(exist_ok=True)
     (config.base_dir / "active").mkdir(exist_ok=True)
+    _server_tmp_dir(config.base_dir).mkdir(exist_ok=True)
 
     if not config.config_path.exists():
         config.save()
@@ -645,7 +691,7 @@ def _server_start(args: argparse.Namespace) -> None:
     print(f"   Press Ctrl+C to stop\n")
 
     # Pass log level to the bridge subprocess via environment
-    env = os.environ.copy()
+    env = _server_runtime_env(config.base_dir)
     env.setdefault("VORONOI_LOG_LEVEL", log_level)
 
     try:

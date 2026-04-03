@@ -61,8 +61,10 @@ from voronoi.science.gates import (
     CalibrationResult,
     Invariant,
     InvariantCheckResult,
+    PLAN_REVIEW_REVIEWERS,
     PRE_REG_FIELDS,
     PRE_REG_SCIENTIFIC_FIELDS,
+    PlanReviewResult,
     PreRegComplianceResult,
     PreRegistration,
     ReplicationNeed,
@@ -71,6 +73,7 @@ from voronoi.science.gates import (
     check_dispatch_gates,
     check_invariants,
     check_merge_gates,
+    check_plan_review_gate,
     find_replication_needs,
     format_invariants_for_prompt,
     load_invariants,
@@ -79,6 +82,29 @@ from voronoi.science.gates import (
     save_invariants,
     validate_data_invariants,
     validate_pre_registration,
+    # Experiment Sentinel
+    DegeneracyCheck,
+    ExperimentContract,
+    ManipulationCheck,
+    PhaseGate,
+    SentinelAuditResult,
+    SentinelCheckResult,
+    load_experiment_contract,
+    save_experiment_contract,
+    validate_experiment_contract,
+    validate_phase_gate,
+)
+
+# --- Claims (cross-run scientific state) ---
+from voronoi.science.claims import (
+    Claim,
+    ClaimArtifact,
+    ClaimLedger,
+    Objection,
+    generate_self_critique,
+    load_ledger,
+    resolve_lineage_id,
+    save_ledger,
 )
 
 __all__ = [
@@ -103,9 +129,19 @@ __all__ = [
     "PreRegistration", "PreRegComplianceResult",
     "parse_pre_registration", "validate_pre_registration", "audit_pre_registration_compliance",
     "check_dispatch_gates", "check_merge_gates",
+    "PLAN_REVIEW_REVIEWERS", "PlanReviewResult", "check_plan_review_gate",
     "Invariant", "InvariantCheckResult",
     "load_invariants", "save_invariants", "format_invariants_for_prompt",
     "check_invariants", "validate_data_invariants",
     "CalibrationResult", "check_calibration", "parse_revise_context",
     "ReplicationNeed", "find_replication_needs",
+    # Experiment Sentinel
+    "ManipulationCheck", "DegeneracyCheck", "PhaseGate",
+    "ExperimentContract", "SentinelCheckResult", "SentinelAuditResult",
+    "load_experiment_contract", "save_experiment_contract",
+    "validate_experiment_contract", "validate_phase_gate",
+    # Claims (cross-run scientific state)
+    "Claim", "ClaimArtifact", "ClaimLedger", "Objection",
+    "load_ledger", "save_ledger", "resolve_lineage_id",
+    "generate_self_critique",
 ]

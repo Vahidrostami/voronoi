@@ -80,6 +80,8 @@ The orchestrator selects roles based on the classified rigor level. Roles CANNOT
 - SOTA anchoring (what's the current best?)
 - Identification of gaps in existing knowledge
 
+**Deep Research**: The scout uses the `deep-research` skill for literature review and prior-art search. This skill leverages Copilot CLI's `/research` command to search GitHub repos + live web sources, providing citation-backed evidence instead of relying on LLM training data. See `.github/skills/deep-research/SKILL.md`.
+
 **Verify Loop**:
 - Knowledge brief written + sources cited
 - Max iterations: **3**
@@ -139,6 +141,8 @@ The orchestrator selects roles based on the classified rigor level. Roles CANNOT
 **File**: `src/voronoi/data/agents/critic.agent.md`
 
 **Standard+ activation.** Adversarial review with 5-check checklist.
+
+**Plan Review Mode (Analytical+):** When dispatched with `TYPE:plan-review` in task notes, the Critic reviews the orchestrator's task decomposition instead of a finding. Uses a 6-point plan review checklist (coverage, granularity, dependencies, completeness, baseline anchoring, artifact chains). Writes verdict to `.swarm/plan-review.json`. At Scientific+, the Theorist also reviews; at Experimental, the Methodologist joins.
 
 **At Scientific+**: Partially blinded — receives findings without knowing which agent produced them.
 
@@ -258,6 +262,13 @@ Each iteration appends to `.swarm/verify-log-<task-id>.jsonl`:
 
 ```
 Orchestrator
+     │
+     ├── decomposes tasks (Plan phase)
+     │
+     ├── [Analytical+] dispatches → Critic for plan review
+     │       [Scientific+] also → Theorist
+     │       [Experimental] also → Methodologist
+     │       └── verdict in .swarm/plan-review.json → Orchestrator revises if needed
      │
      ├── dispatches → Scout (first, for prior knowledge)
      │

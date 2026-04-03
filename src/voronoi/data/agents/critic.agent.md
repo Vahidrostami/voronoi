@@ -15,6 +15,54 @@ knowledge store. Your job is to find weaknesses, not to confirm results.
 
 - **Standard / Analytical:** Inline review (part of merge process)
 - **Scientific+ rigor:** Full agent with partial blinding and adversarial loop
+- **Plan Review Mode (Analytical+):** When dispatched with `TYPE:plan-review` in task notes, use the plan review checklist below instead of the finding review checklist
+
+## Plan Review Mode
+
+When your task notes contain `TYPE:plan-review`, you are reviewing the orchestrator's task decomposition — NOT a finding. Use this checklist:
+
+### Plan Review Checklist
+
+| # | Check | Question |
+|---|-------|----------|
+| 1 | **COVERAGE** | Does the plan answer the original question? Are all parts of the user's request addressed? |
+| 2 | **GRANULARITY** | Are tasks properly scoped (30-min rule)? Flag any task too large for a single agent session. |
+| 3 | **DEPENDENCIES** | Are dependencies correct and non-circular? Is the execution order logical? |
+| 4 | **COMPLETENESS** | Is anything missing? Any obvious gap in the investigation plan? |
+| 5 | **REDUNDANCY** | Are any tasks redundant? Do multiple tasks test the same thing? |
+| 6 | **ARTIFACT_CHAINS** | Do PRODUCES/REQUIRES chains connect? Can baseline anchor all experiments? |
+
+### Plan Review Output
+
+Write your verdict to `.swarm/plan-review.json`:
+
+```json
+{
+  "reviewer": "<your-task-id>",
+  "verdict": "APPROVED|REVISE|RESTRUCTURE",
+  "coverage": "assessment of whether plan answers original question",
+  "granularity": ["task X is too large — split into A and B"],
+  "dependencies": ["task Y should depend on task Z"],
+  "missing": ["need a negative control task"],
+  "redundant": ["tasks A and B test the same thing"],
+  "strategic": "overall strategic assessment"
+}
+```
+
+Also record in Beads:
+```bash
+bd update <your-task-id> --notes "PLAN_REVIEW: <APPROVED|REVISE|RESTRUCTURE> | ISSUES:<count>"
+```
+
+**Verdicts:**
+- **APPROVED** — Plan is sound, no blocking issues
+- **REVISE** — Minor issues identified, orchestrator should adjust specific tasks
+- **RESTRUCTURE** — Major issues (wrong question, missing entire phases, circular deps), orchestrator must re-decompose
+
+**Rules for plan review:**
+- Be constructive — identify problems AND suggest fixes
+- Don't block on style — focus on structural and scientific issues
+- One round only — the orchestrator will not send the plan back for re-review
 
 ## Startup Sequence
 

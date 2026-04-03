@@ -86,9 +86,7 @@ class TestTeaser:
         teaser = rg.build_teaser(7, "Why is performance degrading?", 12, 12, 18.5)
 
         assert "COMPLETE" in teaser
-        assert "Voronoi" in teaser
         assert "EWC" in teaser
-        assert "100%" in teaser
         assert "18min" in teaser
         assert "report attached" in teaser.lower()
 
@@ -100,8 +98,7 @@ class TestTeaser:
         teaser = rg.build_teaser(1, "test question", 5, 3, 10)
 
         assert "COMPLETE" in teaser
-        assert "60%" in teaser
-        assert "0 findings" in teaser
+        assert "0 finding" in teaser
 
     @patch("voronoi.gateway.report._run_bd")
     def test_teaser_bd_failure(self, mock_bd, workspace):
@@ -129,7 +126,7 @@ class TestTeaser:
 
         # Headline should be "Large effect" (d=1.20), not first
         lines = teaser.split("\n")
-        headline_idx = next(i for i, l in enumerate(lines) if "HEADLINE" in l)
+        headline_idx = next(i for i, l in enumerate(lines) if "big one" in l)
         assert "Large effect" in lines[headline_idx + 1]
 
     @patch("voronoi.gateway.report._run_bd")
@@ -145,8 +142,8 @@ class TestTeaser:
         rg = ReportGenerator(workspace)
         teaser = rg.build_teaser(1, "test", 5, 5, 10)
 
-        # "Alpha" is the headline; "All findings" should only list "Beta"
-        all_findings_section = teaser.split("*All findings:*")
+        # "Alpha" is the headline; "Also found" should only list "Beta"
+        all_findings_section = teaser.split("*Also found:*")
         if len(all_findings_section) > 1:
             remainder = all_findings_section[1]
             assert "Alpha" not in remainder
@@ -720,3 +717,77 @@ class TestNegativeResults:
         result = ReportGenerator._render_negative_results(findings)
         assert result is not None
         assert "Unclear" in result
+
+
+# ---------------------------------------------------------------------------
+# Demo output copy
+# ---------------------------------------------------------------------------
+
+class TestDemoOutputCopy:
+    def test_copies_precompiled_to_demo_output(self, tmp_path):
+        """Pre-compiled PDF is copied to demos/<name>/output/paper/."""
+        ws = tmp_path / "workspace"
+        swarm = ws / ".swarm"
+        swarm.mkdir(parents=True)
+        # Place a pre-compiled PDF in .swarm/
+        pdf = swarm / "report.pdf"
+        pdf.write_bytes(b"x" * 2000)  # >1000 bytes to pass size check
+        demo = ws / "demos" / "my-experiment"
+        demo.mkdir(parents=True)
+
+        rg = ReportGenerator(ws)
+        path = rg.build_pdf()
+
+        assert path is not None
+        assert path == pdf
+        paper_dir = demo / "output" / "paper"
+        assert paper_dir.exists()
+        assert (paper_dir / "report.pdf").exists()
+
+    @patch("voronoi.gateway.report._run_bd")
+    def test_no_copy_for_markdown_fallback(self, mock_bd, tmp_path):
+        """Markdown-generated PDFs should NOT be copied to paper dir."""
+        ws = tmp_path / "workspace"
+        swarm = ws / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "deliverable.md").write_text("# Paper")
+        demo = ws / "demos" / "my-experiment"
+        demo.mkdir(parents=True)
+        mock_bd.return_value = (0, json.dumps([]))
+
+        rg = ReportGenerator(ws)
+        path = rg.build_pdf()
+
+        assert path is not None
+        # Auto-generated output should NOT appear in paper dir
+        assert not list((demo / "output").glob("**/*")) if (demo / "output").exists() else True
+
+    def test_no_copy_without_demo(self, tmp_path):
+        """No demo directory => no copy attempted."""
+        ws = tmp_path / "workspace"
+        swarm = ws / ".swarm"
+        swarm.mkdir(parents=True)
+        pdf = swarm / "report.pdf"
+        pdf.write_bytes(b"x" * 2000)
+
+        rg = ReportGenerator(ws)
+        path = rg.build_pdf()
+
+        assert path is not None
+        assert not list(ws.glob("demos/*/output/paper/*"))
+
+    def test_no_copy_multiple_demos(self, tmp_path):
+        """Multiple demo directories => ambiguous, no copy."""
+        ws = tmp_path / "workspace"
+        swarm = ws / ".swarm"
+        swarm.mkdir(parents=True)
+        pdf = swarm / "report.pdf"
+        pdf.write_bytes(b"x" * 2000)
+        (ws / "demos" / "demo1").mkdir(parents=True)
+        (ws / "demos" / "demo2").mkdir(parents=True)
+
+        rg = ReportGenerator(ws)
+        path = rg.build_pdf()
+
+        assert path is not None
+        assert not list(ws.glob("demos/*/output/paper/*"))

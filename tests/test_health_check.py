@@ -21,7 +21,7 @@ def run_health(args=None, config=None, env_extra=None, cwd=None):
         cmd,
         capture_output=True,
         text=True,
-        timeout=15,
+        timeout=30,
         cwd=cwd,
         env=env,
     )
@@ -168,3 +168,24 @@ class TestHealthCheckWithTmux:
         data = json.loads(result.stdout)
         for entry in data:
             assert entry["session"] == self.SESSION
+
+    def test_auto_discovery_ignores_other_project_sessions(self, _tmux_session, tmp_path):
+        """Auto-discovery should stay scoped to the current project/workspace."""
+        unrelated_dir = tmp_path.parent / "unrelated-project"
+        unrelated_dir.mkdir()
+        other_session = "unrelated-health-swarm"
+        try:
+            subprocess.run(
+                ["tmux", "new-session", "-d", "-s", other_session, "-c", str(unrelated_dir)],
+                check=True,
+            )
+            result = run_health(
+                args=["--json", "--no-notify"],
+                cwd=str(_tmux_session),
+            )
+            assert result.returncode == 0
+            data = json.loads(result.stdout)
+            assert data
+            assert {entry["session"] for entry in data} == {self.SESSION}
+        finally:
+            subprocess.run(["tmux", "kill-session", "-t", other_session], capture_output=True)

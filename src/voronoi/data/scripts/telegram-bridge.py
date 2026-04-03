@@ -150,6 +150,10 @@ def run_bot(config: dict) -> None:
     async def _reply(update: Update, text: str, file_path: Path | None = None,
                      buttons: list[list[tuple[str, str]]] | None = None) -> None:
         """Send a text reply, optionally with inline buttons and/or a document."""
+        msg = update.effective_message
+        if msg is None:
+            logger.warning("_reply called but no message available on update")
+            return
         reply_markup = None
         if buttons:
             keyboard = [
@@ -158,13 +162,13 @@ def run_bot(config: dict) -> None:
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
         try:
-            await update.message.reply_text(text, parse_mode="Markdown", reply_markup=reply_markup)
+            await msg.reply_text(text, parse_mode="Markdown", reply_markup=reply_markup)
         except Exception:
-            await update.message.reply_text(text, reply_markup=reply_markup)
+            await msg.reply_text(text, reply_markup=reply_markup)
         if file_path and file_path.exists():
             try:
                 with open(file_path, "rb") as f:
-                    await update.message.reply_document(f, filename=file_path.name)
+                    await msg.reply_document(f, filename=file_path.name)
             except Exception:
                 pass  # document send is best-effort
 
@@ -174,17 +178,18 @@ def run_bot(config: dict) -> None:
         if not _is_allowed(update):
             user = update.effective_user
             logger.warning("Unauthorized /voronoi from user=%s", user.id if user else "?")
-            if update.message:
-                await update.message.reply_text("You are not authorized to use this bot.")
+            await _reply(update, "You are not authorized to use this bot.")
             return
 
-        if update.message and update.message.chat_id:
-            save_chat_id(project_dir, update.message.chat_id)
+        effective_msg = update.effective_message
+        if effective_msg and effective_msg.chat_id:
+            save_chat_id(project_dir, effective_msg.chat_id)
 
         args = context.args or []
         subcommand = args[0].lower() if args else ""
         sub_args = args[1:] if len(args) > 1 else []
-        chat_id = str(update.message.chat_id) if update.message else "unknown"
+        effective_msg = update.effective_message
+        chat_id = str(effective_msg.chat_id) if effective_msg else "unknown"
 
         logger.info("CMD /voronoi %s %s (chat=%s)", subcommand, " ".join(sub_args), chat_id)
         reply_text, reply_file = router.route(subcommand, sub_args, chat_id)
@@ -203,11 +208,11 @@ def run_bot(config: dict) -> None:
         if not _is_allowed(update):
             user = update.effective_user
             logger.warning("Unauthorized /approve from user=%s", user.id if user else "?")
-            if update.message:
-                await update.message.reply_text("You are not authorized to use this bot.")
+            await _reply(update, "You are not authorized to use this bot.")
             return
-        if update.message and update.message.chat_id:
-            save_chat_id(project_dir, update.message.chat_id)
+        effective_msg = update.effective_message
+        if effective_msg and effective_msg.chat_id:
+            save_chat_id(project_dir, effective_msg.chat_id)
         reply_text = format_human_gate_command_reply(
             "approve", context.args or [], _get_dispatcher()
         )
@@ -217,11 +222,11 @@ def run_bot(config: dict) -> None:
         if not _is_allowed(update):
             user = update.effective_user
             logger.warning("Unauthorized /revise from user=%s", user.id if user else "?")
-            if update.message:
-                await update.message.reply_text("You are not authorized to use this bot.")
+            await _reply(update, "You are not authorized to use this bot.")
             return
-        if update.message and update.message.chat_id:
-            save_chat_id(project_dir, update.message.chat_id)
+        effective_msg = update.effective_message
+        if effective_msg and effective_msg.chat_id:
+            save_chat_id(project_dir, effective_msg.chat_id)
         reply_text = format_human_gate_command_reply(
             "revise", context.args or [], _get_dispatcher()
         )
@@ -391,7 +396,7 @@ def run_bot(config: dict) -> None:
 
             async def _async_send(cid: str, text: str) -> int | None:
                 # Typing indicator before milestone messages
-                is_milestone = any(marker in text for marker in ("★ ", "⚠ ", "is done", "failed"))
+                is_milestone = any(marker in text for marker in ("★ ", "⚠ ", "is done", "didn't make it", "failed"))
                 if is_milestone:
                     try:
                         await app.bot.send_chat_action(chat_id=cid, action="typing")
@@ -413,7 +418,7 @@ def run_bot(config: dict) -> None:
                             [InlineKeyboardButton("📋 Details", callback_data="details"),
                              InlineKeyboardButton("🧠 Belief Map", callback_data="belief")],
                         ])
-                    elif any(k in text for k in ("tasks", "Phase ", "agents active", "criteria")):
+                    elif any(k in text for k in ("tasks", "agents active", "criteria")):
                         # Status/digest update
                         reply_markup = InlineKeyboardMarkup([
                             [InlineKeyboardButton("📋 Details", callback_data="details"),
@@ -425,7 +430,7 @@ def run_bot(config: dict) -> None:
                             [InlineKeyboardButton("📋 Details", callback_data="details"),
                              InlineKeyboardButton("🧠 Belief Map", callback_data="belief")],
                         ])
-                    elif "failed" in text.lower():
+                    elif "didn't make it" in text.lower() or "failed" in text.lower():
                         reply_markup = InlineKeyboardMarkup([
                             [InlineKeyboardButton("📋 Details", callback_data="details"),
                              InlineKeyboardButton("🛑 Abort", callback_data="abort")],

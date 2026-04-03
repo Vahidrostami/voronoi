@@ -90,6 +90,7 @@ def load_belief_map(workspace: Path) -> BeliefMap:
         raw_hyps = data.get("hypotheses", [])
         # Schema migration: accept both list-of-objects (canonical) and
         # dict-keyed-by-id (legacy/malformed).  See INV-33.
+        migrated = False
         if isinstance(raw_hyps, dict):
             logger.warning("belief-map.json has dict-keyed hypotheses in %s — migrating to list", workspace)
             items: list[dict] = []
@@ -101,6 +102,7 @@ def load_belief_map(workspace: Path) -> BeliefMap:
                 elif isinstance(val, str):
                     items.append({"id": key, "name": val})
             raw_hyps = items
+            migrated = True
         if not isinstance(raw_hyps, list):
             logger.warning("belief-map.json hypotheses is not a list or dict in %s", workspace)
             raw_hyps = []
@@ -113,6 +115,14 @@ def load_belief_map(workspace: Path) -> BeliefMap:
                 status=h.get("status", "untested"), evidence=h.get("evidence", []),
                 testability=h.get("testability", 0.5), impact=h.get("impact", 0.5),
             ))
+        # Persist migration so subsequent reads don't re-trigger warnings
+        if migrated:
+            try:
+                data["hypotheses"] = raw_hyps
+                path.write_text(json.dumps(data, indent=2))
+                logger.info("Persisted belief-map migration for %s", workspace)
+            except OSError:
+                pass
         return bm
     except (json.JSONDecodeError, OSError, AttributeError, TypeError) as e:
         logger.warning("Failed to load belief map: %s", e)
@@ -155,6 +165,10 @@ class OrchestratorCheckpoint:
     tokens_this_cycle: int = 0
     tokens_cumulative: int = 0
     context_window_remaining_pct: float = 1.0
+    # Structured /context snapshot — ground-truth from Copilot CLI
+    context_snapshot: dict = field(default_factory=dict)
+    # Expected keys: model, model_limit, total_used, system_tokens,
+    # message_tokens, free_tokens, buffer_tokens (all ints except model=str)
 
 
 def load_checkpoint(workspace: Path) -> OrchestratorCheckpoint:
@@ -182,6 +196,7 @@ def load_checkpoint(workspace: Path) -> OrchestratorCheckpoint:
             tokens_this_cycle=d.get("tokens_this_cycle", 0),
             tokens_cumulative=d.get("tokens_cumulative", 0),
             context_window_remaining_pct=d.get("context_window_remaining_pct", 1.0),
+            context_snapshot=d.get("context_snapshot", {}),
         )
     except (json.JSONDecodeError, OSError) as e:
         logger.warning("Failed to load orchestrator checkpoint: %s", e)
@@ -215,6 +230,18 @@ def format_checkpoint_for_prompt(cp: OrchestratorCheckpoint) -> str:
         lines.append(f"Token budget: {cp.tokens_this_cycle:,} this cycle, "
                      f"{cp.tokens_cumulative:,} cumulative "
                      f"({cp.context_window_remaining_pct:.0%} window remaining)")
+    if cp.context_snapshot:
+        snap = cp.context_snapshot
+        model = snap.get("model", "")
+        limit = snap.get("model_limit", 0)
+        sys_tok = snap.get("system_tokens", 0)
+        msg_tok = snap.get("message_tokens", 0)
+        free_tok = snap.get("free_tokens", 0)
+        if limit:
+            lines.append(
+                f"Context ({model}): system={sys_tok:,} messages={msg_tok:,} "
+                f"free={free_tok:,} / {limit:,}"
+            )
     if cp.recent_events:
         lines.append("\nRecent events:")
         lines.extend(f"  - {e}" for e in cp.recent_events)

@@ -99,7 +99,12 @@ class SandboxManager:
                     return None
                 raise RuntimeError(f"Failed to start sandbox: {result.stderr}")
 
-            container_id = result.stdout.strip()[:12]
+            raw_id = result.stdout.strip()
+            if not raw_id:
+                if self.config.fallback_to_host:
+                    return None
+                raise RuntimeError("Docker returned empty container ID")
+            container_id = raw_id[:12]
 
             # Write sandbox ID to workspace
             sandbox_file = Path(workspace_path) / ".sandbox-id"

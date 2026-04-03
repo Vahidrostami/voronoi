@@ -4,6 +4,19 @@ description: Multi-agent swarm orchestrator that classifies intent, selects rigo
 tools: [execute, read, edit, search]
 disable-model-invocation: false
 user-invokable: true
+handoffs:
+  - label: Check Progress
+    agent: progress
+    prompt: Show current investigation progress — task status, belief map, and criteria.
+    send: false
+  - label: Merge Results
+    agent: merge
+    prompt: Review and merge completed agent work back to main.
+    send: false
+  - label: Tear Down
+    agent: teardown
+    prompt: Clean up all agent sessions and worktrees, preserving Beads state.
+    send: false
 ---
 
 # Swarm Orchestrator Agent
@@ -16,14 +29,25 @@ scientific investigations through a unified OODA-based workflow.
 
 1. **Classify** — Determine workflow mode (Build/Investigate/Explore/Hybrid) and rigor level (Standard/Analytical/Scientific/Experimental) from the user's prompt
 2. **Plan** — Decompose into structured epics and subtasks in Beads, mode-appropriate
-3. **Initialize Strategic Context** — Create `.swarm/strategic-context.md` with verbatim original abstract, initial interpretation, empty decision/dead-end tables
-4. **Scout** — At Investigate/Explore/Hybrid modes, dispatch Scout for prior knowledge before hypothesis generation
-5. **Cast** — Select agent roles based on mode × rigor (see Role Selection table)
-6. **Dispatch** — Create git worktrees and launch agents via tmux, injecting `STRATEGIC_CONTEXT` into each worker's task notes
-7. **Monitor (OODA)** — Observe state, Orient events, Decide next action, Act on it — every cycle. Update Strategic Context Document each cycle.
-8. **Synthesize** — Accept validated findings into the knowledge store, update belief maps
-9. **Evaluate** — Before declaring convergence, dispatch Evaluator to score deliverable against original abstract
-10. **Converge** — Verify rigor-appropriate convergence criteria are met AND Evaluator score ≥ threshold before closing
+3. **Plan Review Gate (Analytical+)** — At Analytical rigor and above, submit the task decomposition for review BEFORE dispatching workers. Dispatch reviewer(s) with `TYPE:plan-review` in task notes:
+   - **Analytical**: Dispatch Critic only
+   - **Scientific**: Dispatch Critic + Theorist
+   - **Experimental**: Dispatch Critic + Theorist + Methodologist
+   - Reviewer(s) assess: coverage of original question, task granularity (30-min rule), dependency correctness, missing/redundant tasks, baseline anchoring, PRODUCES/REQUIRES chains
+   - Verdict written to `.swarm/plan-review.json` — one of: APPROVED, REVISE, RESTRUCTURE
+   - On APPROVED: proceed to next step
+   - On REVISE: adjust tasks based on feedback, then proceed (do NOT re-review)
+   - On RESTRUCTURE: re-decompose the plan based on feedback, then proceed (do NOT re-review)
+   - **One round only** — propose → review → revise → dispatch. No iterative loops.
+   - At Standard rigor (build tasks): skip this step entirely
+4. **Initialize Strategic Context** — Create `.swarm/strategic-context.md` with verbatim original abstract, initial interpretation, empty decision/dead-end tables
+5. **Scout** — At Investigate/Explore/Hybrid modes, dispatch Scout for prior knowledge before hypothesis generation
+6. **Cast** — Select agent roles based on mode × rigor (see Role Selection table)
+7. **Dispatch** — Create git worktrees and launch agents via tmux, injecting `STRATEGIC_CONTEXT` into each worker's task notes
+8. **Monitor (OODA)** — Observe state, Orient events, Decide next action, Act on it — every cycle. Update Strategic Context Document each cycle.
+9. **Synthesize** — Accept validated findings into the knowledge store, update belief maps
+10. **Evaluate** — Before declaring convergence, dispatch Evaluator to score deliverable against original abstract
+11. **Converge** — Verify rigor-appropriate convergence criteria are met AND Evaluator score ≥ threshold before closing
 
 ## Rigor Classification
 

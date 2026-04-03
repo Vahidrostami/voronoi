@@ -107,9 +107,12 @@ class AntonHandoff:
 
         try:
             result = json.loads(output)
-            task_id = result.get("id", "?")
+            task_id = result.get("id", "")
         except (json.JSONDecodeError, ValueError):
-            task_id = "?"
+            task_id = ""
+
+        if not task_id:
+            return True, f"Created Anton task (unknown id): {spec.title}"
 
         # Add metadata notes
         _run_cmd(

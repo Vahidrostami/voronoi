@@ -283,6 +283,30 @@ If the orchestrator writes `context_window_remaining_pct` in the checkpoint:
 
 Self-reported pressure can trigger directives earlier than the time thresholds.
 
+### `/compact` — Native Context Compression
+
+At `context_warning` and `context_critical` levels, the dispatcher directive instructs the orchestrator to run Copilot CLI's `/compact` command. This is **native LLM-level context compression** — the agent's conversation history is summarized in-place, recovering 60-70% of context budget without restarting.
+
+**Why this matters:** Voronoi's workspace compaction (`compact.py`) compresses *state files* agents read. `/compact` compresses the agent's *conversation memory* — the accumulated tool calls, reasoning, and outputs from 30+ OODA cycles. These are complementary:
+
+| Mechanism | What it compresses | When |
+|-----------|-------------------|------|
+| `compact.py` (dispatcher) | `.swarm/` files (experiments.tsv, events.jsonl) | Every `compact_interval_hours` |
+| `/compact` (agent-side) | Agent's conversation history (context window) | On `context_warning` or `context_critical` directive |
+
+**Checkpoint + file state survives `/compact`** because they're on disk, not in conversation context. The agent reads checkpoint at each OODA cycle start, so compacted conversation history doesn't lose critical state.
+
+**Directive format** (written to `.swarm/dispatcher-directive.json`):
+```json
+{"directive": "context_warning",
+ "message": "10h elapsed. Run /compact NOW, then delegate remaining work to fresh agents.",
+ "hours_elapsed": 10.2}
+```
+
+The orchestrator reads this directive every OODA cycle and executes `/compact` before continuing.
+
+The full protocol is documented in the `context-management` skill (`src/voronoi/data/skills/context-management/SKILL.md`), which is injected into long-running worker prompts via `SKILL_MAP`.
+
 ### Configuration
 
 All thresholds are configurable via `~/.voronoi/config.json` or environment variables:
@@ -293,6 +317,40 @@ All thresholds are configurable via `~/.voronoi/config.json` or environment vari
 ```
 
 Environment: `VORONOI_CONTEXT_ADVISORY_HOURS`, `VORONOI_CONTEXT_WARNING_HOURS`, `VORONOI_CONTEXT_CRITICAL_HOURS`, `VORONOI_COMPACT_INTERVAL_HOURS`.
+
+### Ground-Truth Context Snapshots via `/context`
+
+**Code**: `OrchestratorCheckpoint.context_snapshot` in `src/voronoi/science/convergence.py`, `_check_token_budget()` in `src/voronoi/server/dispatcher.py`, `log_context_snapshot()` in `src/voronoi/server/events.py`
+
+The orchestrator runs Copilot CLI's `/context` command at each OODA cycle start and writes the structured output into the checkpoint's `context_snapshot` field:
+
+```json
+{
+  "context_snapshot": {
+    "model": "claude-opus-4.6",
+    "model_limit": 200000,
+    "total_used": 50000,
+    "system_tokens": 22600,
+    "message_tokens": 27300,
+    "free_tokens": 109600,
+    "buffer_tokens": 40400
+  }
+}
+```
+
+**Why this matters:** Before this, `context_window_remaining_pct` was self-reported by the orchestrator — an LLM guessing its own consumption, often inaccurate. `/context` provides ground-truth measurements.
+
+**Data flow:**
+
+1. Orchestrator runs `/context` → parses output → writes `context_snapshot` in `voronoi_write_checkpoint`
+2. MCP tool auto-derives `context_window_remaining_pct` from `free_tokens / model_limit` (unless explicitly set)
+3. Dispatcher reads checkpoint → prefers `context_snapshot` over self-reported `context_window_remaining_pct`
+4. Dispatcher logs snapshot to `events.jsonl` as `context_snapshot` event for timeline analysis
+5. Timeline analysis: query `events.jsonl` for `event=context_snapshot` to see per-cycle token growth
+
+**Timeline analysis use case:** By diffing `total_used` between consecutive `context_snapshot` events, you can identify which OODA cycles consumed the most context — and correlate with other events (tool calls, file reads) to find the root cause of context exhaustion.
+
+**Protocol:** Documented in `src/voronoi/data/skills/context-management/SKILL.md` and injected into the OODA protocol via `build_orchestrator_prompt()`.
 
 ## 12. Workspace State Compaction
 

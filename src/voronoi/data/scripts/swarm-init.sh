@@ -118,6 +118,13 @@ cat > .swarm-config.json << EOF
   "agent_flags": "--allow-all",
   "orchestrator_model": "${VORONOI_ORCHESTRATOR_MODEL:-}",
   "worker_model": "${VORONOI_WORKER_MODEL:-}",
+  "effort": "${VORONOI_EFFORT:-high}",
+  "role_permissions": {
+    "scout": "--allow-all --deny-tool=write",
+    "review_critic": "--allow-all --deny-tool=write",
+    "review_stats": "--allow-all --deny-tool=write",
+    "review_method": "--allow-all --deny-tool=write"
+  },
   "agent_flags_safe": [
     "--disallow-tool", "mcp__curl",
     "--disallow-tool", "mcp__ssh",
@@ -158,16 +165,23 @@ TMUX_SESSION="${PROJECT_NAME}-swarm"
 if [[ -n "$_tg_bot_token" ]]; then
     echo ""
     echo "✓ Telegram bot token found"
-    # Ensure tmux session exists
-    if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
-        tmux new-session -d -s "$TMUX_SESSION" -n "orchestrator"
+    # Check if bridge is already running (same singleton lock as telegram-bridge.py)
+    _lock_port=$(python3 -c "import hashlib; print(49152 + int(hashlib.sha256('${_tg_bot_token}'.encode()).hexdigest()[:12], 16) % 16384)" 2>/dev/null)
+    if [[ -n "$_lock_port" ]] && python3 -c "import socket; s=socket.socket(); s.bind(('127.0.0.1', $_lock_port)); s.close()" 2>/dev/null; then
+        # Port is free — no bridge running, start one
+        # Ensure tmux session exists
+        if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+            tmux new-session -d -s "$TMUX_SESSION" -n "orchestrator"
+        fi
+        # Kill any existing bridge pane/window to avoid duplicates
+        tmux kill-window -t "${TMUX_SESSION}:telegram" 2>/dev/null || true
+        # Start bridge in a dedicated tmux window
+        tmux new-window -t "$TMUX_SESSION" -n "telegram" \
+            "cd '$PROJECT_DIR' && python3 scripts/telegram-bridge.py; read -p 'Bridge exited. Press enter to close.'"
+        echo "✓ Telegram bridge started in tmux window '${TMUX_SESSION}:telegram'"
+    else
+        echo "✓ Telegram bridge already running (lock port: ${_lock_port})"
     fi
-    # Kill any existing bridge pane/window to avoid duplicates
-    tmux kill-window -t "${TMUX_SESSION}:telegram" 2>/dev/null || true
-    # Start bridge in a dedicated tmux window
-    tmux new-window -t "$TMUX_SESSION" -n "telegram" \
-        "cd '$PROJECT_DIR' && python3 scripts/telegram-bridge.py; read -p 'Bridge exited. Press enter to close.'"
-    echo "✓ Telegram bridge started in tmux window '${TMUX_SESSION}:telegram'"
 else
     echo ""
     echo "To enable Telegram notifications:"

@@ -20,7 +20,7 @@ class Investigation:
     """An investigation in the queue."""
     id: int = 0
     chat_id: str = ""
-    status: str = "queued"            # queued | running | complete | failed | cancelled
+    status: str = "queued"            # queued | running | paused | review | complete | failed | cancelled
     investigation_type: str = "lab"   # repo | lab
     repo: Optional[str] = None        # owner/repo if repo-bound
     question: str = ""
@@ -33,6 +33,8 @@ class Investigation:
     github_url: Optional[str] = None
     parent_id: Optional[int] = None   # for follow-ups
     demo_source: Optional[str] = None  # demo name:path for demo-originated investigations
+    lineage_id: Optional[int] = None   # root investigation ID for claim ledger scoping
+    cycle_number: int = 1              # iteration round within a lineage
     created_at: float = field(default_factory=time.time)
     started_at: Optional[float] = None
     completed_at: Optional[float] = None
@@ -44,7 +46,7 @@ CREATE TABLE IF NOT EXISTS investigations (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     chat_id           TEXT NOT NULL,
     status            TEXT NOT NULL DEFAULT 'queued'
-                      CHECK(status IN ('queued', 'running', 'complete', 'failed', 'cancelled')),
+                      CHECK(status IN ('queued', 'running', 'paused', 'complete', 'failed', 'cancelled')),
     investigation_type TEXT NOT NULL DEFAULT 'lab'
                       CHECK(investigation_type IN ('repo', 'lab')),
     repo              TEXT,
@@ -76,6 +78,90 @@ _MIGRATION_ADD_DEMO_SOURCE = """
 ALTER TABLE investigations ADD COLUMN demo_source TEXT;
 """
 
+_MIGRATION_ADD_PAUSED_STATUS = """
+-- Widen CHECK constraint to accept 'paused' and 'review' statuses.
+-- SQLite doesn't support ALTER CHECK, so we recreate the table.
+CREATE TABLE IF NOT EXISTS investigations_new (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id           TEXT NOT NULL,
+    status            TEXT NOT NULL DEFAULT 'queued'
+                      CHECK(status IN ('queued', 'running', 'paused', 'review', 'complete', 'failed', 'cancelled')),
+    investigation_type TEXT NOT NULL DEFAULT 'lab'
+                      CHECK(investigation_type IN ('repo', 'lab')),
+    repo              TEXT,
+    question          TEXT NOT NULL,
+    slug              TEXT NOT NULL,
+    mode              TEXT NOT NULL DEFAULT 'discover',
+    rigor             TEXT NOT NULL DEFAULT 'scientific',
+    codename          TEXT NOT NULL DEFAULT '',
+    workspace_path    TEXT,
+    sandbox_id        TEXT,
+    github_url        TEXT,
+    parent_id         INTEGER REFERENCES investigations_new(id),
+    demo_source       TEXT,
+    created_at        REAL NOT NULL,
+    started_at        REAL,
+    completed_at      REAL,
+    error             TEXT
+);
+INSERT OR IGNORE INTO investigations_new SELECT * FROM investigations;
+DROP TABLE investigations;
+ALTER TABLE investigations_new RENAME TO investigations;
+CREATE INDEX IF NOT EXISTS idx_inv_status ON investigations(status);
+CREATE INDEX IF NOT EXISTS idx_inv_chat ON investigations(chat_id);
+CREATE INDEX IF NOT EXISTS idx_inv_repo ON investigations(repo);
+"""
+
+_MIGRATION_ADD_LINEAGE = """
+ALTER TABLE investigations ADD COLUMN lineage_id INTEGER;
+ALTER TABLE investigations ADD COLUMN cycle_number INTEGER NOT NULL DEFAULT 1;
+"""
+
+_MIGRATION_ADD_REVIEW_STATUS = """
+-- Widen CHECK constraint to accept 'review' status (for DBs already migrated to paused).
+CREATE TABLE IF NOT EXISTS investigations_v3 (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id           TEXT NOT NULL,
+    status            TEXT NOT NULL DEFAULT 'queued'
+                      CHECK(status IN ('queued', 'running', 'paused', 'review', 'complete', 'failed', 'cancelled')),
+    investigation_type TEXT NOT NULL DEFAULT 'lab'
+                      CHECK(investigation_type IN ('repo', 'lab')),
+    repo              TEXT,
+    question          TEXT NOT NULL,
+    slug              TEXT NOT NULL,
+    mode              TEXT NOT NULL DEFAULT 'discover',
+    rigor             TEXT NOT NULL DEFAULT 'scientific',
+    codename          TEXT NOT NULL DEFAULT '',
+    workspace_path    TEXT,
+    sandbox_id        TEXT,
+    github_url        TEXT,
+    parent_id         INTEGER REFERENCES investigations_v3(id),
+    demo_source       TEXT,
+    lineage_id        INTEGER,
+    cycle_number      INTEGER NOT NULL DEFAULT 1,
+    created_at        REAL NOT NULL,
+    started_at        REAL,
+    completed_at      REAL,
+    error             TEXT
+);
+INSERT OR IGNORE INTO investigations_v3 (
+    id, chat_id, status, investigation_type, repo, question, slug,
+    mode, rigor, codename, workspace_path, sandbox_id, github_url,
+    parent_id, demo_source, lineage_id, cycle_number,
+    created_at, started_at, completed_at, error
+)
+SELECT id, chat_id, status, investigation_type, repo, question, slug,
+       mode, rigor, codename, workspace_path, sandbox_id, github_url,
+       parent_id, demo_source, lineage_id, cycle_number,
+       created_at, started_at, completed_at, error
+FROM investigations;
+DROP TABLE investigations;
+ALTER TABLE investigations_v3 RENAME TO investigations;
+CREATE INDEX IF NOT EXISTS idx_inv_status ON investigations(status);
+CREATE INDEX IF NOT EXISTS idx_inv_chat ON investigations(chat_id);
+CREATE INDEX IF NOT EXISTS idx_inv_repo ON investigations(repo);
+"""
+
 
 class InvestigationQueue:
     """SQLite-backed investigation queue with concurrency control."""
@@ -105,6 +191,36 @@ class InvestigationQueue:
                 conn.execute("SELECT demo_source FROM investigations LIMIT 1")
             except sqlite3.OperationalError:
                 conn.executescript(_MIGRATION_ADD_DEMO_SOURCE)
+            # Migrate existing databases that have the old CHECK constraint
+            # without 'paused' status.  Detect by trying an insert+rollback.
+            try:
+                conn.execute(
+                    "INSERT INTO investigations "
+                    "(chat_id, status, question, slug, created_at) "
+                    "VALUES ('__migration_test', 'paused', '__test', '__test', 0)"
+                )
+                conn.execute(
+                    "DELETE FROM investigations WHERE chat_id='__migration_test'"
+                )
+            except sqlite3.IntegrityError:
+                conn.executescript(_MIGRATION_ADD_PAUSED_STATUS)
+            # Migrate existing databases that lack lineage_id/cycle_number
+            try:
+                conn.execute("SELECT lineage_id FROM investigations LIMIT 1")
+            except sqlite3.OperationalError:
+                conn.executescript(_MIGRATION_ADD_LINEAGE)
+            # Migrate existing databases that lack 'review' status support.
+            try:
+                conn.execute(
+                    "INSERT INTO investigations "
+                    "(chat_id, status, question, slug, created_at) "
+                    "VALUES ('__migration_test_review', 'review', '__test', '__test', 0)"
+                )
+                conn.execute(
+                    "DELETE FROM investigations WHERE chat_id='__migration_test_review'"
+                )
+            except sqlite3.IntegrityError:
+                conn.executescript(_MIGRATION_ADD_REVIEW_STATUS)
         finally:
             conn.close()
 
@@ -141,11 +257,12 @@ class InvestigationQueue:
             cursor = conn.execute(
                 "INSERT INTO investigations "
                 "(chat_id, status, investigation_type, repo, question, slug, "
-                " mode, rigor, codename, parent_id, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " mode, rigor, codename, parent_id, lineage_id, cycle_number, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (inv.chat_id, "queued", inv.investigation_type, inv.repo,
                  inv.question, inv.slug, inv.mode, inv.rigor,
-                 inv.codename, inv.parent_id, inv.created_at),
+                 inv.codename, inv.parent_id, inv.lineage_id,
+                 inv.cycle_number, inv.created_at),
             )
             inv_id: int = cursor.lastrowid  # type: ignore[assignment]
             # Assign a deterministic codename if none was provided
@@ -155,6 +272,12 @@ class InvestigationQueue:
                 conn.execute(
                     "UPDATE investigations SET codename=? WHERE id=?",
                     (codename, inv_id),
+                )
+            # Set lineage_id to self if this is a root investigation
+            if inv.lineage_id is None and inv.parent_id is None:
+                conn.execute(
+                    "UPDATE investigations SET lineage_id=? WHERE id=?",
+                    (inv_id, inv_id),
                 )
             return inv_id
 
@@ -238,6 +361,122 @@ class InvestigationQueue:
             )
             return cursor.rowcount > 0
 
+    def pause(self, investigation_id: int, reason: str) -> None:
+        """Pause a running investigation (e.g. auth expiry).
+
+        Transitions running → paused.  Sets completed_at to the current
+        time so _check_paused_timeouts can measure time-in-paused-state.
+        resume() clears completed_at when the investigation restarts.
+        """
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE investigations SET status='paused', error=?, completed_at=? "
+                "WHERE id=? AND status='running'",
+                (reason, time.time(), investigation_id),
+            )
+
+    def resume(self, investigation_id: int) -> bool:
+        """Resume a paused or failed investigation.
+
+        Transitions paused|failed → running, clears the error field,
+        and resets started_at so elapsed-time tracking is accurate.
+        Returns True if the status was actually changed.
+        """
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE investigations SET status='running', error=NULL, "
+                "started_at=?, completed_at=NULL "
+                "WHERE id=? AND status IN ('paused', 'failed')",
+                (time.time(), investigation_id),
+            )
+            return cursor.rowcount > 0
+
+    def review(self, investigation_id: int) -> bool:
+        """Transition a running investigation to review status.
+
+        The investigation is paused for human feedback before final completion.
+        Returns True if the status was changed.
+        """
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE investigations SET status='review', completed_at=? "
+                "WHERE id=? AND status='running'",
+                (time.time(), investigation_id),
+            )
+            return cursor.rowcount > 0
+
+    def accept(self, investigation_id: int) -> bool:
+        """Accept a reviewed investigation — transition review → complete.
+
+        Returns True if the status was changed.
+        """
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE investigations SET status='complete', completed_at=? "
+                "WHERE id=? AND status='review'",
+                (time.time(), investigation_id),
+            )
+            return cursor.rowcount > 0
+
+    def continue_investigation(self, investigation_id: int,
+                               feedback: str = "") -> Optional[int]:
+        """Create a continuation investigation from a completed or reviewed one.
+
+        Creates a new investigation with:
+        - Same question (+ feedback appended if given)
+        - parent_id set to the current investigation
+        - Same lineage_id (for claim ledger scoping)
+        - Incremented cycle_number
+        - Same workspace_path (workspace reuse)
+
+        Returns the new investigation ID, or None if the source is invalid.
+        """
+        inv = self.get(investigation_id)
+        if inv is None:
+            return None
+        if inv.status not in ("review", "complete"):
+            return None
+
+        question = inv.question
+        if feedback:
+            question = f"{question}\n\n## PI Feedback (Round {inv.cycle_number})\n{feedback}"
+
+        lineage = inv.lineage_id or investigation_id
+
+        from voronoi.server.runner import make_slug
+        new_inv = Investigation(
+            chat_id=inv.chat_id,
+            investigation_type=inv.investigation_type,
+            repo=inv.repo,
+            question=question,
+            slug=make_slug(inv.question),
+            mode=inv.mode,
+            rigor=inv.rigor,
+            codename=inv.codename,  # keep same codename across rounds
+            parent_id=investigation_id,
+            lineage_id=lineage,
+            cycle_number=inv.cycle_number + 1,
+        )
+        new_id = self.enqueue(new_inv)
+
+        # Transfer workspace path so continuation reuses the workspace
+        if inv.workspace_path:
+            with self._connect() as conn:
+                conn.execute(
+                    "UPDATE investigations SET workspace_path=? WHERE id=?",
+                    (inv.workspace_path, new_id),
+                )
+
+        # Mark the source as complete if it was in review
+        if inv.status == "review":
+            with self._connect() as conn:
+                conn.execute(
+                    "UPDATE investigations SET status='complete' WHERE id=? AND status='review'",
+                    (investigation_id,),
+                )
+
+        return new_id
+
     def get(self, investigation_id: int) -> Optional[Investigation]:
         """Get an investigation by ID."""
         with self._connect() as conn:
@@ -316,10 +555,20 @@ class InvestigationQueue:
                 ).fetchall()
             return [self._row_to_investigation(r) for r in rows]
 
+    def get_paused(self) -> list[Investigation]:
+        """Get all paused investigations."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM investigations WHERE status='paused' "
+                "ORDER BY started_at ASC",
+            ).fetchall()
+            return [self._row_to_investigation(r) for r in rows]
+
     def format_status(self) -> str:
         """Format queue status for Telegram."""
         running = self.get_running()
         queued = self.get_queued()
+        paused = self.get_paused()
 
         lines = ["📊 *Investigation Queue*\n"]
 
@@ -331,6 +580,14 @@ class InvestigationQueue:
                 name = inv.codename or f"#{inv.id}"
                 lines.append(f"  ⚡ {name} {label} ({elapsed:.0f}min)")
 
+        if paused:
+            lines.append("\n*Paused:*")
+            for inv in paused:
+                label = inv.repo or inv.slug
+                name = inv.codename or f"#{inv.id}"
+                reason = (inv.error or "unknown")[:60]
+                lines.append(f"  ⏸ {name} {label} — {reason}")
+
         if queued:
             lines.append("\n*Queued:*")
             for i, inv in enumerate(queued):
@@ -338,7 +595,7 @@ class InvestigationQueue:
                 name = inv.codename or f"#{inv.id}"
                 lines.append(f"  ⏳ {name} {label} (position {i+1})")
 
-        if not running and not queued:
+        if not running and not queued and not paused:
             lines.append("No active investigations.")
 
         return "\n".join(lines)
@@ -347,6 +604,16 @@ class InvestigationQueue:
         demo_source = None
         try:
             demo_source = row["demo_source"]
+        except (IndexError, KeyError):
+            pass
+        lineage_id = None
+        try:
+            lineage_id = row["lineage_id"]
+        except (IndexError, KeyError):
+            pass
+        cycle_number = 1
+        try:
+            cycle_number = row["cycle_number"] or 1
         except (IndexError, KeyError):
             pass
         return Investigation(
@@ -365,6 +632,8 @@ class InvestigationQueue:
             github_url=row["github_url"],
             parent_id=row["parent_id"],
             demo_source=demo_source,
+            lineage_id=lineage_id,
+            cycle_number=cycle_number,
             created_at=row["created_at"],
             started_at=row["started_at"],
             completed_at=row["completed_at"],

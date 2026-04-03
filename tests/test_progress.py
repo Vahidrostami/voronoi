@@ -8,7 +8,7 @@ from pathlib import Path
 
 from voronoi.gateway.progress import (
     format_launch, format_complete, format_failure, format_alert,
-    format_restart, format_duration, progress_bar, estimate_remaining,
+    format_restart, format_pause, format_duration, progress_bar, estimate_remaining,
     build_digest, build_digest_whatsup, assess_track_status,
     phase_description, phase_position, _synthesize_narrative,
     VOICE_PHASE_VARIANTS, MSG_TYPE_MILESTONE, MSG_TYPE_STATUS,
@@ -31,7 +31,7 @@ class TestBuddyFormatters:
     def test_format_failure(self):
         msg = format_failure("Synapse", "crashed", 7200, 5, 20, log_tail="error here")
         assert "Synapse" in msg
-        assert "failed" in msg.lower()
+        assert "didn't make it" in msg
         assert "error here" in msg
 
     def test_format_alert(self):
@@ -43,16 +43,30 @@ class TestBuddyFormatters:
         msg = format_restart("Synapse", 1, 2, log_tail="last line")
         assert "Synapse" in msg
         assert "1/2" in msg
-        assert "crashed" in msg
+        assert "hit a bump" in msg
 
     def test_format_restart_clean_exit(self):
         msg = format_restart("Synapse", 1, 2, clean_exit=True)
         assert "exited early" in msg
-        assert "crashed" not in msg
+        assert "hit a bump" not in msg
 
     def test_format_restart_crash(self):
         msg = format_restart("Synapse", 1, 2, clean_exit=False)
-        assert "crashed" in msg
+        assert "hit a bump" in msg
+
+    def test_format_pause(self):
+        msg = format_pause("Synapse", "auth expired", 7200, 5, 20)
+        assert "Synapse" in msg
+        assert "paused" in msg.lower()
+        assert "auth expired" in msg
+        assert "5/20" in msg
+        assert "/voronoi resume" in msg
+
+    def test_format_pause_no_tasks(self):
+        msg = format_pause("Synapse", "auth expired", 300, 0, 0)
+        assert "Synapse" in msg
+        assert "paused" in msg.lower()
+        assert "0/0" not in msg  # should skip progress when total=0
 
     def test_format_duration(self):
         assert format_duration(300) == "5min"
@@ -131,7 +145,7 @@ class TestBuildDigest:
             task_snapshot=snapshot,
             workspace=tmp_path,
             events_since_last=[
-                {"type": "task_done", "msg": "✅ Done: *Build encoder*"},
+                {"type": "task_done", "msg": "✅ Wrapped up: *Build encoder*"},
             ],
         )
         assert "Synapse" in msg
@@ -230,7 +244,7 @@ class TestBuildDigestWhatsup:
         )
         assert "Synapse" in msg
         assert "1h" in msg
-        assert "8/20" in msg or "Phase" in msg
+        assert "8/20" in msg or "investigating" in msg
         assert "accuracy" in msg.lower()
 
 
@@ -359,7 +373,7 @@ class TestMessageTypes:
             task_snapshot={"t1": {"status": "in_progress", "notes": ""}},
             workspace=tmp_path,
             events_since_last=[
-                {"type": "task_new", "msg": "📋 New: *task 1*"},
+                {"type": "task_new", "msg": "📋 Queued: *task 1*"},
             ],
         )
         assert msg_type == MSG_TYPE_STATUS

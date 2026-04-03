@@ -10,9 +10,11 @@ applyTo: "src/voronoi/data/**"
 
 | Directory | Content | Spec |
 |-----------|---------|------|
-| `agents/` | 12 agent role definitions (`.agent.md`) | AGENT-ROLES.md |
+| `agents/` | Agent role definitions (`.agent.md`) | AGENT-ROLES.md |
 | `skills/` | Domain knowledge packages (`SKILL.md`) | AGENT-ROLES.md §6 |
-| `prompts/` | Runtime prompts (spawn, merge, standup) | SERVER.md §4 |
+| `prompts/` | Runtime prompts (spawn, merge, standup, progress, teardown) | SERVER.md §4 |
+| `instructions/` | File-based instructions (`.instructions.md`) for investigation workspaces | ARCHITECTURE.md §6 |
+| `hooks/` | Agent lifecycle hooks (session start, data protection) | ARCHITECTURE.md §6 |
 | `scripts/` | Shell scripts (spawn-agent.sh, etc.) | ARCHITECTURE.md §6 |
 | `demos/` | Demo investigations | CLI.md §5 |
 | `templates/` | CLAUDE.md + AGENTS.md for workspaces | ARCHITECTURE.md §5 |
@@ -21,7 +23,7 @@ applyTo: "src/voronoi/data/**"
 
 - These files are shipped with `pip install voronoi` — changes affect all users
 - Agent roles are the source of truth (INV-02) — never duplicate in Python code
-- `voronoi init` copies agents/prompts/skills → target `.github/`, scripts → target `scripts/`
+- `voronoi init` copies agents/prompts/skills/instructions/hooks → target `.github/`, scripts → target `scripts/`
 - Do NOT add dev-only content here — that goes in `.github/`
 
 After changes: run `python -m pytest tests/ -x -q`.

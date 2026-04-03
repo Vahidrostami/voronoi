@@ -48,6 +48,17 @@ from voronoi.science import (
     load_checkpoint,
     save_checkpoint,
     format_checkpoint_for_prompt,
+    # Experiment Sentinel
+    ExperimentContract,
+    ManipulationCheck,
+    DegeneracyCheck,
+    PhaseGate,
+    SentinelAuditResult,
+    SentinelCheckResult,
+    load_experiment_contract,
+    save_experiment_contract,
+    validate_experiment_contract,
+    validate_phase_gate,
 )
 from voronoi.science._helpers import _fetch_tasks
 
@@ -108,7 +119,7 @@ class TestPreRegistration:
         )
         pr = parse_pre_registration(notes)
         assert pr.is_complete is True
-        assert pr.power_analysis == "0.5d"
+        assert pr.power_analysis == "0.80"
         assert "PARAM1" in pr.sensitivity_plan
 
     def test_validate_standard_ok(self):
@@ -144,6 +155,29 @@ class TestPreRegistration:
         pr = parse_pre_registration(notes)
         assert len(pr.deviations) == 1
         assert "changed N" in pr.deviations[0]
+
+    def test_power_analysis_parses_power_not_effect_size(self):
+        """Bug fix: power_analysis should capture POWER value, not EFFECT_SIZE."""
+        notes = (
+            "PRE_REG: HYPOTHESIS=[h] | METHOD=[m] | CONTROLS=[c] | "
+            "EXPECTED_RESULT=[e] | CONFOUNDS=[cf] | STAT_TEST=[t] | SAMPLE_SIZE=[50]\n"
+            "PRE_REG_POWER: EFFECT_SIZE=[0.5d] | POWER=[0.80] | MIN_N=[64]"
+        )
+        pr = parse_pre_registration(notes)
+        # Must capture POWER value, not EFFECT_SIZE
+        assert pr.power_analysis == "0.80"
+        assert pr.power_analysis != "0.5d"
+
+    def test_power_analysis_missing_without_power_field(self):
+        """If POWER field is absent, power_analysis should be empty."""
+        notes = (
+            "PRE_REG: HYPOTHESIS=[h] | METHOD=[m] | CONTROLS=[c] | "
+            "EXPECTED_RESULT=[e] | CONFOUNDS=[cf] | STAT_TEST=[t] | SAMPLE_SIZE=[50]\n"
+            "PRE_REG_POWER: EFFECT_SIZE=[0.5d] | MIN_N=[64]"
+        )
+        pr = parse_pre_registration(notes)
+        assert pr.power_analysis == ""
+        assert pr.is_scientific_complete is False
 
 
 # ---------------------------------------------------------------------------
@@ -306,6 +340,28 @@ class TestBeliefMap:
         bm = load_belief_map(tmp_path)
         assert len(bm.hypotheses) == 1
         assert bm.hypotheses[0].id == "H1"
+
+    def test_load_dict_keyed_persists_migration(self, tmp_path):
+        """Dict-keyed migration should be written back to disk so it doesn't re-trigger."""
+        (tmp_path / ".swarm").mkdir()
+        original = json.dumps({
+            "cycle": 2,
+            "hypotheses": {
+                "H1": {"name": "Encoding helps", "prior": 0.6, "status": "confirmed"},
+            },
+        })
+        (tmp_path / ".swarm" / "belief-map.json").write_text(original)
+        bm = load_belief_map(tmp_path)
+        assert len(bm.hypotheses) == 1
+
+        # Read the file again — it should now be in list format
+        data = json.loads((tmp_path / ".swarm" / "belief-map.json").read_text())
+        assert isinstance(data["hypotheses"], list)
+        assert data["hypotheses"][0]["id"] == "H1"
+
+        # Second load should NOT log a migration warning
+        bm2 = load_belief_map(tmp_path)
+        assert len(bm2.hypotheses) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -1784,6 +1840,49 @@ class TestOrchestratorCheckpoint:
         assert "L2 gradient" in text
         assert "Dispatch critic" in text
 
+    def test_context_snapshot_save_and_load(self, tmp_path):
+        snapshot = {
+            "model": "claude-opus-4.6",
+            "model_limit": 200000,
+            "total_used": 50000,
+            "system_tokens": 22600,
+            "message_tokens": 27300,
+            "free_tokens": 109600,
+            "buffer_tokens": 40400,
+        }
+        cp = OrchestratorCheckpoint(
+            cycle=3, phase="investigating",
+            context_snapshot=snapshot,
+        )
+        save_checkpoint(tmp_path, cp)
+        loaded = load_checkpoint(tmp_path)
+        assert loaded.context_snapshot == snapshot
+        assert loaded.context_snapshot["model"] == "claude-opus-4.6"
+        assert loaded.context_snapshot["free_tokens"] == 109600
+
+    def test_context_snapshot_in_prompt(self):
+        cp = OrchestratorCheckpoint(
+            cycle=5, phase="investigating",
+            context_snapshot={
+                "model": "claude-opus-4.6",
+                "model_limit": 200000,
+                "total_used": 90000,
+                "system_tokens": 22600,
+                "message_tokens": 67400,
+                "free_tokens": 70000,
+                "buffer_tokens": 40000,
+            },
+        )
+        text = format_checkpoint_for_prompt(cp)
+        assert "claude-opus-4.6" in text
+        assert "system=" in text
+        assert "200,000" in text
+
+    def test_context_snapshot_empty_not_in_prompt(self):
+        cp = OrchestratorCheckpoint(cycle=1, phase="starting")
+        text = format_checkpoint_for_prompt(cp)
+        assert "Context" not in text
+
 
 # ---------------------------------------------------------------------------
 # Convergence — All success criteria met override
@@ -1889,3 +1988,445 @@ class TestNegativeResultConvergence:
                                     improvement_rounds=1)
         assert result.converged is False
         assert result.status == "blocked"
+
+
+# ---------------------------------------------------------------------------
+# Plan Review Gate
+# ---------------------------------------------------------------------------
+
+class TestPlanReviewGate:
+    """Tests for check_plan_review_gate and PLAN_REVIEW_REVIEWERS."""
+
+    def test_standard_rigor_skips_gate(self, tmp_path):
+        """Standard rigor should pass gate without any file."""
+        from voronoi.science import check_plan_review_gate
+        passed, result = check_plan_review_gate(tmp_path, "standard")
+        assert passed is True
+        assert result.exists is False
+
+    def test_analytical_requires_review(self, tmp_path):
+        """Analytical rigor should fail gate when no review file exists."""
+        from voronoi.science import check_plan_review_gate
+        (tmp_path / ".swarm").mkdir()
+        passed, result = check_plan_review_gate(tmp_path, "analytical")
+        assert passed is False
+        assert result.exists is False
+
+    def test_approved_verdict_passes(self, tmp_path):
+        """APPROVED verdict should pass the gate."""
+        from voronoi.science import check_plan_review_gate
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "plan-review.json").write_text(json.dumps({
+            "reviewer": "critic-bd-05",
+            "verdict": "APPROVED",
+            "coverage": "good",
+            "strategic": "sound plan",
+        }))
+        passed, result = check_plan_review_gate(tmp_path, "analytical")
+        assert passed is True
+        assert result.verdict == "APPROVED"
+        assert result.reviewer == "critic-bd-05"
+
+    def test_revise_verdict_passes(self, tmp_path):
+        """REVISE verdict should pass the gate (orchestrator adjusts and proceeds)."""
+        from voronoi.science import check_plan_review_gate
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "plan-review.json").write_text(json.dumps({
+            "reviewer": "critic-bd-07",
+            "verdict": "REVISE",
+            "granularity": ["task bd-12 too large"],
+            "missing": ["negative control"],
+        }))
+        passed, result = check_plan_review_gate(tmp_path, "scientific")
+        assert passed is True
+        assert result.verdict == "REVISE"
+        assert "granularity" in result.issues
+        assert "missing" in result.issues
+
+    def test_restructure_verdict_blocks(self, tmp_path):
+        """RESTRUCTURE verdict should block the gate."""
+        from voronoi.science import check_plan_review_gate
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "plan-review.json").write_text(json.dumps({
+            "reviewer": "critic-bd-03",
+            "verdict": "RESTRUCTURE",
+            "coverage": "plan doesn't address original question",
+            "strategic": "fundamental redesign needed",
+        }))
+        passed, result = check_plan_review_gate(tmp_path, "experimental")
+        assert passed is False
+        assert result.verdict == "RESTRUCTURE"
+
+    def test_malformed_json_blocks(self, tmp_path):
+        """Malformed JSON should block the gate."""
+        from voronoi.science import check_plan_review_gate
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "plan-review.json").write_text("not json {{{")
+        passed, result = check_plan_review_gate(tmp_path, "analytical")
+        assert passed is False
+        assert result.verdict == "ERROR"
+
+    def test_missing_file_blocks_at_scientific(self, tmp_path):
+        """Missing review file at scientific rigor should block."""
+        from voronoi.science import check_plan_review_gate
+        passed, result = check_plan_review_gate(tmp_path, "scientific")
+        assert passed is False
+
+    def test_adaptive_rigor_requires_review(self, tmp_path):
+        """Adaptive rigor (DISCOVER mode) should require plan review."""
+        from voronoi.science import check_plan_review_gate, PLAN_REVIEW_REVIEWERS
+        assert PLAN_REVIEW_REVIEWERS["adaptive"] == ["critic"]
+        passed, _ = check_plan_review_gate(tmp_path, "adaptive")
+        assert passed is False
+
+    def test_reviewer_mapping(self):
+        """Verify reviewer escalation by rigor level."""
+        from voronoi.science import PLAN_REVIEW_REVIEWERS
+        assert PLAN_REVIEW_REVIEWERS["standard"] == []
+        assert PLAN_REVIEW_REVIEWERS["analytical"] == ["critic"]
+        assert PLAN_REVIEW_REVIEWERS["scientific"] == ["critic", "theorist"]
+        assert PLAN_REVIEW_REVIEWERS["experimental"] == ["critic", "theorist", "methodologist"]
+
+    def test_case_insensitive_verdict(self, tmp_path):
+        """Verdict comparison should be case-insensitive."""
+        from voronoi.science import check_plan_review_gate
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "plan-review.json").write_text(json.dumps({
+            "reviewer": "critic-bd-05",
+            "verdict": "approved",
+        }))
+        passed, result = check_plan_review_gate(tmp_path, "analytical")
+        assert passed is True
+        assert result.verdict == "APPROVED"
+
+
+# ---------------------------------------------------------------------------
+# Experiment Sentinel — contract validation
+# ---------------------------------------------------------------------------
+
+class TestExperimentContract:
+    """Tests for experiment contract load/save/validation."""
+
+    def _make_contract(self, **overrides):
+        defaults = dict(
+            experiment_id="test-exp",
+            independent_variable="encoding_level",
+            conditions=["L1-D", "L1-A", "L4-D", "L4-A"],
+            manipulation_checks=[],
+            required_outputs=[],
+            degeneracy_checks=[],
+            phase_gates=[],
+        )
+        defaults.update(overrides)
+        return ExperimentContract(**defaults)
+
+    def test_save_and_load_roundtrip(self, tmp_path):
+        contract = self._make_contract(
+            manipulation_checks=[ManipulationCheck(
+                check_type="hash_distinct",
+                target="output/hashes.json",
+                params={"field": "sha256"},
+            )],
+            degeneracy_checks=[DegeneracyCheck(
+                check_type="not_identical",
+                target="output/results.json",
+                params={"field": "cell_means.*"},
+            )],
+        )
+        save_experiment_contract(tmp_path, contract)
+        loaded = load_experiment_contract(tmp_path)
+        assert loaded is not None
+        assert loaded.experiment_id == "test-exp"
+        assert loaded.independent_variable == "encoding_level"
+        assert len(loaded.manipulation_checks) == 1
+        assert loaded.manipulation_checks[0].check_type == "hash_distinct"
+        assert len(loaded.degeneracy_checks) == 1
+
+    def test_load_returns_none_when_missing(self, tmp_path):
+        assert load_experiment_contract(tmp_path) is None
+
+    def test_load_returns_none_on_bad_json(self, tmp_path):
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "experiment-contract.json").write_text("not json{{{")
+        assert load_experiment_contract(tmp_path) is None
+
+
+class TestSentinelValidation:
+    """Tests for validate_experiment_contract."""
+
+    def test_no_contract_passes(self, tmp_path):
+        result = validate_experiment_contract(tmp_path)
+        assert result.passed is True
+        assert len(result.checks) == 0
+
+    def test_required_output_missing_fails(self, tmp_path):
+        contract = ExperimentContract(
+            experiment_id="e1",
+            independent_variable="x",
+            required_outputs=[{"path": "output/results.json", "description": "results"}],
+        )
+        result = validate_experiment_contract(tmp_path, contract=contract, trigger="test")
+        assert result.passed is False
+        assert any("MISSING_OUTPUT" in f for f in result.critical_failures)
+
+    def test_required_output_present_passes(self, tmp_path):
+        out = tmp_path / "output"
+        out.mkdir()
+        (out / "results.json").write_text("{}")
+        contract = ExperimentContract(
+            experiment_id="e1",
+            independent_variable="x",
+            required_outputs=[{"path": "output/results.json", "description": "results"}],
+        )
+        result = validate_experiment_contract(tmp_path, contract=contract, trigger="test")
+        assert result.passed is True
+
+    def test_hash_distinct_catches_collapsed_manipulation(self, tmp_path):
+        """When all conditions have the same hash, manipulation has collapsed."""
+        out = tmp_path / "output"
+        out.mkdir()
+        (out / "hashes.json").write_text(json.dumps({
+            "L1-D": {"sha256": "aaa"},
+            "L1-A": {"sha256": "aaa"},
+            "L4-D": {"sha256": "aaa"},
+            "L4-A": {"sha256": "aaa"},
+        }))
+        contract = ExperimentContract(
+            experiment_id="e1",
+            independent_variable="encoding",
+            conditions=["L1-D", "L1-A", "L4-D", "L4-A"],
+            manipulation_checks=[ManipulationCheck(
+                check_type="hash_distinct",
+                target="output/hashes.json",
+                params={"field": "sha256", "across": "conditions"},
+            )],
+        )
+        result = validate_experiment_contract(tmp_path, contract=contract, trigger="test")
+        assert result.passed is False
+        assert any("MANIPULATION" in f for f in result.critical_failures)
+
+    def test_hash_distinct_passes_when_varied(self, tmp_path):
+        out = tmp_path / "output"
+        out.mkdir()
+        (out / "hashes.json").write_text(json.dumps({
+            "L1-D": {"sha256": "aaa"},
+            "L1-A": {"sha256": "bbb"},
+            "L4-D": {"sha256": "ccc"},
+            "L4-A": {"sha256": "ddd"},
+        }))
+        contract = ExperimentContract(
+            experiment_id="e1",
+            independent_variable="encoding",
+            conditions=["L1-D", "L1-A", "L4-D", "L4-A"],
+            manipulation_checks=[ManipulationCheck(
+                check_type="hash_distinct",
+                target="output/hashes.json",
+                params={"field": "sha256", "across": "conditions"},
+            )],
+        )
+        result = validate_experiment_contract(tmp_path, contract=contract, trigger="test")
+        assert result.passed is True
+
+    def test_value_range_catches_out_of_range(self, tmp_path):
+        """Char ratio of 0.03 should fail a [0.7, 1.5] range check."""
+        out = tmp_path / "output"
+        out.mkdir()
+        (out / "hashes.json").write_text(json.dumps({
+            "scenarios": {
+                "scenario_01": {"L4-A": {"char_ratio_vs_l1": 0.03}},
+                "scenario_02": {"L4-A": {"char_ratio_vs_l1": 0.02}},
+            }
+        }))
+        contract = ExperimentContract(
+            experiment_id="e1",
+            independent_variable="encoding",
+            manipulation_checks=[ManipulationCheck(
+                check_type="value_range",
+                target="output/hashes.json",
+                params={"field": "scenarios.*.L4-A.char_ratio_vs_l1", "min": 0.7, "max": 1.5},
+            )],
+        )
+        result = validate_experiment_contract(tmp_path, contract=contract, trigger="test")
+        assert result.passed is False
+        assert any("MANIPULATION" in f for f in result.critical_failures)
+
+    def test_value_range_passes_when_in_range(self, tmp_path):
+        out = tmp_path / "output"
+        out.mkdir()
+        (out / "hashes.json").write_text(json.dumps({
+            "scenarios": {
+                "scenario_01": {"L4-A": {"char_ratio_vs_l1": 0.85}},
+                "scenario_02": {"L4-A": {"char_ratio_vs_l1": 1.1}},
+            }
+        }))
+        contract = ExperimentContract(
+            experiment_id="e1",
+            independent_variable="encoding",
+            manipulation_checks=[ManipulationCheck(
+                check_type="value_range",
+                target="output/hashes.json",
+                params={"field": "scenarios.*.L4-A.char_ratio_vs_l1", "min": 0.7, "max": 1.5},
+            )],
+        )
+        result = validate_experiment_contract(tmp_path, contract=contract, trigger="test")
+        assert result.passed is True
+
+    def test_not_identical_catches_degenerate_results(self, tmp_path):
+        """All cells having identical values means the experiment is degenerate."""
+        out = tmp_path / "output"
+        out.mkdir()
+        (out / "results.json").write_text(json.dumps({
+            "anova": {"cell_means": {"L1-D": 0.13, "L1-A": 0.13, "L4-D": 0.13, "L4-A": 0.13}},
+        }))
+        contract = ExperimentContract(
+            experiment_id="e1",
+            independent_variable="encoding",
+            degeneracy_checks=[DegeneracyCheck(
+                check_type="not_identical",
+                target="output/results.json",
+                params={"field": "anova.cell_means.*"},
+            )],
+        )
+        result = validate_experiment_contract(tmp_path, contract=contract, trigger="test")
+        assert result.passed is False
+        assert any("DEGENERACY" in f for f in result.critical_failures)
+
+    def test_min_variance_catches_flat_metrics(self, tmp_path):
+        out = tmp_path / "output"
+        out.mkdir()
+        (out / "results.json").write_text(json.dumps({
+            "anova": {"cell_means": {"L1-D": 0.13, "L1-A": 0.13, "L4-D": 0.13, "L4-A": 0.1300001}},
+        }))
+        contract = ExperimentContract(
+            experiment_id="e1",
+            independent_variable="encoding",
+            degeneracy_checks=[DegeneracyCheck(
+                check_type="min_variance",
+                target="output/results.json",
+                params={"field": "anova.cell_means.*", "min_std": 0.01},
+            )],
+        )
+        result = validate_experiment_contract(tmp_path, contract=contract, trigger="test")
+        assert result.passed is False
+
+    def test_skips_check_when_target_not_yet_produced(self, tmp_path):
+        """Before outputs exist, checks should skip (not fail)."""
+        contract = ExperimentContract(
+            experiment_id="e1",
+            independent_variable="encoding",
+            manipulation_checks=[ManipulationCheck(
+                check_type="value_range",
+                target="output/not_yet.json",
+                params={"field": "x", "min": 0, "max": 1},
+            )],
+        )
+        result = validate_experiment_contract(tmp_path, contract=contract, trigger="test")
+        assert result.passed is True  # skip, not fail
+
+    def test_audit_result_persisted(self, tmp_path):
+        contract = ExperimentContract(experiment_id="e1", independent_variable="x")
+        validate_experiment_contract(tmp_path, contract=contract, trigger="test")
+        audit_path = tmp_path / ".swarm" / "sentinel-audit.json"
+        assert audit_path.exists()
+        data = json.loads(audit_path.read_text())
+        assert data["passed"] is True
+        assert data["trigger"] == "test"
+
+
+class TestPhaseGateValidation:
+    """Tests for validate_phase_gate."""
+
+    def test_unknown_phase_transition_passes(self, tmp_path):
+        contract = ExperimentContract(
+            experiment_id="e1", independent_variable="x",
+            phase_gates=[PhaseGate(from_phase="p0", to_phase="p1", checks=[])],
+        )
+        result = validate_phase_gate(tmp_path, contract, "p2", "p3")
+        assert result.passed is True
+
+    def test_phase_gate_with_value_range_check(self, tmp_path):
+        out = tmp_path / "output"
+        out.mkdir()
+        (out / "hashes.json").write_text(json.dumps({
+            "scenarios": {"s1": {"L4-A": {"char_ratio": 0.03}}},
+        }))
+        contract = ExperimentContract(
+            experiment_id="e1", independent_variable="encoding",
+            phase_gates=[PhaseGate(
+                from_phase="phase_minus_1", to_phase="phase_0",
+                checks=[{
+                    "check_type": "value_range",
+                    "target": "output/hashes.json",
+                    "params": {"field": "scenarios.*.L4-A.char_ratio", "min": 0.7, "max": 1.5},
+                }],
+            )],
+        )
+        result = validate_phase_gate(tmp_path, contract, "phase_minus_1", "phase_0")
+        assert result.passed is False
+        assert any("PHASE_GATE" in f for f in result.critical_failures)
+
+
+class TestSentinelEmptyResolve:
+    """Tests for field-path-mismatch detection (empty resolve vs file missing)."""
+
+    def test_value_range_warns_on_empty_field_path(self, tmp_path):
+        """File exists but field path resolves to nothing — should pass with warning."""
+        out = tmp_path / "output"
+        out.mkdir()
+        (out / "data.json").write_text(json.dumps({"unrelated": {"key": 42}}))
+        contract = ExperimentContract(
+            experiment_id="e1",
+            independent_variable="x",
+            manipulation_checks=[ManipulationCheck(
+                check_type="value_range",
+                target="output/data.json",
+                params={"field": "nonexistent.*.path", "min": 0, "max": 1},
+            )],
+        )
+        result = validate_experiment_contract(tmp_path, contract=contract, trigger="test")
+        assert result.passed is True
+        # Should mention "field path" or "not yet produced" in message
+        msgs = [c.message for c in result.checks]
+        assert any("field path" in m or "No values" in m for m in msgs)
+
+    def test_metric_range_warns_on_non_numeric_values(self, tmp_path):
+        """File exists, field resolves to non-numeric — should skip gracefully."""
+        out = tmp_path / "output"
+        out.mkdir()
+        (out / "data.json").write_text(json.dumps({
+            "cells": {"A": "text", "B": "more_text"},
+        }))
+        contract = ExperimentContract(
+            experiment_id="e1",
+            independent_variable="x",
+            degeneracy_checks=[DegeneracyCheck(
+                check_type="min_variance",
+                target="output/data.json",
+                params={"field": "cells.*", "min_std": 0.01},
+            )],
+        )
+        result = validate_experiment_contract(tmp_path, contract=contract, trigger="test")
+        assert result.passed is True  # skip, not fail
+
+    def test_not_identical_with_single_value_skips(self, tmp_path):
+        """Only one value resolved — should skip, not crash."""
+        out = tmp_path / "output"
+        out.mkdir()
+        (out / "data.json").write_text(json.dumps({"x": {"only_one": 0.5}}))
+        contract = ExperimentContract(
+            experiment_id="e1",
+            independent_variable="x",
+            degeneracy_checks=[DegeneracyCheck(
+                check_type="not_identical",
+                target="output/data.json",
+                params={"field": "x.*"},
+            )],
+        )
+        result = validate_experiment_contract(tmp_path, contract=contract, trigger="test")
+        assert result.passed is True

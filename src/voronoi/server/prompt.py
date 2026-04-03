@@ -32,6 +32,7 @@ def build_orchestrator_prompt(
     output_dir: str = "",
     max_agents: int = 4,
     safe: bool = False,
+    prior_context: dict | None = None,
 ) -> str:
     """Build the unified orchestrator system prompt.
 
@@ -55,6 +56,13 @@ def build_orchestrator_prompt(
         Maximum concurrent worker agents.
     safe : bool
         If True, spawns workers with restricted tool access.
+    prior_context : dict | None
+        If set, contains warm-start data from prior runs:
+        - ``ledger_summary``: formatted claim ledger for the prompt
+        - ``pi_feedback``: verbatim human feedback
+        - ``cycle_number``: which round this is
+        - ``immutable_paths``: artifact paths that must not be modified
+        - ``artifact_manifest``: reusable artifacts description
     """
     _MODE_VERB = {
         "discover": "Discovery",
@@ -227,15 +235,23 @@ def build_orchestrator_prompt(
         f"1. Read checkpoint + `.swarm/brief-digest.md` (NOT the full `{prompt_path}`)\n"
         "2. Read `.swarm/dispatcher-directive.json` if it exists — obey it:\n"
         "   - `context_advisory`: prioritize convergence\n"
-        "   - `context_warning`: delegate ALL remaining work to fresh agents\n"
-        "   - `context_critical`: write checkpoint and dispatch Scribe NOW\n"
-        "3. Run targeted `bd query` (NEVER `bd list --json` in routine cycles)\n"
-        "4. Orient → Decide → Act\n"
-        "5. Write checkpoint, update belief map\n\n"
+        "   - `context_warning`: run `/compact` NOW to recover context budget, then delegate remaining work\n"
+        "   - `context_critical`: run `/compact` NOW, write checkpoint, dispatch Scribe immediately\n"
+        "3. Run `/context` and include the snapshot in your checkpoint (`context_snapshot` field).\n"
+        "   Extract: model, model_limit, total_used, system_tokens, message_tokens, free_tokens, buffer_tokens.\n"
+        "   This gives the dispatcher ground-truth token data for pressure directives.\n"
+        "4. Run targeted `bd query` (NEVER `bd list --json` in routine cycles)\n"
+        "5. Orient → Decide → Act\n"
+        "6. Write checkpoint (with context_snapshot), update belief map\n\n"
         "**At startup only:** Read `{prompt_path}` completely, then extract critical "
         "constraints into `.swarm/brief-digest.md` (~50 lines): success criteria, "
         "experimental design, hard constraints, mandated entry point. After that, "
-        "work from checkpoint + brief-digest.\n"
+        "work from checkpoint + brief-digest.\n\n"
+        "**On resume (checkpoint exists):** Read ONLY: (1) checkpoint, (2) brief-digest, "
+        "(3) dispatcher-directive, (4) `bd ready`. Do NOT re-read the agent definition, "
+        "belief map, paper files, experiments log, eval score, or other artifacts "
+        "unless the checkpoint indicates they changed. Each unnecessary file read "
+        "at startup wastes context that you need for OODA cycles later.\n"
     )
 
     # -- Success criteria ---------------------------------------------------
@@ -278,7 +294,13 @@ def build_orchestrator_prompt(
         "1. Flag `DESIGN_INVALID` in the task notes with diagnosis\n"
         "2. Dispatch Methodologist for post-mortem review\n"
         "3. Create a REVISE task with the Methodologist's recommendations\n"
-        "4. Only proceed to paper after the revised experiment passes its gate\n"
+        "4. Only proceed to paper after the revised experiment passes its gate\n\n"
+        "**Sentinel alerts and DESIGN_INVALID — IMPORTANT:**\n"
+        "When you see a `sentinel_violation` directive in `.swarm/dispatcher-directive.json`, "
+        "this IS a DESIGN_INVALID event.  The sentinel has already detected and flagged it.  "
+        "Do NOT create a separate DESIGN_INVALID task — the sentinel's alert is the flag.  "
+        "Your job: read `.swarm/sentinel-audit.json`, dispatch Methodologist, create REVISE task.  "
+        "Do NOT try to fix the code yourself — delegate to a worker agent.\n"
     )
 
     # -- Anti-simulation enforcement (expanded — this is critical) ----------
@@ -324,6 +346,48 @@ def build_orchestrator_prompt(
     # The orchestrator role file has Tools & Systems, the full dispatch
     # spec format, and task type → role mapping.  No duplication here.
 
+    # -- Long-running process delegation — MANDATORY ----------------------
+    sections.append(
+        "\n## Long-Running Processes — NEVER BLOCK THE ORCHESTRATOR\n\n"
+        "**NEVER run experiments or long-running scripts (>5min expected) in the "
+        "orchestrator session.** Long processes exhaust your context window with "
+        "idle polling and produce zero value during wait time.\n\n"
+        "**Mandatory workflow for experiments:**\n"
+        "1. Dispatch a worker agent (`task_type: \"experiment\"`) with the exact "
+        "command, expected runtime, and output files\n"
+        "2. The worker runs the experiment in its own worktree, commits results, "
+        "and exits\n"
+        "3. After merge, read the results in your next OODA cycle\n\n"
+        "**NEVER do this:**\n"
+        "- `sleep 600 && check_progress` — every sleep+check cycle wastes context\n"
+        "- `python3 run_experiments.py` then poll with `Read shell output Waiting`\n"
+        "- Run the same `find .llm_cache/ | wc -l && date` repeatedly\n\n"
+        "**Why:** In a 30h investigation, sleep-polling consumed 30%+ of context "
+        "budget for zero information. A worker agent runs the experiment with 100% "
+        "of its context available and exits cleanly.\n\n"
+        "**After dispatching all workers with no immediate work remaining:**\n"
+        "1. Write checkpoint with `phase: \"waiting_for_workers\"`, list workers in "
+        "`active_workers: [\"agent-phase2\", ...]`, and `next_actions`\n"
+        "2. Update belief map\n"
+        "3. Exit cleanly — the dispatcher will restart you when workers finish\n"
+        "4. Do NOT idle-loop waiting for workers — that wastes your entire context window\n\n"
+        "The dispatcher checks `active_workers` in your checkpoint. While any listed "
+        "worker's tmux window is alive, it will NOT restart you. When the last worker "
+        "exits, the dispatcher restarts you with a fresh context to merge results.\n"
+    )
+
+    # -- Anti-inline-coding — MANDATORY ------------------------------------
+    sections.append(
+        "\n## Code Changes — ALWAYS DELEGATE TO WORKERS\n\n"
+        "**NEVER write more than ~20 lines of code in the orchestrator session.**\n"
+        "Your role is orchestration (OODA, dispatch, merge, converge), not coding.\n\n"
+        "If an experiment needs code changes (encoder fixes, new analysis scripts, "
+        "bug fixes), dispatch a worker agent with a detailed briefing. The worker "
+        "implements, tests, and commits in its own worktree.\n\n"
+        "**Why:** Writing 200+ lines of code in the orchestrator burns context "
+        "that should be reserved for monitoring, merging, and convergence cycles.\n"
+    )
+
     # -- Manuscript delegation — MANDATORY ---------------------------------
     sections.append(
         "\n## Manuscript Writing — ALWAYS DELEGATE TO SCRIBE\n\n"
@@ -335,13 +399,80 @@ def build_orchestrator_prompt(
         "**Scribe** worker (`task_type: \"scribe\"`) with a briefing that lists:\n"
         "   - All completed findings and their locations\n"
         "   - The success criteria status\n"
-        "   - The target structure (e.g., academic paper sections)\n"
-        "2. The Scribe writes the deliverable in its own worktree with a full context window\n"
-        "3. After merge, verify the deliverable exists and dispatch the Evaluator\n\n"
+        "   - The output directory for the paper (from the project brief)\n"
+        "2. The Scribe writes **LaTeX** (`paper.tex`) — NEVER Markdown.\n"
+        "   Do NOT include instructions like 'write Markdown' or 'write deliverable.md' "
+        "in the scribe briefing. The Scribe's role file specifies LaTeX output — "
+        "your briefing must not contradict it.\n"
+        "3. After merge, verify `paper.tex` AND `paper.pdf` exist, then dispatch the Evaluator\n"
+        "4. The Scribe writes `.swarm/deliverable.md` as a SUMMARY for the convergence gate — "
+        "this is NOT the paper itself.  The paper is `paper.tex` + `paper.pdf`.\n\n"
         "**Why:** Your context is consumed by OODA cycles, experiment monitoring, and "
         "findings synthesis after hours of orchestration. The Scribe starts fresh with "
         "100% of its context available for writing — producing higher quality output "
         "and preventing session crashes.\n"
+    )
+
+    # -- Experiment Contract (Sentinel) — MANDATORY for experiments ---------
+    sections.append(
+        "\n## Experiment Contract — Machine-Readable Validity Declaration\n\n"
+        "After completing experiment design (Methodologist-approved or after your "
+        "own OODA plan), write `.swarm/experiment-contract.json` declaring what makes "
+        "this experiment **structurally valid**.  The dispatcher runs an autonomous "
+        "Sentinel that checks this contract against actual outputs — catching broken "
+        "manipulations, degenerate results, and collapsed conditions WITHOUT waiting "
+        "for you to notice.\n\n"
+        "**Contract schema:**\n"
+        "```json\n"
+        "{\n"
+        '  "experiment_id": "phase2-factorial",\n'
+        '  "independent_variable": "encoding_level",\n'
+        '  "conditions": ["L1-D", "L1-A", "L4-D", "L4-A"],\n'
+        '  "manipulation_checks": [\n'
+        '    {"check_type": "hash_distinct", "target": "output/encoding_hashes.json",\n'
+        '     "params": {"field": "sha256", "across": "conditions"}},\n'
+        '    {"check_type": "value_range", "target": "output/encoding_hashes.json",\n'
+        '     "params": {"field": "scenarios.*.L4-A.char_ratio_vs_l1", "min": 0.7, "max": 1.5}}\n'
+        "  ],\n"
+        '  "required_outputs": [\n'
+        '    {"path": "output/results.json", "description": "Per-scenario ANOVA results"}\n'
+        "  ],\n"
+        '  "degeneracy_checks": [\n'
+        '    {"check_type": "not_identical", "target": "output/results.json",\n'
+        '     "params": {"field": "anova.cell_means.*", "across": "conditions"}},\n'
+        '    {"check_type": "min_variance", "target": "output/results.json",\n'
+        '     "params": {"field": "anova.cell_means.*", "min_std": 0.001}}\n'
+        "  ],\n"
+        '  "phase_gates": [\n'
+        '    {"from_phase": "phase_minus_1", "to_phase": "phase_0",\n'
+        '     "checks": [\n'
+        '       {"check_type": "value_range", "target": "output/encoding_hashes.json",\n'
+        '        "params": {"field": "scenarios.*.L4-A.char_ratio_vs_l1", "min": 0.7, "max": 1.5}}\n'
+        "     ]}\n"
+        "  ]\n"
+        "}\n"
+        "```\n\n"
+        "**Available check types:**\n"
+        "- `hash_distinct` — field values must differ across conditions (catches collapsed IV)\n"
+        "- `value_range` — numeric field must be within [min, max] (catches ratio violations)\n"
+        "- `metric_range` — field values must have std >= min_std (catches flat/degenerate metrics)\n"
+        "- `not_identical` — values must not all be the same (catches identical outputs)\n"
+        "- `min_distinct_values` — at least N distinct values required\n"
+        "- `min_variance` — same as metric_range (alias)\n\n"
+        "**When to write the contract:**\n"
+        "- After experiment design, BEFORE dispatching workers\n"
+        "- Include checks for every constraint in the PROMPT.md that is machine-verifiable\n"
+        "- Phase gates should guard every phase transition declared in the brief\n\n"
+        "**The Sentinel is autonomous** — it runs without your involvement.  If it finds "
+        "a violation, it writes `.swarm/sentinel-audit.json` and sends a Telegram alert.  "
+        "It also writes a dispatcher directive to `.swarm/dispatcher-directive.json` with "
+        "`level: sentinel_violation` — when you see this directive in your OODA cycle:\n"
+        "1. **STOP** — do NOT dispatch new workers or cross phase gates\n"
+        "2. Read `.swarm/sentinel-audit.json` to understand what failed\n"
+        "3. Dispatch Methodologist for post-mortem diagnosis\n"
+        "4. Create a REVISE task with the fix\n"
+        "5. Only after the REVISE task passes and the sentinel audit shows `passed: true`, "
+        "resume normal operation\n"
     )
 
     # -- Rules -------------------------------------------------------------
@@ -386,7 +517,116 @@ def build_orchestrator_prompt(
             "See `.github/agents/evaluator.agent.md` for the full evaluation protocol.\n"
         )
 
+    # -- Warm-Start Brief (multi-run context) ------------------------------
+    if prior_context:
+        cycle = prior_context.get("cycle_number", 2)
+        sections.append(
+            f"\n## Round {cycle} — Continuation\n\n"
+            f"This is round {cycle} of an iterative investigation. "
+            "Prior rounds established findings that are summarized below. "
+            "Your job: address the PI's feedback while preserving confirmed results.\n\n"
+            "**Critical rules for continuation rounds:**\n"
+            "- Do NOT re-run experiments whose results are not challenged\n"
+            "- Do NOT regenerate data that locked claims depend on\n"
+            "- If you need additional data, create NEW files — don't modify existing ones\n"
+            "- Locked claims are constraints — treat them as established facts\n"
+            "- Challenged claims are your priority — investigate and resolve them\n"
+        )
+
+        ledger_summary = prior_context.get("ledger_summary", "")
+        if ledger_summary:
+            sections.append(
+                "\n## Claim Ledger — Prior State of Knowledge\n\n"
+                + ledger_summary + "\n"
+            )
+
+        pi_feedback = prior_context.get("pi_feedback", "")
+        if pi_feedback:
+            sections.append(
+                "\n## PI Feedback\n\n"
+                "The principal investigator provided this feedback after the last round. "
+                "Address each concern:\n\n"
+                + pi_feedback + "\n"
+            )
+
+        immutable_paths = prior_context.get("immutable_paths", [])
+        if immutable_paths:
+            sections.append(
+                "\n## Immutable Artifacts — DO NOT MODIFY\n\n"
+                "The following files support locked claims. Modifying them will block convergence:\n"
+            )
+            for p in immutable_paths:
+                sections.append(f"- `{p}`\n")
+
+        artifact_manifest = prior_context.get("artifact_manifest", "")
+        if artifact_manifest:
+            sections.append(
+                "\n## Reusable Artifacts from Prior Rounds\n\n"
+                + artifact_manifest + "\n"
+            )
+
     return "".join(sections)
+
+
+# ---------------------------------------------------------------------------
+# Warm-Start Brief builder
+# ---------------------------------------------------------------------------
+
+
+def build_warm_start_context(
+    lineage_id: int,
+    cycle_number: int,
+    pi_feedback: str = "",
+    base_dir: Path | None = None,
+    workspace: Path | None = None,
+) -> dict:
+    """Build the prior_context dict for build_orchestrator_prompt.
+
+    Reads the Claim Ledger and workspace artifacts to produce a structured
+    context dict that the prompt builder can inject into continuation prompts.
+    """
+    from voronoi.science.claims import load_ledger
+
+    ledger = load_ledger(lineage_id, base_dir=base_dir)
+
+    context: dict = {
+        "cycle_number": cycle_number,
+        "ledger_summary": ledger.format_for_prompt(),
+        "pi_feedback": pi_feedback,
+        "immutable_paths": ledger.get_immutable_paths(),
+    }
+
+    # Build artifact manifest from workspace if available
+    if workspace and workspace.exists():
+        manifest_lines: list[str] = []
+        swarm = workspace / ".swarm"
+
+        # Check for prior experiments
+        experiments = swarm / "experiments.tsv"
+        if experiments.exists():
+            try:
+                lines = experiments.read_text().strip().splitlines()
+                keep_count = sum(1 for l in lines[1:] if "\tkeep\t" in l)
+                manifest_lines.append(
+                    f"- Experiments: {len(lines) - 1} total, {keep_count} kept results"
+                )
+            except OSError:
+                pass
+
+        # Check for existing data directories
+        for data_dir in ("data", "data/raw", "data/synthetic", "output"):
+            dp = workspace / data_dir
+            if dp.is_dir():
+                files = list(dp.iterdir())
+                if files:
+                    manifest_lines.append(
+                        f"- `{data_dir}/`: {len(files)} files (DO NOT REGENERATE)"
+                    )
+
+        if manifest_lines:
+            context["artifact_manifest"] = "\n".join(manifest_lines)
+
+    return context
 
 
 # ---------------------------------------------------------------------------
@@ -418,10 +658,16 @@ SKILL_MAP: dict[str, list[str]] = {
     "investigation": [
         ".github/skills/investigation-protocol/SKILL.md",
         ".github/skills/evidence-system/SKILL.md",
+        ".github/skills/context-management/SKILL.md",
     ],
     "experiment": [
         ".github/skills/investigation-protocol/SKILL.md",
         ".github/skills/evidence-system/SKILL.md",
+        ".github/skills/context-management/SKILL.md",
+    ],
+    "scribe": [
+        ".github/skills/compilation-protocol/SKILL.md",
+        ".github/skills/figure-generation/SKILL.md",
     ],
     "paper": [
         ".github/skills/figure-generation/SKILL.md",
@@ -430,6 +676,13 @@ SKILL_MAP: dict[str, list[str]] = {
     "compilation": [
         ".github/skills/figure-generation/SKILL.md",
         ".github/skills/compilation-protocol/SKILL.md",
+    ],
+    "scout": [
+        ".github/skills/deep-research/SKILL.md",
+    ],
+    "exploration": [
+        ".github/skills/deep-research/SKILL.md",
+        ".github/skills/context-management/SKILL.md",
     ],
 }
 
@@ -540,6 +793,37 @@ def build_worker_prompt(
     # 9. Extra instructions
     if extra_instructions:
         sections.append(f"\n## Additional Instructions\n\n{extra_instructions}\n")
+
+    # 9a. Scribe: LaTeX format enforcement (overrides any contradictory briefing)
+    if task_type == "scribe":
+        sections.append(
+            "\n## Output Format — MANDATORY\n\n"
+            "**Write LaTeX (`paper.tex`), NOT Markdown.**\n"
+            "Your role file specifies LaTeX output. This section reinforces it "
+            "because the orchestrator's briefing may inadvertently say 'Markdown' — "
+            "ignore any such instruction.\n\n"
+            "1. The paper MUST be named `paper.tex` — this is the Voronoi convention\n"
+            "2. Compile to `paper.pdf` using the compilation-protocol skill\n"
+            "3. Place the paper, PDF, and figures in the output directory specified "
+            "by the project brief (typically `demos/<name>/output/paper/`)\n"
+            "4. After the paper is complete, write `.swarm/deliverable.md` as a SHORT "
+            "summary (abstract + key findings) — this is the convergence signal, "
+            "NOT the paper itself\n"
+            "5. Copy `paper.pdf` to `.swarm/report.pdf` for Telegram delivery\n"
+        )
+
+    # 9b. Experiment worker: anti-polling guidance
+    if task_type in ("investigation", "experiment"):
+        sections.append(
+            "\n## Running Experiments — Block, Don't Poll\n\n"
+            "When running a long experiment script:\n"
+            "- Run it **synchronously** (let it block your session) — do NOT background it "
+            "and poll with `sleep && check`\n"
+            "- If the script takes hours, that's fine — your worktree is isolated\n"
+            "- After it finishes, read the results, commit, close your task, and exit\n"
+            "- NEVER run `sleep 600 && find .llm_cache | wc -l` loops — they waste "
+            "your context window for zero value\n"
+        )
 
     # 10. Self-verification protocol (Reflection pass + test loop)
     sections.append(

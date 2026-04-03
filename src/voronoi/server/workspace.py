@@ -258,21 +258,26 @@ class WorkspaceManager:
             logger.debug("voronoi init failed in %s", workspace_path, exc_info=True)
 
     def _ensure_github_files(self, workspace_path: Path) -> None:
-        """Copy runtime agents/prompts/skills to .github/ in the workspace, plus scripts/ and templates."""
+        """Copy runtime agents/prompts/skills/instructions/hooks to .github/ in the workspace, plus scripts/ and templates."""
         try:
             from voronoi.cli import find_data_dir, _resolve_templates_dir
 
             data = find_data_dir()
 
-            # Copy agents/prompts/skills into workspace's .github/ if missing
+            # Copy agents/prompts/skills/instructions/hooks into workspace's .github/ if missing
             github_dst = workspace_path / ".github"
             if not (github_dst / "agents").is_dir():
                 github_dst.mkdir(exist_ok=True)
-                for subdir in ("agents", "prompts", "skills"):
+                for subdir in ("agents", "prompts", "skills", "instructions", "hooks"):
                     src = data / subdir
                     dst = github_dst / subdir
                     if src.is_dir() and not dst.is_dir():
                         shutil.copytree(src, dst)
+                # Make hook scripts executable
+                hooks_dst = github_dst / "hooks"
+                if hooks_dst.is_dir():
+                    for sh in hooks_dst.rglob("*.sh"):
+                        sh.chmod(sh.stat().st_mode | 0o755)
 
             # Copy runtime scripts if missing
             scripts_dst = workspace_path / "scripts"

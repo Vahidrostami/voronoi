@@ -32,7 +32,7 @@ SQLite-backed investigation lifecycle management. Global queue (`~/.voronoi/queu
 class Investigation:
     id: int              # Auto-assigned on enqueue
     chat_id: str         # Telegram chat or CLI session
-    status: str          # queued | running | complete | failed | cancelled
+    status: str          # queued | running | paused | review | complete | failed | cancelled
     investigation_type: str  # "repo" | "lab"
     repo: str | None     # GitHub repo URL (repo-type only)
     question: str        # The user's question/task
@@ -45,6 +45,8 @@ class Investigation:
     github_url: str | None
     parent_id: int | None    # For follow-up investigations
     demo_source: str | None  # Demo name if from demo
+    lineage_id: int | None   # Root investigation ID for claim ledger scoping
+    cycle_number: int        # Iteration round within a lineage (default 1)
     created_at: float
     started_at: float | None
     completed_at: float | None
@@ -66,15 +68,26 @@ class Investigation:
        │running │──────────────────────┐
        └───┬───┘                       │
            │                           │
-     ┌─────┼─────┐              cancel()
-     │     │     │                     │
-  complete() fail()                    │
-     │     │     │                     │
-     ▼     ▼     ▼                     ▼
- ┌────────┐ ┌──────┐            ┌──────────┐
- │complete│ │failed│            │cancelled │
- └────────┘ └──────┘            └──────────┘
+     ┌─────┼─────┼──────┼─────┐   cancel()
+     │     │     │      │     │        │
+  complete() fail() pause() review()   │
+     │     │     │      │     │        │
+     ▼     ▼     ▼      ▼     ▼        ▼
+ ┌────────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────────┐
+ │complete│ │failed│ │paused│ │review│ │cancelled │
+ └────────┘ └──┬───┘ └──┬───┘ └──┬───┘ └──────────┘
+               │        │        │
+               └────┬───┘   continue_investigation() / accept()
+                    │            │              │
+                    │ resume()   │              │ accept()
+                    ▼            ▼              ▼
+               ┌───────┐    ┌───────┐    ┌────────┐
+               │running │    │queued │    │complete│
+               └───────┘    └───────┘    └────────┘
+                        (new inv, same lineage)
 ```
+
+The `review` state is entered when a science investigation (mode=discover/prove) converges successfully. The PI reviews claims, provides feedback, and can continue to a new round (`continue_investigation`) or accept and close (`accept`). Build-mode investigations skip `review` and go directly to `complete`.
 
 ### InvestigationQueue API
 
@@ -90,6 +103,12 @@ class InvestigationQueue:
     def complete(self, investigation_id: int, github_url: str | None = None) -> None: ...
     def fail(self, investigation_id: int, error: str) -> None: ...
     def cancel(self, investigation_id: int) -> bool: ...
+    def pause(self, investigation_id: int, reason: str) -> None: ...    # running → paused
+    def resume(self, investigation_id: int) -> None: ...                # paused|failed → running
+    def review(self, investigation_id: int) -> bool: ...                # running → review
+    def accept(self, investigation_id: int) -> bool: ...                # review → complete
+    def continue_investigation(self, investigation_id: int,
+                               feedback: str = "") -> int | None: ...  # review|complete → new queued
 
     # Queries
     def get(self, investigation_id: int) -> Investigation | None: ...
@@ -114,7 +133,8 @@ class InvestigationQueue:
 CREATE TABLE investigations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     chat_id TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'queued',
+    status TEXT NOT NULL DEFAULT 'queued'
+        CHECK(status IN ('queued','running','paused','review','complete','failed','cancelled')),
     investigation_type TEXT NOT NULL DEFAULT 'lab',
     repo TEXT,
     question TEXT NOT NULL,
@@ -127,6 +147,8 @@ CREATE TABLE investigations (
     github_url TEXT,
     parent_id INTEGER,
     demo_source TEXT,
+    lineage_id INTEGER,            -- Root investigation ID for claim ledger scoping
+    cycle_number INTEGER DEFAULT 1, -- Iteration round within a lineage
     created_at REAL NOT NULL,
     started_at REAL,
     completed_at REAL,
@@ -164,10 +186,45 @@ class DispatcherConfig:
     timeout_hours: int       # 48 — max investigation runtime
     max_retries: int         # 2 — retry failed launches
     stall_minutes: int       # 45 — minutes without progress before warning
+    pause_timeout_hours: int # 24 — auto-fail paused investigations after this
     context_advisory_hours: int   # 6 — "prioritize convergence" directive
-    context_warning_hours: int    # 10 — "delegate remaining work" directive
-    context_critical_hours: int   # 14 — "dispatch Scribe NOW" directive
+    context_warning_hours: int    # 10 — "delegate remaining work" + force compact
+    context_critical_hours: int   # 14 — force context restart
+    max_context_restarts: int     # 2 — max proactive context refreshes
 ```
+
+### Copilot CLI Flags
+
+The dispatcher injects several Copilot CLI flags at launch time:
+
+| Flag | Where | Purpose |
+|------|-------|---------|
+| `--effort <level>` | Orchestrator + workers (via `.swarm-config.json`) | Reasoning effort scaled by rigor: adaptive→`high`, scientific→`high`, experimental→`xhigh` |
+| `--share <path>` | Orchestrator + workers | Saves clean markdown session transcript to `.swarm/session.md` for audit trails |
+| `--deny-tool` | Workers only (via `spawn-agent.sh` role permissions) | Read-only roles (scout, critic, statistician, methodologist) get `--deny-tool=write` |
+
+Both orchestrator and worker tmux launches also propagate Copilot CLI auth/state environment needed for durable restarts: `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`, `COPILOT_HOME`, and `GH_HOST`. This ensures a resumed agent uses the same stored Copilot state directory and GitHub host selection as the parent server process, rather than falling back to a fresh login prompt.
+
+Server runtime also reserves `~/.voronoi/tmp` as the shared temp root. `voronoi server start` exports `TMPDIR`, `TMP`, and `TEMP` to that directory, and `_launch_in_tmux()` relays the same values into orchestrator sessions so worker-side tests and scratch files stay under server state instead of falling back to the system `/tmp`.
+
+**Effort-by-rigor mapping** (applied in `_launch_in_tmux()` and `spawn-agent.sh`):
+
+| Rigor | `--effort` | Rationale |
+|-------|-----------|----------|
+| (none / standard) | `medium` | Routine build tasks |
+| `adaptive` | `high` | Science discovery needs deeper reasoning |
+| `scientific` | `high` | Full science protocol |
+| `experimental` | `xhigh` | Maximum depth for novel discovery |
+
+**Role permission profiles** (configured in `.swarm-config.json`):
+
+| Role | Permissions |
+|------|------------|
+| `scout` | `--allow-all --deny-tool=write` |
+| `review_critic` | `--allow-all --deny-tool=write` |
+| `review_stats` | `--allow-all --deny-tool=write` |
+| `review_method` | `--allow-all --deny-tool=write` |
+| All others | `--allow-all` (default) |
 
 ### RunningInvestigation
 
@@ -194,6 +251,7 @@ class RunningInvestigation:
     eval_score: float         # Latest evaluator score
     retry_count: int
     stall_warned: bool
+    context_restarts: int         # Proactive context refreshes (separate from retry_count)
     status_message_id: int | None  # Telegram message ID for edit-in-place
 ```
 
@@ -223,7 +281,7 @@ class InvestigationDispatcher:
 3. Copy demo files if `demo_source` set
 4. Build orchestrator prompt via `prompt.py`
 5. Verify Copilot auth (`_ensure_copilot_auth()`)
-6. Launch in tmux: `tmux new-session -d -s {session} "cd {workspace} && {agent_command} {flags} -p prompt.txt ; exit"`
+6. Launch in tmux: `tmux new-session -d -s {session} "cd {workspace} && {agent_command} {flags} --effort {level} --share .swarm/session.md -p prompt.txt ; exit"`, injecting auth/state environment into the tmux session before `send-keys`
 7. Add to `_running` dict
 
 ### Progress Polling
@@ -239,6 +297,11 @@ class InvestigationDispatcher:
      - `_diff_tasks()` — compares task snapshot for new/started/completed tasks
      - `_check_findings()` — detects new FINDING tasks (deduplicates via notified set)
      - `_check_design_invalid()` — detects DESIGN_INVALID flags in open tasks
+     - `_check_sentinel()` — experiment contract validation (see SCIENCE.md §10):
+       - Detects missing contract after 1h at Analytical+ rigor
+       - Triggers on contract change, output production, phase transition, or periodic timer
+       - Runs phase gate validation when orchestrator checkpoint phase changes
+       - Writes `sentinel_violation` directive on failure
      - `_detect_phase()` — classifies phase from workspace file artifacts
      - `_check_paradigm_stress()` — detects contradictions (Scientific+ only)
      - `_check_heartbeat_stalls()` — detects agent inactivity via heartbeat files
@@ -297,30 +360,70 @@ Phase inferred from workspace artifacts:
 |--------|---------|
 | tmux session dies | Agent finished (or crashed) — try restart if retries remain |
 | `deliverable.md` exists | Standard-rigor completion |
-| `deliverable.md` + `convergence.json` exist | Analytical+ completion |
+| `deliverable.md` + `convergence.json` exist | Analytical+ completion (convergence status is **case-insensitive**) |
 | DESIGN_INVALID open | **Hard gate** — blocks completion even if deliverable exists |
 | Timeout reached | Forced completion with exhaustion marker |
+
+The convergence status check (`_convergence_status_ok`) accepts `converged`, `CONVERGED`, or any case variant for all valid statuses (`converged`, `exhausted`, `diminishing_returns`, `negative_result`). It also checks the legacy `converged: true` boolean field.
+
+### Criteria Synchronization
+
+The dispatcher syncs `criteria_status` from the orchestrator checkpoint into `success-criteria.json` on each poll cycle via `_sync_criteria_from_checkpoint()`. This sync is promotion-only: checkpoint entries can mark a criterion as met, but they do not clear a criterion that is already marked met in the canonical file. That prevents stale or partial checkpoints from regressing canonical criteria state when the orchestrator updates its checkpoint but does not write back the full criteria file. The state digest generator also cross-references both sources, preferring whichever has more "met" values.
 
 ### Completion Handling
 
 1. **Hard gate**: If any DESIGN_INVALID tasks are open, completion is blocked
-2. Clean up tmux sessions (orchestrator + swarm)
+2. Clean up tmux sessions — reads `.swarm-config.json` for the actual session name, enumerates live tmux sessions and kills any whose working directory is under the swarm directory
 3. On success: generate teaser via `ReportGenerator.build_teaser()`, generate PDF via `build_pdf()`, send teaser + document to Telegram
 4. On failure: extract log tail, send failure message via `format_failure()`
 5. Try GitHub publish if `gh` CLI available
+6. Clean up agent worktrees — prune git worktrees, remove worktree directories, remove the `-swarm/` directory
+7. Remove `.swarm/.tmux-env` secrets file from workspace
+8. Clean `~/.voronoi/tmp` if no other investigations are running
 
 ### Agent Restart
 
 When tmux session dies:
 1. **Classify the exit first** — check if agent logged out cleanly vs crashed unexpectedly
 2. If exit was clean but incomplete, check if a human gate is pending — if so, do NOT retry (the agent is waiting for approval)
-3. Check retry limit (`max_retries`, default 2)
-4. Send contextual notification: "exited early" for clean exits, "crashed" only for unexpected exits
-5. Validate orchestrator prompt still exists
-6. Build **resume prompt** that includes: the original question, essential protocol references, checkpoint state, success criteria status, task summary, and clear next actions
-7. Rotate log file (preserve previous attempt's logs)
-8. Re-launch in tmux with the resume prompt
-9. On auth failure: stop retrying (no point wasting retries)
+3. **Check for auth failure** — normalize the log tail first (strip ANSI/TUI control sequences, collapse punctuation noise), then inspect it for auth-related patterns ("authenticate", "gh auth login", "COPILOT_GITHUB_TOKEN", etc.). If matched, transition to `paused` state instead of burning a retry. Send Telegram notification with `/resume` instructions.
+4. **Check for orphaned workers** — in addition to checking tmux windows, `_has_active_workers()` uses `pgrep` to detect orphaned copilot processes whose command line references the workspace path. This prevents premature restart when workers outlive their tmux session.
+5. Check retry limit (`max_retries`, default 2)
+5. Send contextual notification: "exited early" for clean exits, "crashed" only for unexpected exits
+6. Validate orchestrator prompt still exists
+7. Build **resume prompt** that includes: the original question, essential protocol references, checkpoint state, success criteria status, task summary, and clear next actions
+8. Rotate log file (preserve previous attempt's logs)
+9. Re-launch in tmux with the resume prompt
+10. On auth failure during launch: transition to `paused` (not exhausting retries)
+
+### Context Restart (Proactive)
+
+When the orchestrator becomes context-exhausted, directive files are unreliable because the agent may be stuck in a polling sleep and never read them. At `context_critical` level (time-based ≥14h or self-reported ≤15% window remaining), the dispatcher **force-restarts** the orchestrator:
+
+1. Compact workspace state (`compact_workspace_state()`)
+2. Kill the tmux session
+3. Build a fresh resume prompt from checkpoint + state digest
+4. Relaunch in tmux with clean context window
+5. Send Telegram notification
+
+Time-based restarts are **evidence-gated**: if the orchestrator's context snapshot shows >30% headroom, the force-restart is skipped (the agent is healthy enough to read the directive itself). Token-based restarts (≤15% self-reported) always trigger regardless of elapsed time. This prevents killing a healthy agent that happens to be running for a long time.
+
+This does NOT count against `max_retries` — it uses a separate `context_restarts` counter (limit: `max_context_restarts`, default 2). At `context_warning` level, the dispatcher force-compacts the workspace immediately (instead of waiting for the periodic 6h interval) to help the agent if it does read the directive.
+
+The resume prompt for context refreshes is distinct from crash restarts: it explicitly tells the agent the previous session was healthy, nothing failed, and to continue from the checkpoint without re-validating completed work.
+
+### Investigation Resume
+
+The dispatcher exposes `resume_investigation(investigation_id)` for resuming `paused` or `failed` investigations. This:
+1. Validates the investigation exists and is in `paused` or `failed` status
+2. Validates the workspace still exists with an orchestrator prompt
+3. Transitions the queue status back to `running` via `queue.resume()`
+4. Resets `retry_count` to 0
+5. Builds a fresh resume prompt via `_build_resume_prompt()`
+6. Launches in tmux
+7. Adds back to `self.running` for monitoring
+
+Paused investigations auto-fail after `pause_timeout_hours` (default 24h).
 
 ### Abort Handling
 
@@ -377,15 +480,43 @@ def build_orchestrator_prompt(
 | 9 | Phase gates | Hard gates (no paper while DESIGN_INVALID exists) |
 | 10 | Anti-simulation | Hard gate to detect fake LLM calls |
 | 11 | Workflow steps | Mode-specific OODA/iteration cycles |
-| 12 | Tools | bd commands, spawn-agent.sh, merge-agent.sh, figures |
-| 13 | Worker prompts | Role file inclusion, artifact contracts |
-| 14 | Rules | Concurrency limits, proofs, never edit worker code |
-| 15 | Rigor rules | Analytical/scientific/experimental enforcement |
-| 16 | Eval score | `.swarm/eval-score.json` output format |
+| 12 | Long-running processes | **NEVER block orchestrator** — delegate experiments to workers |
+| 13 | Code changes | **NEVER write >20 lines** — delegate coding to workers |
+| 14 | Manuscript delegation | **ALWAYS delegate to Scribe** — Scribe writes LaTeX (`paper.tex`), NEVER Markdown |
+| 15 | Tools | bd commands, spawn-agent.sh, merge-agent.sh, figures |
+| 16 | Worker prompts | Role file inclusion, artifact contracts |
+| 17 | Rules | Concurrency limits, proofs, never edit worker code |
+| 18 | Rigor rules | Analytical/scientific/experimental enforcement |
+| 19 | Eval score | `.swarm/eval-score.json` output format |
 
 ### Key Design Principle
 
 The prompt **references** `.github/agents/*.agent.md` files in the target workspace. It tells the orchestrator: "Read this file NOW — it contains your complete role definition." Role definitions live canonically in `src/voronoi/data/agents/` and are copied to `.github/agents/` in investigation workspaces. They are NEVER duplicated in Python code.
+
+### Worker Prompt Skill Injection
+
+`build_worker_prompt()` uses `SKILL_MAP` to inject task-type-specific skill references:
+
+| Task Type | Skills Injected |
+|-----------|----------------|
+| `investigation`, `experiment` | `investigation-protocol`, `evidence-system`, `context-management` |
+| `scribe` | `compilation-protocol`, `figure-generation` |
+| `paper`, `compilation` | `figure-generation`, `compilation-protocol` |
+| `scout` | `deep-research` |
+| `exploration` | `deep-research`, `context-management` |
+
+Skills are referenced as paths (e.g., `.github/skills/deep-research/SKILL.md`) in the worker prompt. The agent reads them at task start.
+
+### Scribe Format Enforcement
+
+`build_worker_prompt()` injects an "Output Format — MANDATORY" section for `task_type="scribe"` that overrides any contradictory briefing with:
+- Write LaTeX (`paper.tex`), not Markdown
+- Compile to `paper.pdf` using the compilation-protocol skill
+- Place paper in the output directory from the project brief
+- Write `.swarm/deliverable.md` as a SHORT summary (convergence signal), not the paper
+- Copy `paper.pdf` to `.swarm/report.pdf` for Telegram delivery
+
+This prevents the orchestrator's LLM-generated briefing from accidentally telling the Scribe to write Markdown.
 
 ---
 
@@ -401,9 +532,10 @@ Provisions investigation workspaces with auto-cloning, git worktrees, and framew
 ~/.voronoi/
 ├── objects/                    # Bare git repos (shared object store)
 │   └── owner--repo.git        # --reference for deduplication
+├── tmp/                        # Dedicated temp root for bridge + agent subprocesses
 └── active/                    # Active investigation workspaces
     └── inv-{id}-{slug}/       # One per investigation
-        ├── .github/           # Agent roles + skills
+        ├── .github/           # Agent roles, skills, instructions, hooks
         ├── .swarm/            # Orchestrator state
         ├── scripts/           # Infrastructure scripts
         ├── data/raw/          # Experimental data

@@ -165,6 +165,10 @@ graph TD
 | `/voronoi progress` | Are we on track? Metrics, criteria, belief map |
 | `/voronoi results [id]` | View past investigation results |
 | `/voronoi recall <query>` | Search past findings |
+| `/voronoi resume [id\|codename]` | Resume a paused or failed investigation |
+| `/voronoi review [codename]` | Show Claim Ledger — lock, challenge, or accept findings |
+| `/voronoi continue <codename> [feedback]` | Start a new round with PI feedback |
+| `/voronoi claims [codename]` | Show current claim state for an investigation |
 | Free text in groups | Auto-detect intent and dispatch |
 
 **From CLI**: `/swarm <task>` · `/standup` · `/progress` · `/merge` · `/teardown`
@@ -211,7 +215,10 @@ DISCOVER starts light and escalates rigor as hypotheses crystallize. PROVE has f
 | Statistician | — | ✅ | ✅ |
 | Methodologist | — | ✅ | ✅ |
 | Pre-registration | — | ✅ | ✅ |
+| Experiment Sentinel | — | ✅ | ✅ |
 | Replication | — | — | ✅ (experimental) |
+
+**Experiment Sentinel** — the dispatcher autonomously validates experiment contracts against actual outputs during execution. Catches collapsed manipulations, degenerate metrics, and broken phase gates *before* wasting hours of compute. See `docs/SCIENCE.md` §10.
 
 **Evidence System** — every finding includes:
 
@@ -254,14 +261,18 @@ src/voronoi/
   cli.py                  # init, upgrade, demo, server
   utils.py                # shared field extraction, note parsing
   beads.py                # Beads subprocess helpers
-  science/                # rigor gates (4 modules)
-    convergence.py  fabrication.py  gates.py  _helpers.py
+  science/                # rigor gates (5 modules)
+    convergence.py  fabrication.py  gates.py  _helpers.py  claims.py
   gateway/                # Telegram interface
     config.py  router.py  report.py  intent.py
     memory.py  knowledge.py  handoff.py  progress.py
+    codename.py  literature.py
   server/
     prompt.py  dispatcher.py  queue.py  workspace.py
     sandbox.py  publisher.py  runner.py  events.py
+    compact.py  repo_url.py
+  mcp/                    # MCP server — validated tool interface
+    server.py  tools_beads.py  tools_swarm.py  validators.py
   data/                   # Runtime files (shipped with pip install)
     agents/               # Role definitions — canonical location
     skills/               # Skill definitions — canonical location
@@ -272,12 +283,18 @@ src/voronoi/
 
 **File audience separation**: The repo-root `CLAUDE.md` contains developer instructions. Investigation workspaces get `src/voronoi/data/templates/CLAUDE.md` — a separate runtime constitution with science-specific rules. They are never mixed.
 
+**Agent steering**: Investigation workspaces ship with scoped instructions (`.github/instructions/`), lifecycle hooks (`.github/hooks/`), and domain skills (`.github/skills/`):
+- **Instructions** apply automatically based on file context — anti-fabrication rules for experiment code, data integrity for raw data, finding schemas for results
+- **Hooks** enforce invariants at agent lifecycle points — session start injects Beads status, and destructive commands on raw data are blocked before execution
+- **Skills** load domain knowledge on demand — Copilot CLI usage patterns, data hashing protocols, evidence management, and 19 other specialized workflows
+
 Each agent is a **full Copilot CLI session** in its own **tmux window** with its own **git worktree**. No custom IPC — agents communicate through git + [Beads](https://github.com/steveyegge/beads).
 
 ```
 ~/.voronoi/              # server mode
   config.json  queue.db
   objects/               # shared bare git repos
+  ledgers/               # claim ledgers per investigation lineage
   active/                # one workspace per investigation
     inv-1-slug/
       .swarm/            # journal, beliefs, deliverable
@@ -298,6 +315,7 @@ Each agent is a **full Copilot CLI session** in its own **tmux window** with its
 | Statistical rigor gates | ✅ | — | — | — |
 | Pre-registration & replication | ✅ | — | — | — |
 | Evidence system (SHA-256) | ✅ | — | — | — |
+| Iterative science (claim ledger) | ✅ | — | — | — |
 | Telegram-native interface | ✅ | — | — | — |
 | Docker-sandboxed execution | ✅ | — | ✅ | — |
 | Role-based specialization | ✅ (12) | ✅ | ✅ | ✅ (6) |
@@ -331,7 +349,7 @@ pip install voronoi[report]  # optional: PDF generation
 
 ```bash
 git clone https://github.com/Vahidrostami/voronoi && cd voronoi
-pip install -e . && pytest   # 642 tests
+pip install -e . && pytest   # 829 tests
 ```
 
 See [DESIGN.md](DESIGN.md) for the full design philosophy.

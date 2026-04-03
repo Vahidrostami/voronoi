@@ -52,13 +52,14 @@ Phase 3: Test (scientific-level rigor)
 3. **Dispatch** — Workspace provisioned, orchestrator launched
 4. **Free Exploration** — Orchestrator reads question, dispatches Scout + any relevant initial agents in parallel. No rigid sequence.
 5. **Hypothesis Formation** — As agents report back, orchestrator forms belief map. SERENDIPITY events can redirect exploration.
-6. **Rigor Escalation** — When hypotheses are testable, orchestrator engages Methodologist + Statistician. Pre-registration kicks in.
-7. **Parallel Investigation** — Multiple agents pursue different hypotheses simultaneously
-8. **Inner Loop** — Each agent: execute → verify → retry (self-healing)
-9. **OODA Outer Loop** — Orchestrator observes findings, updates belief map, decides next actions
-10. **Review Gates** — Statistician + Critic review findings (activated when rigor escalated)
-11. **Synthesis** — Synthesizer assembles deliverable
-12. **Evaluation** — Evaluator scores output
+6. **Plan Review** — At Analytical+ rigor, before dispatching structured investigation work, the orchestrator submits its task decomposition for review. Critic reviews the plan (at Scientific+: Critic + Theorist; at Experimental: + Methodologist). Reviewer writes verdict to `.swarm/plan-review.json`. Orchestrator revises if verdict is REVISE or RESTRUCTURE, then proceeds. One round only.
+7. **Rigor Escalation** — When hypotheses are testable, orchestrator engages Methodologist + Statistician. Pre-registration kicks in.
+8. **Parallel Investigation** — Multiple agents pursue different hypotheses simultaneously
+9. **Inner Loop** — Each agent: execute → verify → retry (self-healing)
+10. **OODA Outer Loop** — Orchestrator observes findings, updates belief map, decides next actions
+11. **Review Gates** — Statistician + Critic review findings (activated when rigor escalated)
+12. **Synthesis** — Synthesizer assembles deliverable
+13. **Evaluation** — Evaluator scores output
 
 ### Convergence
 All active hypotheses resolved OR orchestrator judges exploration complete + eval score ≥ 0.75.
@@ -91,11 +92,12 @@ All 12 roles from the start.
 2. **Scout Phase** — Prior knowledge, SOTA anchoring, gap identification
 3. **Theory Phase** — Theorist proposes causal models and competing theories
 4. **Hypothesis Generation** — Orchestrator initializes belief map with hypotheses
-5. **Baseline** — First subtask is ALWAYS a baseline measurement (hard gate)
-6. **Pre-Registration** — Each investigator pre-registers: hypothesis, method, controls, stat test, sample size, power analysis, sensitivity plan
-7. **Methodologist Review** — Mandatory — approves or revises experimental design
-8. **Dispatch Investigators** — Parallel experiments in worktrees
-9. **Inner Loop** — Each investigator:
+5. **Plan Review** — Orchestrator submits task decomposition for review before any experiments run. At Scientific rigor: Critic + Theorist review. At Experimental: Critic + Theorist + Methodologist. Reviewer(s) dispatched with `TYPE:plan-review` in task notes. Verdict written to `.swarm/plan-review.json`. Orchestrator revises plan if verdict is REVISE or RESTRUCTURE. One round only — no iterative loops.
+6. **Baseline** — First subtask is ALWAYS a baseline measurement (hard gate)
+7. **Pre-Registration** — Each investigator pre-registers: hypothesis, method, controls, stat test, sample size, power analysis, sensitivity plan
+8. **Methodologist Review** — Mandatory — approves or revises experimental design
+9. **Dispatch Investigators** — Parallel experiments in worktrees
+10. **Inner Loop** — Each investigator:
    - Execute experiment
    - Verify: runs without crash, metric extracted
    - Self-verification: test loop (up to 3 retries), produces check, metric consistency
@@ -104,19 +106,20 @@ All 12 roles from the start.
    - Commit raw data with SHA-256
    - Sensitivity analysis (2+ parameter variations)
    - Create FINDING in Beads
-10. **OODA Loop** — Orchestrator reads findings, updates belief map, checks convergence
-11. **Statistician Review** — Independent recomputation, interpretation metadata
-12. **Critic Review** — Partially blinded adversarial review
-13. **Synthesis** — Claim-evidence registry → deliverable (report or manuscript)
-14. **Evaluation** — CCSA scoring with structured feedback
-15. **Convergence** — All hypotheses resolved, no paradigm stress, eval ≥ 0.75
+11. **OODA Loop** — Orchestrator reads findings, updates belief map, checks convergence
+12. **Statistician Review** — Independent recomputation, interpretation metadata
+13. **Critic Review** — Partially blinded adversarial review
+14. **Synthesis** — Claim-evidence registry → deliverable (report or manuscript)
+15. **Evaluation** — CCSA scoring with structured feedback
+16. **Convergence** — All hypotheses resolved, no paradigm stress, eval ≥ 0.75
 
 ### Human Review Gates (PROVE mode)
 
-At two key decision points, the investigation pauses for human approval:
+At key decision points, the investigation pauses for review:
 
 | Gate | When | What the Human Sees |
 |------|------|--------------------|  
+| **Plan review** | After orchestrator decomposes into tasks, before baseline | Task decomposition, dependency graph, scope assessment, reviewer verdict |
 | **Pre-registration** | After pre-reg complete, before running experiments | Hypothesis, method, N, design summary |
 | **Convergence** | After findings collected, before finalizing deliverable | Findings summary, eval score, convergence status |
 
@@ -264,7 +267,7 @@ The Telegram bridge adds contextual buttons to messages:
 ### Phase Sequence
 
 ```
-starting → scouting → planning → investigating → reviewing → synthesizing → converging → complete
+starting → scouting → planning → plan-review → investigating → reviewing → synthesizing → converging → complete
 ```
 
 Each phase has conversational descriptions per mode (not just labels), e.g.:
@@ -344,3 +347,54 @@ Orchestrator
 - `bd ready` returns only unblocked tasks
 - Workers check `REQUIRES` at startup — report BLOCKED if missing
 - Merge rejected if `PRODUCES` missing
+
+---
+
+## 10. Multi-Run Iteration
+
+### Philosophy
+
+Science is iterative. The user fires a question, Voronoi runs autonomously, then the PI reviews results, raises objections, and triggers another round. The Claim Ledger is the durable scientific state that survives across runs.
+
+### Lifecycle
+
+```
+Run 1: question → agents → findings → convergence → REVIEW
+  ↓ PI feedback: "lock C1, challenge C2: N too small"
+Run 2: warm-start brief → agents → new findings → convergence → REVIEW
+  ↓ PI feedback: "looks good"
+Run 2: REVIEW → COMPLETE
+```
+
+### Key Mechanisms
+
+| Mechanism | Where | What it does |
+|-----------|-------|-------------|
+| `review` status | queue.py | Pauses after convergence for PI feedback |
+| Claim Ledger | claims.py | Cross-run scientific state with provenance |
+| Warm-Start Brief | prompt.py | Loads prior claims + PI feedback into new round |
+| Workspace reuse | dispatcher.py | Same git repo, archived `.swarm/`, git tags at boundaries |
+| Immutability | gates.py | Locked claims' artifacts can't be modified |
+| Self-critique | claims.py | Auto-identifies weaknesses before showing PI |
+
+### Workspace Handoff Between Runs
+
+When `/continue` is triggered:
+1. Git tag `run-<N>-complete` marks the boundary
+2. `.swarm/` state archived to `.swarm/archive/run-<N>/`
+3. Checkpoint and convergence files cleared for fresh orchestrator
+4. Belief map, experiments.tsv, success criteria carried forward
+5. Worktrees pruned
+6. Locked claims' artifacts written as `file_unchanged` invariants
+
+### Runs Are Additive
+
+New runs add experiments, code, and data to the workspace. They never regenerate what prior runs established — unless the PI challenged it. Locked claims create immutability zones. The paper is the only artifact rewritten each round.
+
+### Telegram Commands
+
+| Command | When | Effect |
+|---------|------|--------|
+| `/voronoi review [codename]` | During or after run | Show Claim Ledger |
+| `/voronoi continue <codename> [feedback]` | After review | Start new round with feedback |
+| `/voronoi claims [codename]` | Any time | Show claim state |

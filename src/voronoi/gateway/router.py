@@ -17,7 +17,7 @@ from typing import Optional
 from voronoi.beads import run_bd, has_beads_dir
 from voronoi.gateway.intent import ClassifiedIntent, WorkflowMode, classify
 from voronoi.gateway.progress import (
-    MODE_EMOJI, RIGOR_DESCRIPTIONS, MODE_VERB,
+    MODE_EMOJI, MODE_VERB,
     build_digest_whatsup, build_digest, phase_description, format_duration,
     assess_track_status, _criteria_summary, _experiment_summary,
     progress_bar, _clean_question_preview,
@@ -34,7 +34,10 @@ __all__ = [
     "handle_status", "handle_whatsup", "handle_howsitgoing",
     "handle_tasks", "handle_ready", "handle_health", "handle_board",
     "handle_reprioritize", "handle_pause", "handle_resume", "handle_add",
+    "handle_resume_investigation",
     "handle_complete",
+    "handle_complete_investigation",
+    "handle_review_investigation", "handle_continue_investigation", "handle_claims",
     "handle_abort", "handle_pivot", "handle_guide",
     "handle_discover", "handle_prove",
     "handle_recall", "handle_belief", "handle_journal", "handle_finding",
@@ -470,16 +473,16 @@ def handle_health(project_dir: str) -> str:
         # Try the package data directory
         script = Path(__file__).resolve().parent.parent / "data" / "scripts" / "health-check.sh"
     if not script.exists():
-        return "❌ `health-check.sh` not found"
+        return "❌ Health check script isn't set up — run `voronoi init` first."
     try:
         result = subprocess.run(
             ["bash", str(script), "--json", "--no-notify"],
             capture_output=True, text=True, timeout=30,
         )
     except subprocess.TimeoutExpired:
-        return "⏱ Health check timed out"
+        return "⏱ Health check is taking too long — try again in a moment."
     except FileNotFoundError:
-        return "❌ bash not found"
+        return "❌ Can't run health check — bash not available on this system."
 
     if result.returncode == 2:
         return "❌ No Voronoi sessions found. Is the pipeline running?"
@@ -652,6 +655,59 @@ def handle_resume(project_dir: str, task_id: str) -> str:
     return f"▶️ Task `{task_id}` resumed"
 
 
+def handle_resume_investigation(project_dir: str, identifier: str) -> str:
+    """Resume a paused or failed investigation by ID or codename.
+
+    The dispatcher's resume_investigation() is called via a lazy import
+    to avoid circular dependencies.  If no dispatcher instance is
+    running (CLI context), we fall back to updating the queue directly.
+    """
+    from voronoi.server.queue import InvestigationQueue
+
+    db_path = Path.home() / ".voronoi" / "queue.db"
+    if not db_path.exists():
+        return "❌ No investigation queue found."
+
+    queue = InvestigationQueue(db_path)
+
+    # Resolve identifier → investigation ID
+    inv = None
+    # Try numeric ID first
+    try:
+        inv_id = int(identifier)
+        inv = queue.get(inv_id)
+    except (ValueError, TypeError):
+        pass
+
+    # Try codename match
+    if inv is None:
+        needle = identifier.lower().strip()
+        for candidate in queue.get_recent(limit=50):
+            if candidate.codename and candidate.codename.lower() == needle:
+                inv = candidate
+                break
+
+    if inv is None:
+        return f"❌ No investigation matching `{identifier}`."
+    if inv.status not in ("paused", "failed"):
+        return f"❌ *{inv.codename or f'#{inv.id}'}* is {inv.status} — can only resume paused or failed."
+
+    # Try to use an active dispatcher if one exists (server context)
+    try:
+        from voronoi.server.dispatcher import _active_dispatcher
+        dispatcher = _active_dispatcher()
+        if dispatcher is not None:
+            return dispatcher.resume_investigation(inv.id)
+    except (ImportError, Exception):
+        pass
+
+    # Fallback: update queue directly (no agent launch — just mark resumable)
+    if not queue.resume(inv.id):
+        return f"❌ Failed to resume #{inv.id}."
+    label = inv.codename or f"#{inv.id}"
+    return f"▶️ *{label}* marked as running — it will be picked up on next dispatch cycle."
+
+
 def handle_add(project_dir: str, title: str) -> str:
     # Create task in the first running investigation workspace
     ws_path = _get_first_active_workspace(project_dir) or project_dir
@@ -678,6 +734,196 @@ def handle_complete(project_dir: str, task_id: str, reason: str = "Completed") -
     if code != 0:
         return f"❌ Failed to close: {output}"
     return f"✅ Task `{task_id}` closed: {reason}"
+
+
+def handle_complete_investigation(project_dir: str, identifier: str) -> str:
+    """Accept and close an investigation that is in review status.
+
+    The identifier can be an investigation ID (integer) or a codename.
+    """
+    q = _get_queue(project_dir)
+    inv = _find_investigation(q, identifier)
+    if inv is None:
+        return f"❌ Investigation *{identifier}* not found."
+
+    label = inv.codename or f"#{inv.id}"
+
+    if inv.status == "complete":
+        return f"✅ *{label}* is already complete."
+
+    if inv.status != "review":
+        return (
+            f"❌ *{label}* is {inv.status} — "
+            f"can only accept from review."
+        )
+
+    ok = q.accept(inv.id)
+    if not ok:
+        return f"❌ Failed to close *{label}*."
+
+    return f"✅ *{label}* accepted and closed."
+
+
+def handle_review_investigation(project_dir: str, identifier: str) -> str:
+    """Show the Claim Ledger for an investigation in review format.
+
+    The identifier can be an investigation ID (integer) or a codename.
+    """
+    q = _get_queue(project_dir)
+    inv = _find_investigation(q, identifier)
+    if inv is None:
+        return f"❌ Investigation *{identifier}* not found."
+
+    lineage_id = inv.lineage_id or inv.id
+    from voronoi.science.claims import load_ledger
+    base_dir = q.db_path.parent
+    ledger = load_ledger(lineage_id, base_dir=base_dir)
+
+    if not ledger.claims:
+        return (
+            f"🔬 *{inv.codename or f'#{inv.id}'}* — no claims recorded yet.\n"
+            f"Status: {inv.status} | Mode: {inv.mode} | Round: {inv.cycle_number}"
+        )
+
+    header = (
+        f"🔬 *{inv.codename or f'#{inv.id}'}* — "
+        f"Round {inv.cycle_number} | {inv.status}\n\n"
+    )
+    return header + ledger.format_for_review()
+
+
+def handle_continue_investigation(project_dir: str, identifier: str,
+                                  feedback: str = "") -> str:
+    """Continue an investigation with optional PI feedback.
+
+    Creates a new run in the same lineage with the prior claim ledger.
+    """
+    q = _get_queue(project_dir)
+    inv = _find_investigation(q, identifier)
+    if inv is None:
+        return f"❌ Investigation *{identifier}* not found."
+
+    if inv.status not in ("review", "complete"):
+        return (
+            f"❌ *{inv.codename or f'#{inv.id}'}* is {inv.status} — "
+            f"can only continue from review or complete."
+        )
+
+    # If feedback provided, process lock/challenge intents
+    if feedback:
+        lineage_id = inv.lineage_id or inv.id
+        base_dir = q.db_path.parent
+        _process_feedback(lineage_id, feedback, base_dir)
+
+    new_id = q.continue_investigation(inv.id, feedback)
+    if new_id is None:
+        return f"❌ Failed to continue *{inv.codename or f'#{inv.id}'}*."
+
+    new_inv = q.get(new_id)
+    label = inv.codename or f"#{inv.id}"
+    round_num = new_inv.cycle_number if new_inv else "?"
+    return (
+        f"🔄 *{label}* — Round {round_num} queued.\n"
+        + (f"Feedback recorded: _{feedback[:100]}_" if feedback else "No additional feedback.")
+    )
+
+
+def handle_claims(project_dir: str, identifier: str = "") -> str:
+    """Show the Claim Ledger for an investigation."""
+    q = _get_queue(project_dir)
+    if identifier:
+        inv = _find_investigation(q, identifier)
+    else:
+        # Find the most recent science investigation
+        recent = q.get_recent(limit=5)
+        inv = next((i for i in recent if i.mode in ("discover", "prove")), None)
+
+    if inv is None:
+        return "❌ No investigation found."
+
+    lineage_id = inv.lineage_id or inv.id
+    from voronoi.science.claims import load_ledger
+    base_dir = q.db_path.parent
+    ledger = load_ledger(lineage_id, base_dir=base_dir)
+
+    if not ledger.claims:
+        return f"📋 *{inv.codename or f'#{inv.id}'}* — no claims yet."
+
+    return (
+        f"📋 *{inv.codename or f'#{inv.id}'}* — {ledger.summary()}\n\n"
+        + ledger.format_for_review()
+    )
+
+
+def _find_investigation(q: InvestigationQueue, identifier: str) -> Optional[Investigation]:
+    """Find an investigation by ID or codename."""
+    # Try as integer ID
+    try:
+        inv_id = int(identifier)
+        return q.get(inv_id)
+    except (ValueError, TypeError):
+        pass
+    # Try as codename
+    recent = q.get_recent(limit=50)
+    for inv in recent:
+        if inv.codename and inv.codename.lower() == identifier.lower():
+            return inv
+    return None
+
+
+def _process_feedback(lineage_id: int, feedback: str, base_dir: Path) -> None:
+    """Parse natural-language feedback into claim ledger operations.
+
+    Detects simple patterns like "lock C1", "challenge C2: reason", etc.
+    Falls back to recording as general PI feedback if no patterns match.
+    """
+    from voronoi.science.claims import load_ledger, save_ledger
+    import re
+
+    ledger = load_ledger(lineage_id, base_dir=base_dir)
+    if not ledger.claims:
+        return
+
+    changed = False
+    lines = feedback.strip().split("\n")
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+
+        # "lock C1" or "lock C1 C3"
+        lock_match = re.match(r"lock\s+(C\d+(?:\s+C\d+)*)", line, re.IGNORECASE)
+        if lock_match:
+            for cid in re.findall(r"C\d+", lock_match.group(1)):
+                claim = ledger.get_claim(cid)
+                if claim and claim.status in ("provisional", "asserted"):
+                    try:
+                        if claim.status == "provisional":
+                            ledger.assert_claim(cid)
+                        ledger.lock_claim(cid)
+                        changed = True
+                    except (ValueError, KeyError):
+                        pass
+            continue
+
+        # "challenge C2: reason" or "challenge C2 reason"
+        challenge_match = re.match(
+            r"challenge\s+(C\d+)[:\s]+(.+)", line, re.IGNORECASE
+        )
+        if challenge_match:
+            cid = challenge_match.group(1)
+            reason = challenge_match.group(2).strip()
+            claim = ledger.get_claim(cid)
+            if claim and claim.status not in ("retired",):
+                try:
+                    ledger.challenge_claim(cid, reason, raised_by="PI")
+                    changed = True
+                except (ValueError, KeyError):
+                    pass
+            continue
+
+    if changed:
+        save_ledger(lineage_id, ledger, base_dir=base_dir)
 
 
 def handle_abort(project_dir: str) -> str:
@@ -756,16 +1002,12 @@ def _workflow_response(mode: str, rigor: str, question: str,
                        inv_id: int, queue_status: str,
                        codename: str = "") -> str:
     emoji = MODE_EMOJI.get(mode, "🔷")
-    rigor_desc = RIGOR_DESCRIPTIONS.get(rigor, rigor)
     verb = MODE_VERB.get(mode, mode)
     label = codename or f"#{inv_id}"
     return (
-        f"⚡ *Voronoi · {label}* {emoji} LAUNCHED\n\n"
+        f"{emoji} *{label}* — {verb} is live.\n\n"
         f"_{question}_\n\n"
-        f"  Mode     *{rigor}* {verb}\n"
-        f"  Rigor    {rigor_desc}\n"
-        f"  Queue    {queue_status}\n\n"
-        f"Setting up workspace — I'll ping you when agents are live."
+        f"Agents are spinning up — I'll keep you posted."
     )
 
 
@@ -787,8 +1029,6 @@ def handle_prove(project_dir: str, hypothesis: str, chat_id: str = "") -> str:
 
 def handle_recall(project_dir: str, query: str) -> str:
     ks = _get_knowledge(project_dir)
-    if ks is None:
-        return "❌ Knowledge store not available"
     return ks.format_recall_response(query)
 
 
@@ -805,11 +1045,17 @@ def handle_belief(project_dir: str) -> str:
                 if name.endswith(".json"):
                     try:
                         data = json.loads(content)
+                        hyps = data.get("hypotheses", [])
+                        if isinstance(hyps, dict):
+                            hyps = list(hyps.values())
                         lines = []
-                        for h in data.get("hypotheses", []):
-                            lines.append(f"- {h.get('name', '?')}: P={h.get('prior', '?')} [{h.get('status', '?')}]")
+                        for h in hyps:
+                            if isinstance(h, dict):
+                                lines.append(f"- {h.get('name', '?')}: P={h.get('prior', '?')} [{h.get('status', '?')}]")
+                            elif isinstance(h, str):
+                                lines.append(f"- {h}")
                         content = "\n".join(lines) if lines else content
-                    except (json.JSONDecodeError, ValueError):
+                    except (json.JSONDecodeError, ValueError, TypeError):
                         pass
                 return f"📊 *Belief Map*\n\n{content}"
     return "📊 No belief map found. Start an investigation to generate one."
@@ -914,15 +1160,11 @@ def handle_demo(project_dir: str, demo_name: str, chat_id: str = "") -> str:
     # Tag the investigation so the dispatcher knows to copy demo files
     q.set_demo_source(inv_id, demo_name, str(demo["path"]))
 
-    queued = len(q.get_queued())
-    running = len(q.get_running())
     logger.info("Enqueued demo %s as investigation %s (#%d)", demo_name, codename, inv_id)
 
     return (
-        f"⚡ *Voronoi · {codename}* 🎮 DEMO LAUNCHED\n\n"
-        f"Demo: *{demo_name}*\n"
-        f"Queue: {queued} waiting · {running} running\n\n"
-        f"Setting up workspace — I'll ping you when agents are live."
+        f"🎮 *{codename}* — demo is live.\n\n"
+        f"Running *{demo_name}* — agents are spinning up."
     )
 
 
@@ -939,25 +1181,21 @@ def handle_details(project_dir: str) -> str:
 
     # Read task snapshot from bd
     task_snapshot: dict = {}
-    try:
-        import subprocess
-        result = subprocess.run(
-            ["bd", "list", "--json"],
-            capture_output=True, text=True, timeout=15, cwd=str(ws),
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            import json as _json
-            tasks = _json.loads(result.stdout)
-            if isinstance(tasks, list):
-                for t in tasks:
-                    tid = t.get("id", "")
-                    task_snapshot[tid] = {
-                        "status": t.get("status", ""),
-                        "title": t.get("title", ""),
-                        "notes": t.get("notes", ""),
-                    }
-    except Exception:
-        pass
+    if has_beads_dir(str(ws)):
+        code, data = _run_bd("list", "--json", cwd=str(ws))
+        if code == 0 and data:
+            try:
+                tasks = json.loads(data)
+                if isinstance(tasks, list):
+                    for t in tasks:
+                        tid = t.get("id", "")
+                        task_snapshot[tid] = {
+                            "status": t.get("status", ""),
+                            "title": t.get("title", ""),
+                            "notes": t.get("notes", ""),
+                        }
+            except (json.JSONDecodeError, TypeError):
+                pass
 
     elapsed_sec = (time.time() - (inv.started_at or time.time()))
     text, _ = build_digest(
@@ -1013,11 +1251,11 @@ def handle_results(project_dir: str, inv_id_str: str = "") -> str:
 # ---------------------------------------------------------------------------
 
 _INTRO_MESSAGE = (
-    "*Voronoi* — ask a question, get evidence.\n\n"
+    "👋 *Voronoi* — ask a question, get evidence.\n\n"
     "Drop me a question — anything from _\"why is our model degrading?\"_ "
     "to _\"does EWC beat replay for catastrophic forgetting?\"_ — and I'll "
-    "dispatch a swarm of AI agents to discover the answer.\n\n"
-    "Or send `/voronoi` for commands."
+    "spin up a team of AI agents to find out.\n\n"
+    "Or send `/voronoi` to see what I can do."
 )
 
 def _LOW_CONFIDENCE_MESSAGE(text: str, intent) -> str:
@@ -1025,36 +1263,36 @@ def _LOW_CONFIDENCE_MESSAGE(text: str, intent) -> str:
     mode_label = intent.mode.value if intent.mode else "unknown"
     confidence_pct = int(intent.confidence * 100)
     return (
-        f"I'm not quite sure what you'd like ({confidence_pct}% → _{mode_label}_).\n\n"
+        f"Hmm, I'm only {confidence_pct}% sure what you're after (leaning toward _{mode_label}_).\n\n"
         f"Your message: _{text[:120]}_\n\n"
-        "Try something like:\n"
+        "Try phrasing it like:\n"
         "  _Why is our model accuracy dropping?_ → discover\n"
         "  _Prove that EWC beats replay_ → prove\n\n"
-        "Or use a command directly:\n"
+        "Or go direct:\n"
         "`/voronoi discover <question>`\n"
         "`/voronoi prove <hypothesis>`"
     )
 
 
 _HELP_MESSAGE = (
-    "*Voronoi* — your AI research lab\n\n"
+    "🧪 *Voronoi* — your AI research lab\n\n"
     "Just ask me anything:\n"
     "  → _Why is our model accuracy dropping?_\n"
     "  → _Prove that EWC beats replay for catastrophic forgetting_\n"
     "  → _Compare Redis vs Memcached_\n\n"
-    "I'll figure out what to do — classify intent, pick the right "
-    "rigor level, spawn parallel agents, and deliver findings.\n\n"
+    "I'll figure out the rest — pick the right approach, "
+    "spin up agents, and bring you findings.\n\n"
     "━━━━━━━━━━━━━━━━━━━━━━\n"
-    "*Quick check-ins*\n"
-    "`/voronoi status` — what's happening right now\n"
-    "`/voronoi board` — Kanban snapshot (To Do / In Progress / Done)\n"
-    "`/voronoi progress` — are we on track? metrics + criteria\n\n"
-    "*Workflows*\n"
+    "*Check in*\n"
+    "`/voronoi status` — what's happening now\n"
+    "`/voronoi board` — Kanban snapshot\n"
+    "`/voronoi progress` — metrics + criteria\n\n"
+    "*Investigate*\n"
     "`/voronoi discover <question>`\n"
     "`/voronoi prove <hypothesis>`\n\n"
     "*Knowledge*\n"
     "`/voronoi belief` · `journal` · `finding <id>` · `recall <query>`\n\n"
-    "*Control*\n"
+    "*Steer*\n"
     "`/voronoi guide <msg>` · `pivot <msg>` · `abort`\n\n"
     "_In groups, @mention me or reply to my messages._"
 )
@@ -1162,18 +1400,43 @@ class CommandRouter:
             elif sub == "pause" and args:
                 return handle_pause(self.project_dir, args[0]), None
             elif sub == "resume" and args:
-                return handle_resume(self.project_dir, args[0]), None
+                # Detect investigation ID/codename vs task ID.
+                # Beads task IDs look like "bd-123"; investigation IDs are
+                # plain integers or codenames (single words, no hyphens
+                # starting with "bd-").
+                arg = args[0]
+                is_beads_task = arg.startswith("bd-")
+                if is_beads_task:
+                    return handle_resume(self.project_dir, arg), None
+                return handle_resume_investigation(self.project_dir, arg), None
             elif sub == "add" and args:
                 return handle_add(self.project_dir, " ".join(args)), None
             elif sub == "complete" and args:
-                reason = " ".join(args[1:]) if len(args) > 1 else "Completed"
-                return handle_complete(self.project_dir, args[0], reason), None
+                # Detect task ID vs investigation codename/ID.
+                # Beads task IDs look like "bd-123"; investigation
+                # identifiers are plain integers or codenames.
+                arg = args[0]
+                is_beads_task = arg.startswith("bd-")
+                if is_beads_task:
+                    reason = " ".join(args[1:]) if len(args) > 1 else "Completed"
+                    return handle_complete(self.project_dir, arg, reason), None
+                return handle_complete_investigation(self.project_dir, arg), None
             elif sub == "abort":
                 return handle_abort(self.project_dir), None
             elif sub == "pivot" and args:
                 return handle_pivot(self.project_dir, " ".join(args)), None
             elif sub == "guide" and args:
                 return handle_guide(self.project_dir, " ".join(args)), None
+            elif sub == "review":
+                arg = args[0] if args else ""
+                return handle_review_investigation(self.project_dir, arg), None
+            elif sub == "continue" and args:
+                identifier = args[0]
+                feedback = " ".join(args[1:]) if len(args) > 1 else ""
+                return handle_continue_investigation(self.project_dir, identifier, feedback), None
+            elif sub == "claims":
+                arg = args[0] if args else ""
+                return handle_claims(self.project_dir, arg), None
             else:
                 return f"❓ Unknown command: `{sub}`\nSend `/voronoi` for help.", None
         except Exception as e:

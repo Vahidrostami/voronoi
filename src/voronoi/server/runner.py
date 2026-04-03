@@ -7,6 +7,7 @@ launch orchestrator → stream progress → publish results.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shutil
@@ -14,6 +15,8 @@ import subprocess
 import time
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger("voronoi.runner")
 
 from voronoi.server.queue import Investigation, InvestigationQueue
 from voronoi.server.repo_url import RepoRef, extract_repo_url, strip_repo_url
@@ -132,7 +135,7 @@ class ServerConfig:
                 try:
                     setattr(self, attr, int(val))
                 except ValueError:
-                    pass  # ignore non-integer env values
+                    logger.warning("Invalid integer for %s: %r — using default", var, val)
 
         if env("VORONOI_GITHUB_LAB_ORG"):
             self.github_lab_org = env("VORONOI_GITHUB_LAB_ORG")

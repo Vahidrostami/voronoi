@@ -206,8 +206,8 @@ def classify(text: str) -> ClassifiedIntent:
             original_text=text,
         )
 
-    # Recall
-    if recall_score > 0 and recall_score >= discover_score:
+    # Recall — only if recall signals strictly dominate discovery
+    if recall_score > 0 and recall_score > discover_score:
         return ClassifiedIntent(
             mode=WorkflowMode.RECALL,
             rigor=RigorLevel.ADAPTIVE,

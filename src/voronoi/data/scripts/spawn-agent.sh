@@ -32,6 +32,7 @@ SWARM_DIR=$(echo "$CONFIG" | jq -r '.swarm_dir')
 TMUX_SESSION=$(echo "$CONFIG" | jq -r '.tmux_session')
 AGENT_CMD=$(echo "$CONFIG" | jq -r '.agent_command // "copilot"')
 WORKER_MODEL=$(echo "$CONFIG" | jq -r '.worker_model // ""')
+EFFORT=$(echo "$CONFIG" | jq -r '.effort // "medium"')
 
 # Select permission mode
 if [[ "$SAFE_MODE" == "true" ]]; then
@@ -90,6 +91,17 @@ try:
     print(data.get('notes', ''))
 except Exception:
     print('')
+" 2>/dev/null || echo "")
+
+# Extract TASK_TYPE from notes (e.g. TASK_TYPE:scout) for role-based permissions
+TASK_TYPE=$(echo "$TASK_NOTES" | python3 -c "
+import sys, re
+notes = sys.stdin.read()
+for line in notes.split('\n'):
+    m = re.match(r'TASK_TYPE:\s*(\S+)', line.strip())
+    if m:
+        print(m.group(1))
+        break
 " 2>/dev/null || echo "")
 
 # Check REQUIRES: files must exist before dispatch
@@ -274,11 +286,31 @@ if [[ -n "$WORKER_MODEL" ]]; then
     MODEL_FLAG=" --model $(printf '%q' "$WORKER_MODEL")"
 fi
 
-# 5b. Inject auth tokens via tmux set-environment (INV-31: no secrets in logs).
+# Build --effort flag from config (rigor-scaled, written by dispatcher)
+EFFORT_FLAG=""
+if [[ -n "$EFFORT" && "$EFFORT" != "null" ]]; then
+    EFFORT_FLAG=" --effort $EFFORT"
+fi
+
+# Build --share flag for clean audit trail
+SHARE_FLAG=" --share $(printf '%q' "$WORKTREE_PATH/.swarm/session.md")"
+mkdir -p "$WORKTREE_PATH/.swarm"
+
+# 5b. Role-based --deny-tool permissions.
+# Read-only roles get --deny-tool=write to structurally enforce
+# that reviewers cannot modify code (belt + suspenders with .agent.md tools list).
+ROLE_PERMS=$(echo "$CONFIG" | jq -r ".role_permissions.\"$TASK_TYPE\" // \"\"" 2>/dev/null || true)
+if [[ -n "$ROLE_PERMS" && "$ROLE_PERMS" != "null" ]]; then
+    AGENT_FLAGS="$ROLE_PERMS"
+    SAFE_FLAGS=$(printf '%q' "$AGENT_FLAGS")
+fi
+
+# 5c. Inject auth/state env via tmux set-environment (INV-31: no secrets in logs).
 # tmux shells inherit the tmux server's env, not the caller's. Using
 # set-environment avoids inline export commands that would be captured
-# by pipe-pane logging.
-for _var in GH_TOKEN GITHUB_TOKEN COPILOT_GITHUB_TOKEN; do
+# by pipe-pane logging. COPILOT_HOME and GH_HOST are needed so worker
+# sessions reuse the same Copilot state directory and GitHub host.
+for _var in GH_TOKEN GITHUB_TOKEN COPILOT_GITHUB_TOKEN COPILOT_HOME GH_HOST; do
     _val="${!_var:-}"
     if [[ -n "$_val" ]]; then
         tmux set-environment -t "$TMUX_SESSION" "$_var" "$_val" 2>/dev/null || true
@@ -294,11 +326,11 @@ fi
 
 if [[ -f "$WORKTREE_PATH/.agent-prompt.txt" ]]; then
     tmux send-keys -t "$TMUX_SESSION:$BRANCH_NAME" \
-        "cd $SAFE_WP && $SAFE_CMD $SAFE_FLAGS$MODEL_FLAG -p \"\$(cat .agent-prompt.txt)\"" Enter
+        "cd $SAFE_WP && $SAFE_CMD $SAFE_FLAGS$MODEL_FLAG$EFFORT_FLAG$SHARE_FLAG -p \"\$(cat .agent-prompt.txt)\"" Enter
 else
     echo "⚠ No prompt file found — agent will start in interactive mode"
     tmux send-keys -t "$TMUX_SESSION:$BRANCH_NAME" \
-        "cd $SAFE_WP && $SAFE_CMD $SAFE_FLAGS$MODEL_FLAG" Enter
+        "cd $SAFE_WP && $SAFE_CMD $SAFE_FLAGS$MODEL_FLAG$EFFORT_FLAG$SHARE_FLAG" Enter
 fi
 
 echo "✓ Agent spawned: $BRANCH_NAME (tmux: $TMUX_SESSION)"
