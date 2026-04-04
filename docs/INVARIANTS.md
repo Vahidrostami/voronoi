@@ -2,7 +2,7 @@
 
 > Rules that MUST never be violated. Reference during code review, debugging, and development.
 
-**TL;DR**: 41 invariants. Key ones: prompt.py is sole prompt builder (INV-01). Roles only in .github/ files (INV-02). Orchestrator never enters worktrees (INV-03). Atomic queue claiming (INV-06). Rigor only escalates (INV-08). Baseline-first (INV-09). EVA before finding (INV-12). No simulation bypass (INV-16). Push before session end (INV-25). Plan review before dispatch at Analytical+ (INV-35). Experiment contract before workers (INV-39). Sentinel audit cannot be bypassed (INV-40). Missing contract warning (INV-41).
+**TL;DR**: 41 invariants. Key ones: prompt.py is sole prompt builder (INV-01). Roles only in .github/ files (INV-02). Orchestrator never enters worktrees (INV-03). Atomic queue claiming (INV-06). Rigor only escalates (INV-08). Baseline-first (INV-09). EVA before finding (INV-12). No simulation bypass (INV-16). Push before session end (INV-25). Plan review before dispatch at Analytical+ (INV-35b). Experiment contract before workers (INV-39). Sentinel audit cannot be bypassed (INV-40). Missing contract warning (INV-41).
 
 ## 1. Architectural Invariants
 
@@ -173,7 +173,7 @@ Claims tagged `model_prior` MUST NOT appear as established findings in deliverab
 ### INV-38: Continuation Artifact Preservation
 Continuation runs MUST NOT regenerate data that locked claims depend on. New data MUST be created in separate files/directories. The warm-start brief lists immutable paths and instructs the orchestrator accordingly.
 
-### INV-35: Plan Review Before Dispatch (Analytical+)
+### INV-35b: Plan Review Before Dispatch (Analytical+)
 At Analytical rigor and above, the orchestrator MUST submit its task decomposition for plan review BEFORE dispatching investigation workers. The Critic (and at higher rigor, Theorist and Methodologist) reviews the plan and writes a verdict to `.swarm/plan-review.json`. The orchestrator MUST revise the plan if the verdict is REVISE or RESTRUCTURE. Only one review round is permitted — no iterative loops. At Standard rigor (build tasks), plan review is skipped.
 
 ---

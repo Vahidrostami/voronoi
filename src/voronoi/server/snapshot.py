@@ -116,8 +116,9 @@ class WorkspaceSnapshot:
 
         # --- Checkpoint ---
         checkpoint: dict | None = None
-        cp_path = swarm / "orchestrator-checkpoint.json"
-        if cp_path.exists():
+        from voronoi.utils import find_checkpoint
+        cp_path = find_checkpoint(workspace_path)
+        if cp_path is not None:
             try:
                 data = json.loads(cp_path.read_text())
                 if isinstance(data, dict):

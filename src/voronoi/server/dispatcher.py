@@ -28,7 +28,7 @@ from voronoi.gateway.progress import (
     MODE_EMOJI, MODE_VERB,
     MSG_TYPE_MILESTONE, MSG_TYPE_STATUS,
     format_launch, format_complete, format_failure, format_alert,
-    format_negative_result, format_restart, format_pause,
+    format_negative_result, format_restart, format_wake, format_pause,
     format_duration, phase_description,
     build_digest,
 )
@@ -45,15 +45,12 @@ logger = logging.getLogger("voronoi.dispatcher")
 def _find_checkpoint(workspace: Path) -> Path | None:
     """Find the orchestrator checkpoint file.
 
-    Agents may write the checkpoint as ``orchestrator-checkpoint.json``
-    (canonical) or ``checkpoint.json`` (common LLM shortening).
-    Returns the first existing path, or None.
+    Delegates to the canonical ``voronoi.utils.find_checkpoint``.
+    Kept as a module-level function for backward compatibility with
+    internal callers.
     """
-    for name in ("orchestrator-checkpoint.json", "checkpoint.json"):
-        p = workspace / ".swarm" / name
-        if p.exists():
-            return p
-    return None
+    from voronoi.utils import find_checkpoint
+    return find_checkpoint(workspace)
 
 
 @dataclass
@@ -111,6 +108,8 @@ class RunningInvestigation:
     pending_events: list[dict] = field(default_factory=list)  # Events accumulated while orchestrator is parked
     orchestrator_parked: bool = False  # True when orchestrator exited intentionally with active workers
     last_parked_digest_at: float = 0  # Last Telegram digest while parked (throttle to 5min)
+    _criteria_alerts: set = field(default_factory=set)  # Track which criteria-progress alerts have fired
+    _sentinel_missing_contract_warned: bool = False  # Track sentinel missing-contract warning
 
     @property
     def label(self) -> str:
@@ -224,8 +223,10 @@ class InvestigationDispatcher:
                 continue  # already tracking
 
             if not inv.workspace_path:
-                # No workspace — can't recover, mark failed
-                self.queue.fail(inv.id, "No workspace path — cannot recover")
+                # Claimed by next_ready() but workspace not yet provisioned.
+                # Reset to queued so it will be picked up on the next cycle
+                # instead of permanently lost.
+                self._requeue_unprovisioned(inv.id)
                 continue
 
             workspace_path = Path(inv.workspace_path)
@@ -297,6 +298,23 @@ class InvestigationDispatcher:
                 self.running[inv.id] = run
                 logger.info("Re-adopted running investigation #%d (%s)",
                             inv.id, inv.codename)
+
+    def _requeue_unprovisioned(self, investigation_id: int) -> None:
+        """Reset a claimed-but-not-launched investigation back to queued.
+
+        This handles the crash window between ``next_ready()`` (which marks
+        the row running) and ``queue.start()`` (which attaches the workspace).
+        """
+        try:
+            with self.queue._connect(immediate=True) as conn:
+                conn.execute(
+                    "UPDATE investigations SET status='queued', started_at=NULL "
+                    "WHERE id=? AND status='running' AND workspace_path IS NULL",
+                    (investigation_id,),
+                )
+            logger.info("Re-queued unprovisioned investigation #%d", investigation_id)
+        except Exception as e:
+            logger.warning("Failed to re-queue #%d: %s", investigation_id, e)
 
     def _launch_investigation(self, inv) -> None:
         from voronoi.server.repo_url import extract_repo_url
@@ -612,21 +630,29 @@ class InvestigationDispatcher:
                     # Check if orchestrator exited intentionally while workers run.
                     # If checkpoint has active_workers and any are still alive,
                     # defer restart until workers finish or an urgent event arrives.
-                    if self._has_active_workers(run):
-                        if not run.orchestrator_parked:
-                            run.orchestrator_parked = True
-                            run.last_parked_digest_at = now
-                            logger.info("Investigation #%d orchestrator parked — "
-                                        "workers still running",
-                                        inv_id)
-                        # Check if an urgent event requires immediate wake
-                        if self._needs_orchestrator(run):
-                            logger.info("Investigation #%d waking orchestrator — "
-                                        "urgent event detected",
-                                        inv_id)
-                            run.orchestrator_parked = False
-                            if self._try_restart(run):
-                                continue
+                    if run.orchestrator_parked:
+                        # Already parked — check if workers are still running
+                        if self._has_active_workers(run):
+                            # Workers still running — check for urgent wakes
+                            if self._needs_orchestrator(run):
+                                logger.info("Investigation #%d waking orchestrator — "
+                                            "urgent event detected",
+                                            inv_id)
+                                self._wake_from_park(run)
+                            continue  # don't add to completed_ids
+                        else:
+                            # Workers done — normal wake (NOT a crash restart)
+                            logger.info("Investigation #%d workers finished, "
+                                        "waking orchestrator", inv_id)
+                            self._wake_from_park(run)
+                            continue  # don't add to completed_ids
+                    elif self._has_active_workers(run):
+                        # First time seeing park
+                        run.orchestrator_parked = True
+                        run.last_parked_digest_at = now
+                        logger.info("Investigation #%d orchestrator parked — "
+                                    "workers still running",
+                                    inv_id)
                         continue  # don't add to completed_ids
                     # Try to restart the agent instead of giving up
                     if self._try_restart(run):
@@ -790,8 +816,6 @@ class InvestigationDispatcher:
             if met == 0 and total > 0:
                 hours_mark = 4 if elapsed_hours < 6 else 8
                 alert_key = f"criteria_zero_{hours_mark}h"
-                if not hasattr(run, '_criteria_alerts'):
-                    run._criteria_alerts = set()
                 if alert_key not in run._criteria_alerts:
                     run._criteria_alerts.add(alert_key)
                     self.send_message(format_alert(
@@ -1094,7 +1118,8 @@ class InvestigationDispatcher:
 
         try:
             self._launch_in_tmux(run.tmux_session, run.workspace_path,
-                                 prompt_file=resume_file, rigor=run.rigor)
+                                 prompt_file=resume_file,
+                                 rigor=self._effective_rigor(run))
             run.stall_warned = False
             run.context_directive_level = ""
 
@@ -1252,8 +1277,8 @@ class InvestigationDispatcher:
             if (elapsed_hours >= 1.0
                     and run.rigor in ("adaptive", "scientific", "experimental")
                     and self._has_experiment_tasks(run)
-                    and not getattr(run, "_sentinel_missing_contract_warned", False)):
-                run._sentinel_missing_contract_warned = True  # type: ignore[attr-defined]
+                    and not run._sentinel_missing_contract_warned):
+                run._sentinel_missing_contract_warned = True
                 events.append({
                     "type": "design_invalid",
                     "msg": (
@@ -1979,7 +2004,8 @@ class InvestigationDispatcher:
 
         # Send appropriate completion message
         from voronoi.gateway.report import ReportGenerator
-        rg = ReportGenerator(run.workspace_path, mode=run.mode, rigor=run.rigor)
+        rg = ReportGenerator(run.workspace_path, mode=run.mode,
+                             rigor=self._effective_rigor(run))
         if is_negative_result:
             neg_msg = format_negative_result(
                 codename=run.label,
@@ -2158,8 +2184,19 @@ class InvestigationDispatcher:
         if not workers:
             return False
 
-        # Check if any of the listed workers have a live tmux window
-        swarm_session = run.tmux_session + "-swarm"
+        # Read the actual swarm session name from .swarm-config.json
+        # (swarm-init.sh writes it as ${PROJECT_NAME}-swarm, which differs
+        # from the dispatcher's session naming).
+        swarm_session = None
+        config_path = run.workspace_path / ".swarm-config.json"
+        try:
+            cfg = json.loads(config_path.read_text())
+            if isinstance(cfg, dict):
+                swarm_session = cfg.get("tmux_session")
+        except (json.JSONDecodeError, OSError):
+            pass
+        if not swarm_session:
+            swarm_session = run.tmux_session + "-swarm"
         for worker in workers:
             try:
                 result = subprocess.run(
@@ -2324,6 +2361,61 @@ class InvestigationDispatcher:
         if len(run.pending_events) > 50:
             run.pending_events = run.pending_events[-50:]
 
+    def _wake_from_park(self, run: RunningInvestigation) -> bool:
+        """Wake a parked orchestrator without consuming crash-retry budget.
+
+        Unlike ``_try_restart`` (crash recovery), this is the normal wake
+        path when workers finish or an urgent event is detected while the
+        orchestrator is parked.  It does NOT increment ``retry_count``.
+
+        Returns True if the orchestrator was successfully relaunched.
+        """
+        run.orchestrator_parked = False
+
+        # Ensure original orchestrator prompt exists
+        prompt_file = run.workspace_path / ".swarm" / "orchestrator-prompt.txt"
+        if not prompt_file.exists():
+            logger.error("Prompt file missing for #%d — cannot wake",
+                         run.investigation_id)
+            return False
+
+        # Compact workspace state before building resume prompt
+        try:
+            from voronoi.server.compact import compact_workspace_state
+            compact_workspace_state(run.workspace_path)
+        except Exception:
+            pass
+
+        resume_file = self._build_resume_prompt(run)
+
+        # Rotate the log file so the new session starts clean
+        if run.log_path.exists():
+            rotated = run.log_path.with_suffix(".wake.log")
+            try:
+                run.log_path.rename(rotated)
+            except OSError:
+                pass
+
+        n_events = len(run.pending_events)
+        self.send_message(format_wake(
+            run.label,
+            n_events=n_events,
+        ))
+
+        try:
+            self._launch_in_tmux(run.tmux_session, run.workspace_path,
+                                 prompt_file=resume_file,
+                                 rigor=self._effective_rigor(run))
+            run.stall_warned = False
+            run.context_directive_level = ""
+            logger.info("Investigation #%d woke from park (pending_events=%d)",
+                        run.investigation_id, n_events)
+            return True
+        except Exception as e:
+            logger.error("Failed to wake #%d from park: %s",
+                         run.investigation_id, e)
+            return False
+
     def _try_restart(self, run: RunningInvestigation) -> bool:
         """Attempt to restart a dead agent session.
 
@@ -2383,7 +2475,8 @@ class InvestigationDispatcher:
 
         try:
             self._launch_in_tmux(run.tmux_session, run.workspace_path,
-                                 prompt_file=resume_file, rigor=run.rigor)
+                                 prompt_file=resume_file,
+                                 rigor=self._effective_rigor(run))
             run.stall_warned = False
             run.context_directive_level = ""
             return True
@@ -2477,7 +2570,8 @@ class InvestigationDispatcher:
         resume_file = self._build_resume_prompt(run)
         try:
             self._launch_in_tmux(run.tmux_session, run.workspace_path,
-                                 prompt_file=resume_file, rigor=run.rigor)
+                                 prompt_file=resume_file,
+                                 rigor=self._effective_rigor(run))
         except Exception as e:
             logger.error("Failed to resume #%d: %s", inv.id, e)
             self.queue.fail(inv.id, f"Resume launch failed: {e}")
@@ -2529,10 +2623,11 @@ class InvestigationDispatcher:
             restart_label = f"CONTEXT REFRESH ({run.context_restarts}/{self.config.max_context_restarts})"
         else:
             restart_label = "RESUME (operator-initiated)"
+        effective_rigor = self._effective_rigor(run)
         lines: list[str] = [
             f"You are the Voronoi swarm orchestrator. This is a {restart_label}.\n",
             f"**Codename:** {run.label}",
-            f"**Mode:** {run.mode} | **Rigor:** {run.rigor}\n",
+            f"**Mode:** {run.mode} | **Rigor:** {effective_rigor}\n",
         ]
 
         # Include the original investigation question
@@ -2562,7 +2657,7 @@ class InvestigationDispatcher:
                 "- Use `bd query` for targeted task lookups, never `bd list --json`.\n"
                 "- Dispatch workers via `./scripts/spawn-agent.sh`.\n"
                 "- Merge completed work via `./scripts/merge-agent.sh`.\n"
-                "- Before convergence, run: `./scripts/convergence-gate.sh . " + run.rigor + "`\n"
+                "- Before convergence, run: `./scripts/convergence-gate.sh . " + effective_rigor + "`\n"
             )
         else:
             lines.append(
@@ -2575,7 +2670,7 @@ class InvestigationDispatcher:
                 "- Use `bd query` for targeted task lookups, never `bd list --json`.\n"
                 "- Dispatch workers via `./scripts/spawn-agent.sh`.\n"
                 "- Merge completed work via `./scripts/merge-agent.sh`.\n"
-                "- Before convergence, run: `./scripts/convergence-gate.sh . " + run.rigor + "`\n"
+                "- Before convergence, run: `./scripts/convergence-gate.sh . " + effective_rigor + "`\n"
             )
 
         # Human gate status
@@ -2735,28 +2830,39 @@ class InvestigationDispatcher:
         except Exception:
             logger.debug("Failed to publish %s", run.label, exc_info=True)
 
-    def _handle_abort(self) -> None:
-        for inv_id, run in list(self.running.items()):
+    def _handle_abort(self, inv_id: int | None = None) -> None:
+        """Abort running investigation(s).
+
+        If *inv_id* is given, only that investigation is aborted.
+        Otherwise all running investigations are aborted (global signal).
+        Uses ``queue.abort()`` (running → cancelled) so aborted work is
+        not accidentally resumable.
+        """
+        targets = (
+            [(inv_id, self.running[inv_id])]
+            if inv_id is not None and inv_id in self.running
+            else list(self.running.items())
+        )
+        for tid, run in targets:
             subprocess.run(
                 ["tmux", "kill-session", "-t", run.tmux_session],
                 capture_output=True, timeout=10,
             )
-            self.queue.fail(inv_id, "Aborted by operator")
+            self.queue.abort(tid, "Aborted by operator")
             self.send_message(f"*{run.label}* aborted.")
-        self.running.clear()
+            self.running.pop(tid, None)
 
     def _check_abort_signal(self) -> None:
         """Check if the router wrote an abort signal file and act on it."""
-        for run in self.running.values():
+        for run in list(self.running.values()):
             signal_path = run.workspace_path / ".swarm" / "abort-signal"
             if signal_path.exists():
-                logger.info("Abort signal detected — aborting all running investigations")
+                logger.info("Abort signal detected for #%d", run.investigation_id)
                 try:
                     signal_path.unlink()
                 except OSError:
                     pass
-                self._handle_abort()
-                return
+                self._handle_abort(run.investigation_id)
         # Also check the global project dir (for investigations without workspaces yet)
         global_signal = self.config.base_dir / ".swarm" / "abort-signal"
         if global_signal.exists():
@@ -2784,7 +2890,7 @@ class InvestigationDispatcher:
         the human to ``/approve <id>`` or ``/revise <id> <feedback>``.
         """
         for run in self.running.values():
-            if run.rigor not in ("scientific", "experimental"):
+            if self._effective_rigor(run) not in ("scientific", "experimental"):
                 continue
             gate_path = run.workspace_path / ".swarm" / "human-gate.json"
             if not gate_path.exists():
@@ -2895,7 +3001,8 @@ class InvestigationDispatcher:
                 pass
         try:
             self._launch_in_tmux(run.tmux_session, run.workspace_path,
-                                 prompt_file=resume_file, rigor=run.rigor)
+                                 prompt_file=resume_file,
+                                 rigor=self._effective_rigor(run))
             run.stall_warned = False
             run.context_directive_level = ""
             logger.info("Restarted %s after human gate decision", run.label)
@@ -3097,6 +3204,7 @@ class InvestigationDispatcher:
         archive_dir.mkdir(parents=True, exist_ok=True)
         files_to_archive = [
             "deliverable.md", "belief-map.json", "orchestrator-checkpoint.json",
+            "checkpoint.json",
             "success-criteria.json", "experiments.tsv", "eval-score.json",
             "convergence.json", "claim-evidence.json", "report.pdf",
             "state-digest.md", "scout-brief.md", "events.jsonl",
@@ -3112,6 +3220,7 @@ class InvestigationDispatcher:
         # 3. Clean .swarm/ for fresh orchestrator (keep reusable files)
         files_to_remove = [
             "deliverable.md", "events.jsonl", "orchestrator-checkpoint.json",
+            "checkpoint.json",
             "convergence.json", "eval-score.json", "dispatcher-directive.json",
             "human-gate.json", "state-digest.md",
         ]

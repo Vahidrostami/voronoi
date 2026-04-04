@@ -354,11 +354,15 @@ class InvestigationQueue:
             )
 
     def fail(self, investigation_id: int, error: str) -> None:
-        """Mark an investigation as failed."""
+        """Mark an investigation as failed.
+
+        Accepts both running and paused investigations so that a paused
+        investigation can be failed without an intermediate resume step.
+        """
         with self._connect() as conn:
             conn.execute(
                 "UPDATE investigations SET status='failed', completed_at=?, "
-                "error=? WHERE id=? AND status='running'",
+                "error=? WHERE id=? AND status IN ('running', 'paused')",
                 (time.time(), error, investigation_id),
             )
 
@@ -369,6 +373,21 @@ class InvestigationQueue:
                 "UPDATE investigations SET status='cancelled', completed_at=? "
                 "WHERE id=? AND status='queued'",
                 (time.time(), investigation_id),
+            )
+            return cursor.rowcount > 0
+
+    def abort(self, investigation_id: int, error: str = "Aborted by operator") -> bool:
+        """Abort a running investigation — transition running → cancelled.
+
+        Unlike ``cancel()`` (which only works on queued rows) this handles
+        investigations that are already in progress.
+        Returns True if the status was actually changed.
+        """
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE investigations SET status='cancelled', completed_at=?, "
+                "error=? WHERE id=? AND status='running'",
+                (time.time(), error, investigation_id),
             )
             return cursor.rowcount > 0
 
@@ -457,6 +476,10 @@ class InvestigationQueue:
         - Incremented cycle_number
         - Same workspace_path (workspace reuse)
 
+        All three operations (enqueue, workspace transfer, parent status)
+        are performed in a single IMMEDIATE transaction so concurrent
+        dispatchers cannot claim the row before the workspace is set.
+
         Returns the new investigation ID, or None if the source is invalid.
         """
         inv = self.get(investigation_id)
@@ -473,33 +496,45 @@ class InvestigationQueue:
         lineage = inv.lineage_id or investigation_id
 
         from voronoi.server.runner import make_slug
-        new_inv = Investigation(
-            chat_id=inv.chat_id,
-            investigation_type=inv.investigation_type,
-            repo=inv.repo,
-            question=question,
-            slug=make_slug(question),
-            mode=inv.mode,
-            rigor=inv.rigor,
-            codename=inv.codename,  # keep same codename across rounds
-            parent_id=investigation_id,
-            lineage_id=lineage,
-            cycle_number=inv.cycle_number + 1,
-            pi_feedback=feedback,
-        )
-        new_id = self.enqueue(new_inv)
+        slug = make_slug(question)
 
-        # Transfer workspace path so continuation reuses the workspace
-        if inv.workspace_path:
-            with self._connect() as conn:
+        # Assign codename deterministically — done inside the transaction
+        # so the row is fully populated before COMMIT.
+        with self._connect(immediate=True) as conn:
+            now = time.time()
+            cursor = conn.execute(
+                "INSERT INTO investigations "
+                "(chat_id, status, investigation_type, repo, question, slug, "
+                " mode, rigor, codename, parent_id, lineage_id, cycle_number, "
+                " pi_feedback, workspace_path, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (inv.chat_id, "queued", inv.investigation_type, inv.repo,
+                 question, slug, inv.mode, inv.rigor,
+                 inv.codename, investigation_id, lineage,
+                 inv.cycle_number + 1, feedback,
+                 inv.workspace_path,  # workspace reuse — set atomically
+                 now),
+            )
+            new_id: int = cursor.lastrowid  # type: ignore[assignment]
+
+            # Assign a deterministic codename if none was provided
+            if not inv.codename:
+                from voronoi.gateway.codename import codename_for_id
+                codename = codename_for_id(new_id)
                 conn.execute(
-                    "UPDATE investigations SET workspace_path=? WHERE id=?",
-                    (inv.workspace_path, new_id),
+                    "UPDATE investigations SET codename=? WHERE id=?",
+                    (codename, new_id),
                 )
 
-        # Mark the source as complete if it was in review
-        if inv.status == "review":
-            with self._connect() as conn:
+            # Set lineage_id to self if this is a root investigation
+            if lineage is None:
+                conn.execute(
+                    "UPDATE investigations SET lineage_id=? WHERE id=?",
+                    (new_id, new_id),
+                )
+
+            # Mark the source as complete if it was in review
+            if inv.status == "review":
                 conn.execute(
                     "UPDATE investigations SET status='complete' WHERE id=? AND status='review'",
                     (investigation_id,),

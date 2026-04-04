@@ -1,5 +1,6 @@
 """Tests for voronoi.server.sandbox — Sandbox Manager."""
 
+import time
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -66,6 +67,7 @@ class TestSandboxManager:
         ]
         sm = SandboxManager()
         sm._docker_available = True
+        sm._docker_checked_at = time.monotonic()
         result = sm.start(1, str(ws))
         assert result is not None
         assert result.container_name == "voronoi-inv-1"
@@ -93,6 +95,7 @@ class TestSandboxManager:
         ]
         sm = SandboxManager(SandboxConfig(fallback_to_host=True))
         sm._docker_available = True
+        sm._docker_checked_at = time.monotonic()
         result = sm.start(1, str(ws))
         assert result is None
 
@@ -116,6 +119,7 @@ class TestSandboxManager:
         ]
         sm = SandboxManager(SandboxConfig(fallback_to_host=False))
         sm._docker_available = True
+        sm._docker_checked_at = time.monotonic()
         with pytest.raises(RuntimeError, match="empty container ID"):
             sm.start(1, str(ws))
 
@@ -167,10 +171,41 @@ class TestExecInSandboxOrHost:
 
     @patch("voronoi.server.sandbox.subprocess.run")
     def test_uses_sandbox_when_id_exists(self, mock_run, tmp_path):
-        (tmp_path / ".sandbox-id").write_text("abc123")
+        (tmp_path / ".sandbox-id").write_text("abc123def456")
         mock_run.return_value = MagicMock(returncode=0, stdout="sandboxed\n", stderr="")
         code, output = exec_in_sandbox_or_host(str(tmp_path), ["echo", "test"])
         # Should have called docker exec
         call_args = mock_run.call_args[0][0]
         assert "docker" in call_args
-        assert "abc123" in call_args
+        assert "abc123def456" in call_args
+
+    def test_invalid_container_id_falls_through_to_host(self, tmp_path):
+        """FIX-09: Invalid container IDs should be rejected, falling back to host."""
+        (tmp_path / ".sandbox-id").write_text("not-a-hex-id!")
+        code, output = exec_in_sandbox_or_host(str(tmp_path), ["echo", "test"])
+        # Should fall through to host execution (echo)
+        assert code == 0
+
+
+class TestDockerCacheTTL:
+    """FIX-08: Docker availability cache should expire after TTL."""
+
+    def test_cache_expires(self):
+        sm = SandboxManager()
+        sm._docker_available = False
+        sm._docker_checked_at = time.monotonic() - 120  # expired
+
+        with patch("voronoi.server.sandbox.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            result = sm.is_docker_available()
+
+        assert result is True
+        mock_run.assert_called_once()
+
+    def test_cache_not_expired(self):
+        sm = SandboxManager()
+        sm._docker_available = False
+        sm._docker_checked_at = time.monotonic()  # just checked
+
+        result = sm.is_docker_available()
+        assert result is False  # returns cached value

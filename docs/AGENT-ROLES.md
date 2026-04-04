@@ -19,6 +19,7 @@
 | 9 | Evaluator | `evaluator.agent.md` | Analytical+ | Scores deliverable: CCSA formula |
 | 10 | Theorist | `theorist.agent.md` | Scientific+ | Causal models, competing theories, paradigm stress |
 | 11 | Methodologist | `methodologist.agent.md` | Scientific+ | Experimental design review, power analysis |
+| 12 | Scribe | `scribe.agent.md` | Analytical+ | LaTeX paper compilation |
 
 ## 2. Activation Rules
 

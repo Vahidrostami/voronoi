@@ -8,7 +8,7 @@ from pathlib import Path
 
 from voronoi.gateway.progress import (
     format_launch, format_complete, format_failure, format_alert,
-    format_negative_result, format_restart, format_pause,
+    format_negative_result, format_restart, format_wake, format_pause,
     format_duration, progress_bar, estimate_remaining,
     build_digest, build_digest_whatsup, assess_track_status,
     phase_description, phase_position, _synthesize_narrative,
@@ -54,6 +54,19 @@ class TestBuddyFormatters:
     def test_format_restart_crash(self):
         msg = format_restart("Synapse", 1, 2, clean_exit=False)
         assert "hit a bump" in msg
+
+    def test_format_wake_with_events(self):
+        msg = format_wake("Synapse", n_events=5)
+        assert "Synapse" in msg
+        assert "workers finished" in msg
+        assert "5 events" in msg
+        assert "restarting" not in msg  # must NOT look like a crash
+
+    def test_format_wake_no_events(self):
+        msg = format_wake("Synapse", n_events=0)
+        assert "Synapse" in msg
+        assert "workers finished" in msg
+        assert "events" not in msg
 
     def test_format_pause(self):
         msg = format_pause("Synapse", "auth expired", 7200, 5, 20)
@@ -427,3 +440,32 @@ class TestMessageTypes:
             ],
         )
         assert msg_type == MSG_TYPE_STATUS
+
+
+class TestReadTsvRows:
+    """Tests for _read_tsv_rows — TSV parsing edge cases."""
+
+    def test_short_row_padded_not_dropped(self, tmp_path):
+        """Rows with fewer fields than the header must be padded, not dropped (BUG-006)."""
+        from voronoi.gateway.progress import _read_tsv_rows
+
+        tsv = tmp_path / "data.tsv"
+        tsv.write_text(
+            "a\tb\tc\n"
+            "1\t2\t3\n"
+            "4\t5\n"      # short row - 2 fields instead of 3
+        )
+        rows = _read_tsv_rows(tsv)
+        assert len(rows) == 2
+        assert rows[0] == {"a": "1", "b": "2", "c": "3"}
+        assert rows[1] == {"a": "4", "b": "5", "c": ""}
+
+    def test_single_field_row_padded(self, tmp_path):
+        """A row with only one field gets remaining fields padded."""
+        from voronoi.gateway.progress import _read_tsv_rows
+
+        tsv = tmp_path / "data.tsv"
+        tsv.write_text("x\ty\tz\nonly_one\n")
+        rows = _read_tsv_rows(tsv)
+        assert len(rows) == 1
+        assert rows[0] == {"x": "only_one", "y": "", "z": ""}

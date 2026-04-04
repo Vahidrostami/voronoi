@@ -5,7 +5,45 @@ Reduces boilerplate across test files — the most common setup patterns
 are available as fixtures without explicit import.
 """
 
+import subprocess
+
 import pytest
+
+
+# ---------------------------------------------------------------------------
+# Session-scoped safety net: kill orphaned tmux sessions from tests
+# ---------------------------------------------------------------------------
+
+def _kill_test_tmux_sessions():
+    """Kill tmux sessions created by pytest tmp_path workspaces.
+
+    Tests that call provision_lab() without mocking _voronoi_init will
+    create tmux sessions named ``<tmp_path_basename>-swarm``.  These
+    match the pattern ``tmp*-swarm``.  This function kills them so
+    they don't accumulate across test runs.
+    """
+    try:
+        result = subprocess.run(
+            ["tmux", "list-sessions", "-F", "#{session_name}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            return
+        for name in result.stdout.strip().splitlines():
+            if name.startswith("tmp") and name.endswith("-swarm"):
+                subprocess.run(
+                    ["tmux", "kill-session", "-t", name],
+                    capture_output=True, timeout=5,
+                )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass  # tmux not installed or hung
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _cleanup_test_tmux_sessions():
+    """Kill orphaned tmp*-swarm tmux sessions after the full test run."""
+    yield
+    _kill_test_tmux_sessions()
 
 
 @pytest.fixture

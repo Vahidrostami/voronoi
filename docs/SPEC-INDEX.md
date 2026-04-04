@@ -16,6 +16,7 @@
 | Progress digests, track assessment | [GATEWAY.md](GATEWAY.md) | §8 (Progress) |\n| Mid-investigation Q&A, `/voronoi ask` | [GATEWAY.md](GATEWAY.md) | §8b (Ask Handler) |
 | Report/manuscript/PDF generation | [GATEWAY.md](GATEWAY.md) | §9 (Report) |
 | Telegram bridge, inline buttons, groups | [GATEWAY.md](GATEWAY.md) | §12 (Telegram Bridge) |
+| Ops diagnostics via Telegram | [GATEWAY.md](GATEWAY.md) | §13 (Ops Commands) |
 | Investigation queue, lifecycle | [SERVER.md](SERVER.md) | §2 (Queue) |
 | Dispatcher, launching agents | [SERVER.md](SERVER.md) | §3 (Dispatcher) |
 | Progress monitoring, phase detection | [SERVER.md](SERVER.md) | §3 (Dispatcher — Progress Polling) |
@@ -42,7 +43,7 @@
 | Targeted Beads queries | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §5 |
 | Code-assembled worker prompts | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §6 |
 | Per-agent context budget | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §3 |
-| System rules, code review | [INVARIANTS.md](INVARIANTS.md) | All (30 rules) |
+| System rules, code review | [INVARIANTS.md](INVARIANTS.md) | All (41 invariants) |
 | Worker self-verification protocol | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §8 |
 | Token budget tracking | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §9 |
 | Structured event log | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §10 |

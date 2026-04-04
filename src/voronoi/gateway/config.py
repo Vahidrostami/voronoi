@@ -84,9 +84,17 @@ def load_config(config_path: str = ".swarm-config.json") -> dict:
         else []
     )
 
+    raw_ops_users = os.environ.get("VORONOI_TG_OPS_USERS", "")
+    ops_users = (
+        [u.strip().lower() for u in raw_ops_users.split(",") if u.strip()]
+        if raw_ops_users
+        else list(user_allowlist)  # default: all allowed users can use ops
+    )
+
     return {
         "bot_token": os.environ.get("VORONOI_TG_BOT_TOKEN", tg.get("bot_token", "")),
         "user_allowlist": user_allowlist,
+        "ops_users": ops_users,
         "bridge_enabled": tg.get("bridge_enabled", True),
         "project_dir": config.get("project_dir", os.getcwd()),
         "project_name": config.get("project_name", "voronoi"),

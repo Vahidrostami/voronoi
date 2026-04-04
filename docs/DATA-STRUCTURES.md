@@ -15,6 +15,7 @@ class WorkflowMode(Enum):
     STATUS = "status"         # Meta: query swarm state
     RECALL = "recall"         # Meta: search knowledge store
     GUIDE = "guide"           # Meta: operator guidance
+    ASK = "ask"               # Meta: question about a running investigation
 ```
 
 ### RigorLevel (`gateway/intent.py`)
@@ -44,7 +45,7 @@ class ClassifiedIntent:
     @property
     def is_science(self) -> bool: ...   # DISCOVER | PROVE
     @property
-    def is_meta(self) -> bool: ...      # STATUS | RECALL | GUIDE
+    def is_meta(self) -> bool: ...      # STATUS | RECALL | GUIDE | ASK
 ```
 
 ### ClassifiedPhase (`gateway/intent.py`)

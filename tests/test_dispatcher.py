@@ -70,7 +70,7 @@ class TestDispatchNext:
             d._handle_abort()
 
         assert len(d.running) == 0
-        mock_queue.fail.assert_called_once()
+        mock_queue.abort.assert_called_once()
 
     def test_recover_running_scientific_requires_completion_gate(self, dispatcher_setup):
         d, msgs, docs, tmp_path = dispatcher_setup
@@ -503,7 +503,7 @@ class TestAbortSignal:
             d._check_abort_signal()
 
         assert len(d.running) == 0
-        mock_queue.fail.assert_called_once()
+        mock_queue.abort.assert_called_once()
         # Signal file should be cleaned up
         assert not (ws / ".swarm" / "abort-signal").exists()
 
@@ -2571,6 +2571,67 @@ class TestStateDigestCriteriaXref:
 class TestOrphanedWorkerDetection:
     """Tests for orphaned process detection in _has_active_workers."""
 
+    def test_swarm_session_from_config(self, dispatcher_setup):
+        """Should read swarm session name from .swarm-config.json (BUG-002 fix)."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="voronoi-inv-1",
+            question="test",
+            mode="discover",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "orchestrator-checkpoint.json").write_text(json.dumps({
+            "active_workers": ["worker-1"]
+        }))
+        # Write config with a different session name than what the dispatcher would construct
+        (tmp_path / ".swarm-config.json").write_text(json.dumps({
+            "tmux_session": "inv-1-coupled-decisions-swarm"
+        }))
+
+        # tmux has-session succeeds for the config-derived name, list-windows shows the worker
+        def side_effect(cmd, **kwargs):
+            if cmd[0] == "tmux" and cmd[1] == "has-session":
+                # Verify it's checking the name from config, not the constructed one
+                assert cmd[3] == "inv-1-coupled-decisions-swarm"
+                return MagicMock(returncode=0)
+            if cmd[0] == "tmux" and cmd[1] == "list-windows":
+                return MagicMock(returncode=0, stdout="worker-1\norchestrator\n")
+            return MagicMock(returncode=1, stdout="")
+
+        with patch("voronoi.server.dispatcher.subprocess.run", side_effect=side_effect):
+            assert d._has_active_workers(run) is True
+
+    def test_swarm_session_fallback_when_no_config(self, dispatcher_setup):
+        """Should fall back to tmux_session + '-swarm' when no config file."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="voronoi-inv-1",
+            question="test",
+            mode="discover",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "orchestrator-checkpoint.json").write_text(json.dumps({
+            "active_workers": ["worker-1"]
+        }))
+        # No .swarm-config.json — should fall back
+
+        def side_effect(cmd, **kwargs):
+            if cmd[0] == "tmux" and cmd[1] == "has-session":
+                assert cmd[3] == "voronoi-inv-1-swarm"  # fallback name
+                return MagicMock(returncode=1)
+            if cmd[0] == "pgrep":
+                return MagicMock(returncode=1, stdout="")
+            return MagicMock(returncode=1, stdout="")
+
+        with patch("voronoi.server.dispatcher.subprocess.run", side_effect=side_effect):
+            assert d._has_active_workers(run) is False
+
     def test_orphaned_process_detected(self, dispatcher_setup):
         """Should detect orphaned copilot processes referencing workspace."""
         d, msgs, docs, tmp_path = dispatcher_setup
@@ -3244,6 +3305,111 @@ class TestOrchestratorParking:
                                      "title": "experiment"}])):
             assert d._needs_orchestrator(run) is False
 
+    def test_park_wake_does_not_consume_retry(self, dispatcher_setup):
+        """When workers finish and orchestrator was parked, wake should
+        NOT increment retry_count (BUG-001 regression test)."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        mock_queue = MagicMock()
+        d._queue = mock_queue
+
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "orchestrator-prompt.txt").write_text("original prompt")
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test question",
+            mode="discover",
+        )
+        run.orchestrator_parked = True
+        run.retry_count = 0
+        d.running[1] = run
+
+        with patch.object(d, "_check_abort_signal"), \
+             patch.object(d, "check_human_gates"), \
+             patch.object(d, "_refresh_eval_score"), \
+             patch.object(d, "_sync_criteria_from_checkpoint"), \
+             patch.object(d, "_check_progress", return_value=[]), \
+             patch.object(d, "_check_event_log", return_value=[]), \
+             patch.object(d, "_has_active_workers", return_value=False), \
+             patch.object(d, "_launch_in_tmux"), \
+             patch("voronoi.server.dispatcher.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1)  # session dead
+            d.poll_progress()
+
+        # retry_count must remain 0 — wake is not a crash
+        assert run.retry_count == 0
+        assert run.orchestrator_parked is False
+        # Should send a wake message, not a restart message
+        assert any("workers finished" in m for m in msgs)
+        assert not any("restarting" in m for m in msgs)
+
+    def test_park_wake_uses_wake_from_park(self, dispatcher_setup):
+        """poll_progress should call _wake_from_park when parked + workers done."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        mock_queue = MagicMock()
+        d._queue = mock_queue
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        run.orchestrator_parked = True
+        d.running[1] = run
+
+        with patch.object(d, "_check_abort_signal"), \
+             patch.object(d, "check_human_gates"), \
+             patch.object(d, "_refresh_eval_score"), \
+             patch.object(d, "_sync_criteria_from_checkpoint"), \
+             patch.object(d, "_check_progress", return_value=[]), \
+             patch.object(d, "_check_event_log", return_value=[]), \
+             patch.object(d, "_has_active_workers", return_value=False), \
+             patch.object(d, "_wake_from_park", return_value=True) as mock_wake, \
+             patch("voronoi.server.dispatcher.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1)  # session dead
+            d.poll_progress()
+
+        mock_wake.assert_called_once_with(run)
+        # Should NOT have been removed from running
+        assert 1 in d.running
+
+    def test_parked_workers_still_running_stays_parked(self, dispatcher_setup):
+        """When parked and workers still alive, should continue parking."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        run.orchestrator_parked = True
+        d.running[1] = run
+
+        with patch.object(d, "_check_abort_signal"), \
+             patch.object(d, "check_human_gates"), \
+             patch.object(d, "_refresh_eval_score"), \
+             patch.object(d, "_sync_criteria_from_checkpoint"), \
+             patch.object(d, "_check_progress", return_value=[]), \
+             patch.object(d, "_check_event_log", return_value=[]), \
+             patch.object(d, "_has_active_workers", return_value=True), \
+             patch.object(d, "_needs_orchestrator", return_value=False), \
+             patch.object(d, "_try_restart") as mock_restart, \
+             patch("voronoi.server.dispatcher.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1)  # session dead
+            d.poll_progress()
+
+        # Should stay parked and NOT call _try_restart
+        assert run.orchestrator_parked is True
+        mock_restart.assert_not_called()
+        assert 1 in d.running
+
 
 class TestPromptBuilderLifecycle:
     """Tests for the updated prompt.py lifecycle framing."""
@@ -3547,3 +3713,150 @@ class TestEffectiveRigor:
 
         assert 1 in d.running
         assert d.running[1].last_rigor == "scientific"
+
+
+# ---------------------------------------------------------------------------
+# Bug-fix regression tests
+# ---------------------------------------------------------------------------
+
+class TestFix01RequeueUnprovisioned:
+    """FIX-01: Claimed-but-not-launched investigations should be requeued, not failed."""
+
+    def test_recover_running_requeues_no_workspace(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        mock_queue = MagicMock()
+        d._queue = mock_queue
+
+        mock_queue.get_running.return_value = [
+            SimpleNamespace(
+                id=42,
+                workspace_path=None,
+                question="test",
+                mode="discover",
+                codename="Cortex",
+                chat_id="123",
+                rigor="adaptive",
+                started_at=time.time(),
+            )
+        ]
+
+        with patch("voronoi.server.dispatcher.subprocess.run"):
+            d._recover_running()
+
+        # Should NOT have called fail
+        mock_queue.fail.assert_not_called()
+        # Should have been requeued (not tracked)
+        assert 42 not in d.running
+
+
+class TestFix03EffectiveRigorHumanGates:
+    """FIX-03: Human gates must use effective rigor, not raw run.rigor."""
+
+    def test_human_gate_fires_for_escalated_adaptive(self, dispatcher_setup):
+        """check_human_gates should fire when adaptive escalated to scientific."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+
+        ws = tmp_path / "ws"
+        (ws / ".swarm").mkdir(parents=True)
+        (ws / ".swarm" / "human-gate.json").write_text(
+            '{"status":"pending","gate":"prereg","summary":"Need approval"}'
+        )
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=ws,
+            tmux_session="test-session",
+            question="Q",
+            mode="discover",
+            rigor="adaptive",
+            last_rigor="scientific",
+            codename="Cortex",
+        )
+        d.running[1] = run
+
+        with patch("voronoi.server.dispatcher.subprocess.run"):
+            d.check_human_gates()
+
+        assert len(msgs) == 1
+        assert "Human Review" in msgs[0]
+
+    def test_human_gate_skipped_for_pure_adaptive(self, dispatcher_setup):
+        """check_human_gates should skip non-escalated adaptive investigations."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+
+        ws = tmp_path / "ws"
+        (ws / ".swarm").mkdir(parents=True)
+        (ws / ".swarm" / "human-gate.json").write_text(
+            '{"status":"pending","gate":"prereg","summary":"Need approval"}'
+        )
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=ws,
+            tmux_session="test-session",
+            question="Q",
+            mode="discover",
+            rigor="adaptive",
+            last_rigor="",
+            codename="Cortex",
+        )
+        d.running[1] = run
+
+        d.check_human_gates()
+
+        assert len(msgs) == 0
+
+    def test_resume_prompt_uses_effective_rigor(self, dispatcher_setup):
+        """Resume prompt should use escalated rigor, not raw adaptive."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+
+        ws = tmp_path / "ws"
+        (ws / ".swarm").mkdir(parents=True)
+        (ws / ".swarm" / "orchestrator-prompt.txt").write_text("original")
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=ws,
+            tmux_session="test-session",
+            question="Q",
+            mode="discover",
+            rigor="adaptive",
+            last_rigor="scientific",
+            codename="Cortex",
+        )
+
+        resume = d._build_resume_prompt(run).read_text()
+        assert "**Rigor:** scientific" in resume
+        assert "convergence-gate.sh . scientific" in resume
+
+
+class TestFix04ScopedAbort:
+    """FIX-04: Abort should scope to specific investigation + use cancelled status."""
+
+    def test_abort_scoped_to_one_investigation(self, dispatcher_setup):
+        """Aborting one investigation should not kill others."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        mock_queue = MagicMock()
+        d._queue = mock_queue
+
+        d.running[1] = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path / "ws1",
+            tmux_session="s1",
+            question="Q1",
+            mode="discover",
+        )
+        d.running[2] = RunningInvestigation(
+            investigation_id=2,
+            workspace_path=tmp_path / "ws2",
+            tmux_session="s2",
+            question="Q2",
+            mode="discover",
+        )
+
+        with patch("subprocess.run"):
+            d._handle_abort(inv_id=1)
+
+        assert 1 not in d.running
+        assert 2 in d.running
+        mock_queue.abort.assert_called_once_with(1, "Aborted by operator")

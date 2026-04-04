@@ -174,8 +174,9 @@ def _write_state_digest(workspace: Path) -> bool:
             if isinstance(criteria, list) and criteria:
                 # Check checkpoint for a potentially fresher criteria_status
                 cp_cs: dict = {}
-                cp_path = swarm / "orchestrator-checkpoint.json"
-                if cp_path.exists():
+                from voronoi.utils import find_checkpoint
+                cp_path = find_checkpoint(workspace)
+                if cp_path is not None:
                     try:
                         cp = json.loads(cp_path.read_text())
                         if isinstance(cp, dict):

@@ -192,6 +192,7 @@ These handlers interact with the Claim Ledger (`~/.voronoi/ledgers/<lineage_id>/
 |-----|--------|-------------|
 | `bot_token` | `VORONOI_TG_BOT_TOKEN` | Telegram bot token |
 | `user_allowlist` | `VORONOI_ALLOWED_USERS` | Comma-separated Telegram user IDs |
+| `ops_users` | `VORONOI_TG_OPS_USERS` | Comma-separated user IDs/usernames for `/voronoi ops`. Falls back to `user_allowlist` if not set. |
 | `bridge_enabled` | `.swarm-config.json` | Whether Telegram bridge is active |
 | `project_dir` | `.swarm-config.json` | Default project directory |
 | `project_name` | `.swarm-config.json` | Human-readable project name |
@@ -487,6 +488,7 @@ def format_failure(codename: str, reason: str, elapsed_sec: float, closed: int,
                    total: int, log_tail: str, retry_count: int, max_retries: int) -> str
 def format_alert(codename: str, message: str) -> str
 def format_restart(codename: str, attempt: int, max_retries: int, log_tail: str) -> str
+def format_wake(codename: str, n_events: int = 0) -> str
 def format_pause(codename: str, reason: str, elapsed_sec: float,
                  closed: int, total: int) -> str
 ```
@@ -566,10 +568,19 @@ When Copilot is unavailable (not installed, auth expired, timeout), falls back t
 |-------------------|------------------|-------------------|
 | Experiments/results | experiment, result, data, show, found, finding | `experiments.tsv`, findings |
 | Failures/crashes | fail, crash, error, wrong, problem, issue | `experiments.tsv` (crash/discard), task notes |
-| Hypotheses/beliefs | hypothes, belief, theory, leading, which, best, worst | `belief-map.json` |
-| Success criteria | criteri, success, progress, track, going | `success-criteria.json`, tasks |
 | Specific methods | classifier, model, method, algorithm, ... | `experiments.tsv` descriptions |
+| Hypotheses/beliefs | hypothes, belief, theory, leading | `belief-map.json` |
+| Success criteria | criteri, success, progress, track, going | `success-criteria.json`, tasks |
 | General | *(catch-all)* | All sources combined |
+
+**Keyword priority**: The method-specific branch is checked *before* the hypothesis branch to prevent generic words from misrouting classifier/model questions.
+
+**Float safety**: Hypothesis prior/posterior values are converted via `_safe_float()` which returns 0.0 for non-numeric values (`"N/A"`, `None`, `"TBD"`). This prevents crashes when LLM agents write non-numeric belief map entries.
+
+### Safety Measures
+
+- **Response length cap**: Both LLM and fallback responses are capped at 3500 characters (`_ASK_MAX_RESPONSE`) to stay within Telegram's 4096-character message limit. Truncated responses end with `… _(truncated)_`.
+- **Prompt injection defense**: The user's question is placed inside a code fence (```` ``` ````) in the LLM prompt, with an explicit instruction to treat it as data, not follow any instructions it may contain.
 
 ### Design Decisions
 
@@ -784,3 +795,44 @@ Dispatcher callbacks (`send_message`, `send_document`) use `call_soon_threadsafe
 ### Message Sending
 
 All sends use Markdown parse mode with best-effort fallback to plain text. Document attachments sent separately, failures logged but don't break text delivery.
+
+## 13. Ops Commands (`handlers_query.py:handle_ops`)
+
+### Purpose
+
+Read-only server diagnostics exposed via `/voronoi ops <command>`. Gives operators visibility into the server's runtime state (tmux sessions, processes, disk usage, logs) without requiring a separate SSH session.
+
+### Security Model
+
+- **No user input reaches a shell.** Each ops subcommand maps to a hardcoded `subprocess.run([...])` invocation with a fixed argument list. The subcommand name is matched against an allowlist dict — unknown subcommands are rejected.
+- **Ops-user restriction.** Gated by `VORONOI_TG_OPS_USERS` env var (comma-separated user IDs/usernames). Falls back to `VORONOI_TG_USER_ALLOWLIST` if not set. The router receives an `ops_allowed` flag from the bridge, which checks this list before forwarding.
+- **Output truncation.** Subprocess output is truncated to 3500 characters to stay within Telegram's 4096-char message limit (accounting for header/timestamp formatting).
+
+### Available Commands
+
+| Subcommand | Subprocess | Description |
+|------------|------------|-------------|
+| `tmux` | `tmux list-sessions` | List active tmux sessions |
+| `agents` | `ps aux \| grep -E 'copilot\|claude'` | Show agent-related processes |
+| `disk` | `du -sh ~/.voronoi/active/*` | Disk usage per investigation workspace |
+| `logs` | `tail -30 <latest agent.log>` | Last 30 lines of most recent agent log |
+| *(no args)* | — | Show available ops subcommands |
+
+### Function Signature
+
+```python
+def handle_ops(project_dir: str, sub: str, *, ops_allowed: bool = True) -> str:
+```
+
+- `ops_allowed=False` → returns an unauthorized message without executing anything
+- Unknown subcommand → returns help listing available commands
+
+### Router Wiring
+
+```python
+elif sub == "ops":
+    ops_sub = args[0] if args else ""
+    return handle_ops(self.project_dir, ops_sub, ops_allowed=ops_allowed), None
+```
+
+The `route()` method receives `ops_allowed` as a keyword argument (default `True` for CLI usage). The Telegram bridge sets it based on the `ops_users` config list.

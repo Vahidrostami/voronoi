@@ -294,9 +294,9 @@ class TestWorkspaceGitHubProvisioning:
 
         wm = WorkspaceManager(tmp_path / "voronoi")
 
-        with patch.object(wm, "_ensure_github_files") as mock_ensure:
+        with patch.object(wm, "_voronoi_init") as mock_init:
             info = wm.provision_lab(1, "test", "Does EWC work?")
-            mock_ensure.assert_called_once_with(Path(info.path))
+            mock_init.assert_called_once_with(Path(info.path))
 
 
 # ---------------------------------------------------------------------------

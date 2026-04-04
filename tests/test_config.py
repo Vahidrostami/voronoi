@@ -20,8 +20,10 @@ class TestLoadDotenv:
         env_file.write_text("TEST_VAR_VORONOI=hello\n")
         monkeypatch.delenv("TEST_VAR_VORONOI", raising=False)
         load_dotenv(env_file)
-        assert os.environ.get("TEST_VAR_VORONOI") == "hello"
-        monkeypatch.delenv("TEST_VAR_VORONOI")
+        try:
+            assert os.environ.get("TEST_VAR_VORONOI") == "hello"
+        finally:
+            monkeypatch.delenv("TEST_VAR_VORONOI", raising=False)
 
     def test_does_not_overwrite(self, tmp_path, monkeypatch):
         env_file = tmp_path / ".env"
@@ -35,16 +37,20 @@ class TestLoadDotenv:
         env_file.write_text("# comment\nTEST_VAR_VORONOI=value\n")
         monkeypatch.delenv("TEST_VAR_VORONOI", raising=False)
         load_dotenv(env_file)
-        assert os.environ.get("TEST_VAR_VORONOI") == "value"
-        monkeypatch.delenv("TEST_VAR_VORONOI")
+        try:
+            assert os.environ.get("TEST_VAR_VORONOI") == "value"
+        finally:
+            monkeypatch.delenv("TEST_VAR_VORONOI", raising=False)
 
     def test_strips_inline_comments(self, tmp_path, monkeypatch):
         env_file = tmp_path / ".env"
         env_file.write_text("TEST_VAR_VORONOI=value  # comment\n")
         monkeypatch.delenv("TEST_VAR_VORONOI", raising=False)
         load_dotenv(env_file)
-        assert os.environ.get("TEST_VAR_VORONOI") == "value"
-        monkeypatch.delenv("TEST_VAR_VORONOI")
+        try:
+            assert os.environ.get("TEST_VAR_VORONOI") == "value"
+        finally:
+            monkeypatch.delenv("TEST_VAR_VORONOI", raising=False)
 
     def test_nonexistent_file(self):
         load_dotenv(Path("/nonexistent/.env"))  # Should not raise

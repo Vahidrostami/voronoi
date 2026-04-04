@@ -20,7 +20,7 @@ This directory contains the **complete technical specification** for Voronoi. Th
 | [SERVER.md](SERVER.md) | Server layer: queue, dispatcher, workspace, sandbox, prompt | Working on investigation lifecycle |
 | [SCIENCE.md](SCIENCE.md) | Science framework: rigor gates, belief maps, convergence, EVA | Working on evidence/investigation logic |
 | [CLI.md](CLI.md) | CLI commands, project scaffolding, demo management | Working on CLI or `voronoi` command |
-| [AGENT-ROLES.md](AGENT-ROLES.md) | 11 agent roles, activation rules, verify loops | Working on agent orchestration |
+| [AGENT-ROLES.md](AGENT-ROLES.md) | 12 agent roles, activation rules, verify loops | Working on agent orchestration |
 | [DATA-STRUCTURES.md](DATA-STRUCTURES.md) | All dataclasses, schemas, file formats, DB schemas | Implementing or consuming data |
 | [WORKFLOWS.md](WORKFLOWS.md) | End-to-end workflows: discover, prove, demo | Understanding user journeys |
 | [INVARIANTS.md](INVARIANTS.md) | System-wide invariants that must never be violated | Code review, debugging |

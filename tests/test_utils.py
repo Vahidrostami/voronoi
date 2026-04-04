@@ -2,7 +2,7 @@
 
 import pytest
 
-from voronoi.utils import clean_finding_title, extract_field, parse_finding_notes
+from voronoi.utils import clean_finding_title, extract_field, find_checkpoint, parse_finding_notes
 
 
 class TestExtractField:
@@ -88,3 +88,29 @@ class TestParseFindingNotes:
         assert parsed["data_file"] == "data/raw/results.csv"
         assert parsed["robust"] == "yes"
         assert parsed["stat_test"] == "Welch t-test"
+
+
+class TestFindCheckpoint:
+    """FIX-06: find_checkpoint should check both canonical and LLM-shortened names."""
+
+    def test_canonical_name(self, tmp_path):
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "orchestrator-checkpoint.json").write_text("{}")
+        assert find_checkpoint(tmp_path) is not None
+        assert find_checkpoint(tmp_path).name == "orchestrator-checkpoint.json"
+
+    def test_shortened_name(self, tmp_path):
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "checkpoint.json").write_text("{}")
+        assert find_checkpoint(tmp_path) is not None
+        assert find_checkpoint(tmp_path).name == "checkpoint.json"
+
+    def test_canonical_preferred_over_shortened(self, tmp_path):
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "orchestrator-checkpoint.json").write_text("{}")
+        (tmp_path / ".swarm" / "checkpoint.json").write_text("{}")
+        assert find_checkpoint(tmp_path).name == "orchestrator-checkpoint.json"
+
+    def test_no_checkpoint(self, tmp_path):
+        (tmp_path / ".swarm").mkdir()
+        assert find_checkpoint(tmp_path) is None

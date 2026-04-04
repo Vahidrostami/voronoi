@@ -113,6 +113,7 @@ def run_bot(config: dict) -> None:
 
     bot_token = config["bot_token"]
     user_allowlist = config.get("user_allowlist", [])
+    ops_users = config.get("ops_users", list(user_allowlist))
     project_dir = config["project_dir"]
 
     if not bot_token:
@@ -133,6 +134,16 @@ def run_bot(config: dict) -> None:
         uid = str(user.id).lower()
         uname = (user.username or "").lower()
         return uid in user_allowlist or uname in user_allowlist
+
+    def _is_ops_allowed(update: Update) -> bool:
+        if not ops_users:
+            return True
+        user = update.effective_user
+        if user is None:
+            return False
+        uid = str(user.id).lower()
+        uname = (user.username or "").lower()
+        return uid in ops_users or uname in ops_users
 
     def _is_group_directed(update: Update) -> bool:
         msg = update.message
@@ -192,7 +203,8 @@ def run_bot(config: dict) -> None:
         chat_id = str(effective_msg.chat_id) if effective_msg else "unknown"
 
         logger.info("CMD /voronoi %s %s (chat=%s)", subcommand, " ".join(sub_args), chat_id)
-        reply_text, reply_file = router.route(subcommand, sub_args, chat_id)
+        ops_allowed = _is_ops_allowed(update)
+        reply_text, reply_file = router.route(subcommand, sub_args, chat_id, ops_allowed=ops_allowed)
         logger.debug("Reply: %s", reply_text[:120])
 
         # Contextual inline buttons for command responses

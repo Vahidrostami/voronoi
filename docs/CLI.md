@@ -99,9 +99,9 @@ Updates framework files while preserving user edits.
 
 | Name | Description | Mode | Rigor |
 |------|-------------|------|-------|
-| `coupled-decisions` | 5 coupled levers, planted ground truth in 100K transactions | INVESTIGATE | SCIENTIFIC |
-| `emergent-ecosystem` | 4 species on 100×100 grid, each agent builds one | BUILD | STANDARD |
-| `forgetting-cure` | 4 anti-forgetting strategies, head-to-head MNIST benchmark | INVESTIGATE | SCIENTIFIC |
+| `coupled-decisions` | 5 coupled levers, planted ground truth in 100K transactions | DISCOVER | SCIENTIFIC |
+| `emergent-ecosystem` | 4 species on 100×100 grid, each agent builds one | DISCOVER | ADAPTIVE |
+| `forgetting-cure` | 4 anti-forgetting strategies, head-to-head MNIST benchmark | DISCOVER | SCIENTIFIC |
 
 ### `voronoi demo list`
 

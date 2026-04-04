@@ -51,6 +51,7 @@ class Investigation:
     demo_source: str | None  # Demo name if from demo
     lineage_id: int | None   # Root investigation ID for claim ledger scoping
     cycle_number: int        # Iteration round within a lineage (default 1)
+    pi_feedback: str         # PI feedback for continuation rounds (empty for root)
     created_at: float
     started_at: float | None
     completed_at: float | None
@@ -72,7 +73,7 @@ class Investigation:
        │running │──────────────────────┐
        └───┬───┘                       │
            │                           │
-     ┌─────┼─────┼──────┼─────┐   cancel()
+     ┌─────┼─────┼──────┼─────┐   abort() / cancel()
      │     │     │      │     │        │
   complete() fail() pause() review()   │
      │     │     │      │     │        │
@@ -91,7 +92,10 @@ class Investigation:
                         (new inv, same lineage)
 ```
 
-The `review` state is entered when a science investigation (mode=discover/prove) converges successfully. The PI reviews claims, provides feedback, and can continue to a new round (`continue_investigation`) or accept and close (`accept`). Build-mode investigations skip `review` and go directly to `complete`.
+- `abort()` transitions `running → cancelled` (operator-initiated abort). Cancelled investigations are NOT resumable.
+- `cancel()` transitions `queued → cancelled` (pre-launch cancellation).
+- `fail()` accepts both `running` and `paused` investigations.
+- `continue_investigation()` performs INSERT + workspace transfer + parent status update in a single atomic transaction.
 
 ### InvestigationQueue API
 
@@ -105,9 +109,10 @@ class InvestigationQueue:
     def start(self, investigation_id: int, workspace_path: str,
               sandbox_id: str | None = None) -> None: ...
     def complete(self, investigation_id: int, github_url: str | None = None) -> None: ...
-    def fail(self, investigation_id: int, error: str) -> None: ...
+    def fail(self, investigation_id: int, error: str) -> None: ...      # running|paused → failed
     def fail_paused(self, investigation_id: int, error: str) -> bool: ... # paused → failed (atomic)
-    def cancel(self, investigation_id: int) -> bool: ...
+    def cancel(self, investigation_id: int) -> bool: ...                # queued → cancelled
+    def abort(self, investigation_id: int, error: str = "...") -> bool: ...  # running → cancelled
     def pause(self, investigation_id: int, reason: str) -> None: ...    # running → paused
     def resume(self, investigation_id: int) -> None: ...                # paused|failed → running
     def review(self, investigation_id: int) -> bool: ...                # running → review
@@ -324,14 +329,21 @@ When the orchestrator exits cleanly with `active_workers` in the checkpoint, the
 1. Sets `orchestrator_parked = True`
 2. Accumulates events in `pending_events` (task completions, findings, serendipity, phase changes)
 3. Throttles Telegram digests to every 5 minutes (from 30 seconds)
-4. Each poll cycle, calls `_needs_orchestrator()` to check wake conditions
-5. On wake: builds resume prompt with accumulated `pending_events`, relaunches orchestrator
+4. Each poll cycle, checks `orchestrator_parked` FIRST, then `_has_active_workers()`
+5. On wake: calls `_wake_from_park()` — builds resume prompt with accumulated `pending_events`, relaunches orchestrator, sends `format_wake()` Telegram message
 6. `pending_events` are drained into the resume prompt and cleared
 
+**Critical**: Wake-from-park uses a dedicated `_wake_from_park()` method that does NOT increment `retry_count` or send crash-style messages. This is normal operation, not crash recovery. The poll_progress flow checks `orchestrator_parked` before falling through to the crash-restart `_try_restart()` path.
+
 Wake conditions (`_needs_orchestrator()`):
-- All active workers finished (normal wake)
+- All active workers finished (normal wake — checked via `_has_active_workers()` returning False)
 - DESIGN_INVALID detected in open task (urgent — immediate wake)
 - Workers no longer alive (process died)
+
+Worker liveness (`_has_active_workers()`):
+1. Reads the swarm tmux session name from `.swarm-config.json` (`tmux_session` field, written by `swarm-init.sh`). Falls back to `{orchestrator_session}-swarm` if the config file is missing.
+2. Checks if any workers listed in the checkpoint have a matching tmux window in the swarm session.
+3. Falls back to `pgrep` for orphaned processes whose cwd is inside the workspace.
 
 Findings and serendipity are accumulated and delivered in the resume prompt — they do NOT trigger immediate wake because they are not time-sensitive. The orchestrator evaluates them with fresh context.
 
@@ -468,15 +480,18 @@ Paused investigations auto-fail after `pause_timeout_hours` (default 24h).
 
 ### Abort Handling
 
-`_handle_abort()` kills all running investigations:
+`_handle_abort(inv_id)` aborts a specific running investigation (or all if no ID given):
 - Reads `.swarm/abort-signal` file written by `handle_abort()` in router
+- Each signal file aborts only the investigation whose workspace contains it
+- Global signal file (`~/.voronoi/.swarm/abort-signal`) aborts all running investigations
 - Kills tmux sessions
-- Marks investigations as cancelled in queue
-- Clears internal tracking
+- Marks investigations as **cancelled** via `queue.abort()` (`running → cancelled`)
+- Cancelled investigations are NOT resumable (unlike failed ones)
 
 ### Recovery
 
 On dispatcher restart, `_recover_running()` scans for investigations in `running` status:
+- If `workspace_path` is NULL (claimed but not yet launched) → **reset to queued** for retry
 - Restores `task_snapshot` from Beads (`bd list --json`) so progress reporting is accurate
 - If tmux session alive → re-adopt for monitoring
 - If tmux dead + deliverable exists → mark complete

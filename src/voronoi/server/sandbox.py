@@ -7,11 +7,18 @@ Graceful fallback to host when Docker is unavailable.
 
 from __future__ import annotations
 
+import re
 import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+
+# Docker container IDs are lowercase hex, 12-64 chars
+_CONTAINER_ID_RE = re.compile(r"^[a-f0-9]{12,64}$")
+
+# Re-check Docker availability every 60 seconds
+_DOCKER_CHECK_TTL = 60.0
 
 
 @dataclass
@@ -41,10 +48,13 @@ class SandboxManager:
     def __init__(self, config: Optional[SandboxConfig] = None):
         self.config = config or SandboxConfig()
         self._docker_available: Optional[bool] = None
+        self._docker_checked_at: float = 0
 
     def is_docker_available(self) -> bool:
-        """Check if Docker daemon is running."""
-        if self._docker_available is not None:
+        """Check if Docker daemon is running (cached with TTL)."""
+        now = time.monotonic()
+        if (self._docker_available is not None
+                and now - self._docker_checked_at < _DOCKER_CHECK_TTL):
             return self._docker_available
         try:
             result = subprocess.run(
@@ -54,6 +64,7 @@ class SandboxManager:
             self._docker_available = result.returncode == 0
         except (FileNotFoundError, subprocess.TimeoutExpired):
             self._docker_available = False
+        self._docker_checked_at = now
         return self._docker_available
 
     def start(self, investigation_id: int, workspace_path: str) -> Optional[SandboxInfo]:
@@ -179,7 +190,7 @@ def exec_in_sandbox_or_host(
     sandbox_file = Path(workspace_path) / ".sandbox-id"
     if sandbox_file.exists():
         container_id = sandbox_file.read_text().strip()
-        if container_id:
+        if container_id and _CONTAINER_ID_RE.match(container_id):
             try:
                 result = subprocess.run(
                     ["docker", "exec", "-w", "/workspace", container_id] + command,

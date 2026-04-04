@@ -106,7 +106,7 @@ flowchart LR
 | Runtime agents/skills | ✅ `voronoi init` | ✅ `_ensure_github_files()` fallback |
 | Prompt builder | ✅ `prompt.py` | ✅ `prompt.py` (same function) |
 | Progress updates | stdout | Telegram messages every 30s |
-| Timeout detection | KeyboardInterrupt | Configurable (default 8h) |
+| Timeout detection | KeyboardInterrupt | Configurable (default 48h) |
 | Completion | Agent exits | tmux dies OR deliverable.md + convergence.json |
 
 ---

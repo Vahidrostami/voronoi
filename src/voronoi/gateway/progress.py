@@ -237,8 +237,10 @@ def _read_tsv_rows(path: Path) -> list[dict]:
         rows = []
         for line in lines[1:]:
             fields = line.split("\t")
-            if len(fields) >= len(headers):
-                rows.append(dict(zip(headers, fields)))
+            if len(fields) < len(headers):
+                # Pad short rows with empty strings to preserve partial data
+                fields += [""] * (len(headers) - len(fields))
+            rows.append(dict(zip(headers, fields)))
         return rows
     except OSError:
         return []
@@ -929,6 +931,17 @@ def format_restart(codename: str, attempt: int, max_retries: int,
     if log_tail:
         lines.append(f"\nLast output:\n```\n{log_tail[-300:]}\n```")
     return "\n".join(lines)
+
+
+def format_wake(codename: str, n_events: int = 0) -> str:
+    """Format a wake-from-park notification.
+
+    Distinct from ``format_restart`` — this is normal operation, not a
+    crash recovery.  Does not mention retry counts.
+    """
+    if n_events > 0:
+        return f"*{codename}* — workers finished, resuming orchestrator ({n_events} events queued)."
+    return f"*{codename}* — workers finished, resuming orchestrator."
 
 
 def format_pause(codename: str, reason: str, elapsed_sec: float,

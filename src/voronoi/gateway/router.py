@@ -37,6 +37,7 @@ from voronoi.gateway.handlers_query import (  # noqa: F401
     handle_finding,
     handle_claims,
     handle_ask,
+    handle_ops,
 )
 from voronoi.gateway.handlers_mutate import (  # noqa: F401
     handle_reprioritize,
@@ -71,7 +72,7 @@ __all__ = [
     "handle_review_investigation", "handle_continue_investigation", "handle_claims",
     "handle_abort", "handle_pivot", "handle_guide",
     "handle_discover", "handle_prove",
-    "handle_recall", "handle_belief", "handle_journal", "handle_finding",
+    "handle_recall", "handle_belief", "handle_journal", "handle_finding", "handle_ops",
     "handle_results", "handle_demo", "handle_details",
     "handle_ask",
 ]
@@ -149,6 +150,8 @@ _HELP_MESSAGE = (
     "`/voronoi ask <question>` — ask about a running investigation\n\n"
     "*Steer*\n"
     "`/voronoi guide <msg>` · `pivot <msg>` · `abort`\n\n"
+    "*Ops*\n"
+    "`/voronoi ops` — server diagnostics (tmux, disk, logs)\n\n"
     "_In groups, @mention me or reply to my messages._"
 )
 
@@ -199,7 +202,8 @@ class CommandRouter:
         return "\n".join(lines)
 
     def route(self, command: str, args: list[str],
-              chat_id: str) -> tuple[str, Optional[Path]]:
+              chat_id: str, *,
+              ops_allowed: bool = True) -> tuple[str, Optional[Path]]:
         """Dispatch a /voronoi <command> and return (text, document)."""
         if not command:
             return _HELP_MESSAGE, None
@@ -287,6 +291,9 @@ class CommandRouter:
                 return handle_claims(self.project_dir, arg), None
             elif sub == "ask" and args:
                 return handle_ask(self.project_dir, " ".join(args)), None
+            elif sub == "ops":
+                ops_sub = args[0] if args else ""
+                return handle_ops(self.project_dir, ops_sub, ops_allowed=ops_allowed), None
             else:
                 return f"❓ Unknown command: `{sub}`\nSend `/voronoi` for help.", None
         except Exception as e:

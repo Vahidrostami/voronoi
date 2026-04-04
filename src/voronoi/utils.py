@@ -114,3 +114,21 @@ def git_init_main(repo_path: str | Path) -> None:
         text=True,
         check=False,
     )
+
+
+# Canonical checkpoint filenames — LLMs sometimes shorten the name
+_CHECKPOINT_NAMES = ("orchestrator-checkpoint.json", "checkpoint.json")
+
+
+def find_checkpoint(workspace: Path) -> Path | None:
+    """Find the orchestrator checkpoint file.
+
+    Agents may write the checkpoint as ``orchestrator-checkpoint.json``
+    (canonical) or ``checkpoint.json`` (common LLM shortening).
+    Returns the first existing path, or ``None``.
+    """
+    for name in _CHECKPOINT_NAMES:
+        p = workspace / ".swarm" / name
+        if p.exists():
+            return p
+    return None

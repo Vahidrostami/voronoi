@@ -414,3 +414,71 @@ class TestReviewAndContinue:
         new_inv = queue.get(new_id)
         assert new_inv.question == "Does X work?"
         assert new_inv.pi_feedback == "new feedback"
+
+    def test_continue_sets_workspace_atomically(self, queue):
+        """Continuation should have workspace_path set before row is visible."""
+        inv_id = queue.enqueue(Investigation(chat_id="c1", question="Q", slug="q"))
+        queue.start(inv_id, "/tmp/ws")
+        queue.complete(inv_id)
+        new_id = queue.continue_investigation(inv_id)
+        new_inv = queue.get(new_id)
+        assert new_inv.workspace_path == "/tmp/ws"
+        assert new_inv.status == "queued"
+
+    def test_continue_marks_parent_complete_atomically(self, queue):
+        """Continuation from review should mark parent complete in same transaction."""
+        inv_id = queue.enqueue(Investigation(chat_id="c1", question="Q", slug="q"))
+        queue.start(inv_id, "/tmp/ws")
+        queue.review(inv_id)
+        new_id = queue.continue_investigation(inv_id, "iterate")
+        parent = queue.get(inv_id)
+        assert parent.status == "complete"
+        child = queue.get(new_id)
+        assert child.workspace_path == "/tmp/ws"
+
+
+class TestAbortTransition:
+    def test_abort_running_produces_cancelled(self, queue):
+        """abort() should transition running → cancelled."""
+        inv_id = queue.enqueue(Investigation(chat_id="c1", question="Q", slug="q"))
+        queue.start(inv_id, "/tmp/ws")
+        ok = queue.abort(inv_id, "Aborted by operator")
+        assert ok is True
+        inv = queue.get(inv_id)
+        assert inv.status == "cancelled"
+        assert inv.error == "Aborted by operator"
+
+    def test_abort_not_running_returns_false(self, queue):
+        """abort() should only work on running investigations."""
+        inv_id = queue.enqueue(Investigation(chat_id="c1", question="Q", slug="q"))
+        ok = queue.abort(inv_id)
+        assert ok is False
+        assert queue.get(inv_id).status == "queued"
+
+    def test_cancelled_not_resumable(self, queue):
+        """Cancelled investigations should NOT be resumable."""
+        inv_id = queue.enqueue(Investigation(chat_id="c1", question="Q", slug="q"))
+        queue.start(inv_id, "/tmp/ws")
+        queue.abort(inv_id)
+        ok = queue.resume(inv_id)
+        assert ok is False
+        assert queue.get(inv_id).status == "cancelled"
+
+
+class TestFailAcceptsPaused:
+    def test_fail_from_paused(self, queue):
+        """fail() should work on paused investigations."""
+        inv_id = queue.enqueue(Investigation(chat_id="c1", question="Q", slug="q"))
+        queue.start(inv_id, "/tmp/ws")
+        queue.pause(inv_id, "auth expired")
+        queue.fail(inv_id, "timed out")
+        inv = queue.get(inv_id)
+        assert inv.status == "failed"
+        assert inv.error == "timed out"
+
+    def test_fail_from_running(self, queue):
+        """fail() should still work on running investigations."""
+        inv_id = queue.enqueue(Investigation(chat_id="c1", question="Q", slug="q"))
+        queue.start(inv_id, "/tmp/ws")
+        queue.fail(inv_id, "crashed")
+        assert queue.get(inv_id).status == "failed"

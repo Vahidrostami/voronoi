@@ -17,6 +17,18 @@ def wm(tmp_path):
 
 
 class TestProvisionLab:
+    """Tests for lab workspace provisioning.
+
+    _voronoi_init is mocked to prevent swarm-init.sh from creating
+    orphaned tmux sessions.  The tests verify workspace structure
+    (git, PROMPT.md, directories) which is all set up before init runs.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _skip_voronoi_init(self):
+        with patch.object(WorkspaceManager, "_voronoi_init"):
+            yield
+
     def test_creates_workspace(self, wm):
         info = wm.provision_lab(1, "ewc-test", "Does EWC work?")
         assert Path(info.path).exists()
@@ -109,6 +121,18 @@ class TestProvisionRepo:
 
 
 class TestWorkspaceManagement:
+    """Tests for workspace listing, cleanup, and path resolution.
+
+    These tests only exercise directory management — _voronoi_init
+    (which runs swarm-init.sh → creates tmux sessions) is mocked to
+    prevent orphaned tmux sessions from accumulating.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _skip_voronoi_init(self):
+        with patch.object(WorkspaceManager, "_voronoi_init"):
+            yield
+
     def test_list_active_empty(self, wm):
         assert wm.list_active() == []
 
