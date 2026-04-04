@@ -125,7 +125,8 @@ class TestFullTextPassthrough:
         long_question = "Why is our model accuracy " + "dropping " * 20 + "after each retrain cycle?"
         assert len(long_question) > 80  # longer than the old summary limit
 
-        with patch("voronoi.gateway.router.handle_discover") as mock_disc:
+        with patch("voronoi.gateway.router.handle_discover") as mock_disc, \
+             patch.object(router, "_has_running_investigations", return_value=False):
             mock_disc.return_value = "OK"
             router.handle_free_text(long_question, "chat1", True)
 

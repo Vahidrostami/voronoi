@@ -30,7 +30,9 @@ src/voronoi/gateway/
 
 ### Purpose
 
-Maps free-text user input to a workflow mode and rigor level. This is the first decision point in every request.
+Maps free-text user input to a workflow mode and rigor level. Used for explicit `/voronoi` command parsing and as a fallback classifier.
+
+**Note:** For free-text routing in Telegram, the router uses **state-aware dispatch** instead of calling `classify()` directly. See §3 (Router).
 
 ### Enums
 
@@ -40,19 +42,18 @@ class WorkflowMode(Enum):
     PROVE       # Specific hypothesis — full science gates
     STATUS      # "/voronoi status"
     RECALL      # "what did we learn", "previous finding"
-    GUIDE       # Fallback — unclear intent
+    GUIDE       # Explicit operator guidance (/voronoi guide)
     ASK         # Mid-investigation question — Q&A about running work
 ```
 
 ```python
 class RigorLevel(Enum):
-    STANDARD      # Build tasks — Builder + Critic only
-    ANALYTICAL    # + Scout, Statistician, Explorer, Synthesizer, Evaluator
-    SCIENTIFIC    # + Methodologist, Theorist, all gates
-    EXPERIMENTAL  # + replication, full pipeline
+    ADAPTIVE      # DISCOVER — starts light, escalates
+    SCIENTIFIC    # PROVE — full gates from the start
+    EXPERIMENTAL  # PROVE + replication
 ```
 
-### Core Function
+### Core Functions
 
 ```python
 def classify(text: str) -> ClassifiedIntent
@@ -64,11 +65,17 @@ def classify(text: str) -> ClassifiedIntent
 
 **Classification priority** (highest to lowest):
 1. Explicit `/voronoi <command>` patterns — exact match
-2. Pattern matching against signal banks (investigate, explore, build, hybrid, etc.)
-3. Rigor escalation signals (experimental > scientific > analytical)
-4. Fallback to `GUIDE` mode (confidence 0.3) if no signals match
+2. ASK signals (mid-investigation questions)
+3. PROVE signals (specific hypotheses, controlled experiments)
+4. DISCOVER signals (open questions, building, exploring)
+5. RECALL signals (knowledge queries)
+6. Fallback to `GUIDE` mode (confidence 0.3) if no signals match
 
-**Invariant**: When in doubt, classify **higher** rigor — gates can be skipped but not added retroactively.
+```python
+def classify_for_new_investigation(text: str) -> ClassifiedIntent
+```
+
+**Purpose**: Simplified classifier used by the state-aware router when **no investigation is running**. Only returns DISCOVER, PROVE, or RECALL — never ASK or GUIDE. Low-confidence messages default to DISCOVER (the router prompts the user).
 
 ### Compound Intent
 
@@ -82,18 +89,16 @@ Splits multi-phase prompts (e.g., "investigate X then build Y") into ordered pha
 
 | Bank | Example triggers |
 |------|-----------------|
-| `_INVESTIGATE_SIGNALS` | "why", "root cause", "hypothesis", "correlation" |
-| `_EXPLORE_SIGNALS` | "which best", "compare", "evaluation", "tradeoffs" |
-| `_EXPERIMENTAL_SIGNALS` | "A/B test", "controlled trial", "p-value" |
-| `_ANALYTICAL_SIGNALS` | "optimize", "measure", "metrics", "effect size" |
-| `_BUILD_SIGNALS` | "build", "implement", "deploy", "refactor" |
-| `_HYBRID_SIGNALS` | "paper", "manuscript", "figure out and fix" |
-| `_RECALL_SIGNALS` | "what did we learn", "previous finding" || `_ASK_SIGNALS` | "what have agents found", "any results yet", "how is it going", "update me on" |
+| `_PROVE_SIGNALS` | "test whether", "prove", "A/B test", "controlled trial", "sample size" |
+| `_DISCOVER_SIGNALS` | "why", "root cause", "compare", "build", "optimize", "paper on" |
+| `_RECALL_SIGNALS` | "what did we learn", "previous finding", "history of" |
+| `_ASK_SIGNALS` | "any results", "how is the results", "update me on", "what have agents found" |
+
 ### ClassifiedIntent Properties
 
 | Property | Type | Description |
 |----------|------|-------------|
-| `.is_science` | bool | True if mode is INVESTIGATE, EXPLORE, or HYBRID |
+| `.is_science` | bool | True if mode is DISCOVER or PROVE |
 | `.is_meta` | bool | True if mode is STATUS, RECALL, GUIDE, or ASK |
 
 ---
@@ -502,7 +507,7 @@ def phase_position(phase: str) -> tuple[int, int]     # Journey position (step, 
 
 ### Purpose
 
-Lets users ask natural-language questions about running investigations and get answers without terminal access. Reads workspace artifacts (experiments.tsv, success-criteria.json, belief-map.json, task list, findings) and synthesizes a targeted response. No LLM needed — pattern-matches the question against available data.
+Lets users ask natural-language questions about running investigations and get conversational answers without terminal access. Gathers workspace artifacts (experiments.tsv, success-criteria.json, belief-map.json, task list, journal, findings) and sends them with the user's question to Copilot CLI for a one-shot LLM answer. Falls back to keyword-based synthesis when Copilot is unavailable.
 
 ### Function
 
@@ -512,25 +517,68 @@ def handle_ask(project_dir: str, question: str) -> str
 
 **Invoked by**: `/voronoi ask <question>` command or ASK intent from free-text classification.
 
-**Returns**: A conversational answer synthesized from workspace artifacts. When no running investigations exist, returns a helpful redirect. When data is insufficient, suggests alternative commands.
+**Returns**: A conversational LLM-generated answer grounded in workspace data (primary), or a keyword-matched structured response (fallback).
 
-### Question Topic Detection
+### Architecture
 
-| Question about... | Data sources used | Example |
-|-------------------|-------------------|---------|
-| Experiments/results | `experiments.tsv`, findings | "What have the experiments found?" |
-| Failures/crashes | `experiments.tsv` (crash/discard), task notes | "Why did experiment 3 fail?" |
-| Hypotheses/beliefs | `belief-map.json` | "Which hypothesis is leading?" |
-| Success criteria | `success-criteria.json`, tasks | "Are we on track?" |
-| Specific methods | `experiments.tsv` descriptions | "How are the classifiers doing?" |
-| General | All sources combined | "What's the latest?" |
+```
+User question
+    │
+    ▼
+_gather_workspace_context()   ← reads experiments, criteria, beliefs, tasks, journal
+    │
+    ▼
+_build_ask_prompt()           ← system prompt + workspace JSON + user question
+    │
+    ▼
+_run_copilot_query()          ← copilot -p "<prompt>" -s --no-color
+    │
+    ├── success → return LLM answer
+    │
+    └── failure → _answer_from_context()  ← keyword-based fallback
+```
+
+### Data Sources
+
+| Artifact | Path | What's gathered |
+|----------|------|-----------------|
+| Experiments | `.swarm/experiments.tsv` | Total, passed, discarded, crashed, details (capped at 20) |
+| Success criteria | `.swarm/success-criteria.json` | Items, how many met |
+| Belief map | `.swarm/belief-map.json` | Hypotheses with priors/posteriors |
+| Tasks | `bd list --json` | Total, closed, in-progress, items (capped at 30) |
+| Journal | `.swarm/journal.md` | Last 20 lines |
+
+### Copilot CLI Integration
+
+Uses the same Copilot CLI that agents use, with the configured worker model:
+
+- Binary: `copilot` (must be on PATH)
+- Model: `VORONOI_WORKER_MODEL` env var (falls back to Copilot default)
+- Flags: `-p <prompt> -s --no-color`
+- Timeout: 60 seconds
+- Prompt instructs LLM to answer ONLY from workspace data, format for Telegram
+
+### Fallback: Keyword-Based Synthesis
+
+When Copilot is unavailable (not installed, auth expired, timeout), falls back to `_answer_from_context()` which uses keyword matching:
+
+| Question about... | Keywords matched | Data sources used |
+|-------------------|------------------|-------------------|
+| Experiments/results | experiment, result, data, show, found, finding | `experiments.tsv`, findings |
+| Failures/crashes | fail, crash, error, wrong, problem, issue | `experiments.tsv` (crash/discard), task notes |
+| Hypotheses/beliefs | hypothes, belief, theory, leading, which, best, worst | `belief-map.json` |
+| Success criteria | criteri, success, progress, track, going | `success-criteria.json`, tasks |
+| Specific methods | classifier, model, method, algorithm, ... | `experiments.tsv` descriptions |
+| General | *(catch-all)* | All sources combined |
 
 ### Design Decisions
 
-- **No LLM in the path**: Deterministic, fast, no cost. Pattern matching on question keywords against workspace data.
+- **LLM-first, fallback-safe**: Copilot CLI provides natural conversational answers; keyword matching ensures the feature works without external dependencies.
 - **Multi-investigation**: Scans all running investigations and returns answers per codename.
+- **Grounded answers**: System prompt instructs LLM to answer ONLY from workspace data — no hallucination.
 - **Graceful degradation**: When artifacts don't exist yet (early phases), says so explicitly rather than returning empty data.
 - **Read-only**: Never modifies workspace state. Safe to call at any time.
+- **No runtime dependency**: Copilot CLI is an optional external tool, not a Python dependency.
 
 ---
 
@@ -693,10 +741,17 @@ Parses `/voronoi <subcommand> [args]`, routes through `CommandRouter.route()`, a
 
 ### Free-Text Handler
 
-Processes non-command messages:
+Processes non-command messages using **state-aware routing**:
 - Checks user allowlist
 - Skips group messages unless bot is @mentioned or message is a reply to bot
-- Strips @botname, classifies via `CommandRouter.handle_free_text()`
+- Strips @botname, routes via `CommandRouter.handle_free_text()`
+
+**State-aware routing logic:**
+- If an investigation is running → route to ASK (LLM-powered Q&A about the investigation)
+- If no investigation is running → classify as DISCOVER/PROVE and start a new investigation
+- Greetings → intro message
+
+This eliminates the old regex-based ASK classification, which missed natural phrasings like "any new results?" or "how is the results so far?" and defaulted to GUIDE ("Guidance noted"). Now any free text while an investigation is running gets a real answer.
 
 ### Inline Button Callbacks
 

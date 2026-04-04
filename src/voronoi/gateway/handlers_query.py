@@ -7,6 +7,7 @@ that only read workspace state and return formatted text.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -718,36 +719,180 @@ def _find_investigation(q, identifier: str):
 
 
 # ---------------------------------------------------------------------------
-# ASK handler — mid-investigation Q&A
+# ASK handler — mid-investigation Q&A (LLM-powered)
 # ---------------------------------------------------------------------------
+
+def _gather_workspace_context(ws: Path) -> dict:
+    """Gather all workspace artifacts into a structured dict for LLM context."""
+    from voronoi.gateway.progress import _read_json, _read_all_experiment_rows
+
+    swarm = ws / ".swarm"
+    ctx: dict = {}
+
+    # Experiments
+    exp_rows = _read_all_experiment_rows(ws)
+    if exp_rows:
+        keep = [r for r in exp_rows if r.get("status") == "keep"]
+        discard = [r for r in exp_rows if r.get("status") == "discard"]
+        crash = [r for r in exp_rows if r.get("status") == "crash"]
+        ctx["experiments"] = {
+            "total": len(exp_rows),
+            "passed": len(keep),
+            "discarded": len(discard),
+            "crashed": len(crash),
+            "details": exp_rows[:20],  # cap to avoid prompt bloat
+        }
+
+    # Success criteria
+    criteria_data = _read_json(swarm / "success-criteria.json")
+    criteria: list[dict] = criteria_data if isinstance(criteria_data, list) else []
+    if criteria:
+        criteria_met = [c for c in criteria if c.get("met")]
+        ctx["success_criteria"] = {
+            "total": len(criteria),
+            "met": len(criteria_met),
+            "items": criteria,
+        }
+
+    # Belief map
+    belief_data = _read_json(swarm / "belief-map.json")
+    if isinstance(belief_data, dict):
+        hyps = belief_data.get("hypotheses", [])
+        if isinstance(hyps, dict):
+            hyps = list(hyps.values())
+        if isinstance(hyps, list):
+            hypotheses = [h for h in hyps if isinstance(h, dict)]
+            if hypotheses:
+                ctx["hypotheses"] = hypotheses
+
+    # Tasks
+    task_list: list[dict] = []
+    try:
+        code, output = _run_bd("list", "--json", cwd=str(ws))
+        if code == 0 and output.strip():
+            parsed = json.loads(output)
+            if isinstance(parsed, list):
+                task_list = parsed
+    except Exception:
+        pass
+
+    if task_list:
+        closed = [t for t in task_list if t.get("status") == "closed"]
+        in_prog = [t for t in task_list if t.get("status") == "in_progress"]
+        ctx["tasks"] = {
+            "total": len(task_list),
+            "closed": len(closed),
+            "in_progress": len(in_prog),
+            "items": task_list[:30],  # cap
+        }
+
+    # Journal (last 20 lines)
+    journal_path = swarm / "journal.md"
+    if journal_path.exists():
+        try:
+            lines = journal_path.read_text().strip().split("\n")
+            ctx["journal_tail"] = "\n".join(lines[-20:])
+        except OSError:
+            pass
+
+    return ctx
+
+
+def _build_ask_prompt(question: str, investigations: list[dict]) -> str:
+    """Build a one-shot prompt for the LLM to answer a user question."""
+    context_parts: list[str] = []
+    for inv in investigations:
+        label = inv["label"]
+        ctx = inv["context"]
+        context_parts.append(f"### Investigation: {label}")
+        context_parts.append(json.dumps(ctx, indent=2, default=str))
+
+    context_block = "\n\n".join(context_parts)
+
+    return (
+        "You are Voronoi, a scientific research assistant. "
+        "A user is asking about their running investigation(s). "
+        "Answer their question based ONLY on the workspace data below. "
+        "Be concise, conversational, and specific. Use numbers and names from the data. "
+        "If the data doesn't contain enough information to answer, say so honestly. "
+        "Format for Telegram (markdown: *bold*, _italic_, no headers).\n\n"
+        f"## Workspace Data\n\n{context_block}\n\n"
+        f"## User Question\n\n{question}"
+    )
+
+
+def _run_copilot_query(prompt: str) -> Optional[str]:
+    """Run a one-shot Copilot CLI query. Returns the response or None on failure."""
+    import shutil
+    import subprocess as sp
+
+    copilot = shutil.which("copilot")
+    if not copilot:
+        return None
+
+    # Use the configured model if available
+    model = os.environ.get("VORONOI_WORKER_MODEL", "")
+    cmd = [copilot]
+    if model:
+        cmd.extend(["--model", model])
+    cmd.extend(["-p", prompt, "-s", "--no-color"])
+
+    try:
+        result = sp.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env={**os.environ},
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except (sp.TimeoutExpired, OSError, FileNotFoundError):
+        pass
+    return None
+
 
 def handle_ask(project_dir: str, question: str) -> str:
     """Answer a natural-language question about a running investigation.
 
-    Reads workspace artifacts (experiments.tsv, success-criteria.json,
-    belief-map.json, findings, task list) and synthesizes a conversational
-    answer.  No LLM needed — pattern-matches the question against available
-    data and builds a targeted response.
-
-    This is the key handler that lets users interact with running
-    investigations without terminal access.
+    Gathers workspace artifacts (experiments, criteria, beliefs, tasks,
+    journal) and sends them with the user's question to Copilot CLI for
+    a one-shot LLM answer.  Falls back to keyword-based synthesis when
+    Copilot is unavailable.
     """
     q = _get_queue(project_dir)
     running = q.get_running()
     if not running:
         return "Nothing running right now — there's nothing to ask about. Send a question to start an investigation."
 
-    # Collect context from all running investigations
-    sections: list[str] = []
-
+    # Gather context from all running investigations
+    inv_contexts: list[dict] = []
     for inv in running:
         ws_path = inv.workspace_path
         if not ws_path:
             continue
         ws = Path(ws_path)
         label = inv.codename or f"#{inv.id}"
+        ctx = _gather_workspace_context(ws)
+        inv_contexts.append({"label": label, "context": ctx})
 
-        answer = _answer_from_workspace(ws, label, question)
+    if not inv_contexts:
+        return (
+            "I looked through the workspace but couldn't find enough data to answer that yet. "
+            "The agents may still be early in the investigation.\n\n"
+            "Try `/voronoi status` for an overview, or `/voronoi progress` for metrics."
+        )
+
+    # Try LLM-powered answer first
+    prompt = _build_ask_prompt(question, inv_contexts)
+    llm_answer = _run_copilot_query(prompt)
+    if llm_answer:
+        return llm_answer
+
+    # Fallback: keyword-based synthesis (when Copilot is unavailable)
+    sections: list[str] = []
+    for inv_ctx in inv_contexts:
+        answer = _answer_from_context(inv_ctx["label"], inv_ctx["context"], question)
         if answer:
             sections.append(answer)
 
@@ -761,70 +906,47 @@ def handle_ask(project_dir: str, question: str) -> str:
     return "\n\n".join(sections)
 
 
-def _answer_from_workspace(ws: Path, label: str, question: str) -> str:
-    """Synthesize an answer from workspace artifacts for a specific question."""
-    from voronoi.gateway.progress import (
-        _read_json, _read_all_experiment_rows,
-        format_duration, progress_bar,
-    )
+def _answer_from_context(label: str, ctx: dict, question: str) -> str:
+    """Keyword-based fallback: synthesize an answer from gathered context."""
+    from voronoi.gateway.progress import progress_bar
 
     q_lower = question.lower()
     parts: list[str] = [f"*{label}*\n"]
 
-    # ── Gather all available data ──
-    swarm = ws / ".swarm"
-
-    # Experiments
-    exp_rows = _read_all_experiment_rows(ws)
+    exp = ctx.get("experiments", {})
+    exp_rows = exp.get("details", [])
+    keep_count = exp.get("passed", 0)
+    discard_count = exp.get("discarded", 0)
+    crash_count = exp.get("crashed", 0)
+    total_exp = exp.get("total", 0)
     keep = [r for r in exp_rows if r.get("status") == "keep"]
-    discard = [r for r in exp_rows if r.get("status") == "discard"]
     crash = [r for r in exp_rows if r.get("status") == "crash"]
+    discard = [r for r in exp_rows if r.get("status") == "discard"]
 
-    # Success criteria
-    criteria_data = _read_json(swarm / "success-criteria.json")
-    criteria: list[dict] = criteria_data if isinstance(criteria_data, list) else []
-    criteria_met = [c for c in criteria if c.get("met")]
+    criteria = ctx.get("success_criteria", {})
+    criteria_items = criteria.get("items", [])
+    criteria_met = criteria.get("met", 0)
+    criteria_total = criteria.get("total", 0)
 
-    # Belief map
-    belief_data = _read_json(swarm / "belief-map.json")
-    hypotheses: list[dict] = []
-    if isinstance(belief_data, dict):
-        hyps = belief_data.get("hypotheses", [])
-        if isinstance(hyps, dict):
-            hyps = list(hyps.values())
-        if isinstance(hyps, list):
-            hypotheses = [h for h in hyps if isinstance(h, dict)]
+    hypotheses = ctx.get("hypotheses", [])
 
-    # Tasks
-    task_list: list[dict] = []
-    try:
-        code, output = _run_bd("list", "--json", cwd=str(ws))
-        if code == 0 and output.strip():
-            parsed = json.loads(output)
-            if isinstance(parsed, list):
-                task_list = parsed
-    except Exception:
-        pass
-
-    total_tasks = len(task_list)
-    closed_tasks = [t for t in task_list if t.get("status") == "closed"]
-    in_progress_tasks = [t for t in task_list if t.get("status") == "in_progress"]
-    failed_tasks = [t for t in task_list if "fail" in t.get("notes", "").lower() or "crash" in t.get("notes", "").lower()]
-
-    # Findings (from beads)
-    findings: list[dict] = [t for t in task_list if "finding" in t.get("title", "").lower() or "FINDING" in t.get("notes", "")]
-
-    # ── Answer based on question topic ──
+    tasks = ctx.get("tasks", {})
+    total_tasks = tasks.get("total", 0)
+    closed_tasks = tasks.get("closed", 0)
+    in_progress_tasks = tasks.get("in_progress", 0)
+    task_items = tasks.get("items", [])
+    failed_tasks = [t for t in task_items if "fail" in t.get("notes", "").lower() or "crash" in t.get("notes", "").lower()]
+    findings: list[dict] = [t for t in task_items if "finding" in t.get("title", "").lower() or "FINDING" in t.get("notes", "")]
 
     # Questions about experiments or results
     if _q_about(q_lower, ["experiment", "result", "data", "show", "found", "finding"]):
-        if not exp_rows and not findings:
+        if not total_exp and not findings:
             parts.append("No experiment results yet — agents are still working.")
         else:
-            if exp_rows:
-                parts.append(f"{len(exp_rows)} experiments run so far:")
-                if keep:
-                    parts.append(f"  ✓ {len(keep)} passed")
+            if total_exp:
+                parts.append(f"{total_exp} experiments run so far:")
+                if keep_count:
+                    parts.append(f"  ✓ {keep_count} passed")
                     for r in keep[:5]:
                         desc = r.get("description", r.get("metric_name", ""))
                         val = r.get("metric_value", "")
@@ -833,16 +955,14 @@ def _answer_from_workspace(ws: Path, label: str, question: str) -> str:
                             if val:
                                 detail += f" (value: {val})"
                             parts.append(detail)
-                if discard:
-                    parts.append(f"  ✗ {len(discard)} discarded")
-                if crash:
-                    parts.append(f"  💥 {len(crash)} crashed")
-            # Add relevant findings
+                if discard_count:
+                    parts.append(f"  ✗ {discard_count} discarded")
+                if crash_count:
+                    parts.append(f"  💥 {crash_count} crashed")
             for t in findings[:3]:
                 notes = t.get("notes", "")
                 title = t.get("title", "")
                 parts.append(f"\n★ {title}")
-                # Extract key metrics from notes
                 for line in notes.split("\n"):
                     line_s = line.strip()
                     if any(k in line_s.upper() for k in ["EFFECT_SIZE", "CI_95", "P_VALUE", "SAMPLE_SIZE"]):
@@ -887,9 +1007,9 @@ def _answer_from_workspace(ws: Path, label: str, question: str) -> str:
 
     # Questions about criteria/success/progress
     elif _q_about(q_lower, ["criteri", "success", "progress", "track", "going", "on track"]):
-        if criteria:
-            parts.append(f"Success criteria: {len(criteria_met)}/{len(criteria)} met")
-            for c in criteria:
+        if criteria_items:
+            parts.append(f"Success criteria: {criteria_met}/{criteria_total} met")
+            for c in criteria_items:
                 check = "✓" if c.get("met") else "○"
                 desc = c.get("description", "")[:60]
                 cid = c.get("id", "?")
@@ -898,14 +1018,13 @@ def _answer_from_workspace(ws: Path, label: str, question: str) -> str:
             parts.append("No success criteria defined yet.")
 
         if total_tasks > 0:
-            bar = progress_bar(len(closed_tasks), total_tasks)
-            parts.append(f"\n{bar}  {len(closed_tasks)}/{total_tasks} tasks")
+            bar = progress_bar(closed_tasks, total_tasks)
+            parts.append(f"\n{bar}  {closed_tasks}/{total_tasks} tasks")
 
     # Questions about specific classifiers/models/methods
     elif _q_about(q_lower, ["classifier", "model", "method", "algorithm", "knn", "k-nn",
                              "logistic", "decision tree", "random forest", "svm", "neural",
                              "threshold", "noise", "critical"]):
-        # Search experiments and findings for relevant mentions
         relevant: list[str] = []
         for r in exp_rows:
             desc = r.get("description", "").lower()
@@ -919,13 +1038,12 @@ def _answer_from_workspace(ws: Path, label: str, question: str) -> str:
         else:
             parts.append("No specific results matching your query yet. The agents may still be running those experiments.")
 
-    # General "what's happening" / catch-all
+    # General catch-all
     else:
-        # Build a comprehensive overview
-        if exp_rows:
-            parts.append(f"{len(exp_rows)} experiments run ({len(keep)} passed, {len(discard)} discarded, {len(crash)} crashed).")
-        if criteria:
-            parts.append(f"Success criteria: {len(criteria_met)}/{len(criteria)} met.")
+        if total_exp:
+            parts.append(f"{total_exp} experiments run ({keep_count} passed, {discard_count} discarded, {crash_count} crashed).")
+        if criteria_items:
+            parts.append(f"Success criteria: {criteria_met}/{criteria_total} met.")
         if hypotheses:
             best = max(hypotheses, key=lambda h: float(h.get("posterior", h.get("prior", 0))))
             name = best.get("name", best.get("label", ""))
@@ -933,8 +1051,8 @@ def _answer_from_workspace(ws: Path, label: str, question: str) -> str:
             if name:
                 parts.append(f"Leading hypothesis: {name} (P={conf}).")
         if total_tasks > 0:
-            parts.append(f"Tasks: {len(closed_tasks)}/{total_tasks} done, {len(in_progress_tasks)} in progress.")
-        if not exp_rows and not criteria and not hypotheses and total_tasks == 0:
+            parts.append(f"Tasks: {closed_tasks}/{total_tasks} done, {in_progress_tasks} in progress.")
+        if not total_exp and not criteria_items and not hypotheses and total_tasks == 0:
             parts.append("The investigation is still in early stages — not much data yet.")
 
     return "\n".join(parts)

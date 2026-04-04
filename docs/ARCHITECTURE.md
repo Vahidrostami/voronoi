@@ -44,10 +44,13 @@ The system is organized into four layers, each with clear responsibilities and b
 └──────────────────────┬──────────────────────────────┘
                        │
 ┌──────────────────────▼──────────────────────────────┐
-│                   Server Layer                       │
-│   queue.py · dispatcher.py · prompt.py              │
-│   workspace.py · sandbox.py · runner.py             │
-│   publisher.py · repo_url.py · events.py            │
+│              Server Layer (OUTER LOOP)               │
+│   dispatcher.py — the always-on outer loop:          │
+│     collect events · wake orchestrator when needed    │
+│     accumulate pending_events while parked           │
+│     auto-merge worker branches · throttle digests    │
+│   queue.py · prompt.py · workspace.py · sandbox.py  │
+│   runner.py · publisher.py · repo_url.py · events.py│
 │   tmux.py · snapshot.py · compact.py                │
 └──────────────────────┬──────────────────────────────┘
                        │
@@ -59,10 +62,11 @@ The system is organized into four layers, each with clear responsibilities and b
 └──────────────────────┬──────────────────────────────┘
                        │
 ┌──────────────────────▼──────────────────────────────┐
-│               Execution Layer (via tmux)             │
-│   Orchestrator (copilot instance reading             │
-│     .github/agents/swarm-orchestrator.agent.md)      │
-│   Workers (git worktree + tmux window each)          │
+│         Execution Layer (MIDDLE + INNER LOOPS)       │
+│   Orchestrator (episodic copilot sessions —          │
+│     read checkpoint → OODA → dispatch → exit)        │
+│   Workers (git worktree + tmux window each,          │
+│     execute → verify → commit inner loop)            │
 └──────────────────────┬──────────────────────────────┘
                        │
 ┌──────────────────────▼──────────────────────────────┐
@@ -71,6 +75,21 @@ The system is organized into four layers, each with clear responsibilities and b
 │   _helpers · convergence · fabrication · gates        │
 │   claims (cross-run scientific state)                │
 └─────────────────────────────────────────────────────┘
+```
+
+### Three Loops
+
+```
+Outer Loop  — Dispatcher (code, always on, reliable)
+│  Decides: "Does the orchestrator need to be called?"
+│  Does NOT: Reason about science, pick hypotheses, evaluate findings
+│
+└── Middle Loop — Orchestrator (LLM, episodic sessions, creative)
+    │  Decides: Everything about the science
+    │  Does NOT: Monitor processes, manage tmux, sleep, merge git
+    │
+    └── Inner Loop — Workers (LLM, one-shot, focused)
+           Execute one task, verify, commit. No strategic decisions.
 ```
 
 ### Layer Contracts

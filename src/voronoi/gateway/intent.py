@@ -156,9 +156,10 @@ _RECALL_SIGNALS = [
 # questions; they ask about what the agents have found/done so far.
 _ASK_SIGNALS = [
     r"\bhow\s+(are|is)\s+(the|things|it)\s+(going|progressing|looking)\b",
+    r"\bhow\s+(are|is)\s+the\s+(results?|findings?|experiments?|progress|investigation)\b",
     r"\bwhat\s+have\s+(the\s+)?(agents?|they|we)\s+(found|discovered|learned)\s+so\s+far\b",
     r"\bwhat\s+(are|is)\s+the\s+(current|latest)\s+(results?|findings?|status)\b",
-    r"\bany\s+(results?|findings?|progress)\s+(yet|so\s+far)\b",
+    r"\bany\s+(new\s+|recent\s+|latest\s+)?(results?|findings?|progress)(\s+(yet|so\s+far))?\b",
     r"\bwhat\s+happened\s+with\b",
     r"\bwhy\s+did\s+(experiment|task|agent)\b.*\b(fail|crash|stop)\b",
     r"\bwhat\s+(does|do)\s+the\s+(data|results?|experiments?)\s+(show|say|suggest|indicate)\b",
@@ -179,15 +180,22 @@ def _count_matches(text: str, patterns: list[str]) -> int:
 def classify(text: str) -> ClassifiedIntent:
     """Classify a free-text message into a Voronoi workflow intent.
 
-    Two science modes:
-    - DISCOVER: open questions, adaptive rigor, creative exploration
-    - PROVE: specific hypotheses, full science gates
+    NOTE: For free-text routing, the router uses state-aware dispatch instead
+    of this function directly. When an investigation is running, all free text
+    routes to ASK. When nothing is running, classify_for_new_investigation()
+    handles DISCOVER/PROVE/RECALL classification.
+
+    This function is still used for:
+    - Explicit /voronoi command parsing
+    - Backward compatibility
+    - Cases where state-awareness isn't available
 
     Priority order:
     1. Explicit /voronoi commands (highest confidence)
-    2. PROVE signals (specific hypothesis, controlled experiments)
-    3. DISCOVER signals (open questions, building, exploring)
-    4. Default to GUIDE (lowest confidence)
+    2. ASK signals (mid-investigation questions)
+    3. PROVE signals (specific hypothesis, controlled experiments)
+    4. DISCOVER signals (open questions, building, exploring)
+    5. Default to GUIDE (lowest confidence)
     """
     text = text.strip()
     if not text:
@@ -291,6 +299,84 @@ def _make_summary(text: str, max_len: int = 80) -> str:
     if len(cleaned) <= max_len:
         return cleaned
     return cleaned[:max_len - 3] + "..."
+
+
+# ---------------------------------------------------------------------------
+# State-aware classifier for new investigations (no running investigation)
+# ---------------------------------------------------------------------------
+
+def classify_for_new_investigation(text: str) -> ClassifiedIntent:
+    """Classify free text when NO investigation is running.
+
+    Only distinguishes DISCOVER vs PROVE vs RECALL.
+    Used by the state-aware router when no investigation is active.
+    ASK and GUIDE are never returned — the router handles those via state.
+    """
+    text = text.strip()
+    if not text:
+        return ClassifiedIntent(
+            mode=WorkflowMode.DISCOVER,
+            rigor=RigorLevel.ADAPTIVE,
+            confidence=0.0,
+            summary="Empty message",
+            original_text=text,
+        )
+
+    # Check explicit commands (still needed for /voronoi discover/prove in edge cases)
+    for pattern, mode, rigor in _COMMAND_PATTERNS:
+        if pattern.search(text):
+            payload = pattern.sub("", text).strip()
+            return ClassifiedIntent(
+                mode=mode,
+                rigor=rigor or RigorLevel.ADAPTIVE,
+                confidence=1.0,
+                summary=payload or f"{mode.value} command",
+                original_text=text,
+            )
+
+    prove_score = _count_matches(text, _PROVE_SIGNALS)
+    discover_score = _count_matches(text, _DISCOVER_SIGNALS)
+    recall_score = _count_matches(text, _RECALL_SIGNALS)
+
+    # PROVE if strong prove signals
+    if prove_score >= 2 or (prove_score >= 1 and discover_score == 0):
+        rigor = RigorLevel.EXPERIMENTAL if prove_score >= 3 else RigorLevel.SCIENTIFIC
+        return ClassifiedIntent(
+            mode=WorkflowMode.PROVE,
+            rigor=rigor,
+            confidence=min(0.6 + prove_score * 0.15, 0.95),
+            summary=_make_summary(text),
+            original_text=text,
+        )
+
+    # Recall — if recall signals dominate discovery
+    if recall_score > 0 and recall_score > discover_score:
+        return ClassifiedIntent(
+            mode=WorkflowMode.RECALL,
+            rigor=RigorLevel.ADAPTIVE,
+            confidence=min(0.5 + recall_score * 0.15, 0.95),
+            summary=_make_summary(text),
+            original_text=text,
+        )
+
+    # DISCOVER — any discover signal or a substantive message
+    if discover_score > 0:
+        return ClassifiedIntent(
+            mode=WorkflowMode.DISCOVER,
+            rigor=RigorLevel.ADAPTIVE,
+            confidence=min(0.5 + discover_score * 0.15, 0.95),
+            summary=_make_summary(text),
+            original_text=text,
+        )
+
+    # Default: DISCOVER with low confidence (let router decide to prompt)
+    return ClassifiedIntent(
+        mode=WorkflowMode.DISCOVER,
+        rigor=RigorLevel.ADAPTIVE,
+        confidence=0.3,
+        summary=_make_summary(text),
+        original_text=text,
+    )
 
 
 # ---------------------------------------------------------------------------

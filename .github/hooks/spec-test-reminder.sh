@@ -34,11 +34,7 @@ case "$FILE" in
   *) exit 0 ;;
 esac
 
-# Fire once per session (keyed to parent PID to approximate session scope)
-FLAG="/tmp/.voronoi-hook-reminded-${PPID:-0}"
-if [[ -f "$FLAG" ]]; then exit 0; fi
-touch "$FLAG"
-
+# Fire on EVERY source-file edit — spec drift happens on the 2nd edit, not the 1st.
 # Inject context into the agent's conversation
 cat <<'EOF'
 {

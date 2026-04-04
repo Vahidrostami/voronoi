@@ -29,7 +29,14 @@ Agents MUST NOT use custom IPC, shared memory, sockets, or any other communicati
 `next_ready()` MUST mark an investigation as `running` in the same transaction as the `SELECT`. This prevents double-dispatch under concurrent access. Uses `BEGIN IMMEDIATE`.
 
 ### INV-07: Investigation State Machine
-Investigations MUST follow the state machine: `queued → running → {complete | failed | cancelled}`. No other transitions are valid. A `complete` investigation MUST NOT be re-queued.
+Investigations MUST follow the state machine defined in SERVER.md §2:
+- `queued → running` (via `next_ready()`, atomic)
+- `running → {complete | failed | paused | review | cancelled}`
+- `paused | failed → running` (via `resume()`)
+- `review → complete` (via `accept()`)
+- `review | complete → new queued` (via `continue_investigation()`, creates a NEW investigation)
+
+A `complete` investigation MUST NOT be re-queued directly. Continuation creates a new investigation with `parent_id` linking to the original (same `lineage_id`, incremented `cycle_number`).
 
 ---
 

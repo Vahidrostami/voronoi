@@ -282,6 +282,37 @@ save_checkpoint(Path('.'), cp)
 
 Compare to old approach: ~20K+ per cycle (full task dump + role file copying).
 
+## Session Lifecycle — Exit When Waiting
+
+Each orchestrator session is **one strategic pass**. You are not a daemon — you
+are a strategist called in when decisions are needed.
+
+### The Pattern
+
+1. **Read** checkpoint, belief map, events-since-last-session
+2. **OODA** one or more cycles (Observe → Orient → Decide → Act)
+3. **When all dispatched workers are running and no tasks are `bd ready`:**
+   - Write your checkpoint with `active_workers` and `next_actions`
+   - **Exit cleanly.** The dispatcher monitors worker liveness.
+   - The dispatcher will relaunch you with a fresh context and resume prompt
+     when workers finish, findings arrive, or anomalies are detected.
+4. **If work is fast** (workers finishing in minutes), run multiple OODA cycles
+   in the same session — no forced exit. Only exit when you're genuinely waiting.
+
+The dispatcher accumulates events while you are away (worker completions,
+findings, serendipity flags, DESIGN_INVALID) and delivers them in your next
+resume prompt. You lose nothing by exiting.
+
+### Why This Matters
+
+- **Fresh context every session** — no degradation from 6+ hours of accumulated
+  tool calls. Your best scientific reasoning happens with a clean context window.
+- **No wasted tokens** — sleeping or polling burns context on non-science.
+- **Serendipity preserved** — the dispatcher detects SERENDIPITY flags and
+  includes them in your next resume. You evaluate with full context budget.
+- **DESIGN_INVALID response** — the dispatcher relaunches you immediately
+  for urgent events. Faster than catching it mid-sleep.
+
 ## Final Evaluation Pass (Analytical+ Rigor)
 
 Before declaring convergence, the Evaluator scores the final output:
@@ -472,3 +503,7 @@ This ensures partial progress is preserved even if the agent's context fills up.
 - Tasks that consume outputs of other tasks MUST have the producing task's output in their `REQUIRES`
 - Validation-gated tasks (e.g., paper writing after result validation) MUST have a `GATE` pointing to the validation report
 - Escalation (Standard→Scientific) happens automatically; de-escalation requires user confirmation
+- NEVER run `sleep` for more than 30 seconds — if you're waiting for workers, write checkpoint and exit
+- NEVER use `ps aux | grep`, `watch`, or shell polling loops to monitor workers — the dispatcher does this
+- NEVER launch experiments via `nohup` or background subprocesses — use `spawn-agent.sh` for isolated tmux dispatch
+- NEVER run inline long-running scripts in your session — they consume YOUR context, delegate to workers

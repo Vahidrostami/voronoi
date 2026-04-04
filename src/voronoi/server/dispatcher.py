@@ -42,6 +42,20 @@ from voronoi.server.tmux import (
 logger = logging.getLogger("voronoi.dispatcher")
 
 
+def _find_checkpoint(workspace: Path) -> Path | None:
+    """Find the orchestrator checkpoint file.
+
+    Agents may write the checkpoint as ``orchestrator-checkpoint.json``
+    (canonical) or ``checkpoint.json`` (common LLM shortening).
+    Returns the first existing path, or None.
+    """
+    for name in ("orchestrator-checkpoint.json", "checkpoint.json"):
+        p = workspace / ".swarm" / name
+        if p.exists():
+            return p
+    return None
+
+
 @dataclass
 class DispatcherConfig:
     """Configuration for the dispatcher."""
@@ -94,6 +108,9 @@ class RunningInvestigation:
     context_restarts: int = 0  # Proactive context refreshes (separate from retry_count)
     status_message_id: int | None = None  # Telegram message ID for edit-in-place
     last_rigor: str = ""  # Track rigor escalation in DISCOVER mode
+    pending_events: list[dict] = field(default_factory=list)  # Events accumulated while orchestrator is parked
+    orchestrator_parked: bool = False  # True when orchestrator exited intentionally with active workers
+    last_parked_digest_at: float = 0  # Last Telegram digest while parked (throttle to 5min)
 
     @property
     def label(self) -> str:
@@ -240,6 +257,18 @@ class InvestigationDispatcher:
 
             # Restore task_snapshot from Beads so progress reporting is accurate
             self._restore_task_snapshot(run)
+
+            # Restore last_rigor from checkpoint so escalation state survives restart
+            cp_path = _find_checkpoint(workspace_path)
+            if cp_path is not None:
+                try:
+                    cp_data = json.loads(cp_path.read_text())
+                    if isinstance(cp_data, dict):
+                        cp_rigor = cp_data.get("rigor", "")
+                        if isinstance(cp_rigor, str) and cp_rigor:
+                            run.last_rigor = cp_rigor
+                except (json.JSONDecodeError, OSError):
+                    pass
 
             if not session_alive:
                 # Check if a human gate is pending — do NOT crash-retry
@@ -494,18 +523,33 @@ class InvestigationDispatcher:
             # Sync checkpoint criteria_status → success-criteria.json
             self._sync_criteria_from_checkpoint(run)
 
-            result = subprocess.run(
-                ["tmux", "has-session", "-t", run.tmux_session],
-                capture_output=True, timeout=10,
-            )
-            session_alive = result.returncode == 0
+            try:
+                result = subprocess.run(
+                    ["tmux", "has-session", "-t", run.tmux_session],
+                    capture_output=True, timeout=10,
+                )
+                session_alive = result.returncode == 0
+            except subprocess.TimeoutExpired:
+                logger.warning("tmux has-session timed out for #%d — skipping poll",
+                               inv_id)
+                continue
 
             events = self._check_progress(run)
             events.extend(self._check_event_log(run))
             if events:
-                logger.info("Investigation #%d: %d events (phase=%s)",
-                            inv_id, len(events), run.phase)
-                self._send_progress_batch(run, events)
+                # If orchestrator is parked, accumulate events for resume prompt
+                # and throttle Telegram digests to every 5 minutes
+                if run.orchestrator_parked:
+                    self._accumulate_parked_events(run, events)
+                    if now - run.last_parked_digest_at >= 300:  # 5-minute throttle
+                        run.last_parked_digest_at = now
+                        logger.info("Investigation #%d: %d events while parked (phase=%s)",
+                                    inv_id, len(events), run.phase)
+                        self._send_progress_batch(run, events)
+                else:
+                    logger.info("Investigation #%d: %d events (phase=%s)",
+                                inv_id, len(events), run.phase)
+                    self._send_progress_batch(run, events)
 
             # Check for timeout (per-investigation override via .swarm/timeout_hours)
             elapsed_hours = (now - run.started_at) / 3600
@@ -567,11 +611,22 @@ class InvestigationDispatcher:
                         continue  # don't add to completed_ids
                     # Check if orchestrator exited intentionally while workers run.
                     # If checkpoint has active_workers and any are still alive,
-                    # defer restart until workers finish.
+                    # defer restart until workers finish or an urgent event arrives.
                     if self._has_active_workers(run):
-                        logger.info("Investigation #%d orchestrator idle — "
-                                    "workers still running, deferring restart",
-                                    inv_id)
+                        if not run.orchestrator_parked:
+                            run.orchestrator_parked = True
+                            run.last_parked_digest_at = now
+                            logger.info("Investigation #%d orchestrator parked — "
+                                        "workers still running",
+                                        inv_id)
+                        # Check if an urgent event requires immediate wake
+                        if self._needs_orchestrator(run):
+                            logger.info("Investigation #%d waking orchestrator — "
+                                        "urgent event detected",
+                                        inv_id)
+                            run.orchestrator_parked = False
+                            if self._try_restart(run):
+                                continue
                         continue  # don't add to completed_ids
                     # Try to restart the agent instead of giving up
                     if self._try_restart(run):
@@ -684,9 +739,9 @@ class InvestigationDispatcher:
 
         Called each poll cycle after ``_refresh_eval_score()``.
         """
-        cp_path = run.workspace_path / ".swarm" / "orchestrator-checkpoint.json"
+        cp_path = _find_checkpoint(run.workspace_path)
         sc_path = run.workspace_path / ".swarm" / "success-criteria.json"
-        if not cp_path.exists() or not sc_path.exists():
+        if cp_path is None or not sc_path.exists():
             return
         try:
             cp = json.loads(cp_path.read_text())
@@ -772,8 +827,8 @@ class InvestigationDispatcher:
         swarm = run.workspace_path / ".swarm"
 
         # Check checkpoint — if cycle > 0, orchestrator wrote state
-        cp_path = swarm / "orchestrator-checkpoint.json"
-        if cp_path.exists():
+        cp_path = _find_checkpoint(run.workspace_path)
+        if cp_path is not None:
             try:
                 cp = json.loads(cp_path.read_text())
                 if isinstance(cp, dict) and (cp.get("cycle", 0) > 0
@@ -894,8 +949,8 @@ class InvestigationDispatcher:
 
     def _check_token_budget(self, run: RunningInvestigation) -> None:
         """Read checkpoint and enforce self-reported context pressure."""
-        cp_path = run.workspace_path / ".swarm" / "orchestrator-checkpoint.json"
-        if not cp_path.exists():
+        cp_path = _find_checkpoint(run.workspace_path)
+        if cp_path is None:
             return
         try:
             cp = json.loads(cp_path.read_text())
@@ -961,8 +1016,8 @@ class InvestigationDispatcher:
         the checkpoint.  Returns True if the agent reports ≤30% remaining,
         or if no snapshot is available (assume the worst).
         """
-        cp_path = run.workspace_path / ".swarm" / "orchestrator-checkpoint.json"
-        if not cp_path.exists():
+        cp_path = _find_checkpoint(run.workspace_path)
+        if cp_path is None:
             return True  # no data → assume pressured
         try:
             cp = json.loads(cp_path.read_text())
@@ -1227,9 +1282,9 @@ class InvestigationDispatcher:
             return events
 
         # --- Phase transition detection via checkpoint ---
-        checkpoint_path = run.workspace_path / ".swarm" / "checkpoint.json"
+        checkpoint_path = _find_checkpoint(run.workspace_path)
         checkpoint_phase = ""
-        if checkpoint_path.exists():
+        if checkpoint_path is not None:
             try:
                 cp = json.loads(checkpoint_path.read_text())
                 checkpoint_phase = cp.get("phase", "") if isinstance(cp, dict) else ""
@@ -1443,6 +1498,10 @@ class InvestigationDispatcher:
                                f"The investigation shifted from exploration to structured testing.",
                     })
                 run.last_rigor = checkpoint_rigor
+                # Sync effective rigor so completion gates use the escalated level
+                if run.rigor == "adaptive" and checkpoint_rigor != "adaptive":
+                    logger.info("Effective rigor for #%d escalated: %s → %s",
+                                run.investigation_id, run.rigor, checkpoint_rigor)
 
         if (ws / ".swarm" / "deliverable.md").exists():
             run.phase = "complete"
@@ -1483,14 +1542,20 @@ class InvestigationDispatcher:
 
     def _latest_checkpoint(self, run: RunningInvestigation) -> dict | None:
         """Return the newest orchestrator checkpoint from the workspace or worktrees."""
-        candidates = [run.workspace_path / ".swarm" / "orchestrator-checkpoint.json"]
+        # Check both canonical and common LLM-shortened checkpoint names
+        candidates: list[Path] = []
+        for name in ("orchestrator-checkpoint.json", "checkpoint.json"):
+            p = run.workspace_path / ".swarm" / name
+            if p.exists():
+                candidates.append(p)
         swarm_dir = self._swarm_dir(run.workspace_path)
         if swarm_dir:
-            candidates.extend(
-                path / ".swarm" / "orchestrator-checkpoint.json"
-                for path in sorted(swarm_dir.glob("agent-*"))
-                if path.is_dir()
-            )
+            for path in sorted(swarm_dir.glob("agent-*")):
+                if path.is_dir():
+                    for name in ("orchestrator-checkpoint.json", "checkpoint.json"):
+                        p = path / ".swarm" / name
+                        if p.exists():
+                            candidates.append(p)
 
         latest: dict | None = None
         latest_ts = float("-inf")
@@ -1720,14 +1785,27 @@ class InvestigationDispatcher:
             return status.lower() in InvestigationDispatcher._CONVERGED_STATUSES
         return False
 
+    def _effective_rigor(self, run: RunningInvestigation) -> str:
+        """Return the effective rigor for an investigation.
+
+        If adaptive rigor has been escalated (tracked via checkpoint rigor
+        updates in ``_detect_phase``), return the escalated level so that
+        completion gates match the actual rigor in effect.
+        """
+        if run.rigor == "adaptive" and run.last_rigor and run.last_rigor != "adaptive":
+            return run.last_rigor
+        return run.rigor
+
     def _is_complete(self, run: RunningInvestigation) -> bool:
         # HARD GATE: never complete while DESIGN_INVALID tasks are open
         if self._has_open_design_invalid(run):
             return False
 
+        effective_rigor = self._effective_rigor(run)
+
         if (run.workspace_path / ".swarm" / "deliverable.md").exists():
-            # For standard rigor, deliverable is sufficient
-            if run.rigor == "adaptive":
+            # For adaptive rigor (not yet escalated), deliverable is sufficient
+            if effective_rigor == "adaptive":
                 return True
             # For higher rigor, also need convergence signal
             conv = run.workspace_path / ".swarm" / "convergence.json"
@@ -2066,8 +2144,8 @@ class InvestigationDispatcher:
         the orchestrator intentionally exited to conserve context and
         should NOT be restarted until the workers finish.
         """
-        cp_path = run.workspace_path / ".swarm" / "orchestrator-checkpoint.json"
-        if not cp_path.exists():
+        cp_path = _find_checkpoint(run.workspace_path)
+        if cp_path is None:
             return False
         try:
             cp = json.loads(cp_path.read_text())
@@ -2188,6 +2266,63 @@ class InvestigationDispatcher:
         if unique_blockers:
             return "Agent exited cleanly before convergence: " + "; ".join(unique_blockers)
         return "Agent exited cleanly before completion"
+
+    def _needs_orchestrator(self, run: RunningInvestigation) -> bool:
+        """Decide whether to wake the parked orchestrator.
+
+        Called each poll cycle while the orchestrator is parked (exited
+        intentionally with ``active_workers``).  Returns True if an event
+        has occurred that requires the orchestrator's scientific judgment:
+
+        - All active workers have finished (normal wake)
+        - DESIGN_INVALID detected in any open task (urgent)
+        - Workers are no longer alive (process died)
+
+        Findings and serendipity are accumulated in ``pending_events`` and
+        delivered in the resume prompt — they do NOT trigger an immediate
+        wake because they are not time-sensitive.
+        """
+        # 1. Are any workers still alive?
+        if not self._has_active_workers(run):
+            logger.info("All workers done for %s, waking orchestrator", run.label)
+            return True
+
+        # 2. DESIGN_INVALID in any open task (urgent — needs strategic response)
+        from voronoi.beads import run_bd_json
+        code, tasks = run_bd_json("list", "--json", cwd=str(run.workspace_path))
+        if code == 0 and isinstance(tasks, list):
+            for task in tasks:
+                if not isinstance(task, dict):
+                    continue
+                tid = task.get("id", "")
+                notes = task.get("notes", "")
+                status = task.get("status", "")
+                if (status != "closed"
+                        and "DESIGN_INVALID" in notes.upper()
+                        and tid not in run.notified_design_invalid):
+                    logger.warning("DESIGN_INVALID detected in %s while parked — "
+                                   "waking orchestrator", tid)
+                    return True
+
+        return False
+
+    def _accumulate_parked_events(self, run: RunningInvestigation,
+                                  events: list[dict]) -> None:
+        """Accumulate events while the orchestrator is parked.
+
+        These events are included in the resume prompt when the
+        orchestrator is relaunched.
+        """
+        for event in events:
+            etype = event.get("type", "")
+            # Skip raw progress bar events — only accumulate meaningful ones
+            if etype in ("task_done", "task_new", "task_started",
+                         "finding", "serendipity", "design_invalid",
+                         "phase", "rigor_escalation"):
+                run.pending_events.append(event)
+        # Cap at 50 to avoid unbounded growth
+        if len(run.pending_events) > 50:
+            run.pending_events = run.pending_events[-50:]
 
     def _try_restart(self, run: RunningInvestigation) -> bool:
         """Attempt to restart a dead agent session.
@@ -2368,10 +2503,9 @@ class InvestigationDispatcher:
             if paused_hours >= self.config.pause_timeout_hours:
                 logger.warning("Paused investigation #%d timed out after %.1fh",
                                inv.id, paused_hours)
-                # Transition paused → running → failed (resume clears error first)
-                self.queue.resume(inv.id)
-                self.queue.fail(inv.id,
-                                f"Paused for {int(paused_hours)}h without resume — auto-failed")
+                # Atomic transition: paused → failed (no intermediate running state)
+                self.queue.fail_paused(inv.id,
+                                       f"Paused for {int(paused_hours)}h without resume — auto-failed")
                 label = inv.codename or f"#{inv.id}"
                 self.send_message(format_alert(
                     label,
@@ -2382,10 +2516,14 @@ class InvestigationDispatcher:
         """Build a resume prompt for a restarted session.
 
         Includes the original question, essential protocol references,
-        checkpoint state, remaining tasks, and clear next actions.
+        checkpoint state, remaining tasks, clear next actions, and any
+        events accumulated while the orchestrator was parked.
         The restarted agent starts with a clean context window.
         """
-        if run.retry_count > 0:
+        if run.orchestrator_parked:
+            restart_label = "WAKE (workers finished or event detected)"
+            run.orchestrator_parked = False
+        elif run.retry_count > 0:
             restart_label = f"RESTART (attempt {run.retry_count}/{self.config.max_retries})"
         elif run.context_restarts > 0:
             restart_label = f"CONTEXT REFRESH ({run.context_restarts}/{self.config.max_context_restarts})"
@@ -2455,8 +2593,8 @@ class InvestigationDispatcher:
                 pass
 
         # Checkpoint summary
-        cp_path = run.workspace_path / ".swarm" / "orchestrator-checkpoint.json"
-        if cp_path.exists():
+        cp_path = _find_checkpoint(run.workspace_path)
+        if cp_path is not None:
             try:
                 from voronoi.science.convergence import (
                     load_checkpoint, format_checkpoint_for_prompt,
@@ -2510,6 +2648,22 @@ class InvestigationDispatcher:
         if run.eval_score > 0:
             lines.append(f"## Quality Score: {run.eval_score:.2f}\n")
 
+        # Events accumulated while orchestrator was parked
+        if run.pending_events:
+            lines.append("## Events Since Your Last Session\n")
+            lines.append(
+                "The following events occurred while you were away. "
+                "Evaluate them and incorporate into your OODA cycle.\n"
+            )
+            for ev in run.pending_events:
+                etype = ev.get("type", "")
+                msg = ev.get("msg", "")
+                if msg:
+                    lines.append(f"- **{etype}**: {msg}")
+            lines.append("")
+            # Drain the events — they've been delivered
+            run.pending_events.clear()
+
         # Brief digest (if written by orchestrator at startup)
         brief_path = run.workspace_path / ".swarm" / "brief-digest.md"
         if brief_path.exists():
@@ -2523,7 +2677,7 @@ class InvestigationDispatcher:
         # Convergence-aware directive: if checkpoint shows near-convergence,
         # tell the agent to skip the full role file and just verify + commit.
         near_convergence = False
-        if cp_path.exists():
+        if cp_path is not None and cp_path.exists():
             try:
                 cp_data = json.loads(cp_path.read_text())
                 if isinstance(cp_data, dict):

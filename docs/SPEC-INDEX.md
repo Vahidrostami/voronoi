@@ -100,7 +100,7 @@
 | `src/voronoi/server/events.py` | CONTEXT-MANAGEMENT.md | §10 | `test_events.py` |
 | `src/voronoi/server/publisher.py` | SERVER.md | §8 | `test_publisher.py` |
 | `src/voronoi/server/repo_url.py` | SERVER.md | §9 | `test_repo_url.py` |
-| `src/voronoi/server/compact.py` | CONTEXT-MANAGEMENT.md | §12 | — |
+| `src/voronoi/server/compact.py` | CONTEXT-MANAGEMENT.md | §12 | `test_compact.py` |
 | `src/voronoi/science/claims.py` | SCIENCE.md | §16 | `test_claims.py` |
 | `src/voronoi/science/gates.py` | SCIENCE.md | §2, §10 | `test_science.py` |
 | `src/voronoi/science/convergence.py` | SCIENCE.md | §5 | `test_science.py` |

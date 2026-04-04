@@ -22,7 +22,7 @@ flowchart TB
         ROUTER["Command Router\nrouter.py"]
         CONFIG["Config\nconfig.py"]
         MEM["Conversation Memory\nmemory.py"]
-        ASK_H["Ask Handler\nhandlers_query.py\nmid-investigation Q&A"]
+        ASK_H["Ask Handler\nhandlers_query.py\nLLM-powered Q&A\n(copilot CLI one-shot)"]
     end
 
     subgraph Server["Server Layer"]
@@ -187,7 +187,8 @@ src/voronoi/data/
 │   ├── standup.prompt.md            # /standup — cross-agent status
 │   ├── progress.prompt.md           # /progress — progress check
 │   └── teardown.prompt.md           # /teardown — cleanup
-├── skills/                          # Domain knowledge (9 skills)
+├── skills/                          # Domain knowledge (loaded on demand)
+│   ├── worker-lifecycle/            # ★ Dispatch → monitor → merge → cleanup
 │   ├── beads-tracking/              # bd commands, task lifecycle
 │   ├── git-worktree-management/     # Worktree create/merge/cleanup
 │   ├── branch-merging/              # Safe merge protocol

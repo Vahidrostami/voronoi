@@ -535,7 +535,7 @@ class TestAskHandler:
         assert "Nothing running" in result or "nothing to ask" in result.lower()
 
     def test_ask_with_experiments(self, tmp_path):
-        """Ask about experiments when experiments.tsv exists."""
+        """Ask about experiments when experiments.tsv exists (fallback path)."""
         from voronoi.server.queue import InvestigationQueue, Investigation
 
         q = InvestigationQueue(tmp_path / "queue.db")
@@ -552,7 +552,8 @@ class TestAskHandler:
         ))
         q.start(inv_id, str(ws))
 
-        with patch("voronoi.gateway.handlers_query._get_queue", return_value=q):
+        with patch("voronoi.gateway.handlers_query._get_queue", return_value=q), \
+             patch("voronoi.gateway.handlers_query._run_copilot_query", return_value=None):
             result = handle_ask(str(tmp_path), "What have the experiments found?")
 
         assert "Melatonin" in result
@@ -560,7 +561,7 @@ class TestAskHandler:
         assert "passed" in result or "✓" in result
 
     def test_ask_about_hypotheses(self, tmp_path):
-        """Ask about hypotheses with belief-map.json."""
+        """Ask about hypotheses with belief-map.json (fallback path)."""
         from voronoi.server.queue import InvestigationQueue, Investigation
 
         q = InvestigationQueue(tmp_path / "queue.db")
@@ -578,14 +579,15 @@ class TestAskHandler:
         ))
         q.start(inv_id, str(ws))
 
-        with patch("voronoi.gateway.handlers_query._get_queue", return_value=q):
+        with patch("voronoi.gateway.handlers_query._get_queue", return_value=q), \
+             patch("voronoi.gateway.handlers_query._run_copilot_query", return_value=None):
             result = handle_ask(str(tmp_path), "Which hypothesis is leading?")
 
         assert "Dopamine" in result
         assert "GABA" in result
 
     def test_ask_about_failures(self, tmp_path):
-        """Ask about failures when experiments crashed."""
+        """Ask about failures when experiments crashed (fallback path)."""
         from voronoi.server.queue import InvestigationQueue, Investigation
 
         q = InvestigationQueue(tmp_path / "queue.db")
@@ -601,14 +603,15 @@ class TestAskHandler:
         ))
         q.start(inv_id, str(ws))
 
-        with patch("voronoi.gateway.handlers_query._get_queue", return_value=q):
+        with patch("voronoi.gateway.handlers_query._get_queue", return_value=q), \
+             patch("voronoi.gateway.handlers_query._run_copilot_query", return_value=None):
             result = handle_ask(str(tmp_path), "Why did any experiments fail?")
 
         assert "Cortisol" in result
         assert "crash" in result.lower()
 
     def test_ask_about_criteria(self, tmp_path):
-        """Ask about success criteria."""
+        """Ask about success criteria (fallback path)."""
         from voronoi.server.queue import InvestigationQueue, Investigation
 
         q = InvestigationQueue(tmp_path / "queue.db")
@@ -624,11 +627,56 @@ class TestAskHandler:
         ))
         q.start(inv_id, str(ws))
 
-        with patch("voronoi.gateway.handlers_query._get_queue", return_value=q):
+        with patch("voronoi.gateway.handlers_query._get_queue", return_value=q), \
+             patch("voronoi.gateway.handlers_query._run_copilot_query", return_value=None):
             result = handle_ask(str(tmp_path), "How is the progress on success criteria?")
 
         assert "Serotonin" in result
         assert "1/2" in result
+
+    def test_ask_llm_path(self, tmp_path):
+        """When Copilot is available, handle_ask returns the LLM answer."""
+        from voronoi.server.queue import InvestigationQueue, Investigation
+
+        q = InvestigationQueue(tmp_path / "queue.db")
+        ws = tmp_path / "workspace"
+        (ws / ".swarm").mkdir(parents=True)
+        (ws / ".swarm" / "experiments.tsv").write_text(
+            "timestamp\ttask_id\tbranch\tmetric_name\tmetric_value\tstatus\tdescription\n"
+            "2026-01-01\tbd-1\tagent-1\tacc\t0.92\tkeep\tk-NN baseline\n"
+        )
+        inv_id = q.enqueue(Investigation(
+            chat_id="c1", question="Test Q", slug="ask-llm",
+            codename="Oxytocin", mode="discover",
+        ))
+        q.start(inv_id, str(ws))
+
+        llm_response = "The k-NN baseline achieved 92% accuracy — looking good so far!"
+        with patch("voronoi.gateway.handlers_query._get_queue", return_value=q), \
+             patch("voronoi.gateway.handlers_query._run_copilot_query", return_value=llm_response):
+            result = handle_ask(str(tmp_path), "any new results?")
+
+        assert result == llm_response
+
+    def test_ask_llm_failure_falls_back(self, tmp_path):
+        """When Copilot fails, handle_ask falls back to keyword synthesis."""
+        from voronoi.server.queue import InvestigationQueue, Investigation
+
+        q = InvestigationQueue(tmp_path / "queue.db")
+        ws = tmp_path / "workspace"
+        (ws / ".swarm").mkdir(parents=True)
+        inv_id = q.enqueue(Investigation(
+            chat_id="c1", question="Test Q", slug="ask-fallback",
+            codename="Adrenaline", mode="discover",
+        ))
+        q.start(inv_id, str(ws))
+
+        with patch("voronoi.gateway.handlers_query._get_queue", return_value=q), \
+             patch("voronoi.gateway.handlers_query._run_copilot_query", return_value=None):
+            result = handle_ask(str(tmp_path), "any new results?")
+
+        # Fallback path: should still return something useful
+        assert "Adrenaline" in result
 
     def test_ask_via_router(self, tmp_path):
         """Router should route /voronoi ask to handle_ask."""
@@ -638,7 +686,7 @@ class TestAskHandler:
 
 
 # ---------------------------------------------------------------------------
-# Free-text intent detection
+# Free-text — state-aware routing
 # ---------------------------------------------------------------------------
 
 class TestFreeText:
@@ -647,17 +695,75 @@ class TestFreeText:
         text, _ = router.handle_free_text("hello", "chat1", True)
         assert "Voronoi" in text
 
-    def test_science_question(self, tmp_path):
+    def test_free_text_with_running_investigation_routes_to_ask(self, tmp_path):
+        """Any free text when an investigation is running → ASK."""
+        from voronoi.server.queue import InvestigationQueue, Investigation
+
+        q = InvestigationQueue(tmp_path / "queue.db")
+        ws = tmp_path / "workspace"
+        (ws / ".swarm").mkdir(parents=True)
+        inv_id = q.enqueue(Investigation(
+            chat_id="c1", question="Test Q", slug="state-ask",
+            codename="Cortisol", mode="discover",
+        ))
+        q.start(inv_id, str(ws))
+
         router = CommandRouter(str(tmp_path))
-        text, _ = router.handle_free_text("Why is our model accuracy dropping?", "chat1", True)
+        with patch.object(router, "_has_running_investigations", return_value=True), \
+             patch("voronoi.gateway.handlers_query._get_queue", return_value=q), \
+             patch("voronoi.gateway.handlers_query._run_copilot_query", return_value=None):
+            text, _ = router.handle_free_text("how is the results so far?", "chat1", True)
+        assert "Cortisol" in text
+
+    def test_any_message_with_running_investigation_routes_to_ask(self, tmp_path):
+        """Even unclear messages route to ASK when investigation is running."""
+        from voronoi.server.queue import InvestigationQueue, Investigation
+
+        q = InvestigationQueue(tmp_path / "queue.db")
+        ws = tmp_path / "workspace"
+        (ws / ".swarm").mkdir(parents=True)
+        inv_id = q.enqueue(Investigation(
+            chat_id="c1", question="Test Q", slug="state-any",
+            codename="Serotonin", mode="discover",
+        ))
+        q.start(inv_id, str(ws))
+
+        router = CommandRouter(str(tmp_path))
+        with patch.object(router, "_has_running_investigations", return_value=True), \
+             patch("voronoi.gateway.handlers_query._get_queue", return_value=q), \
+             patch("voronoi.gateway.handlers_query._run_copilot_query", return_value=None):
+            text, _ = router.handle_free_text("yo what's up", "chat1", True)
+        # Should NOT get "Guidance noted" — should get an ASK response
+        assert "Guidance noted" not in text
+
+    def test_science_question_no_running_starts_discover(self, tmp_path):
+        """Science question with no running investigation → starts DISCOVER."""
+        router = CommandRouter(str(tmp_path))
+        with patch.object(router, "_has_running_investigations", return_value=False):
+            text, _ = router.handle_free_text("Why is our model accuracy dropping?", "chat1", True)
         assert "discover" in text.lower()
         assert "is live" in text
 
-    def test_explore_question(self, tmp_path):
+    def test_explore_question_no_running_starts_discover(self, tmp_path):
+        """Comparison question with no running investigation → starts DISCOVER."""
         router = CommandRouter(str(tmp_path))
-        text, _ = router.handle_free_text("Which database should we use — Postgres vs MySQL?", "chat1", True)
+        with patch.object(router, "_has_running_investigations", return_value=False):
+            text, _ = router.handle_free_text("Which database should we use — Postgres vs MySQL?", "chat1", True)
         assert "discover" in text.lower()
         assert "is live" in text
+
+    def test_no_guidance_noted_on_free_text(self, tmp_path):
+        """Free text should never produce 'Guidance noted'."""
+        router = CommandRouter(str(tmp_path))
+        with patch.object(router, "_has_running_investigations", return_value=False):
+            text, _ = router.handle_free_text("any new results?", "chat1", True)
+        assert "Guidance noted" not in text
+
+    def test_explicit_guide_command_still_works(self, tmp_path):
+        """Explicit /voronoi guide should still work regardless of state."""
+        router = CommandRouter(str(tmp_path))
+        text, _ = router.route("guide", ["focus", "on", "k-NN"], "chat1")
+        assert "noted" in text.lower() or "Guidance" in text
 
 
 # ---------------------------------------------------------------------------

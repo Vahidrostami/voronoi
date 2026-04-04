@@ -289,9 +289,46 @@ Each phase has conversational descriptions per mode (not just labels), e.g.:
 
 ---
 
-## 8. Two Loops Architecture
+## 8. Three Loops Architecture
 
-Every workflow runs two nested loops:
+Every workflow runs three nested loops:
+
+### Outer Loop (dispatcher, always-on code)
+
+```
+Collect events → needs_orchestrator? → launch session → check completion → send digest → repeat
+```
+
+The dispatcher is the reliable infrastructure backbone. It:
+- Polls every 10-30 seconds
+- Detects worker completions, findings, SERENDIPITY, DESIGN_INVALID
+- Accumulates events while the orchestrator is parked (`pending_events`)
+- Wakes the orchestrator when strategic decisions are needed
+- Throttles Telegram digests to every 5 minutes while parked (milestones still immediate)
+- Auto-merges completed worker git branches
+- Handles crash recovery, timeouts, auth failures
+
+The dispatcher NEVER makes scientific decisions. It only decides *when* to invoke the orchestrator, based on objective conditions:
+- Workers finished → wake
+- DESIGN_INVALID detected → wake immediately
+- Stall detected → wake
+- Investigation just started → first launch
+
+### Middle Loop (orchestrator, episodic LLM sessions)
+
+```
+Read checkpoint + events-since-last-session → Observe → Orient → Decide → Act → write checkpoint → exit
+```
+
+Each orchestrator session is one strategic pass:
+- Reads checkpoint, belief map, and accumulated events from the dispatcher
+- Runs one or more OODA cycles (multiple if work is fast)
+- Dispatches workers, updates belief map, checks convergence
+- Writes checkpoint with `active_workers` and `next_actions`
+- Exits cleanly when waiting for workers
+- Gets fresh context every session — no degradation from hours of accumulated tool calls
+
+The orchestrator owns ALL scientific reasoning: hypotheses, rigor escalation, serendipity evaluation, convergence decisions. It never monitors processes, sleeps, or manages tmux.
 
 ### Inner Loop (per agent, fast)
 
@@ -305,20 +342,9 @@ The self-verification protocol (test loop + checklist + incremental Beads commit
 - Max retries vary by role (2-5)
 - Only escalates after exhausting self-repair
 
-### Outer Loop (orchestrator, deliberate)
+### Why Three Loops
 
-```
-Observe → Orient → Decide → Act → [not converged: repeat]
-```
-
-- Handles strategic decisions
-- Which hypotheses to pursue
-- When to change direction
-- When to converge
-
-### Why Two Loops
-
-The inner loop prevents agent execution failures from cluttering the orchestrator's strategic view. The orchestrator only sees "task complete" or "task exhausted after N attempts" — never individual test failures or lint errors.
+The inner loop prevents agent execution failures from cluttering the orchestrator's strategic view. The outer loop (dispatcher) prevents infrastructure concerns from cluttering the orchestrator's scientific reasoning. The orchestrator only sees "workers finished, here are findings" — never process IDs, tmux windows, or git merge conflicts.
 
 ---
 

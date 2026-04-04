@@ -402,6 +402,22 @@ class InvestigationQueue:
             )
             return cursor.rowcount > 0
 
+    def fail_paused(self, investigation_id: int, error: str) -> bool:
+        """Atomically transition a paused investigation to failed.
+
+        Unlike the two-step ``resume()`` + ``fail()`` dance, this is a
+        single SQL statement so there is no window where the investigation
+        is in 'running' state without a live agent.
+        Returns True if the status was actually changed.
+        """
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE investigations SET status='failed', error=?, completed_at=? "
+                "WHERE id=? AND status='paused'",
+                (error, time.time(), investigation_id),
+            )
+            return cursor.rowcount > 0
+
     def review(self, investigation_id: int) -> bool:
         """Transition a running investigation to review status.
 

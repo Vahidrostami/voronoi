@@ -9,6 +9,7 @@ from voronoi.gateway.intent import (
     WorkflowMode,
     classify,
     classify_compound,
+    classify_for_new_investigation,
 )
 
 
@@ -154,6 +155,22 @@ class TestAskIntent:
         r = classify("Any results yet?")
         assert r.mode == WorkflowMode.ASK
 
+    def test_any_new_results(self):
+        r = classify("any new results?")
+        assert r.mode == WorkflowMode.ASK
+
+    def test_any_recent_findings(self):
+        r = classify("any recent findings?")
+        assert r.mode == WorkflowMode.ASK
+
+    def test_how_is_the_results(self):
+        r = classify("how is the results so far?")
+        assert r.mode == WorkflowMode.ASK
+
+    def test_how_are_the_experiments(self):
+        r = classify("how are the experiments going?")
+        assert r.mode == WorkflowMode.ASK
+
     def test_what_does_the_data_show(self):
         r = classify("What does the data show about the experiments?")
         assert r.mode == WorkflowMode.ASK
@@ -178,6 +195,50 @@ class TestAskIntent:
         r = classify("What have we found so far?")
         assert r.is_meta is True
         assert r.is_science is False
+
+
+# ---------------------------------------------------------------------------
+# State-aware classifier (classify_for_new_investigation)
+# ---------------------------------------------------------------------------
+
+class TestClassifyForNewInvestigation:
+    """Test the simplified classifier used when no investigation is running."""
+
+    def test_never_returns_ask(self):
+        """classify_for_new_investigation never returns ASK — the router handles that via state."""
+        for text in ["any new results?", "how is the results so far?",
+                     "update me on progress", "what have the agents found?"]:
+            r = classify_for_new_investigation(text)
+            assert r.mode != WorkflowMode.ASK, f"Got ASK for: {text}"
+
+    def test_never_returns_guide(self):
+        """classify_for_new_investigation never returns GUIDE — defaults to DISCOVER."""
+        r = classify_for_new_investigation("hello how are you")
+        assert r.mode == WorkflowMode.DISCOVER
+        assert r.confidence < 0.5  # low confidence → router will prompt
+
+    def test_discover_question(self):
+        r = classify_for_new_investigation("Why is our model accuracy dropping?")
+        assert r.mode == WorkflowMode.DISCOVER
+        assert r.confidence >= 0.5
+
+    def test_prove_question(self):
+        r = classify_for_new_investigation("Test whether increasing sample size improves significance")
+        assert r.mode == WorkflowMode.PROVE
+
+    def test_recall_question(self):
+        r = classify_for_new_investigation("What did we learn about caching last time?")
+        assert r.mode == WorkflowMode.RECALL
+
+    def test_empty_returns_discover_low_confidence(self):
+        r = classify_for_new_investigation("")
+        assert r.mode == WorkflowMode.DISCOVER
+        assert r.confidence == 0.0
+
+    def test_ambiguous_text_defaults_to_discover_low_confidence(self):
+        r = classify_for_new_investigation("yo what's up")
+        assert r.mode == WorkflowMode.DISCOVER
+        assert r.confidence < 0.5
 
 
 # ---------------------------------------------------------------------------

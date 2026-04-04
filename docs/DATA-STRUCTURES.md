@@ -65,13 +65,13 @@ class ClassifiedPhase:
 class Investigation:
     id: int                       # Auto-assigned
     chat_id: str
-    status: str                   # queued | running | paused | complete | failed | cancelled
+    status: str                   # queued | running | paused | review | complete | failed | cancelled
     investigation_type: str       # repo | lab
     repo: str | None
     question: str
     slug: str
-    mode: str                     # investigate | explore | build
-    rigor: str                    # standard | analytical | scientific | experimental
+    mode: str                     # discover | prove
+    rigor: str                    # adaptive | scientific | experimental
     codename: str
     workspace_path: str | None
     sandbox_id: str | None
@@ -454,7 +454,7 @@ CREATE TABLE investigations (
     question TEXT NOT NULL,
     slug TEXT NOT NULL,
     mode TEXT NOT NULL DEFAULT 'discover',
-    rigor TEXT NOT NULL DEFAULT 'adaptive',
+    rigor TEXT NOT NULL DEFAULT 'scientific',
     codename TEXT NOT NULL DEFAULT '',
     workspace_path TEXT,
     sandbox_id TEXT,

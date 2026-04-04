@@ -17,7 +17,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from voronoi.gateway.intent import ClassifiedIntent, WorkflowMode, classify
+from voronoi.gateway.intent import ClassifiedIntent, WorkflowMode, classify, classify_for_new_investigation
 from voronoi.gateway.progress import MODE_EMOJI
 
 # --- Re-export all handlers so existing imports keep working ---
@@ -216,7 +216,7 @@ class CommandRouter:
                 return handle_howsitgoing(self.project_dir), None
             elif sub == "board":
                 return handle_board(self.project_dir), None
-            elif sub == "tasks":
+            elif sub in ("task", "tasks"):
                 return handle_tasks(self.project_dir), None
             elif sub == "ready":
                 return handle_ready(self.project_dir), None
@@ -293,53 +293,65 @@ class CommandRouter:
             logger.error("Command %s failed: %s", sub, e, exc_info=True)
             return f"❌ Error: {e}", None
 
+    def _has_running_investigations(self) -> bool:
+        """Check if any investigations are currently running."""
+        try:
+            from voronoi.server.queue import InvestigationQueue
+            base = Path.home() / ".voronoi"
+            q = InvestigationQueue(base / "queue.db")
+            return len(q.get_running()) > 0
+        except Exception:
+            return False
+
     def handle_free_text(self, text: str, chat_id: str,
                          is_private: bool) -> tuple[str, Optional[Path]]:
-        """Classify and handle free-text input."""
+        """State-aware routing for free-text input.
+
+        The routing decision depends on whether an investigation is running:
+        - Investigation running → ASK (send question + workspace data to LLM)
+        - No investigation → classify DISCOVER vs PROVE and start one
+        - Greeting/help → intro message
+
+        Explicit /voronoi commands always override (handled by route()).
+        """
         if _is_greeting(text):
             return _INTRO_MESSAGE, None
 
-        intent = classify(text)
-        logger.info("Classified intent: mode=%s rigor=%s confidence=%.2f",
+        has_running = self._has_running_investigations()
+
+        if has_running:
+            # Investigation is running — treat all free text as ASK
+            logger.info("Classified intent: mode=ask rigor=adaptive confidence=1.00 (state-aware: investigation running)")
+            _save_msg(self.project_dir, chat_id, "user", text,
+                      {"intent": "ask", "confidence": 1.0})
+            return handle_ask(self.project_dir, text), None
+
+        # No investigation running — classify for a new investigation
+        intent = classify_for_new_investigation(text)
+        logger.info("Classified intent: mode=%s rigor=%s confidence=%.2f (state-aware: no investigation running)",
                     intent.mode.value, intent.rigor.value, intent.confidence)
 
-        # Meta intents
-        if intent.is_meta:
-            if intent.mode == WorkflowMode.ASK:
-                return handle_ask(self.project_dir, text), None
-            if intent.mode == WorkflowMode.RECALL:
-                return handle_recall(self.project_dir, intent.summary), None
-            if intent.mode == WorkflowMode.STATUS:
-                return handle_status(self.project_dir), None
-            _save_msg(self.project_dir, chat_id, "user", text,
-                      {"intent": "guide", "confidence": intent.confidence})
-            return handle_guide(self.project_dir, text), None
+        # RECALL — search knowledge store
+        if intent.mode == WorkflowMode.RECALL:
+            return handle_recall(self.project_dir, intent.summary), None
 
-        # Low confidence → ask clarification
+        # Not enough signal to start an investigation → prompt the user
         if intent.confidence < 0.5:
             _save_msg(self.project_dir, chat_id, "user", text,
                       {"intent": intent.mode.value, "confidence": intent.confidence})
             return _LOW_CONFIDENCE_MESSAGE(text, intent), None
 
-        if not intent.is_science:
-            _save_msg(self.project_dir, chat_id, "user", text,
-                      {"intent": intent.mode.value, "confidence": intent.confidence})
-            return _LOW_CONFIDENCE_MESSAGE(text, intent), None
-
-        # Save to memory
+        # Save to memory and start investigation
         _save_msg(self.project_dir, chat_id, "user", text, {
             "intent": intent.mode.value,
             "rigor": intent.rigor.value,
             "confidence": intent.confidence,
         })
 
-        # Dispatch workflow with full question text
         if intent.mode == WorkflowMode.PROVE:
             txt = handle_prove(self.project_dir, text, chat_id)
-        elif intent.mode == WorkflowMode.DISCOVER:
-            txt = handle_discover(self.project_dir, text, chat_id)
         else:
-            txt = handle_guide(self.project_dir, text)
+            txt = handle_discover(self.project_dir, text, chat_id)
 
         # Prepend classification feedback
         confidence_pct = int(intent.confidence * 100)

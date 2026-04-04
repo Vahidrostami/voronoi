@@ -41,8 +41,8 @@ class Investigation:
     repo: str | None     # GitHub repo URL (repo-type only)
     question: str        # The user's question/task
     slug: str            # Filesystem-safe identifier
-    mode: str            # investigate | explore | build
-    rigor: str           # standard | analytical | scientific | experimental
+    mode: str            # discover | prove
+    rigor: str           # adaptive | scientific | experimental
     codename: str        # Brain-themed codename
     workspace_path: str | None
     sandbox_id: str | None
@@ -106,6 +106,7 @@ class InvestigationQueue:
               sandbox_id: str | None = None) -> None: ...
     def complete(self, investigation_id: int, github_url: str | None = None) -> None: ...
     def fail(self, investigation_id: int, error: str) -> None: ...
+    def fail_paused(self, investigation_id: int, error: str) -> bool: ... # paused → failed (atomic)
     def cancel(self, investigation_id: int) -> bool: ...
     def pause(self, investigation_id: int, reason: str) -> None: ...    # running → paused
     def resume(self, investigation_id: int) -> None: ...                # paused|failed → running
@@ -143,7 +144,7 @@ CREATE TABLE investigations (
     repo TEXT,
     question TEXT NOT NULL,
     slug TEXT NOT NULL,
-    mode TEXT NOT NULL DEFAULT 'investigate',
+    mode TEXT NOT NULL DEFAULT 'discover',
     rigor TEXT NOT NULL DEFAULT 'scientific',
     codename TEXT NOT NULL DEFAULT '',
     workspace_path TEXT,
@@ -194,6 +195,7 @@ class DispatcherConfig:
     context_advisory_hours: int   # 6 — "prioritize convergence" directive
     context_warning_hours: int    # 10 — "delegate remaining work" + force compact
     context_critical_hours: int   # 14 — force context restart
+    compact_interval_hours: int   # 6 — workspace state compaction interval
     max_context_restarts: int     # 2 — max proactive context refreshes
 ```
 
@@ -215,7 +217,7 @@ Server runtime also reserves `~/.voronoi/tmp` as the shared temp root. `voronoi 
 
 | Rigor | `--effort` | Rationale |
 |-------|-----------|----------|
-| (none / standard) | `medium` | Routine build tasks |
+| (none / unknown) | `medium` | Routine build tasks |
 | `adaptive` | `high` | Science discovery needs deeper reasoning |
 | `scientific` | `high` | Full science protocol |
 | `experimental` | `xhigh` | Maximum depth for novel discovery |
@@ -257,6 +259,9 @@ class RunningInvestigation:
     stall_warned: bool
     context_restarts: int         # Proactive context refreshes (separate from retry_count)
     status_message_id: int | None  # Telegram message ID for edit-in-place
+    pending_events: list[dict]    # Events accumulated while orchestrator is parked
+    orchestrator_parked: bool     # True when orchestrator exited with active workers
+    last_parked_digest_at: float  # Throttle digests to 5min while parked
 ```
 
 ### InvestigationDispatcher API
@@ -301,18 +306,34 @@ class InvestigationDispatcher:
      - `_diff_tasks()` — compares task snapshot for new/started/completed tasks
      - `_check_findings()` — detects new FINDING tasks and SERENDIPITY notes (deduplicates via notified set)
      - `_check_design_invalid()` — detects DESIGN_INVALID flags in open tasks
-     - `_check_sentinel()` — experiment contract validation (see SCIENCE.md §10):
-       - Detects missing contract after 1h at Analytical+ rigor
-       - Triggers on contract change, output production, phase transition, or periodic timer
-       - Runs phase gate validation when orchestrator checkpoint phase changes
-       - Writes `sentinel_violation` directive on failure
-     - `_detect_phase()` — classifies phase from workspace file artifacts; detects rigor escalation from checkpoint
+     - `_check_sentinel()` — experiment contract validation (see SCIENCE.md §10)
+     - `_detect_phase()` — classifies phase from workspace file artifacts; detects rigor escalation
      - `_check_paradigm_stress()` — detects contradictions (Scientific+ only)
      - `_check_heartbeat_stalls()` — detects agent inactivity via heartbeat files
-     - `_check_event_log()` — reads `.swarm/events.jsonl` for failures, token spend, and serendipity events
-   - Send digest via `build_digest()` (single narrative message, not per-event)
+     - `_check_event_log()` — reads `.swarm/events.jsonl` for failures, token spend, serendipity
+   - **If orchestrator is parked**: accumulate events in `pending_events` for the resume prompt. Throttle Telegram digest edits to every 5 minutes (milestones still sent immediately).
+   - **If orchestrator is active**: send digest via `build_digest()` normally.
    - Check for timeout, stall, completion
+   - **If orchestrator is dead and workers active**: check `_needs_orchestrator()` — wake on DESIGN_INVALID or all workers done. Otherwise defer.
    - Handle dead agents: try restart or mark failed
+
+### Orchestrator Parking & Wake
+
+When the orchestrator exits cleanly with `active_workers` in the checkpoint, the dispatcher enters **parked mode** for that investigation:
+
+1. Sets `orchestrator_parked = True`
+2. Accumulates events in `pending_events` (task completions, findings, serendipity, phase changes)
+3. Throttles Telegram digests to every 5 minutes (from 30 seconds)
+4. Each poll cycle, calls `_needs_orchestrator()` to check wake conditions
+5. On wake: builds resume prompt with accumulated `pending_events`, relaunches orchestrator
+6. `pending_events` are drained into the resume prompt and cleared
+
+Wake conditions (`_needs_orchestrator()`):
+- All active workers finished (normal wake)
+- DESIGN_INVALID detected in open task (urgent — immediate wake)
+- Workers no longer alive (process died)
+
+Findings and serendipity are accumulated and delivered in the resume prompt — they do NOT trigger immediate wake because they are not time-sensitive. The orchestrator evaluates them with fresh context.
 
 ### Human Review Gates (Scientific+ Rigor)
 
@@ -364,10 +385,12 @@ Phase inferred from workspace artifacts:
 | Signal | Meaning |
 |--------|---------|
 | tmux session dies | Agent finished (or crashed) — try restart if retries remain |
-| `deliverable.md` exists | Standard-rigor completion |
-| `deliverable.md` + `convergence.json` exist | Analytical+ completion (convergence status is **case-insensitive**) |
+| `deliverable.md` exists | Adaptive-rigor (not escalated) completion |
+| `deliverable.md` + `convergence.json` exist | Escalated-adaptive / scientific / experimental completion (convergence status is **case-insensitive**) |
 | DESIGN_INVALID open | **Hard gate** — blocks completion even if deliverable exists |
 | Timeout reached | Forced completion with exhaustion marker |
+
+The completion gate uses the **effective rigor** (`_effective_rigor()`): if an adaptive investigation has escalated (checkpoint rigor ≠ adaptive), the escalated level is used for gate decisions. This prevents adaptive-rigor investigations that escalated to scientific from completing without convergence validation.
 
 The convergence status check (`_convergence_status_ok`) accepts `converged`, `CONVERGED`, or any case variant for all valid statuses (`converged`, `exhausted`, `diminishing_returns`, `negative_result`). It also checks the legacy `converged: true` boolean field.
 
@@ -472,8 +495,8 @@ Single source of truth for all orchestrator prompts. Both CLI and Telegram paths
 ```python
 def build_orchestrator_prompt(
     question: str,
-    mode: str,              # investigate | explore | build
-    rigor: str,             # standard | analytical | scientific | experimental
+    mode: str,              # discover | prove
+    rigor: str,             # adaptive | scientific | experimental
     workspace_path: str = "",
     codename: str = "",
     prompt_path: str = "PROMPT.md",
@@ -486,28 +509,35 @@ def build_orchestrator_prompt(
 
 ### Prompt Structure (Section Order Matters)
 
+The prompt is intentionally compact (~190 lines) to preserve context budget for the orchestrator's OODA cycles. Procedural details are in skills (loaded on demand), not inline.
+
 | # | Section | Content |
 |---|---------|---------|
-| 1 | Identity | Role protocol → `.github/agents/swarm-orchestrator.agent.md` (in target workspace) |
-| 2 | Mission | Mode/rigor, workspace, project brief path |
-| 3 | Personality | Excitement, brain metaphors, factual focus |
-| 4 | Science | Mode + rigor-aware sections |
-| 5 | Investigation invariants | Structural constraints |
-| 6 | REVISE task support | Iterative experiment redesign workflow |
-| 7 | Verify loop | Self-healing agents, EVA guidance |
-| 8 | Success criteria | `.swarm/success-criteria.json` format |
-| 9 | Phase gates | Hard gates (no paper while DESIGN_INVALID exists) |
-| 10 | Anti-simulation | Hard gate to detect fake LLM calls |
-| 11 | Workflow steps | Mode-specific OODA/iteration cycles |
-| 12 | Long-running processes | **NEVER block orchestrator** — delegate experiments to workers |
-| 13 | Code changes | **NEVER write >20 lines** — delegate coding to workers |
-| 14 | Manuscript delegation | **ALWAYS delegate to Scribe** — Scribe writes LaTeX (`paper.tex`), NEVER Markdown |
-| 15 | Tools | bd commands, spawn-agent.sh, merge-agent.sh, figures |
-| 16 | Worker prompts | Role file inclusion, artifact contracts |
-| 17 | Rules | Concurrency limits, proofs, never edit worker code |
-| 18 | Rigor rules | Analytical/scientific/experimental enforcement |
-| 19 | Eval score | `.swarm/eval-score.json` output format |
-| 20 | Warm-Start Brief | Continuation context: round number, claim ledger, PI feedback, immutable paths, artifact manifest (only for `prior_context != None`) |
+| 1 | Identity | Role protocol → `.github/agents/swarm-orchestrator.agent.md` |
+| 2 | Worker Dispatch | **MANDATORY** — References `worker-lifecycle` skill, forbids built-in agent tools |
+| 3 | Mission | Mode/rigor, workspace, project brief path |
+| 4 | Personality | Excitement, brain metaphors, factual focus |
+| 5 | Science | Mode + rigor-aware sections (human gates for scientific+) |
+| 6 | Creative Freedom | DISCOVER mode: dynamic roles, serendipity, adaptive rigor escalation |
+| 7 | Investigation invariants | `.swarm/invariants.json` enforcement |
+| 8 | REVISE task support | References `revise-calibration` skill |
+| 9 | OODA Protocol | Compact — references role file, dispatcher directives |
+| 10 | Success criteria | `.swarm/success-criteria.json` format |
+| 11 | Phase gates | Hard gates (no paper while DESIGN_INVALID exists) |
+| 12 | LLM calls & Anti-simulation | References `copilot-cli-usage` skill, hard anti-simulation gate |
+| 13 | Delegation rules | Compact: no inline experiments, no inline code, delegate manuscript to Scribe |
+| 14 | Experiment contract | Compact Sentinel description |
+| 15 | Rules | Concurrency, artifact contracts, convergence gate |
+| 16 | Eval score | `.swarm/eval-score.json` output format |
+| 17 | Warm-Start Brief | (Only for `prior_context != None`) |
+
+### Skills Referenced by the Orchestrator Prompt
+
+| Skill | When read | Purpose |
+|-------|-----------|---------|
+| `worker-lifecycle` | Before dispatching any worker | Complete spawn → monitor → merge → cleanup recipe |
+| `copilot-cli-usage` | When making programmatic LLM calls | Correct Copilot CLI invocation |
+| `revise-calibration` | When creating REVISE tasks | Calibration iteration protocol |
 
 ### Key Design Principle
 
@@ -626,10 +656,10 @@ Docker-based execution isolation per investigation. Optional — falls back to h
 class SandboxConfig:
     enabled: bool           # Whether to attempt Docker isolation
     image: str              # Docker image name
-    cpus: float             # CPU limit
+    cpus: int               # CPU limit
     memory: str             # Memory limit (e.g., "4g")
     timeout_hours: int      # Container timeout
-    network: str            # Network mode (e.g., "none" for isolation)
+    network: bool           # Network enabled (False → "--network none")
     fallback_to_host: bool  # Fall back if Docker unavailable
 ```
 
@@ -697,7 +727,7 @@ class ServerConfig:
     # GitHub settings
     github_lab_org: str                   # "voronoi-lab"
     github_visibility: str                # "private"
-    github_auto_publish: bool             # False
+    github_auto_publish: bool             # True
 
     # Sandbox settings
     sandbox: SandboxConfig
@@ -723,8 +753,8 @@ class ServerConfig:
 ```python
 def make_slug(text: str, max_len: int = 40) -> str
 def create_investigation_from_text(text: str, chat_id: str,
-                                   mode: str = "investigate",
-                                   rigor: str = "scientific") -> Investigation
+                                   mode: str = "discover",
+                                   rigor: str = "adaptive") -> Investigation
 ```
 
 ---

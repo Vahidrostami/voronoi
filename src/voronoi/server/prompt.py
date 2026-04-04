@@ -73,11 +73,15 @@ def build_orchestrator_prompt(
 
     sections: list[str] = []
 
-    # -- Identity ----------------------------------------------------------
+    # -- Identity & Lifecycle (top-level — read first) --------------------
     sections.append(
-        "You are the Voronoi swarm orchestrator. Your job: read the project brief, "
-        "plan tasks, spawn parallel worker agents, monitor their progress, merge "
-        "completed work, and repeat until done.\n"
+        "You are the Voronoi swarm orchestrator — a strategist called in when "
+        "scientific decisions are needed.\n\n"
+        "**Lifecycle:** Each session is one strategic pass. Read checkpoint → "
+        "run OODA cycles → dispatch workers → write checkpoint → exit. "
+        "The dispatcher monitors workers and relaunches you when results arrive, "
+        "anomalies occur, or decisions are needed. Do NOT idle-loop, sleep-poll, "
+        "or monitor processes — that is infrastructure work, not science.\n"
     )
 
     # -- Role protocol (the critical link to .github/agents) ---------------
@@ -87,6 +91,27 @@ def build_orchestrator_prompt(
         "complete role definition including OODA workflow, role selection tables, "
         "convergence criteria, paradigm checks, bias monitoring, and the macro "
         "retry loop.  Follow it precisely.\n"
+    )
+
+    # -- Worker dispatch (the critical skill) ------------------------------
+    sections.append(
+        "\n## Worker Dispatch — MANDATORY\n\n"
+        "**Before dispatching any worker**, read `.github/skills/worker-lifecycle/SKILL.md`. "
+        "It has the complete step-by-step recipe: `build_worker_prompt()` → "
+        "`spawn-agent.sh` → checkpoint → merge.\n\n"
+        "**NEVER use Copilot's built-in agent tools** (General-purpose agent, etc.) "
+        "to run experiments or tasks. They run inline in YOUR session, consuming "
+        "YOUR context window. ALWAYS use `./scripts/spawn-agent.sh` — it creates "
+        "an isolated tmux window with a fresh Copilot instance.\n\n"
+        "**After dispatching workers with no immediate work remaining:**\n"
+        "Write `.swarm/orchestrator-checkpoint.json` with `active_workers` list "
+        "and `next_actions`, then EXIT cleanly. The dispatcher accumulates events "
+        "(worker completions, findings, serendipity, DESIGN_INVALID) while you "
+        "are away and delivers them in your next resume prompt.\n\n"
+        "**Do NOT:**\n"
+        "- Sleep, poll, or use `ps aux | grep` to monitor workers\n"
+        "- Launch experiments via `nohup` or background subprocesses\n"
+        "- Run long-running scripts inline — delegate to workers\n"
     )
 
     # -- Mission -----------------------------------------------------------
@@ -302,185 +327,54 @@ def build_orchestrator_prompt(
         "Do NOT try to fix the code yourself — delegate to a worker agent.\n"
     )
 
-    # -- Anti-simulation enforcement (expanded — this is critical) ----------
+    # -- LLM calls (skill ref) --------------------------------------------
     sections.append(
-        "\n## LLM Calls via Copilot CLI — MANDATORY\n\n"
-        "When experiments need programmatic LLM calls (discovery, judge, etc.), "
-        "agents MUST use:\n"
-        "```bash\n"
-        "# Read configured model from workspace config\n"
-        "LLM_MODEL=$(jq -r '.worker_model // \"\"' .swarm-config.json 2>/dev/null)\n"
-        "MODEL_FLAG=\"\"\n"
-        "if [[ -n \"$LLM_MODEL\" ]]; then MODEL_FLAG=\"--model $LLM_MODEL\"; fi\n\n"
-        "copilot $MODEL_FLAG -p \"<prompt>\" -s --no-color --allow-all\n"
-        "```\n"
-        "- Pass the prompt as a **direct argument** to `-p`, NOT via stdin.\n"
-        "- **NEVER** use `echo \"...\" | copilot -p -` or pipe/stdin patterns — "
-        "they produce empty/generic responses and silently break experiments.\n"
-        "- **ALWAYS** include the `--model` flag from `.swarm-config.json` — without it, "
-        "copilot uses its default model, not the one configured for this investigation.\n"
-        "- Cache responses by SHA-256 hash of the prompt text.\n\n"
-        "\n## Anti-Simulation — HARD GATE\n\n"
-        "**NEVER create simulation/mock/fake files that replace real LLM calls.** "
-        "This is a convergence-blocking violation.\n\n"
-        "Specifically:\n"
-        "- NEVER create files named `*sim*`, `*mock*`, `*fake*` that replace the mandated entry point\n"
-        "- NEVER hardcode detection probabilities, effect sizes, or scores that the experiment "
-        "is supposed to *measure* — this is circular reasoning\n"
-        "- NEVER use `np.random` / `random` sampling as a substitute for real LLM calls\n"
-        "- If the experiment requires too many LLM calls, **reduce N or k** — do NOT simulate\n"
-        "- If real results are disappointing (e.g., p > 0.05), report them honestly and flag "
-        "`RESULT_CONTRADICTS_HYPOTHESIS` — do NOT create a simulation to get better numbers\n\n"
-        "**The convergence gate will BLOCK completion** if it detects:\n"
-        "- Any `run_sim.py` / `run_mock.py` / `run_fake.py` runner scripts (CRITICAL)\n"
-        "- Source files with simulation-bypass patterns (hardcoded probabilities, np.random.seed)\n"
-        "- Insufficient LLM cache entries relative to the experiment design\n"
-        "- `results.json` with simulation provenance markers\n\n"
-        "**Provenance requirement:** Every `results.json` MUST include a `runner` field "
-        "naming the script that produced it (e.g., `\"runner\": \"run_experiments.py\"`). "
-        "The mandated entry point declared in PROMPT.md is the ONLY valid runner.\n"
+        "\n## LLM Calls & Anti-Simulation\n\n"
+        "Read `.github/skills/copilot-cli-usage/SKILL.md` for the correct "
+        "Copilot CLI invocation pattern.\n\n"
+        "**Hard gate:** NEVER create simulation/mock/fake files that replace real "
+        "LLM calls. NEVER hardcode detection probabilities or effect sizes the "
+        "experiment is supposed to measure.  If real results are disappointing, "
+        "report them honestly — do NOT simulate better numbers.\n\n"
+        "**Provenance:** Every `results.json` MUST include a `runner` field "
+        "naming the script that produced it.\n"
     )
 
-    # -- Tools & dispatch protocol are fully covered in the role file ----
-    # The orchestrator role file has Tools & Systems, the full dispatch
-    # spec format, and task type → role mapping.  No duplication here.
-
-    # -- Long-running process delegation — MANDATORY ----------------------
+    # -- Delegation rules (compact) ----------------------------------------
     sections.append(
-        "\n## Long-Running Processes — NEVER BLOCK THE ORCHESTRATOR\n\n"
-        "**NEVER run experiments or long-running scripts (>5min expected) in the "
-        "orchestrator session.** Long processes exhaust your context window with "
-        "idle polling and produce zero value during wait time.\n\n"
-        "**Mandatory workflow for experiments:**\n"
-        "1. Dispatch a worker agent (`task_type: \"experiment\"`) with the exact "
-        "command, expected runtime, and output files\n"
-        "2. The worker runs the experiment in its own worktree, commits results, "
-        "and exits\n"
-        "3. After merge, read the results in your next OODA cycle\n\n"
-        "**NEVER do this:**\n"
-        "- `sleep 600 && check_progress` — every sleep+check cycle wastes context\n"
-        "- `python3 run_experiments.py` then poll with `Read shell output Waiting`\n"
-        "- Run the same `find .llm_cache/ | wc -l && date` repeatedly\n\n"
-        "**Why:** In a 30h investigation, sleep-polling consumed 30%+ of context "
-        "budget for zero information. A worker agent runs the experiment with 100% "
-        "of its context available and exits cleanly.\n\n"
-        "**After dispatching all workers with no immediate work remaining:**\n"
-        "1. Write checkpoint with `phase: \"waiting_for_workers\"`, list workers in "
-        "`active_workers: [\"agent-phase2\", ...]`, and `next_actions`\n"
-        "2. Update belief map\n"
-        "3. Exit cleanly — the dispatcher will restart you when workers finish\n"
-        "4. Do NOT idle-loop waiting for workers — that wastes your entire context window\n\n"
-        "The dispatcher checks `active_workers` in your checkpoint. While any listed "
-        "worker's tmux window is alive, it will NOT restart you. When the last worker "
-        "exits, the dispatcher restarts you with a fresh context to merge results.\n"
+        "\n## Delegation Rules\n\n"
+        "- **NEVER run experiments** (>5min) in the orchestrator session — dispatch a worker\n"
+        "- **NEVER write >20 lines of code** in the orchestrator — dispatch a worker\n"
+        "- **NEVER write the manuscript** yourself — dispatch a Scribe worker "
+        "(`task_type: \"scribe\"`). The Scribe writes LaTeX, not Markdown.\n"
+        "- After Scribe, verify `paper.tex` + `paper.pdf` exist, then dispatch Evaluator\n"
+        "- The Scribe writes `.swarm/deliverable.md` as a SUMMARY for convergence "
+        "— this is NOT the paper itself\n"
     )
 
-    # -- Anti-inline-coding — MANDATORY ------------------------------------
+    # -- Experiment Contract (Sentinel) — compact ref -----------------------
     sections.append(
-        "\n## Code Changes — ALWAYS DELEGATE TO WORKERS\n\n"
-        "**NEVER write more than ~20 lines of code in the orchestrator session.**\n"
-        "Your role is orchestration (OODA, dispatch, merge, converge), not coding.\n\n"
-        "If an experiment needs code changes (encoder fixes, new analysis scripts, "
-        "bug fixes), dispatch a worker agent with a detailed briefing. The worker "
-        "implements, tests, and commits in its own worktree.\n\n"
-        "**Why:** Writing 200+ lines of code in the orchestrator burns context "
-        "that should be reserved for monitoring, merging, and convergence cycles.\n"
+        "\n## Experiment Contract (Sentinel)\n\n"
+        "After experiment design, write `.swarm/experiment-contract.json` declaring "
+        "structural validity checks. The dispatcher runs an autonomous Sentinel that "
+        "verifies outputs against this contract.\n\n"
+        "Available check types: `hash_distinct`, `value_range`, `metric_range`, "
+        "`not_identical`, `min_distinct_values`, `min_variance`.\n\n"
+        "If the Sentinel detects a violation, it writes `.swarm/sentinel-audit.json` "
+        "and a `sentinel_violation` directive. When you see this:\n"
+        "1. STOP — do not dispatch new workers or cross phase gates\n"
+        "2. Read `.swarm/sentinel-audit.json`\n"
+        "3. Dispatch Methodologist for post-mortem\n"
+        "4. Create a REVISE task — do NOT fix code yourself\n"
     )
 
-    # -- Manuscript delegation — MANDATORY ---------------------------------
-    sections.append(
-        "\n## Manuscript Writing — ALWAYS DELEGATE TO SCRIBE\n\n"
-        "**NEVER write the manuscript/paper/deliverable yourself in the orchestrator session.**\n"
-        "Manuscript writing is extremely context-heavy and WILL exhaust your context window "
-        "if attempted inline — leading to session termination before the deliverable is written.\n\n"
-        "**Mandatory workflow:**\n"
-        "1. When all experiments are complete and success criteria are met, dispatch a "
-        "**Scribe** worker (`task_type: \"scribe\"`) with a briefing that lists:\n"
-        "   - All completed findings and their locations\n"
-        "   - The success criteria status\n"
-        "   - The output directory for the paper (from the project brief)\n"
-        "2. The Scribe writes **LaTeX** (`paper.tex`) — NEVER Markdown.\n"
-        "   Do NOT include instructions like 'write Markdown' or 'write deliverable.md' "
-        "in the scribe briefing. The Scribe's role file specifies LaTeX output — "
-        "your briefing must not contradict it.\n"
-        "3. After merge, verify `paper.tex` AND `paper.pdf` exist, then dispatch the Evaluator\n"
-        "4. The Scribe writes `.swarm/deliverable.md` as a SUMMARY for the convergence gate — "
-        "this is NOT the paper itself.  The paper is `paper.tex` + `paper.pdf`.\n\n"
-        "**Why:** Your context is consumed by OODA cycles, experiment monitoring, and "
-        "findings synthesis after hours of orchestration. The Scribe starts fresh with "
-        "100% of its context available for writing — producing higher quality output "
-        "and preventing session crashes.\n"
-    )
-
-    # -- Experiment Contract (Sentinel) — MANDATORY for experiments ---------
-    sections.append(
-        "\n## Experiment Contract — Machine-Readable Validity Declaration\n\n"
-        "After completing experiment design (Methodologist-approved or after your "
-        "own OODA plan), write `.swarm/experiment-contract.json` declaring what makes "
-        "this experiment **structurally valid**.  The dispatcher runs an autonomous "
-        "Sentinel that checks this contract against actual outputs — catching broken "
-        "manipulations, degenerate results, and collapsed conditions WITHOUT waiting "
-        "for you to notice.\n\n"
-        "**Contract schema:**\n"
-        "```json\n"
-        "{\n"
-        '  "experiment_id": "phase2-factorial",\n'
-        '  "independent_variable": "encoding_level",\n'
-        '  "conditions": ["L1-D", "L1-A", "L4-D", "L4-A"],\n'
-        '  "manipulation_checks": [\n'
-        '    {"check_type": "hash_distinct", "target": "output/encoding_hashes.json",\n'
-        '     "params": {"field": "sha256", "across": "conditions"}},\n'
-        '    {"check_type": "value_range", "target": "output/encoding_hashes.json",\n'
-        '     "params": {"field": "scenarios.*.L4-A.char_ratio_vs_l1", "min": 0.7, "max": 1.5}}\n'
-        "  ],\n"
-        '  "required_outputs": [\n'
-        '    {"path": "output/results.json", "description": "Per-scenario ANOVA results"}\n'
-        "  ],\n"
-        '  "degeneracy_checks": [\n'
-        '    {"check_type": "not_identical", "target": "output/results.json",\n'
-        '     "params": {"field": "anova.cell_means.*", "across": "conditions"}},\n'
-        '    {"check_type": "min_variance", "target": "output/results.json",\n'
-        '     "params": {"field": "anova.cell_means.*", "min_std": 0.001}}\n'
-        "  ],\n"
-        '  "phase_gates": [\n'
-        '    {"from_phase": "phase_minus_1", "to_phase": "phase_0",\n'
-        '     "checks": [\n'
-        '       {"check_type": "value_range", "target": "output/encoding_hashes.json",\n'
-        '        "params": {"field": "scenarios.*.L4-A.char_ratio_vs_l1", "min": 0.7, "max": 1.5}}\n'
-        "     ]}\n"
-        "  ]\n"
-        "}\n"
-        "```\n\n"
-        "**Available check types:**\n"
-        "- `hash_distinct` — field values must differ across conditions (catches collapsed IV)\n"
-        "- `value_range` — numeric field must be within [min, max] (catches ratio violations)\n"
-        "- `metric_range` — field values must have std >= min_std (catches flat/degenerate metrics)\n"
-        "- `not_identical` — values must not all be the same (catches identical outputs)\n"
-        "- `min_distinct_values` — at least N distinct values required\n"
-        "- `min_variance` — same as metric_range (alias)\n\n"
-        "**When to write the contract:**\n"
-        "- After experiment design, BEFORE dispatching workers\n"
-        "- Include checks for every constraint in the PROMPT.md that is machine-verifiable\n"
-        "- Phase gates should guard every phase transition declared in the brief\n\n"
-        "**The Sentinel is autonomous** — it runs without your involvement.  If it finds "
-        "a violation, it writes `.swarm/sentinel-audit.json` and sends a Telegram alert.  "
-        "It also writes a dispatcher directive to `.swarm/dispatcher-directive.json` with "
-        "`level: sentinel_violation` — when you see this directive in your OODA cycle:\n"
-        "1. **STOP** — do NOT dispatch new workers or cross phase gates\n"
-        "2. Read `.swarm/sentinel-audit.json` to understand what failed\n"
-        "3. Dispatch Methodologist for post-mortem diagnosis\n"
-        "4. Create a REVISE task with the fix\n"
-        "5. Only after the REVISE task passes and the sentinel audit shows `passed: true`, "
-        "resume normal operation\n"
-    )
-
-    # -- Rules -------------------------------------------------------------
+    # -- Rules (compact) ---------------------------------------------------
     sections.append(
         "\n## Rules\n\n"
         "- Read `.github/agents/swarm-orchestrator.agent.md` at startup\n"
-        "- Read the FULL project brief ONCE at startup, then work from checkpoint\n"
+        "- Read `.github/skills/worker-lifecycle/SKILL.md` before dispatching workers\n"
+        "- Read the FULL project brief ONCE, then work from checkpoint + brief-digest\n"
         "- No overlapping file scopes between agents\n"
-        "- Use `build_worker_prompt()` for dispatch — never copy role files yourself\n"
         "- Diagnose failures (check git log, tmux output) before retrying\n"
         "- Push all completed work to remote when done\n"
         f"- Max concurrent agents: {max_agents}\n"
@@ -491,17 +385,11 @@ def build_orchestrator_prompt(
         )
     sections.append(
         "- EVERY task MUST declare PRODUCES and REQUIRES in Beads notes\n"
-        "- For investigation epics, create a BASELINE task as the FIRST subtask \u2014 "
-        "all experimental tasks depend on it\n"
-        "- Workers self-heal via verify loops \u2014 when they report VERIFY_EXHAUSTED, "
-        "read their iteration log before re-dispatching\n"
-        "- When a worker reports DESIGN_INVALID, dispatch Methodologist for post-mortem "
-        "\u2192 create corrected experiment task\n"
-        "- NEVER enter a worker's worktree to fix code yourself \u2014 "
-        "dispatch a new agent or reassign the task\n"
-        "- spawn-agent.sh will REJECT dispatch if REQUIRES files are missing\n"
-        "- merge-agent.sh will REJECT merge if PRODUCES files are missing\n"
-        "- Before declaring convergence, run: `./scripts/convergence-gate.sh . <rigor>`\n"
+        "- BASELINE task is FIRST subtask \u2014 all experimental tasks depend on it\n"
+        "- NEVER enter a worker's worktree to fix code \u2014 dispatch a new agent\n"
+        "- `spawn-agent.sh` REJECTS dispatch if REQUIRES files are missing\n"
+        "- `merge-agent.sh` REJECTS merge if PRODUCES files are missing\n"
+        "- Before convergence: `./scripts/convergence-gate.sh . <rigor>`\n"
     )
     # Rigor-specific rules are in the orchestrator role file — no duplication here.
 
