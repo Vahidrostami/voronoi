@@ -630,15 +630,21 @@ def main() -> None:
     logging.getLogger("telegram").setLevel(logging.WARNING)
     logging.getLogger("apscheduler").setLevel(logging.WARNING)
 
-    # APScheduler always logs "Run time of job was missed" at WARNING when a job
-    # fires late (e.g. after macOS App Nap or system sleep), even when
-    # misfire_grace_time=None ensures the job still runs.  These warnings are
-    # expected and handled — suppress them so they don't clutter the log.
-    class _MisfireFilter(logging.Filter):
+    # APScheduler logs benign warnings that are expected in our usage:
+    # 1. "Run time of job was missed" — fires after macOS App Nap / system sleep,
+    #    but misfire_grace_time=None ensures the job still runs.
+    # 2. "maximum number of running instances reached" — fires when dispatch_next()
+    #    takes >10s (e.g. during git clone provisioning).  Skipping is correct
+    #    because dispatch_next() is idempotent.
+    # Suppress both so they don't clutter the log.
+    class _APSchedulerNoiseFilter(logging.Filter):
+        _SUPPRESSED = ("Run time of job", "maximum number of running instances")
         def filter(self, record: logging.LogRecord) -> bool:
-            return "Run time of job" not in record.getMessage()
+            msg = record.getMessage()
+            return not any(phrase in msg for phrase in self._SUPPRESSED)
 
-    logging.getLogger("apscheduler.executors.default").addFilter(_MisfireFilter())
+    logging.getLogger("apscheduler.executors.default").addFilter(_APSchedulerNoiseFilter())
+    logging.getLogger("apscheduler.scheduler").addFilter(_APSchedulerNoiseFilter())
     config = load_config(args.config)
 
     if not config["bot_token"]:

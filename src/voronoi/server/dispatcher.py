@@ -18,6 +18,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -188,6 +189,7 @@ class InvestigationDispatcher:
         self.send_document = send_document or (lambda *a: None)
         self.edit_message = edit_message
         self.running: dict[int, RunningInvestigation] = {}
+        self._launching: set[int] = set()  # IDs currently being provisioned
         self._queue = None
         self._workspace_mgr = None
 
@@ -220,6 +222,13 @@ class InvestigationDispatcher:
         instance that died (e.g. bridge restart). If a row is marked
         'running' in the DB but not tracked in self.running, we re-adopt
         it so progress monitoring resumes.
+
+        Workspace provisioning (git clone, voronoi init) can take minutes
+        for large repos.  To prevent blocking the 10-second scheduler
+        tick, the heavy ``_launch_investigation`` call runs in a
+        background thread.  A ``_launching`` set guards against
+        double-claiming and lets the fast prep phase (recovery,
+        paused-timeout) run unblocked on subsequent ticks.
         """
         # Recovery: re-adopt running investigations we're not tracking
         self._recover_running()
@@ -227,11 +236,30 @@ class InvestigationDispatcher:
         # Auto-fail paused investigations that exceeded the timeout
         self._check_paused_timeouts()
 
+        # Skip claiming if we're already provisioning an investigation —
+        # the launch thread will add it to self.running when done.
+        if self._launching:
+            logger.debug("dispatch_next: launch in progress for %s", self._launching)
+            return
+
         inv = self.queue.next_ready(self.config.max_concurrent)
         if inv is None:
             logger.debug("dispatch_next: nothing ready (db=%s)", self.queue.db_path)
             return
         logger.info("Dispatching investigation #%d: %.60s", inv.id, inv.question)
+        self._launching.add(inv.id)
+        t = threading.Thread(
+            target=self._launch_investigation_safe,
+            args=(inv,),
+            name=f"voronoi-launch-{inv.id}",
+            daemon=True,
+        )
+        t.start()
+
+    def _launch_investigation_safe(self, inv) -> None:
+        """Wrapper around _launch_investigation that cleans up _launching and
+        handles errors.  Runs in a background thread so dispatch_next returns
+        immediately after claiming the investigation."""
         try:
             self._launch_investigation(inv)
         except Exception as e:
@@ -241,6 +269,8 @@ class InvestigationDispatcher:
             self.send_message(
                 f"💀 *Voronoi · {label} failed to launch*\n\nError: `{e}`"
             )
+        finally:
+            self._launching.discard(inv.id)
 
     def _recover_running(self) -> None:
         """Re-adopt running investigations from a previous dispatcher instance.
@@ -258,6 +288,8 @@ class InvestigationDispatcher:
         for inv in db_running:
             if inv.id in self.running:
                 continue  # already tracking
+            if inv.id in self._launching:
+                continue  # launch thread is provisioning this one
 
             if not inv.workspace_path:
                 # Claimed by next_ready() but workspace not yet provisioned.
@@ -293,8 +325,14 @@ class InvestigationDispatcher:
                 started_at=inv.started_at or time.time(),
             )
 
-            # Restore task_snapshot from Beads so progress reporting is accurate
-            self._restore_task_snapshot(run)
+            # Restore task_snapshot from Beads — but only when the agent
+            # is dead.  When the session is alive, the agent's MCP server
+            # holds an exclusive lock on the embedded Dolt database, so
+            # `bd list --json` would always fail with a lock error.
+            # poll_progress() → _check_progress() will populate the
+            # snapshot on the next cycle instead.
+            if not session_alive:
+                self._restore_task_snapshot(run)
 
             # Restore notification tracking sets from disk so we don't
             # re-send alerts that were already delivered (BUG-003).
@@ -319,21 +357,15 @@ class InvestigationDispatcher:
                     logger.info("Recovered gate-paused investigation #%d (%s)",
                                 inv.id, inv.codename)
                     continue
-                # Check if it finished while we were down
-                if self._is_complete(run):
-                    logger.info("Recovered completed investigation #%d (%s)",
-                                inv.id, inv.codename)
-                    self._handle_completion(run)
-                elif self._try_restart(run):
-                    # Try to restart instead of marking failed
-                    self.running[inv.id] = run
-                    logger.info("Recovered and restarted investigation #%d (%s)",
-                                inv.id, inv.codename)
-                else:
-                    logger.warning("Recovered dead investigation #%d (%s) — marking failed",
-                                   inv.id, inv.codename)
-                    self._handle_completion(run, failed=True,
-                                            failure_reason="Agent exited (recovered after restart)")
+                # Re-adopt into self.running so poll_progress() handles
+                # completion/restart on its next cycle.  This keeps
+                # _recover_running() fast and avoids blocking
+                # dispatch_next() with heavyweight completion logic
+                # (PDF generation, GitHub publish, worktree cleanup).
+                self.running[inv.id] = run
+                logger.info("Re-adopted dead investigation #%d (%s) — "
+                            "poll_progress will handle completion/restart",
+                            inv.id, inv.codename)
             else:
                 # Still alive — re-adopt for monitoring
                 self.running[inv.id] = run

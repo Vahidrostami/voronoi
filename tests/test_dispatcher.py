@@ -53,6 +53,21 @@ class TestDispatchNext:
         d.dispatch_next()
         assert len(msgs) == 0
 
+    def test_dispatch_next_skips_claim_while_launching(self, dispatcher_setup):
+        """dispatch_next should skip queue claim when a launch is in progress."""
+        d, msgs, docs, _ = dispatcher_setup
+        mock_queue = MagicMock()
+        mock_queue.next_ready.return_value = None
+        d._queue = mock_queue
+
+        # Simulate a launch in progress
+        d._launching.add(99)
+        d.dispatch_next()
+
+        # next_ready should NOT have been called — we skipped the claim phase
+        mock_queue.next_ready.assert_not_called()
+        d._launching.discard(99)
+
     def test_abort_kills_running(self, dispatcher_setup):
         d, msgs, docs, tmp_path = dispatcher_setup
         mock_queue = MagicMock()
@@ -72,7 +87,10 @@ class TestDispatchNext:
         assert len(d.running) == 0
         mock_queue.abort.assert_called_once()
 
-    def test_recover_running_scientific_requires_completion_gate(self, dispatcher_setup):
+    def test_recover_running_readopts_dead_investigation(self, dispatcher_setup):
+        """Recovery re-adopts dead investigations into self.running
+        instead of calling _handle_completion inline, so poll_progress
+        handles completion on the next cycle (keeps dispatch_next fast)."""
         d, msgs, docs, tmp_path = dispatcher_setup
         mock_queue = MagicMock()
         d._queue = mock_queue
@@ -95,13 +113,12 @@ class TestDispatchNext:
         ]
 
         with patch("voronoi.server.dispatcher.subprocess.run", return_value=MagicMock(returncode=1)), \
-             patch.object(d, "_try_restart", return_value=False) as try_restart, \
              patch.object(d, "_handle_completion") as handle_completion:
             d._recover_running()
 
-        try_restart.assert_called_once()
-        assert handle_completion.call_count == 1
-        assert handle_completion.call_args.kwargs["failed"] is True
+        # Dead investigation is re-adopted, not completed inline
+        assert 1 in d.running
+        handle_completion.assert_not_called()
 
 
 class TestProgressMonitoring:
@@ -3762,11 +3779,12 @@ class TestEffectiveRigor:
         ]
 
         with patch("voronoi.server.dispatcher.subprocess.run",
-                   return_value=MagicMock(returncode=0)), \
-             patch.object(d, "_restore_task_snapshot"):
+                   return_value=MagicMock(returncode=0)):
             d._recover_running()
 
         assert 1 in d.running
+        # _restore_task_snapshot is skipped for alive sessions (avoids
+        # Dolt lock contention with the running agent's MCP server).
         assert d.running[1].last_rigor == "scientific"
 
 

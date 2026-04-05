@@ -292,13 +292,12 @@ class InvestigationDispatcher:
 
 ### Dispatch Lifecycle
 
-1. `dispatch_next()` calls `queue.next_ready(max_concurrent)`
-2. If investigation claimed → provision workspace via `workspace_mgr`
-3. Copy demo files if `demo_source` set
-4. Build orchestrator prompt via `prompt.py`
-5. Verify Copilot auth (`_ensure_copilot_auth()`)
-6. Launch in tmux: `tmux new-session -d -s {session} "cd {workspace} && {agent_command} {flags} --effort {level} --share .swarm/session.md -p prompt.txt ; exit"`, injecting auth/state environment into the tmux session before `send-keys`
-7. Add to `_running` dict
+1. `dispatch_next()` calls `_recover_running()` and `_check_paused_timeouts()` (fast — always completes in <1s)
+2. If a launch is already in progress (`_launching` set non-empty), return immediately
+3. Call `queue.next_ready(max_concurrent)` to claim the next queued investigation
+4. Spawn a **background thread** (`_launch_investigation_safe`) for the potentially slow provisioning + launch — this prevents the 10-second scheduler tick from being blocked by `git clone` (which can take minutes for large repos)
+5. The background thread provisions workspace via `workspace_mgr`, copies demo files, builds prompt, launches in tmux, adds to `self.running`, and clears `_launching` when done
+6. `_recover_running()` skips investigations in `_launching` to avoid interfering with in-progress launches
 
 ### Progress Polling
 
@@ -518,10 +517,8 @@ Paused investigations auto-fail after `pause_timeout_hours` (default 24h).
 
 On dispatcher restart, `_recover_running()` scans for investigations in `running` status:
 - If `workspace_path` is NULL (claimed but not yet launched) → **reset to queued** for retry
-- Restores `task_snapshot` from Beads (`bd list --json`) so progress reporting is accurate
-- If tmux session alive → re-adopt for monitoring
-- If tmux dead + deliverable exists → mark complete
-- If tmux dead + no deliverable → try restart OR mark failed
+- If tmux session alive → re-adopt for monitoring (task snapshot populated by `poll_progress()` on next cycle — `bd list --json` is skipped because the agent's MCP server holds the Dolt exclusive lock)
+- If tmux dead → restores `task_snapshot` from Beads (`bd list --json`), then **re-adopts into `self.running`** so `poll_progress()` handles completion/restart on its next cycle (keeps recovery fast and avoids blocking `dispatch_next()` with heavyweight completion logic like PDF generation, GitHub publish, worktree cleanup)
 
 ---
 
