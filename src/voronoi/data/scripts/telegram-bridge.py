@@ -530,8 +530,15 @@ def run_bot(config: dict) -> None:
                 logger.error("Progress poll error: %s", e, exc_info=True)
 
     if app.job_queue is not None:
-        app.job_queue.run_repeating(_job_dispatch, interval=10, first=5)
-        app.job_queue.run_repeating(_job_progress, interval=30, first=15)
+        # misfire_grace_time=None means "run the job no matter how late" —
+        # these are idempotent polls, so running late after macOS App Nap
+        # or system throttle is fine.  Without this, APScheduler's 1-second
+        # default causes noisy "Run time was missed" warnings.
+        _job_kw: dict = {"misfire_grace_time": None}
+        app.job_queue.run_repeating(_job_dispatch, interval=10, first=5,
+                                    job_kwargs=_job_kw)
+        app.job_queue.run_repeating(_job_progress, interval=30, first=15,
+                                    job_kwargs=_job_kw)
     else:
         logger.warning("JobQueue not available — install 'python-telegram-bot[job-queue]'")
 
