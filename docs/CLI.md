@@ -196,8 +196,8 @@ echo 72 > ~/.voronoi/active/<workspace-name>/.swarm/timeout_hours
 
 ```python
 FRAMEWORK_DIRS: list[str] = ["scripts"]
-FRAMEWORK_FILES: list[str] = ["CLAUDE.md", "AGENTS.md", ".env.example"]
-GITHUB_SUBDIRS: list[str] = ["agents", "prompts", "skills"]
+TEMPLATE_FILES: list[str] = ["CLAUDE.md", "AGENTS.md"]
+GITHUB_SUBDIRS: list[str] = ["agents", "prompts", "skills", "instructions", "hooks"]
 USER_OWNED: set[str] = {"CLAUDE.md", "AGENTS.md"}
 ```
 

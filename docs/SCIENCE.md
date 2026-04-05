@@ -30,7 +30,7 @@ Rigor is determined by mode: DISCOVER uses adaptive rigor (starts analytical, es
 | Statistician review | — | YES | YES | YES |
 | Finding interpretation | — | YES | YES | YES |
 | Claim-evidence registry | — | YES | YES | YES |
-| Final evaluation (CCSA) | — | YES | YES | YES |
+| Final evaluation (CCSAN) | — | YES | YES | YES |
 | Methodologist design review | — | YES (advisory) | YES (mandatory) | YES (mandatory) |
 | Pre-registration | — | YES | YES | YES |
 | Pre-reg compliance audit | — | YES | YES | YES |
@@ -847,3 +847,94 @@ Locked claims' supporting artifacts become immutable in subsequent runs. The dis
 - Pending objections
 - Immutable artifact paths
 - PI feedback
+
+---
+
+## 18. Scientific Interpretation Layer
+
+### Purpose
+
+The interpretation layer adds *semantic judgment* to the existing structural gates (EVA, Sentinel, metric contracts). It answers: "Does this result make scientific sense?" — not just "Did the experiment run correctly?"
+
+### Module
+
+`src/voronoi/science/interpretation.py` — all public symbols re-exported from `voronoi.science`.
+
+### Four Mechanisms
+
+#### 18.1 Directional Hypothesis Verification
+
+Every finding carries a three-state directional classification:
+
+| State | Meaning | Trigger |
+|-------|---------|---------|
+| `confirmed` | Significant + correct direction | Normal flow |
+| `refuted_reversed` | Significant + **opposite** direction | Triggers Judgment Tribunal |
+| `inconclusive` | Not significant | No action needed |
+
+The Investigator classifies direction at finding-commit time by comparing observed effect direction to the pre-registered `EXPECTED_DIRECTION` field. The Statistician verifies at review time.
+
+**Convergence impact**: A `refuted_reversed` hypothesis blocks convergence at Analytical+ rigor until the finding is explained by a Tribunal verdict.
+
+```python
+def classify_direction(expected_direction: str, observed_direction: str, significant: bool) -> str
+```
+
+#### 18.2 Triviality Screening
+
+Classifies hypotheses as NOVEL / EXPECTED / TRIVIAL during plan review. The Theorist performs this classification; `screen_triviality()` provides a structured output format.
+
+| Classification | Action |
+|---|---|
+| `novel` | Full experiment |
+| `expected` | Sanity check, don't headline |
+| `trivial` | Skip or reframe |
+
+```python
+def screen_triviality(hypothesis_id: str, hypothesis_statement: str, ...) -> TrivialityResult
+```
+
+#### 18.3 Interpretation Requests & Judgment Tribunal
+
+When a finding contradicts the causal model, an `InterpretationRequest` triggers the Judgment Tribunal — a multi-agent deliberation (Theorist + Statistician + Methodologist, plus Critic at pre-convergence).
+
+**Triggers**: `refuted_reversed`, contradiction, `SURPRISING` flag, pre-convergence review.
+
+**Tribunal output**: `.swarm/tribunal-verdicts.json` — a list of `TribunalResult` objects.
+
+| Verdict | Action | Convergence |
+|---------|--------|:-----------:|
+| `explained` | Explanation tested from existing data | Allowed |
+| `anomaly_unresolved` | Needs new experiment | **Blocked** |
+| `artifact` | Experimental design flaw | **Blocked** (DESIGN_INVALID) |
+| `trivial` | Result is obvious | Allowed, downgraded in deliverable |
+
+**Tribunal composition**:
+
+| Tribunal Type | When | Agents |
+|---|---|---|
+| Mid-run | REFUTED_REVERSED or SURPRISING detected | Theorist + Statistician + Methodologist |
+| Pre-convergence | Before any convergence at Analytical+ | Theorist + Statistician + Methodologist + Critic |
+
+```python
+def check_tribunal_clear(workspace: Path) -> tuple[bool, list[str]]
+def has_reversed_hypotheses(workspace: Path) -> tuple[bool, list[str]]
+```
+
+#### 18.4 Continuation Proposals
+
+After self-critique, the system generates ranked follow-up experiment proposals from tribunal verdicts, challenged claims, and single-evidence claims.
+
+```python
+def generate_continuation_proposals(ledger: ClaimLedger, tribunal_results: list[TribunalResult] | None = None) -> list[ContinuationProposal]
+```
+
+Proposals are ranked by information gain and saved to `.swarm/continuation-proposals.json` for PI review during `/deliberate` or `/review`.
+
+### Evaluator Scoring: CCSAN
+
+The evaluator formula gains a fifth dimension **N (Non-triviality)**:
+
+$$\text{OVERALL} = 0.25C + 0.20C_o + 0.20S + 0.15A + 0.20N$$
+
+Non-triviality below 0.4 triggers an improvement round.

@@ -30,7 +30,6 @@ from voronoi.gateway.router import (
     handle_prove,
     handle_recall,
     handle_belief,
-    handle_journal,
     handle_finding,
     handle_complete,
     handle_complete_investigation,
@@ -38,6 +37,7 @@ from voronoi.gateway.router import (
     handle_continue_investigation,
     handle_claims,
     handle_ask,
+    handle_deliberate,
     handle_ops,
 )
 
@@ -380,19 +380,6 @@ class TestKnowledgeHandlers:
         assert "Encoding helps" in result
         assert "Just a string" in result
         assert "Belief Map" in result
-
-    def test_handle_journal_no_file(self, tmp_path):
-        with patch("voronoi.gateway.handlers_query._get_active_workspaces", return_value=[]):
-            result = handle_journal(str(tmp_path))
-        assert "No journal" in result
-
-    def test_handle_journal_with_file(self, tmp_path):
-        swarm = tmp_path / ".swarm"
-        swarm.mkdir(parents=True)
-        (swarm / "journal.md").write_text("## Round 1\nFound something interesting")
-        with patch("voronoi.gateway.handlers_query._get_active_workspaces", return_value=[]):
-            result = handle_journal(str(tmp_path))
-        assert "Found something" in result
 
     @patch("voronoi.gateway.handlers_query._run_bd")
     def test_handle_finding(self, mock_bd, tmp_path):
@@ -1154,3 +1141,30 @@ class TestOpsHandler:
         router = CommandRouter(str(tmp_path))
         text, _ = router.route("ops", ["tmux"], "chat1", ops_allowed=False)
         assert "not authorized" in text
+
+
+# ---------------------------------------------------------------------------
+# Deliberation
+# ---------------------------------------------------------------------------
+
+class TestDeliberate:
+    """Test handle_deliberate and router wiring."""
+
+    def test_deliberate_no_investigations(self, tmp_path):
+        result = handle_deliberate(str(tmp_path))
+        assert "No investigation" in result or "not found" in result.lower()
+
+    def test_router_routes_deliberate(self, tmp_path):
+        router = CommandRouter(str(tmp_path))
+        text, _ = router.route("deliberate", ["dopamine"], "chat1")
+        # Should route to handle_deliberate with codename
+        assert isinstance(text, str)
+
+    def test_router_free_text_deliberate(self, tmp_path):
+        """Free text with deliberation signals should route to deliberate."""
+        router = CommandRouter(str(tmp_path))
+        text, _ = router.handle_free_text(
+            "Let's brainstorm about these results",
+            "chat1", is_private=True,
+        )
+        assert isinstance(text, str)

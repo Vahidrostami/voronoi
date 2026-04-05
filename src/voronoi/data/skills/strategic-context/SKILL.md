@@ -134,14 +134,13 @@ git commit -m "chore: update strategic context — cycle N"
 ### At Session Recovery
 
 ```bash
-# Session recovery reads strategic context FIRST (before journal)
+# Session recovery reads strategic context FIRST
 cat .swarm/strategic-context.md  # Strategic reasoning and decisions
-cat .swarm/journal.md            # Cycle-by-cycle summaries
 bd prime                         # Task state
 bd list --json                   # All tasks
 ```
 
-The strategic context document answers "why are we doing what we're doing?" while the journal answers "what happened?"
+The strategic context document answers both "why are we doing what we're doing?" and records the decision history across cycles.
 
 ## Injecting Context into Worker Prompts
 

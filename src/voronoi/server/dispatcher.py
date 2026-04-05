@@ -110,6 +110,7 @@ class RunningInvestigation:
     last_parked_digest_at: float = 0  # Last Telegram digest while parked (throttle to 5min)
     _criteria_alerts: set = field(default_factory=set)  # Track which criteria-progress alerts have fired
     _sentinel_missing_contract_warned: bool = False  # Track sentinel missing-contract warning
+    notified_reversed_hypotheses: set = field(default_factory=set)  # Track which reversed hypotheses have been alerted
 
     @property
     def label(self) -> str:
@@ -118,6 +119,41 @@ class RunningInvestigation:
     @property
     def log_path(self) -> Path:
         return self.workspace_path / ".swarm" / "agent.log"
+
+    def save_notification_state(self) -> None:
+        """Persist notification tracking sets so they survive dispatcher restart."""
+        state_path = self.workspace_path / ".swarm" / "dispatcher-notify-state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        data = {
+            "notified_findings": sorted(self.notified_findings),
+            "notified_design_invalid": sorted(self.notified_design_invalid),
+            "notified_reversed_hypotheses": sorted(self.notified_reversed_hypotheses),
+            "criteria_alerts": sorted(self._criteria_alerts),
+            "sentinel_missing_contract_warned": self._sentinel_missing_contract_warned,
+            "notified_paradigm_stress": self.notified_paradigm_stress,
+        }
+        try:
+            state_path.write_text(json.dumps(data, indent=2))
+        except OSError:
+            pass
+
+    def restore_notification_state(self) -> None:
+        """Restore notification tracking sets from disk after dispatcher restart."""
+        state_path = self.workspace_path / ".swarm" / "dispatcher-notify-state.json"
+        if not state_path.exists():
+            return
+        try:
+            data = json.loads(state_path.read_text())
+            if not isinstance(data, dict):
+                return
+            self.notified_findings = set(data.get("notified_findings", []))
+            self.notified_design_invalid = set(data.get("notified_design_invalid", []))
+            self.notified_reversed_hypotheses = set(data.get("notified_reversed_hypotheses", []))
+            self._criteria_alerts = set(data.get("criteria_alerts", []))
+            self._sentinel_missing_contract_warned = bool(data.get("sentinel_missing_contract_warned"))
+            self.notified_paradigm_stress = bool(data.get("notified_paradigm_stress"))
+        except (json.JSONDecodeError, OSError):
+            pass
 
 
 # Module-level weak reference to the active dispatcher, used by
@@ -259,6 +295,10 @@ class InvestigationDispatcher:
             # Restore task_snapshot from Beads so progress reporting is accurate
             self._restore_task_snapshot(run)
 
+            # Restore notification tracking sets from disk so we don't
+            # re-send alerts that were already delivered (BUG-003).
+            run.restore_notification_state()
+
             # Restore last_rigor from checkpoint so escalation state survives restart
             cp_path = _find_checkpoint(workspace_path)
             if cp_path is not None:
@@ -306,12 +346,7 @@ class InvestigationDispatcher:
         the row running) and ``queue.start()`` (which attaches the workspace).
         """
         try:
-            with self.queue._connect(immediate=True) as conn:
-                conn.execute(
-                    "UPDATE investigations SET status='queued', started_at=NULL "
-                    "WHERE id=? AND status='running' AND workspace_path IS NULL",
-                    (investigation_id,),
-                )
+            self.queue.requeue(investigation_id)
             logger.info("Re-queued unprovisioned investigation #%d", investigation_id)
         except Exception as e:
             logger.warning("Failed to re-queue #%d: %s", investigation_id, e)
@@ -330,6 +365,10 @@ class InvestigationDispatcher:
             workspace_path = Path(inv.workspace_path)
             logger.info("Continuation round %d for #%d — reusing workspace %s",
                         inv.cycle_number, inv.id, workspace_path)
+
+            # Build the warm-start prompt BEFORE prepare_continuation()
+            # deletes the checkpoint — the prompt needs checkpoint data (BUG-004).
+            prompt = self._build_prompt(inv, workspace_path)
 
             # Prepare workspace: archive .swarm/, tag boundary, prune worktrees
             parent_inv = self.queue.get(inv.parent_id)
@@ -379,7 +418,10 @@ class InvestigationDispatcher:
         rigor = getattr(inv, 'rigor', 'scientific') or 'scientific'
         self._patch_swarm_config(workspace_path, rigor)
 
-        prompt = self._build_prompt(inv, workspace_path)
+        # For non-continuation launches, build the prompt now (continuations
+        # built it earlier, before prepare_continuation deleted the checkpoint).
+        if not is_continuation:
+            prompt = self._build_prompt(inv, workspace_path)
         prompt_file = workspace_path / ".swarm" / "orchestrator-prompt.txt"
         prompt_file.parent.mkdir(parents=True, exist_ok=True)
         prompt_file.write_text(prompt)
@@ -703,6 +745,9 @@ class InvestigationDispatcher:
                 logger.warning("Failed to read eval-score.json for #%d: %s",
                                run.investigation_id, e)
 
+    # Hard upper bound for timeout overrides (1 week)
+    _MAX_TIMEOUT_HOURS: int = 168
+
     def _effective_timeout(self, run: RunningInvestigation) -> int:
         """Return the effective timeout for an investigation.
 
@@ -710,13 +755,15 @@ class InvestigationDispatcher:
         ``<workspace>/.swarm/timeout_hours``.  The file should contain a
         single integer (the new total timeout in hours).  If the file is
         missing or unreadable, falls back to ``self.config.timeout_hours``.
+
+        Capped at ``_MAX_TIMEOUT_HOURS`` to prevent runaway investigations.
         """
         override_path = run.workspace_path / ".swarm" / "timeout_hours"
         if override_path.exists():
             try:
                 value = int(override_path.read_text().strip())
                 if value > 0:
-                    return value
+                    return min(value, self._MAX_TIMEOUT_HOURS)
             except (ValueError, OSError):
                 pass
         return self.config.timeout_hours
@@ -793,7 +840,23 @@ class InvestigationDispatcher:
 
         if changed:
             try:
-                sc_path.write_text(json.dumps(criteria, indent=2))
+                # Atomic write: temp file + rename to avoid corrupting
+                # the file while the orchestrator agent may be reading it.
+                import tempfile
+                tmp_fd, tmp_path = tempfile.mkstemp(
+                    dir=str(sc_path.parent), suffix=".tmp",
+                )
+                try:
+                    os.write(tmp_fd, json.dumps(criteria, indent=2).encode())
+                    os.close(tmp_fd)
+                    os.replace(tmp_path, str(sc_path))
+                except BaseException:
+                    os.close(tmp_fd) if not os.get_inheritable(tmp_fd) else None
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+                    raise
                 logger.debug("Synced criteria_status → success-criteria.json for #%d",
                              run.investigation_id)
             except OSError:
@@ -1563,6 +1626,9 @@ class InvestigationDispatcher:
         if run.rigor in ("scientific", "experimental") and not run.notified_paradigm_stress:
             events.extend(self._check_paradigm_stress(run))
 
+        # Check for directionally reversed hypotheses (Analytical+ — Judgment Tribunal trigger)
+        events.extend(self._check_reversed_hypotheses(run))
+
         return events
 
     def _latest_checkpoint(self, run: RunningInvestigation) -> dict | None:
@@ -1637,6 +1703,59 @@ class InvestigationDispatcher:
                 })
         except Exception as e:
             logger.debug("Paradigm stress check failed: %s", e)
+        return events
+
+    def _check_reversed_hypotheses(self, run: RunningInvestigation) -> list[dict]:
+        """Check for directionally reversed hypotheses (Judgment Tribunal trigger).
+
+        When a hypothesis is marked refuted_reversed in the belief map and no
+        tribunal verdict explains it, generates an interpretation request and
+        alerts the PI.  This is the mid-run Tribunal trigger.
+        """
+        events: list[dict] = []
+        try:
+            from voronoi.science.interpretation import (
+                has_reversed_hypotheses,
+                generate_interpretation_request,
+                save_interpretation_request,
+            )
+            has_reversed, descriptions = has_reversed_hypotheses(run.workspace_path)
+            if not has_reversed:
+                return events
+
+            # Only alert for newly detected reversals
+            new_reversals = [d for d in descriptions
+                            if d not in run.notified_reversed_hypotheses]
+            if not new_reversals:
+                return events
+
+            for desc in new_reversals:
+                run.notified_reversed_hypotheses.add(desc)
+
+            # Write interpretation request for the orchestrator
+            # Extract hypothesis ID from the description if present
+            import re
+            h_match = re.search(r"Hypothesis (\S+)", new_reversals[0])
+            h_id = h_match.group(1) if h_match else ""
+            request = generate_interpretation_request(
+                finding_id="",  # orchestrator will fill from context
+                trigger="refuted_reversed",
+                hypothesis_id=h_id,
+            )
+            save_interpretation_request(run.workspace_path, request)
+
+            events.append({
+                "type": "design_invalid",  # Use design_invalid type to trigger milestone messaging
+                "msg": (
+                    "⚠️ *Judgment Tribunal needed* — directionally reversed hypothesis detected\n"
+                    + "\n".join(f"  • {d}" for d in new_reversals[:3])
+                    + "\nThe result is statistically significant but in the *opposite* direction "
+                    "of the prediction. A Tribunal (Theorist + Statistician + Methodologist) "
+                    "must explain this before convergence."
+                ),
+            })
+        except Exception as e:
+            logger.debug("Reversed hypothesis check failed: %s", e)
         return events
 
     def _check_heartbeat_stalls(self, run: RunningInvestigation) -> list[dict]:
@@ -1758,6 +1877,9 @@ class InvestigationDispatcher:
             msg_id = self.send_message(msg)
             if msg_id is not None:
                 run.status_message_id = msg_id
+
+        # Persist notification state so it survives dispatcher restarts
+        run.save_notification_state()
 
     def get_detail(self, inv_id: int | None = None) -> str:
         """Return a detailed (non-compact) digest for a running investigation."""
@@ -2260,7 +2382,7 @@ class InvestigationDispatcher:
             "credentials",
             "/login",
         )
-        return sum(marker in lowered for marker in auth_markers) >= 2
+        return sum(marker in lowered for marker in auth_markers) >= 3
 
     def _classify_incomplete_exit(self, run: RunningInvestigation) -> str:
         """Describe why a dead agent session is incomplete."""
@@ -3103,8 +3225,8 @@ class InvestigationDispatcher:
     def _transition_to_review(self, run: RunningInvestigation) -> None:
         """Transition a completed science investigation to review status.
 
-        Generates self-critique, syncs final findings to ledger, and sends
-        the review message to Telegram.
+        Generates self-critique, continuation proposals, syncs final findings
+        to ledger, and sends the review message to Telegram.
         """
         inv = self.queue.get(run.investigation_id)
         if inv is None:
@@ -3132,16 +3254,33 @@ class InvestigationDispatcher:
 
             save_ledger(inv.lineage_id, ledger, base_dir=self.config.base_dir)
 
+            # Generate continuation proposals from self-critique + tribunal verdicts
+            try:
+                from voronoi.science.interpretation import (
+                    generate_continuation_proposals,
+                    load_tribunal_results,
+                    save_continuation_proposals,
+                )
+                tribunal_results = load_tribunal_results(run.workspace_path)
+                proposals = generate_continuation_proposals(ledger, tribunal_results)
+                if proposals:
+                    save_continuation_proposals(run.workspace_path, proposals)
+            except Exception as e:
+                logger.debug("Continuation proposal generation failed: %s", e)
+
+            # Transition to review BEFORE sending the notification so that
+            # immediate /continue clicks find the correct status (BUG-002).
+            self.queue.review(run.investigation_id)
+
             # Build review message with claims
             review_text = self._build_review_message(run, ledger)
             self.send_message(review_text)
         else:
+            self.queue.review(run.investigation_id)
             self.send_message(
                 f"🔬 *{run.label}* converged — ready for review.\n"
                 f"Reply with feedback or send `/voronoi continue {run.label}` to iterate."
             )
-
-        self.queue.review(run.investigation_id)
 
     def _build_review_message(self, run: RunningInvestigation,
                               ledger) -> str:
@@ -3170,8 +3309,20 @@ class InvestigationDispatcher:
             for obj in surfaced[:5]:
                 lines.append(f"  • {obj.concern}")
 
+        # Show continuation proposals if available
+        try:
+            from voronoi.science.interpretation import load_continuation_proposals
+            proposals = load_continuation_proposals(run.workspace_path)
+            if proposals:
+                lines.append("\n📋 *Suggested follow-ups (ranked by information gain):*")
+                for p in proposals[:5]:
+                    lines.append(f"  {p.id}. {p.description} [{p.effort}]")
+        except Exception:
+            pass
+
         lines.append(
             "\nReply with your feedback, or:\n"
+            f"`/voronoi deliberate {run.label}` — reason about results interactively\n"
             f"`/voronoi continue {run.label}` — run another round\n"
             f"`/voronoi complete {run.label}` — accept and close"
         )

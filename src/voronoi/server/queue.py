@@ -26,7 +26,7 @@ class Investigation:
     question: str = ""
     slug: str = ""
     mode: str = "discover"         # discover | prove
-    rigor: str = "scientific"
+    rigor: str = "adaptive"
     codename: str = ""               # brain-themed codename (e.g. "Dopamine")
     workspace_path: Optional[str] = None
     sandbox_id: Optional[str] = None
@@ -437,6 +437,24 @@ class InvestigationQueue:
             )
             return cursor.rowcount > 0
 
+    def requeue(self, investigation_id: int) -> bool:
+        """Reset a running-but-unprovisioned investigation back to queued.
+
+        This is a recovery transition for the crash window between
+        ``next_ready()`` (which marks the row running) and ``start()``
+        (which attaches the workspace).  Only succeeds if the row is
+        running AND has no workspace_path yet.
+
+        Returns True if the status was actually changed.
+        """
+        with self._connect(immediate=True) as conn:
+            cursor = conn.execute(
+                "UPDATE investigations SET status='queued', started_at=NULL "
+                "WHERE id=? AND status='running' AND workspace_path IS NULL",
+                (investigation_id,),
+            )
+            return cursor.rowcount > 0
+
     def review(self, investigation_id: int) -> bool:
         """Transition a running investigation to review status.
 
@@ -695,7 +713,7 @@ class InvestigationQueue:
             question=row["question"],
             slug=row["slug"],
             mode=row["mode"],
-            rigor=row["rigor"],
+            rigor=row["rigor"] or "adaptive",
             codename=row["codename"],
             workspace_path=row["workspace_path"],
             sandbox_id=row["sandbox_id"],

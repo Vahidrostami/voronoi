@@ -666,10 +666,6 @@ class ReportGenerator:
             if belief_simple:
                 sections.append(f"## Belief Map\n\n{belief_simple}\n")
 
-        journal = self._read_file(".swarm", "journal.md")
-        if journal:
-            sections.append(f"## Methodology & Journal\n\n{journal}\n")
-
         # Full deliverable
         if deliverable:
             sections.append(f"## Detailed Conclusion\n\n{deliverable}\n")
@@ -746,10 +742,6 @@ class ReportGenerator:
                 negatives = self._render_negative_results(findings)
                 if negatives:
                     sections.append(f"\n### Negative Results\n\n{negatives}\n")
-
-            journal = self._read_file(".swarm", "journal.md")
-            if journal:
-                sections.append(f"## Methods\n\n{journal}\n")
 
             # Belief map narrative for Discussion
             belief_narrative = self._render_belief_narrative()

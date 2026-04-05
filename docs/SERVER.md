@@ -96,6 +96,7 @@ class Investigation:
 - `cancel()` transitions `queued → cancelled` (pre-launch cancellation).
 - `fail()` accepts both `running` and `paused` investigations.
 - `continue_investigation()` performs INSERT + workspace transfer + parent status update in a single atomic transaction.
+- `requeue()` transitions `running → queued` ONLY when `workspace_path IS NULL` (crash recovery for unprovisioned claims).
 
 ### InvestigationQueue API
 
@@ -115,6 +116,7 @@ class InvestigationQueue:
     def abort(self, investigation_id: int, error: str = "...") -> bool: ...  # running → cancelled
     def pause(self, investigation_id: int, reason: str) -> None: ...    # running → paused
     def resume(self, investigation_id: int) -> None: ...                # paused|failed → running
+    def requeue(self, investigation_id: int) -> bool: ...               # running → queued (unprovisioned only)
     def review(self, investigation_id: int) -> bool: ...                # running → review
     def accept(self, investigation_id: int) -> bool: ...                # review → complete
     def continue_investigation(self, investigation_id: int,
@@ -314,6 +316,7 @@ class InvestigationDispatcher:
      - `_check_sentinel()` — experiment contract validation (see SCIENCE.md §10)
      - `_detect_phase()` — classifies phase from workspace file artifacts; detects rigor escalation
      - `_check_paradigm_stress()` — detects contradictions (Scientific+ only)
+     - `_check_reversed_hypotheses()` — detects hypotheses with `refuted_reversed` status; writes `.swarm/interpretation-request.json` and sends Telegram alert (Judgment Tribunal trigger)
      - `_check_heartbeat_stalls()` — detects agent inactivity via heartbeat files
      - `_check_event_log()` — reads `.swarm/events.jsonl` for failures, token spend, serendipity
    - **If orchestrator is parked**: accumulate events in `pending_events` for the resume prompt. Throttle Telegram digest edits to every 5 minutes (milestones still sent immediately).
@@ -346,6 +349,29 @@ Worker liveness (`_has_active_workers()`):
 3. Falls back to `pgrep` for orphaned processes whose cwd is inside the workspace.
 
 Findings and serendipity are accumulated and delivered in the resume prompt — they do NOT trigger immediate wake because they are not time-sensitive. The orchestrator evaluates them with fresh context.
+
+### Tribunal Trigger (Reversed Hypotheses)
+
+During each progress poll, `_check_reversed_hypotheses()` scans `belief-map.json` for hypotheses with `status = "refuted_reversed"` that have no corresponding tribunal verdict in `tribunal-verdicts.json`.
+
+When an unexplained reversal is detected:
+1. Writes `.swarm/interpretation-request.json` with trigger details
+2. Sends a Telegram alert (milestone-type message) notifying the PI
+3. Deduplicates via `notified_reversed_hypotheses` set on `RunningInvestigation`
+
+The orchestrator reads the interpretation request at its next OODA cycle and dispatches a Judgment Tribunal session (Theorist + Statistician + Methodologist). The tribunal writes its verdict to `.swarm/tribunal-verdicts.json`.
+
+Convergence is blocked while any `ANOMALY_UNRESOLVED` tribunal verdict exists (enforced by `check_tribunal_clear()` in `convergence.py`).
+
+### Transition to Review
+
+When a science investigation completes, `_transition_to_review()`:
+1. Syncs findings to the Claim Ledger
+2. Promotes provisional claims to asserted
+3. Generates self-critique objections
+4. Generates continuation proposals from tribunal verdicts + self-critique (via `generate_continuation_proposals()`)
+5. Saves proposals to `.swarm/continuation-proposals.json`
+6. Sends review message including proposals and a link to `/voronoi deliberate`
 
 ### Human Review Gates (Scientific+ Rigor)
 
@@ -579,9 +605,21 @@ Skills are referenced as paths (e.g., `.github/skills/deep-research/SKILL.md`) i
 - Compile to `paper.pdf` using the compilation-protocol skill
 - Place paper in the output directory from the project brief
 - Write `.swarm/deliverable.md` as a SHORT summary (convergence signal), not the paper
-- Copy `paper.pdf` to `.swarm/report.pdf` for Telegram delivery
 
 This prevents the orchestrator's LLM-generated briefing from accidentally telling the Scribe to write Markdown.
+
+### Tribunal Prompt Builder
+
+`build_tribunal_prompt()` generates a structured prompt for the Judgment Tribunal — a multi-agent deliberation session (Theorist + Statistician + Methodologist) that evaluates whether a surprising finding makes scientific sense.
+
+Parameters: `finding_id`, `trigger`, `hypothesis_id`, `expected`, `observed`, `causal_dag_summary`, `belief_map_summary`, `workspace_path`.
+
+The prompt instructs each tribunal agent to perform their role:
+- **Theorist**: Generate 2-3 competing explanations with discriminating experiments
+- **Statistician**: Robustness check, sensitivity analysis, direction verification
+- **Methodologist**: Design artifact check, confound analysis
+
+Output: `.swarm/tribunal-verdicts.json` with verdict (`explained | anomaly_unresolved | artifact | trivial`).
 
 ---
 

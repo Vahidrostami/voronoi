@@ -409,12 +409,10 @@ PHASE 2 — LATEX COMPILATION:
 PHASE 3 — VERIFICATION:
 8. Verify the PDF has all sections, figures, tables, and bibliography
 9. Check that no figures show as blank boxes or "[?]" references
-10. Copy final PDF to `.swarm/report.pdf`
-11. Commit and push
+10. Commit and push
 ```
 
-The compiled PDF at `.swarm/report.pdf` is what gets sent to the user via Telegram.
-Do NOT rely on post-processing — the agent must produce a publication-ready PDF.
+The compiled PDF is delivered to the user via Telegram automatically by the dispatcher.
 
 ## Diminishing Returns Detection
 

@@ -110,7 +110,7 @@ All 12 roles from the start.
 12. **Statistician Review** — Independent recomputation, interpretation metadata
 13. **Critic Review** — Partially blinded adversarial review
 14. **Synthesis** — Claim-evidence registry → deliverable (report or manuscript)
-15. **Evaluation** — CCSA scoring with structured feedback
+15. **Evaluation** — CCSAN scoring with structured feedback
 16. **Convergence** — All hypotheses resolved, no paradigm stress, eval ≥ 0.75
 
 ### Human Review Gates (PROVE mode)
@@ -342,9 +342,40 @@ The self-verification protocol (test loop + checklist + incremental Beads commit
 - Max retries vary by role (2-5)
 - Only escalates after exhausting self-repair
 
-### Why Three Loops
+### Why Three Loops (+ Judgment Loop)
 
 The inner loop prevents agent execution failures from cluttering the orchestrator's strategic view. The outer loop (dispatcher) prevents infrastructure concerns from cluttering the orchestrator's scientific reasoning. The orchestrator only sees "workers finished, here are findings" — never process IDs, tmux windows, or git merge conflicts.
+
+### Judgment Loop (Interpretation)
+
+When a finding contradicts the causal model (`refuted_reversed` status) or pre-convergence review is needed, the dispatcher triggers a **Judgment Tribunal** — a focused multi-agent deliberation session.
+
+```
+Dispatcher detects REFUTED_REVERSED → writes interpretation-request.json
+     ↓
+Orchestrator reads request → dispatches Tribunal session
+     ↓
+Theorist: explain vs causal model → 2-3 competing explanations
+Statistician: robustness check → sensitivity analysis + direction verification
+Methodologist: design artifact check → confound analysis
+(+ Critic at pre-convergence only)
+     ↓
+Output: .swarm/tribunal-verdicts.json
+     ↓
+Verdict: EXPLAINED → allowed to converge
+         ANOMALY_UNRESOLVED → convergence BLOCKED → dispatch follow-up
+         ARTIFACT → DESIGN_INVALID escalation
+         TRIVIAL → downgraded in deliverable
+```
+
+**Tribunal composition:**
+
+| Type | When | Agents |
+|---|---|---|
+| Mid-run | REFUTED_REVERSED or SURPRISING detected | Theorist + Statistician + Methodologist |
+| Pre-convergence | Before convergence at Analytical+ | Theorist + Statistician + Methodologist + Critic |
+
+The Judgment Loop is NOT a replacement for any existing loop. It is a targeted intervention that runs between the middle loop (orchestrator) and convergence, ensuring findings are scientifically coherent before the investigation can complete.
 
 ---
 

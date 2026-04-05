@@ -210,14 +210,6 @@ class KnowledgeStore:
             # FTS5 not available or query syntax error — degrade gracefully
             return {}
 
-    def get_journal(self, max_lines: int = 30) -> Optional[str]:
-        """Read the latest journal entries."""
-        journal = Path(self.project_dir) / ".swarm" / "journal.md"
-        if not journal.exists():
-            return None
-        lines = journal.read_text().strip().split("\n")
-        return "\n".join(lines[-max_lines:])
-
     def get_belief_map(self) -> Optional[str]:
         """Read the current belief map."""
         # Check for belief map in .swarm/

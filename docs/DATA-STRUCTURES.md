@@ -16,6 +16,7 @@ class WorkflowMode(Enum):
     RECALL = "recall"         # Meta: search knowledge store
     GUIDE = "guide"           # Meta: operator guidance
     ASK = "ask"               # Meta: question about a running investigation
+    DELIBERATE = "deliberate" # Meta: multi-turn Socratic reasoning about results
 ```
 
 ### RigorLevel (`gateway/intent.py`)
@@ -45,7 +46,7 @@ class ClassifiedIntent:
     @property
     def is_science(self) -> bool: ...   # DISCOVER | PROVE
     @property
-    def is_meta(self) -> bool: ...      # STATUS | RECALL | GUIDE | ASK
+    def is_meta(self) -> bool: ...      # STATUS | RECALL | GUIDE | ASK | DELIBERATE
 ```
 
 ### ClassifiedPhase (`gateway/intent.py`)
@@ -293,6 +294,7 @@ class PreRegistration:
     sensitivity_plan: str
     approved_by: str
     deviations: list[str]
+    expected_direction: str  # e.g. "higher_is_better", "L4_A < L4_D"
 ```
 
 ### Hypothesis (`science/convergence.py`)
@@ -311,6 +313,71 @@ class Hypothesis:
     confidence: str             # unknown | hunch | supported | strong | resolved
     rationale: str              # Evidence-linked reasoning for current confidence
     next_test: str              # What would change confidence
+```
+
+**Hypothesis status values**: `untested | testing | confirmed | refuted | refuted_reversed | merged`
+
+`refuted_reversed` indicates a statistically significant result in the **opposite** direction of the prediction. This triggers the Judgment Tribunal.
+
+### Interpretation Layer Dataclasses (`science/interpretation.py`)
+
+```python
+class DirectionMatch:
+    CONFIRMED = "confirmed"           # Significant + correct direction
+    REFUTED_REVERSED = "refuted_reversed"  # Significant + opposite direction
+    INCONCLUSIVE = "inconclusive"      # Not significant
+
+class TrivialityClass:
+    NOVEL = "novel"        # Outcome genuinely uncertain — full investigation
+    EXPECTED = "expected"  # Outcome likely but confirmation useful — sanity check
+    TRIVIAL = "trivial"    # Outcome obvious — skip or reframe
+
+class TribunalVerdict:
+    EXPLAINED = "explained"                    # Coherent explanation found
+    ANOMALY_UNRESOLVED = "anomaly_unresolved"  # No satisfying explanation — BLOCKS convergence
+    ARTIFACT = "artifact"                      # Design flaw — DESIGN_INVALID
+    TRIVIAL = "trivial"                        # Result is expected/obvious
+```
+
+```python
+@dataclass
+class InterpretationRequest:
+    finding_id: str
+    trigger: str               # refuted_reversed | contradiction | surprising | pre_convergence
+    hypothesis_id: str
+    expected: str
+    observed: str
+    causal_edges_violated: list[str]
+    timestamp: str
+
+@dataclass
+class TribunalResult:
+    finding_id: str
+    verdict: str               # TribunalVerdict constant
+    explanations: list[Explanation]
+    recommended_action: str
+    trivial_to_resolve: bool
+    tribunal_agents: list[str]
+    timestamp: str
+
+@dataclass
+class Explanation:
+    id: str                    # E1, E2, etc.
+    theory: str
+    test: str                  # Minimal experiment to test it
+    effort: str                # trivial | moderate | substantial
+    tested: bool
+    test_result: str
+
+@dataclass
+class ContinuationProposal:
+    id: str
+    target_claim: str
+    description: str
+    rationale: str
+    experiment_type: str       # targeted | replication | exploration
+    information_gain: float    # 0.0–1.0
+    effort: str                # trivial | moderate | substantial
 ```
 
 ### ConvergenceResult (`science/convergence.py`)

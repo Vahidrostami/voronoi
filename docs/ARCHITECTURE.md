@@ -2,7 +2,7 @@
 
 > System-level architecture, layers, data flow, deployment topology.
 
-**TL;DR**: 4 layers (Entry → Gateway → Server → Execution) + Science layer. Agents communicate via git + Beads + `.swarm/` files only. Orchestrator never enters worktrees. State externalized to files. Zero runtime deps for core. CLI and Telegram both use `prompt.py` as single prompt source.
+**TL;DR**: 4 layers (Entry → Gateway → Server → Execution) + Science layer. Agents communicate via git + Beads + `.swarm/` files only. Orchestrator never enters worktrees. State externalized to files. Zero runtime deps for core. CLI and Telegram both use `prompt.py` as single prompt source. Science layer includes an interpretive coherence gate (directional verification, triviality screening, Judgment Tribunal) that validates findings make scientific sense — not just that experiments ran correctly.
 
 ## 1. System Overview
 
@@ -48,6 +48,7 @@ The system is organized into four layers, each with clear responsibilities and b
 │   dispatcher.py — the always-on outer loop:          │
 │     collect events · wake orchestrator when needed    │
 │     accumulate pending_events while parked           │
+│     detect reversed hypotheses · trigger tribunal    │
 │     auto-merge worker branches · throttle digests    │
 │   queue.py · prompt.py · workspace.py · sandbox.py  │
 │   runner.py · publisher.py · repo_url.py · events.py│
@@ -72,25 +73,36 @@ The system is organized into four layers, each with clear responsibilities and b
 ┌──────────────────────▼──────────────────────────────┐
 │                   Science Layer                      │
 │   science/ subpackage:                               │
-│   _helpers · convergence · fabrication · gates        │
+│   consistency · convergence · fabrication · gates     │
 │   claims (cross-run scientific state)                │
+│   interpretation (directional verification,          │
+│     triviality, tribunal, continuation proposals)    │
 └─────────────────────────────────────────────────────┘
 ```
 
-### Three Loops
+### Three Loops + Judgment Loop
 
 ```
 Outer Loop  — Dispatcher (code, always on, reliable)
 │  Decides: "Does the orchestrator need to be called?"
+│  Detects: reversed hypotheses, DESIGN_INVALID, worker completion
 │  Does NOT: Reason about science, pick hypotheses, evaluate findings
 │
 └── Middle Loop — Orchestrator (LLM, episodic sessions, creative)
     │  Decides: Everything about the science
     │  Does NOT: Monitor processes, manage tmux, sleep, merge git
     │
-    └── Inner Loop — Workers (LLM, one-shot, focused)
-           Execute one task, verify, commit. No strategic decisions.
+    ├── Inner Loop — Workers (LLM, one-shot, focused)
+    │      Execute one task, verify, classify direction, commit.
+    │
+    └── Judgment Loop — Tribunal (LLM, multi-agent deliberation)
+           Triggered by REFUTED_REVERSED or pre-convergence review.
+           Theorist + Statistician + Methodologist (+ Critic at pre-convergence).
+           Evaluates whether surprising findings make scientific sense.
+           Output: tribunal-verdicts.json → blocks or enables convergence.
 ```
+
+The Judgment Loop is NOT a replacement for any existing loop — it is a targeted intervention that runs between experiment completion and convergence when findings contradict the causal model.
 
 ### Layer Contracts
 
@@ -120,9 +132,19 @@ User message → telegram-bridge.py → CommandRouter.route() or .handle_free_te
                      ↓
               intent.classify() → mode + rigor
                      ↓
-              router → queue.py → dispatcher.py → workspace.py → prompt.py → tmux + copilot
-                     ↓
-              dispatcher.poll_progress() → build_digest() → Telegram (every 30s)
+              ┌──────┴────────────────────────────────┐
+              │                                        │
+         DISCOVER/PROVE                          DELIBERATE
+              │                                        │
+      router → queue.py →                    handle_deliberate()
+      dispatcher.py →                        loads investigation context
+      workspace.py →                         (belief map, tribunal verdicts,
+      prompt.py →                             continuation proposals)
+      tmux + copilot                         returns structured summary
+              │                                        │
+      dispatcher.poll_progress()             user reviews → /continue
+      → build_digest()
+      → Telegram (every 30s)
 ```
 
 `telegram-bridge.py` runs as a standalone process with singleton lock. It hosts both the PTB (python-telegram-bot) handler and the dispatcher's background jobs (dispatch every 10s, progress every 30s).
@@ -157,7 +179,6 @@ Agents do NOT communicate through custom IPC. All inter-agent communication flow
 ```
 .swarm/
 ├── belief-map.json          # Hypothesis probabilities
-├── journal.md               # Narrative continuity across OODA cycles
 ├── strategic-context.md     # Decision rationale, dead ends, gaps
 ├── experiments.tsv          # Append-only experiment ledger
 ├── success-criteria.json    # What success looks like (metric contracts)
@@ -165,6 +186,9 @@ Agents do NOT communicate through custom IPC. All inter-agent communication flow
 ├── deliverable.md           # Final output (report or manuscript)
 ├── eval-score.json          # Evaluator score
 ├── convergence.json         # Convergence result (written at end)
+├── interpretation-request.json  # Tribunal trigger (written by dispatcher on REFUTED_REVERSED)
+├── tribunal-verdicts.json   # Tribunal outputs (EXPLAINED|ANOMALY_UNRESOLVED|ARTIFACT|TRIVIAL)
+├── continuation-proposals.json  # Ranked follow-up experiments (generated at review)
 ├── lab-notebook.json        # Lab notebook entries per OODA cycle
 ├── verify-log-<id>.jsonl    # Per-task verify loop iterations
 ├── events.jsonl             # Structured event log (tool calls, tests, findings)
@@ -247,7 +271,7 @@ src/voronoi/data/
     └── data-integrity/              # SHA-256 hashing + raw data preservation
 ```
 
-## 6. Infrastructure Scripts
+## 6b. Infrastructure Scripts
 
 Pure plumbing — no decision logic. The orchestrator makes all decisions.
 
@@ -394,16 +418,16 @@ The MCP server reinforces invariants at the tool boundary and writes canonical f
 | Docker | NO | Sandbox isolation (fallback to host) |
 | gh CLI | NO | GitHub publishing |
 
-## 9. Data Flow: Investigation Lifecycle
+## 9b. Data Flow: Investigation Lifecycle
 
 ```
 User question
      │
      ▼
-[Intent Classifier] ─── mode + rigor
+[Intent Classifier] ─── mode + rigor (DISCOVER / PROVE / DELIBERATE)
      │
      ▼
-[Investigation Queue] ─── SQLite: queued → running → complete
+[Investigation Queue] ─── SQLite: queued → running → review → complete
      │
      ▼
 [Dispatcher] ─── provisions workspace, builds prompt
@@ -413,27 +437,38 @@ User question
      │
      ├──► [Scout] ─── prior knowledge, SOTA
      │
-     ├──► [Worker 1] ─── git worktree + tmux window
-     ├──► [Worker 2] ─── git worktree + tmux window
-     ├──► [Worker N] ─── git worktree + tmux window
+     ├──► [Theorist] ─── causal model, triviality screening
+     │
+     ├──► [Worker 1..N] ─── git worktree + tmux window each
      │         │
      │         ▼
      │    [Verify Loop] ─── test/lint/artifact per worker
      │         │
      │         ▼
-     │    [EVA] ─── experimental validity audit (investigators only)
+     │    [EVA] ─── experimental validity audit
+     │         │
+     │         ▼
+     │    [Direction Classification] ─── CONFIRMED / REFUTED_REVERSED / INCONCLUSIVE
      │
      ▼
-[Review Gates] ─── Statistician → Critic → Evaluator
+[Review Gates] ─── Statistician (+ direction verify) → Critic → Evaluator (CCSAN)
+     │
+     ├── REFUTED_REVERSED? ──► [Judgment Tribunal]
+     │                          Theorist + Statistician + Methodologist
+     │                          Output: tribunal-verdicts.json
+     │                          ANOMALY_UNRESOLVED → block convergence
      │
      ▼
 [Synthesizer] ─── deliverable.md + claim-evidence.json
      │
      ▼
-[Convergence Check] ─── rigor-specific criteria
+[Pre-Convergence Tribunal] ─── mandatory at Analytical+ (+ Critic)
      │
      ▼
-[Report Generator] ─── teaser + PDF → Telegram/stdout
+[Convergence Check] ─── rigor-specific criteria + tribunal clear + no reversals
+     │
+     ▼
+[Report Generator] ─── teaser + PDF + continuation proposals → Telegram/stdout
 ```
 
 ## 10. Key Design Decisions

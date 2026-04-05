@@ -188,19 +188,6 @@ class TestKnowledgeStoreSearch:
 # ---------------------------------------------------------------------------
 
 class TestKnowledgeStoreFiles:
-    def test_get_journal_exists(self, tmp_path):
-        swarm = tmp_path / ".swarm"
-        swarm.mkdir()
-        (swarm / "journal.md").write_text("## Round 1\nDiscovered X\n\n## Round 2\nConfirmed Y\n")
-        ks = KnowledgeStore(tmp_path)
-        journal = ks.get_journal()
-        assert "Discovered X" in journal
-        assert "Confirmed Y" in journal
-
-    def test_get_journal_missing(self, tmp_path):
-        ks = KnowledgeStore(tmp_path)
-        assert ks.get_journal() is None
-
     def test_get_belief_map_md(self, tmp_path):
         swarm = tmp_path / ".swarm"
         swarm.mkdir()

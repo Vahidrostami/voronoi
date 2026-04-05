@@ -11,13 +11,13 @@
 | 1 | Orchestrator | `swarm-orchestrator.agent.md` | Always | OODA loop, convergence, paradigm checks |
 | 2 | Builder | `worker-agent.agent.md` | Standard+ | Implements code in isolated worktree |
 | 3 | Scout | `scout.agent.md` | Analytical+ | Prior knowledge research, SOTA anchoring |
-| 4 | Investigator | `investigator.agent.md` | Analytical+ | Pre-registered experiments, raw data + SHA-256 |
+| 4 | Investigator | `investigator.agent.md` | Analytical+ | Pre-registered experiments, raw data + SHA-256, directional classification |
 | 5 | Explorer | `explorer.agent.md` | Analytical+ | Option evaluation with comparison matrices |
-| 6 | Statistician | `statistician.agent.md` | Analytical+ | CI, effect sizes, data integrity, p-hacking flags |
+| 6 | Statistician | `statistician.agent.md` | Analytical+ | CI, effect sizes, data integrity, p-hacking flags, direction verification |
 | 7 | Critic | `critic.agent.md` | Standard+ | Adversarial review; partially blinded at Scientific+ |
 | 8 | Synthesizer | `synthesizer.agent.md` | Analytical+ | Consistency checks, claim-evidence registry, deliverable |
-| 9 | Evaluator | `evaluator.agent.md` | Analytical+ | Scores deliverable: CCSA formula |
-| 10 | Theorist | `theorist.agent.md` | Scientific+ | Causal models, competing theories, paradigm stress |
+| 9 | Evaluator | `evaluator.agent.md` | Analytical+ | Scores deliverable: CCSAN formula (includes Non-triviality) |
+| 10 | Theorist | `theorist.agent.md` | Scientific+ | Causal models, competing theories, paradigm stress, triviality screening, explanation audit |
 | 11 | Methodologist | `methodologist.agent.md` | Scientific+ | Experimental design review, power analysis |
 | 12 | Scribe | `scribe.agent.md` | Analytical+ | LaTeX paper compilation |
 
@@ -42,7 +42,7 @@ The orchestrator selects roles based on the classified rigor level. Roles CANNOT
 
 **Responsibilities**:
 - Run the OODA loop (Observe → Orient → Decide → Act)
-- Maintain `.swarm/` state files (belief map, journal, strategic context)
+- Maintain `.swarm/` state files (belief map, strategic context)
 - Dispatch workers via `spawn-agent.sh`
 - Merge completed work via `merge-agent.sh`
 - Monitor convergence and paradigm stress
@@ -171,13 +171,14 @@ The orchestrator selects roles based on the classified rigor level. Roles CANNOT
 
 **File**: `src/voronoi/data/agents/evaluator.agent.md`
 
-**Analytical+ activation.** Scores the deliverable using CCSA formula.
+**Analytical+ activation.** Scores the deliverable using CCSAN formula.
 
-**CCSA Formula**:
+**CCSAN Formula**:
 - **C**ompleteness — Are all questions addressed?
 - **C**oherence — Does the narrative flow logically?
 - **S**trength — Is every claim backed by evidence?
 - **A**ctionability — Can someone act on the conclusions?
+- **N**on-triviality — Are the findings informative vs trivially expected?
 
 Score output: `.swarm/eval-score.json`
 
@@ -197,6 +198,10 @@ Score output: `.swarm/eval-score.json`
 - Propose competing theories
 - Detect paradigm stress (findings contradict working theory)
 - Flag serendipitous discoveries
+- **Triviality screening**: Classify hypotheses as NOVEL/EXPECTED/TRIVIAL during plan review
+- **Explanation audit**: When findings are `refuted_reversed`, generate 2-3 competing explanations with discriminating experiments (Tribunal)
+- **DAG revision**: After surprising findings, revise the causal DAG and document changes
+- **Pre-convergence synthesis**: Verify the final narrative makes causal sense
 
 ### 3.11 Methodologist
 
@@ -213,6 +218,32 @@ Score output: `.swarm/eval-score.json`
 - Conduct power analysis
 - Post-mortem review of `DESIGN_INVALID` experiments
 - Prescribe specific redesigns with validation steps
+- **Tribunal participation**: Check for design artifacts and confounds when findings are surprising
+
+### 3.12 Judgment Tribunal (Coordination Pattern)
+
+**Not a role** — a coordination pattern involving Theorist + Statistician + Methodologist (+ Critic at pre-convergence).
+
+**Triggers**: `refuted_reversed` hypothesis, contradiction between findings, `SURPRISING` flag, pre-convergence review (mandatory at Analytical+).
+
+**Process**: Each participant evaluates the surprising finding from their perspective:
+- Theorist: Explain vs causal model → competing explanations
+- Statistician: Robustness check → sensitivity analysis + direction verification
+- Methodologist: Design artifact check → confound analysis
+- Critic (pre-convergence only): Adversarially challenge the tribunal's own explanations
+
+**Output**: `.swarm/tribunal-verdicts.json` — verdict per finding.
+
+**Verdicts**: EXPLAINED | ANOMALY_UNRESOLVED (blocks convergence) | ARTIFACT (DESIGN_INVALID) | TRIVIAL
+
+### 3.13 Continuation Proposals
+
+Generated automatically at review time by `generate_continuation_proposals()` from:
+1. Tribunal verdicts with untested explanations (highest priority, information_gain=0.9)
+2. Challenged claims with pending objections (information_gain=0.7)
+3. Single-evidence claims needing replication (information_gain=0.5)
+
+Ranked by information gain. Shown to PI during `/voronoi review` and `/voronoi deliberate`.
 
 ---
 

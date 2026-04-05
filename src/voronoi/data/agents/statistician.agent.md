@@ -70,6 +70,26 @@ bd update <finding-id> --notes "SUPPORTS_HYPOTHESIS:[hypothesis ID and name, e.g
 The report generator uses these fields to build interpreted findings sections.
 Without them, the final report will contain bare numbers without context.
 
+### 3b. Directional Verification — MANDATORY
+
+For EVERY finding, verify the Investigator's `DIRECTION_MATCH` classification:
+
+1. **Read the pre-registration** `EXPECTED_DIRECTION` from the source task
+2. **Compare** the observed effect direction to the expected direction
+3. **Verify** the Investigator's classification is correct:
+   - `confirmed`: Significant AND same direction as expected
+   - `refuted_reversed`: Significant AND opposite direction (THIS IS THE MOST IMPORTANT CASE)
+   - `inconclusive`: Not significant
+
+**Critical rule**: A significant result in the **opposite direction** from the prediction is NOT a confirmation. It is a `refuted_reversed`. If the Investigator marked it `confirmed`, override:
+
+```bash
+bd update <finding-id> --notes "DIRECTION_OVERRIDE: Investigator marked confirmed but effect is in opposite direction. Correcting to refuted_reversed."
+bd update <finding-id> --notes "DIRECTION_MATCH:refuted_reversed"
+```
+
+This classification determines whether the Judgment Tribunal is triggered.
+
 ### 4. Red Flags
 Flag any of these:
 - Insufficient power for the observed effect

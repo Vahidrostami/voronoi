@@ -16,13 +16,14 @@ from typing import Optional
 
 
 class WorkflowMode(Enum):
-    """Voronoi workflow modes — two science modes + four meta modes."""
+    """Voronoi workflow modes — two science modes + five meta modes."""
     DISCOVER = "discover"      # Open question — adaptive rigor
     PROVE = "prove"            # Specific hypothesis — full science gates
     STATUS = "status"          # Meta: query swarm state
     RECALL = "recall"          # Meta: search knowledge store
     GUIDE = "guide"            # Meta: operator guidance
     ASK = "ask"                # Meta: question about a running investigation
+    DELIBERATE = "deliberate"  # Meta: multi-turn Socratic reasoning about results
 
 
 class RigorLevel(Enum):
@@ -48,7 +49,8 @@ class ClassifiedIntent:
     @property
     def is_meta(self) -> bool:
         return self.mode in (WorkflowMode.STATUS, WorkflowMode.RECALL,
-                             WorkflowMode.GUIDE, WorkflowMode.ASK)
+                             WorkflowMode.GUIDE, WorkflowMode.ASK,
+                             WorkflowMode.DELIBERATE)
 
 
 # ---------------------------------------------------------------------------
@@ -66,6 +68,7 @@ _COMMAND_PATTERNS: list[tuple[re.Pattern, WorkflowMode, Optional[RigorLevel]]] =
     (re.compile(r"^/voronoi\s+guide\b", re.I), WorkflowMode.GUIDE, None),
     (re.compile(r"^/voronoi\s+pivot\b", re.I), WorkflowMode.GUIDE, None),
     (re.compile(r"^/voronoi\s+ask\b", re.I), WorkflowMode.ASK, None),
+    (re.compile(r"^/voronoi\s+deliberate\b", re.I), WorkflowMode.DELIBERATE, None),
 ]
 
 # PROVE signals — specific hypothesis, controlled experiments, structured validation
@@ -171,6 +174,20 @@ _ASK_SIGNALS = [
     r"\bupdate\s+(me|us)\s+(on|about)\b",
 ]
 
+# DELIBERATE signals — multi-turn reasoning about results, brainstorming
+_DELIBERATE_SIGNALS = [
+    r"\bdeliberat",
+    r"\bbrain\s*storm",
+    r"\bthink\s+(through|about)\s+(the\s+)?(results?|findings?)\b",
+    r"\bwhy\s+(does|do|did)\s+(this|these|the)\s+(results?|findings?)\s+(not\s+)?make\s+sense\b",
+    r"\bdoesn.?t\s+make\s+sense\b",
+    r"\bdon.?t\s+understand\s+(the\s+)?(results?|findings?)\b",
+    r"\blet.?s\s+(reason|think|discuss)\s+(about|through)\b",
+    r"\bwhat\s+(should|could)\s+we\s+(do|test|try)\s+next\b",
+    r"\binterpret\s+(the\s+)?(results?|findings?)\b",
+    r"\breview\s+(the\s+)?(results?|conclusions?|claims?)\s+(together|with\s+me)\b",
+]
+
 
 def _count_matches(text: str, patterns: list[str]) -> int:
     """Count how many patterns match in the text."""
@@ -225,6 +242,17 @@ def classify(text: str) -> ClassifiedIntent:
     discover_score = _count_matches(text, _DISCOVER_SIGNALS)
     recall_score = _count_matches(text, _RECALL_SIGNALS)
     ask_score = _count_matches(text, _ASK_SIGNALS)
+    deliberate_score = _count_matches(text, _DELIBERATE_SIGNALS)
+
+    # DELIBERATE — multi-turn reasoning about results
+    if deliberate_score > 0 and deliberate_score >= ask_score:
+        return ClassifiedIntent(
+            mode=WorkflowMode.DELIBERATE,
+            rigor=RigorLevel.ADAPTIVE,
+            confidence=min(0.6 + deliberate_score * 0.15, 0.95),
+            summary=_make_summary(text),
+            original_text=text,
+        )
 
     # ASK — mid-investigation questions about current progress/findings
     # Must dominate other signals to avoid misclassification

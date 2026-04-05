@@ -22,7 +22,6 @@ def workspace(tmp_path):
     swarm.mkdir()
     (tmp_path / "PROMPT.md").write_text("# Question\n\nWhy is performance degrading?")
     (swarm / "deliverable.md").write_text("# Conclusion\n\nEWC+replay is best.")
-    (swarm / "journal.md").write_text("## Round 1\nLaunched 3 agents\n## Round 2\nMerged results")
     (swarm / "belief-map.md").write_text("- H1: EWC works (P=0.8)\n- H2: Distillation works (P=0.2)")
     return tmp_path
 
@@ -406,7 +405,6 @@ class TestManuscriptMarkdown:
         swarm = tmp_path / ".swarm"
         swarm.mkdir()
         (tmp_path / "PROMPT.md").write_text("Study forgetting mitigation")
-        (swarm / "journal.md").write_text("Ran 3 experiments")
         mock_bd.return_value = (0, json.dumps([
             {"id": "bd-1", "title": "FINDING: Replay helps",
              "notes": "EFFECT_SIZE:0.5\nP:<.01\nVALENCE:positive"},
@@ -419,7 +417,6 @@ class TestManuscriptMarkdown:
         assert "Abstract" in md
         assert "Results" in md
         assert "Replay helps" in md
-        assert "Methods" in md
 
     @patch("voronoi.gateway.evidence._run_bd")
     def test_teaser_says_manuscript_with_rigor(self, mock_bd, tmp_path):

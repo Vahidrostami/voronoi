@@ -198,6 +198,44 @@ class TestAskIntent:
 
 
 # ---------------------------------------------------------------------------
+# DELIBERATE intent — multi-turn reasoning about results
+# ---------------------------------------------------------------------------
+
+class TestDeliberateIntent:
+    """Test DELIBERATE intent classification."""
+
+    def test_deliberate_command(self):
+        r = classify("/voronoi deliberate dopamine")
+        assert r.mode == WorkflowMode.DELIBERATE
+        assert r.confidence == 1.0
+
+    def test_brainstorm_classifies_deliberate(self):
+        r = classify("Let's brainstorm about these results")
+        assert r.mode == WorkflowMode.DELIBERATE
+
+    def test_doesnt_make_sense_classifies_deliberate(self):
+        r = classify("This result doesn't make sense to me")
+        assert r.mode == WorkflowMode.DELIBERATE
+
+    def test_think_through_results(self):
+        r = classify("Let's think through the findings together")
+        assert r.mode == WorkflowMode.DELIBERATE
+
+    def test_interpret_results(self):
+        r = classify("Help me interpret the results")
+        assert r.mode == WorkflowMode.DELIBERATE
+
+    def test_what_should_we_test_next(self):
+        r = classify("What should we test next based on these findings?")
+        assert r.mode == WorkflowMode.DELIBERATE
+
+    def test_deliberate_is_meta(self):
+        r = classify("/voronoi deliberate test")
+        assert r.is_meta is True
+        assert r.is_science is False
+
+
+# ---------------------------------------------------------------------------
 # State-aware classifier (classify_for_new_investigation)
 # ---------------------------------------------------------------------------
 

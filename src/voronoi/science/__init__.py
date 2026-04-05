@@ -1,11 +1,12 @@
 """Science gate enforcement — the backbone of Voronoi's rigor system.
 
-5 modules:
+6 modules:
   - consistency.py: Beads queries, consistency checks, paradigm stress, finding interpretation
   - convergence.py: Belief map, checkpoint, convergence detection
   - fabrication.py: Anti-fabrication verification, simulation bypass
   - gates.py: Dispatch/merge gates, pre-registration, invariants, calibration
   - claims.py: Cross-run claim ledger, provenance, objections
+  - interpretation.py: Directional verification, triviality, tribunal, continuation proposals
 
 All public symbols re-exported here for ``from voronoi.science import X``.
 """
@@ -110,6 +111,31 @@ from voronoi.science.claims import (
     save_ledger,
 )
 
+# --- Interpretation (directional verification, triviality, tribunal) ---
+from voronoi.science.interpretation import (
+    ContinuationProposal,
+    DirectionMatch,
+    DirectionResult,
+    Explanation,
+    InterpretationRequest,
+    TribunalResult,
+    TribunalVerdict,
+    TrivialityClass,
+    TrivialityResult,
+    check_tribunal_clear,
+    classify_direction,
+    generate_continuation_proposals,
+    generate_interpretation_request,
+    has_reversed_hypotheses,
+    load_continuation_proposals,
+    load_interpretation_request,
+    load_tribunal_results,
+    save_continuation_proposals,
+    save_interpretation_request,
+    save_tribunal_result,
+    screen_triviality,
+)
+
 __all__ = [
     # Convergence + belief map + checkpoint
     "CONFIDENCE_TIERS", "VALID_CONFIDENCE_TIERS",
@@ -148,4 +174,14 @@ __all__ = [
     "Claim", "ClaimArtifact", "ClaimLedger", "Objection",
     "load_ledger", "save_ledger", "resolve_lineage_id",
     "generate_self_critique",
+    # Interpretation (directional verification, triviality, tribunal)
+    "DirectionMatch", "DirectionResult", "classify_direction",
+    "TrivialityClass", "TrivialityResult", "screen_triviality",
+    "TribunalVerdict", "Explanation", "InterpretationRequest", "TribunalResult",
+    "check_tribunal_clear", "has_reversed_hypotheses",
+    "generate_interpretation_request",
+    "save_interpretation_request", "load_interpretation_request",
+    "save_tribunal_result", "load_tribunal_results",
+    "ContinuationProposal", "generate_continuation_proposals",
+    "save_continuation_proposals", "load_continuation_proposals",
 ]

@@ -3860,3 +3860,213 @@ class TestFix04ScopedAbort:
         assert 1 not in d.running
         assert 2 in d.running
         mock_queue.abort.assert_called_once_with(1, "Aborted by operator")
+
+
+# ---------------------------------------------------------------------------
+# Reversed hypothesis detection (Judgment Tribunal trigger)
+# ---------------------------------------------------------------------------
+
+class TestReversedHypothesisDetection:
+    def test_detects_reversed_hypothesis(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        (tmp_path / ".swarm").mkdir(exist_ok=True)
+        import json
+        (tmp_path / ".swarm" / "belief-map.json").write_text(json.dumps({
+            "hypotheses": [
+                {"id": "H2", "name": "interaction", "status": "refuted_reversed",
+                 "evidence": ["bd-42"]},
+            ]
+        }))
+        events = d._check_reversed_hypotheses(run)
+        assert len(events) == 1
+        assert "Tribunal" in events[0]["msg"]
+
+    def test_does_not_re_notify(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        (tmp_path / ".swarm").mkdir(exist_ok=True)
+        import json
+        (tmp_path / ".swarm" / "belief-map.json").write_text(json.dumps({
+            "hypotheses": [
+                {"id": "H2", "name": "interaction", "status": "refuted_reversed",
+                 "evidence": ["bd-42"]},
+            ]
+        }))
+        events1 = d._check_reversed_hypotheses(run)
+        events2 = d._check_reversed_hypotheses(run)
+        assert len(events1) == 1
+        assert len(events2) == 0  # Already notified
+
+    def test_writes_interpretation_request(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        (tmp_path / ".swarm").mkdir(exist_ok=True)
+        import json
+        (tmp_path / ".swarm" / "belief-map.json").write_text(json.dumps({
+            "hypotheses": [
+                {"id": "H2", "name": "interaction", "status": "refuted_reversed",
+                 "evidence": ["bd-42"]},
+            ]
+        }))
+        d._check_reversed_hypotheses(run)
+        req_path = tmp_path / ".swarm" / "interpretation-request.json"
+        assert req_path.exists()
+        data = json.loads(req_path.read_text())
+        assert data["trigger"] == "refuted_reversed"
+
+    def test_no_events_without_reversals(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        (tmp_path / ".swarm").mkdir(exist_ok=True)
+        import json
+        (tmp_path / ".swarm" / "belief-map.json").write_text(json.dumps({
+            "hypotheses": [
+                {"id": "H1", "name": "encoding", "status": "confirmed"},
+            ]
+        }))
+        events = d._check_reversed_hypotheses(run)
+        assert len(events) == 0
+
+
+class TestTimeoutCap:
+    """Tests for BUG-005 — timeout override capped at _MAX_TIMEOUT_HOURS."""
+
+    def test_timeout_override_capped(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        (tmp_path / ".swarm").mkdir(exist_ok=True)
+        (tmp_path / ".swarm" / "timeout_hours").write_text("99999")
+        result = d._effective_timeout(run)
+        assert result == d._MAX_TIMEOUT_HOURS
+
+    def test_timeout_override_within_cap(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        (tmp_path / ".swarm").mkdir(exist_ok=True)
+        (tmp_path / ".swarm" / "timeout_hours").write_text("72")
+        result = d._effective_timeout(run)
+        assert result == 72
+
+    def test_timeout_no_override(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        result = d._effective_timeout(run)
+        assert result == d.config.timeout_hours
+
+
+class TestNotificationStatePersistence:
+    """Tests for BUG-003 — notification state survives dispatcher restart."""
+
+    def test_save_and_restore_notification_state(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        (tmp_path / ".swarm").mkdir(exist_ok=True)
+
+        run.notified_findings.add("finding-1")
+        run.notified_findings.add("finding-2")
+        run.notified_design_invalid.add("task-3")
+        run._criteria_alerts.add("criteria_zero_4h")
+        run._sentinel_missing_contract_warned = True
+        run.notified_paradigm_stress = True
+
+        run.save_notification_state()
+
+        # Create a fresh run and restore state
+        run2 = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        assert len(run2.notified_findings) == 0  # fresh
+        run2.restore_notification_state()
+
+        assert "finding-1" in run2.notified_findings
+        assert "finding-2" in run2.notified_findings
+        assert "task-3" in run2.notified_design_invalid
+        assert "criteria_zero_4h" in run2._criteria_alerts
+        assert run2._sentinel_missing_contract_warned is True
+        assert run2.notified_paradigm_stress is True
+
+    def test_restore_missing_file(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        # Should not raise — gracefully handles missing file
+        run.restore_notification_state()
+        assert len(run.notified_findings) == 0
+
+
+class TestAuthThreshold:
+    """Tests for BUG-006 — auth failure detection requires 3+ markers."""
+
+    def test_two_markers_insufficient(self, dispatcher_setup):
+        """Two auth markers should NOT trigger auth failure detection."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        # Only 2 markers: "authenticate" and "credentials"
+        log_tail = "Need to authenticate with valid credentials"
+        assert d._looks_like_auth_failure(log_tail) is False
+
+    def test_three_markers_sufficient(self, dispatcher_setup):
+        """Three auth markers should trigger."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        log_tail = (
+            "Need to authenticate with valid credentials.\n"
+            "Run gh auth login to fix."
+        )
+        assert d._looks_like_auth_failure(log_tail) is True

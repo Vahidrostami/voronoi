@@ -574,6 +574,107 @@ SKILL_MAP: dict[str, list[str]] = {
 }
 
 
+def build_tribunal_prompt(
+    *,
+    finding_id: str,
+    trigger: str,
+    hypothesis_id: str = "",
+    expected: str = "",
+    observed: str = "",
+    causal_dag_summary: str = "",
+    belief_map_summary: str = "",
+    workspace_path: str = "",
+) -> str:
+    """Build a prompt for the Judgment Tribunal session.
+
+    The Tribunal is a multi-agent deliberation: Theorist + Statistician +
+    Methodologist (+ Critic at pre-convergence) that evaluates whether
+    a surprising finding makes scientific sense.
+
+    Parameters
+    ----------
+    finding_id : str
+        The Beads finding ID that triggered the tribunal.
+    trigger : str
+        Why the tribunal was triggered: refuted_reversed, surprising,
+        contradiction, pre_convergence.
+    hypothesis_id : str
+        Which hypothesis is affected.
+    expected : str
+        What the causal model predicted.
+    observed : str
+        What was actually observed.
+    causal_dag_summary : str
+        Summary of the causal DAG edges relevant to this finding.
+    belief_map_summary : str
+        Current state of the belief map.
+    workspace_path : str
+        Path to the investigation workspace.
+    """
+    sections: list[str] = [
+        "# Judgment Tribunal\n\n",
+        "You are participating in a **Judgment Tribunal** — a structured "
+        "multi-agent deliberation to evaluate whether a surprising finding "
+        "makes scientific sense.\n\n",
+    ]
+
+    sections.append(f"## Trigger: `{trigger}`\n\n")
+    if finding_id:
+        sections.append(f"- **Finding**: `{finding_id}`\n")
+    if hypothesis_id:
+        sections.append(f"- **Hypothesis**: `{hypothesis_id}`\n")
+    if expected:
+        sections.append(f"- **Expected (pre-registered)**: {expected}\n")
+    if observed:
+        sections.append(f"- **Observed**: {observed}\n")
+    sections.append("\n")
+
+    if causal_dag_summary:
+        sections.append(f"## Causal Model Context\n\n{causal_dag_summary}\n\n")
+    if belief_map_summary:
+        sections.append(f"## Current Belief Map\n\n{belief_map_summary}\n\n")
+
+    sections.append(
+        "## Your Task\n\n"
+        "### 1. Explanation Audit (Theorist)\n"
+        "Given the causal model, can this result be explained?\n"
+        "- Generate 2-3 competing explanations\n"
+        "- For each: what minimal experiment would test it?\n"
+        "- Classify effort: trivial (existing data) | moderate (new condition) | substantial (new experiment)\n\n"
+        "### 2. Robustness Check (Statistician)\n"
+        "Is this result robust to analysis choices?\n"
+        "- Sensitivity analysis, alternative stat tests, subset analyses\n"
+        "- Is this powered enough to trust?\n"
+        "- Verify the direction classification is correct\n\n"
+        "### 3. Design Artifact Check (Methodologist)\n"
+        "Could this be a design artifact?\n"
+        "- Confound analysis\n"
+        "- Operationalization validity\n"
+        "- Could the manipulation have degraded?\n\n"
+        "## Output\n\n"
+        "Write your verdict to `.swarm/tribunal-verdicts.json` as a JSON object:\n"
+        "```json\n"
+        "{\n"
+        f'  "finding_id": "{finding_id}",\n'
+        '  "verdict": "explained | anomaly_unresolved | artifact | trivial",\n'
+        '  "explanations": [\n'
+        '    {"id": "E1", "theory": "...", "test": "...", "effort": "trivial|moderate|substantial", "tested": false}\n'
+        "  ],\n"
+        '  "recommended_action": "test_E1_before_convergence",\n'
+        '  "trivial_to_resolve": true,\n'
+        '  "tribunal_agents": ["theorist", "statistician", "methodologist"]\n'
+        "}\n"
+        "```\n\n"
+        "**Verdict meanings:**\n"
+        "- `explained`: Coherent explanation found and testable from existing data\n"
+        "- `anomaly_unresolved`: No satisfying explanation — needs new experiment (BLOCKS convergence)\n"
+        "- `artifact`: Design flaw in the experiment — DESIGN_INVALID escalation\n"
+        "- `trivial`: Result is expected/obvious — downgrade in deliverable\n"
+    )
+
+    return "".join(sections)
+
+
 def build_worker_prompt(
     *,
     task_type: str,
@@ -696,7 +797,6 @@ def build_worker_prompt(
             "4. After the paper is complete, write `.swarm/deliverable.md` as a SHORT "
             "summary (abstract + key findings) — this is the convergence signal, "
             "NOT the paper itself\n"
-            "5. Copy `paper.pdf` to `.swarm/report.pdf` for Telegram delivery\n"
         )
 
     # 9b. Experiment worker: anti-polling guidance

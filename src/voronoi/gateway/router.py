@@ -33,10 +33,10 @@ from voronoi.gateway.handlers_query import (  # noqa: F401
     handle_results,
     handle_recall,
     handle_belief,
-    handle_journal,
     handle_finding,
     handle_claims,
     handle_ask,
+    handle_deliberate,
     handle_ops,
 )
 from voronoi.gateway.handlers_mutate import (  # noqa: F401
@@ -72,9 +72,9 @@ __all__ = [
     "handle_review_investigation", "handle_continue_investigation", "handle_claims",
     "handle_abort", "handle_pivot", "handle_guide",
     "handle_discover", "handle_prove",
-    "handle_recall", "handle_belief", "handle_journal", "handle_finding", "handle_ops",
+    "handle_recall", "handle_belief", "handle_finding", "handle_ops",
     "handle_results", "handle_demo", "handle_details",
-    "handle_ask",
+    "handle_ask", "handle_deliberate",
 ]
 
 
@@ -146,8 +146,10 @@ _HELP_MESSAGE = (
     "`/voronoi discover <question>`\n"
     "`/voronoi prove <hypothesis>`\n\n"
     "*Knowledge*\n"
-    "`/voronoi belief` · `journal` · `finding <id>` · `recall <query>`\n"
+    "`/voronoi belief` · `finding <id>` · `recall <query>`\n"
     "`/voronoi ask <question>` — ask about a running investigation\n\n"
+    "*Review*\n"
+    "`/voronoi deliberate [codename]` — reason about results interactively\n\n"
     "*Steer*\n"
     "`/voronoi guide <msg>` · `pivot <msg>` · `abort`\n\n"
     "*Ops*\n"
@@ -245,8 +247,6 @@ class CommandRouter:
                 return handle_recall(self.project_dir, " ".join(args)), None
             elif sub == "belief":
                 return handle_belief(self.project_dir), None
-            elif sub == "journal":
-                return handle_journal(self.project_dir), None
             elif sub == "finding" and args:
                 return handle_finding(self.project_dir, args[0]), None
             elif sub == "results":
@@ -291,6 +291,9 @@ class CommandRouter:
                 return handle_claims(self.project_dir, arg), None
             elif sub == "ask" and args:
                 return handle_ask(self.project_dir, " ".join(args)), None
+            elif sub == "deliberate":
+                codename = args[0] if args else ""
+                return handle_deliberate(self.project_dir, codename), None
             elif sub == "ops":
                 ops_sub = args[0] if args else ""
                 return handle_ops(self.project_dir, ops_sub, ops_allowed=ops_allowed), None
@@ -323,6 +326,15 @@ class CommandRouter:
         """
         if _is_greeting(text):
             return _INTRO_MESSAGE, None
+
+        # Check for DELIBERATE signals first — works regardless of running state
+        intent_check = classify(text)
+        if intent_check.mode == WorkflowMode.DELIBERATE:
+            logger.info("Classified intent: mode=deliberate confidence=%.2f (free-text deliberation)",
+                        intent_check.confidence)
+            _save_msg(self.project_dir, chat_id, "user", text,
+                      {"intent": "deliberate", "confidence": intent_check.confidence})
+            return handle_deliberate(self.project_dir), None
 
         has_running = self._has_running_investigations()
 

@@ -2,7 +2,7 @@
 
 > Rules that MUST never be violated. Reference during code review, debugging, and development.
 
-**TL;DR**: 41 invariants. Key ones: prompt.py is sole prompt builder (INV-01). Roles only in .github/ files (INV-02). Orchestrator never enters worktrees (INV-03). Atomic queue claiming (INV-06). Rigor only escalates (INV-08). Baseline-first (INV-09). EVA before finding (INV-12). No simulation bypass (INV-16). Push before session end (INV-25). Plan review before dispatch at Analytical+ (INV-35b). Experiment contract before workers (INV-39). Sentinel audit cannot be bypassed (INV-40). Missing contract warning (INV-41).
+...nvariants. Key ones: prompt.py is sole prompt builder (INV-01). Roles only in .github/ files (INV-02). Orchestrator never enters worktrees (INV-03). Atomic queue claiming (INV-06). Rigor only escalates (INV-08). Baseline-first (INV-09). EVA before finding (INV-12). No simulation bypass (INV-16). Push before session end (INV-25). Plan review before dispatch at Analytical+ (INV-35b). Experiment contract before workers (INV-39). Sentinel audit cannot be bypassed (INV-40). Missing contract warning (INV-41). Tribunal clear before convergence (INV-42). Directional verification on findings (INV-43).
 
 ## 1. Architectural Invariants
 
@@ -32,6 +32,7 @@ Agents MUST NOT use custom IPC, shared memory, sockets, or any other communicati
 Investigations MUST follow the state machine defined in SERVER.md §2:
 - `queued → running` (via `next_ready()`, atomic)
 - `running → {complete | failed | paused | review | cancelled}`
+- `running → queued` (via `requeue()`, recovery only — unprovisioned claims with no workspace_path)
 - `paused | failed → running` (via `resume()`)
 - `review → complete` (via `accept()`)
 - `review | complete → new queued` (via `continue_investigation()`, creates a NEW investigation)
@@ -188,3 +189,9 @@ The dispatcher Sentinel runs autonomously. The orchestrator MUST NOT delete, mod
 
 ### INV-41: Missing Contract Warning
 At Analytical+ rigor, if experiment-type tasks exist but no `.swarm/experiment-contract.json` has been written after 1 hour, the dispatcher MUST warn and write a `sentinel_violation` directive. The orchestrator MUST NOT dispatch additional experiment workers until the contract is written.
+
+### INV-42: Tribunal Clear Before Convergence
+At Analytical+ rigor, convergence is BLOCKED while any tribunal verdict has status `anomaly_unresolved` or `artifact`. Enforced by `check_tribunal_clear()` in `convergence.py`. The orchestrator MUST address unresolved anomalies (dispatch follow-up experiments or revise the causal model) before convergence can proceed.
+
+### INV-43: Directional Verification on Findings
+At Analytical+ rigor, every hypothesis with a significant finding MUST be classified as `confirmed`, `refuted_reversed`, or `inconclusive` based on comparison of observed effect direction vs pre-registered `expected_direction`. A significant result in the opposite direction is `refuted_reversed`, NOT `confirmed`. Convergence is blocked while any `refuted_reversed` hypothesis has no tribunal explanation. Enforced by `has_reversed_hypotheses()` in `convergence.py`.

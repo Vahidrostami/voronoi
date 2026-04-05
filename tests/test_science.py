@@ -473,6 +473,65 @@ class TestConvergence:
         assert data["score"] == 0.85
 
 
+class TestConvergenceInterpretiveGate:
+    """Test that the Interpretive Coherence Gate blocks convergence."""
+
+    def test_tribunal_unresolved_blocks_convergence(self, tmp_path, monkeypatch):
+        """ANOMALY_UNRESOLVED tribunal verdict should block convergence."""
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "deliverable.md").write_text("# Done")
+        # Write an unresolved tribunal verdict
+        (tmp_path / ".swarm" / "tribunal-verdicts.json").write_text(json.dumps([
+            {"finding_id": "bd-42", "verdict": "anomaly_unresolved",
+             "explanations": [], "recommended_action": "", "trivial_to_resolve": False,
+             "tribunal_agents": [], "timestamp": "2026-01-01T00:00:00Z"}
+        ]))
+        # Stub out bd calls to avoid subprocess
+        monkeypatch.setattr("voronoi.science.consistency._run_bd",
+                            lambda *a, **kw: (1, ""))
+        result = check_convergence(tmp_path, "scientific", eval_score=0.80)
+        assert result.converged is False
+        assert any("tribunal" in b.lower() or "anomaly" in b.lower() for b in result.blockers)
+
+    def test_reversed_hypothesis_blocks_convergence(self, tmp_path, monkeypatch):
+        """Directionally reversed hypothesis without explanation should block convergence."""
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "deliverable.md").write_text("# Done")
+        (tmp_path / ".swarm" / "belief-map.json").write_text(json.dumps({
+            "hypotheses": [
+                {"id": "H2", "name": "interaction", "status": "refuted_reversed",
+                 "evidence": ["bd-42"]},
+            ]
+        }))
+        monkeypatch.setattr("voronoi.science.consistency._run_bd",
+                            lambda *a, **kw: (1, ""))
+        result = check_convergence(tmp_path, "scientific", eval_score=0.80)
+        assert result.converged is False
+        assert any("reversed" in b.lower() for b in result.blockers)
+
+    def test_explained_reversed_does_not_block(self, tmp_path, monkeypatch):
+        """A reversed hypothesis with a tribunal EXPLAINED verdict should not block."""
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "deliverable.md").write_text("# Done")
+        (tmp_path / ".swarm" / "belief-map.json").write_text(json.dumps({
+            "hypotheses": [
+                {"id": "H2", "name": "interaction", "status": "refuted_reversed",
+                 "evidence": ["bd-42"]},
+            ]
+        }))
+        (tmp_path / ".swarm" / "tribunal-verdicts.json").write_text(json.dumps([
+            {"finding_id": "bd-42", "verdict": "explained",
+             "explanations": [], "recommended_action": "", "trivial_to_resolve": False,
+             "tribunal_agents": [], "timestamp": "2026-01-01T00:00:00Z"}
+        ]))
+        monkeypatch.setattr("voronoi.science.consistency._run_bd",
+                            lambda *a, **kw: (1, ""))
+        result = check_convergence(tmp_path, "scientific", eval_score=0.80)
+        # Should not be blocked by reversed hypothesis (it's explained)
+        reversed_blockers = [b for b in result.blockers if "reversed" in b.lower()]
+        assert len(reversed_blockers) == 0
+
+
 # ---------------------------------------------------------------------------
 # Paradigm Stress
 # ---------------------------------------------------------------------------

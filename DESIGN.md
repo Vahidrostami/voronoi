@@ -179,7 +179,7 @@ src/voronoi/data/
 │   ├── methodologist.agent.md       # Experimental design review
 │   ├── statistician.agent.md        # CI, effect sizes, data integrity
 │   ├── synthesizer.agent.md         # Consistency checks, deliverable
-│   ├── evaluator.agent.md           # Final scoring (CCSA formula)
+│   ├── evaluator.agent.md           # Final scoring (CCSAN formula)
 │   └── scribe.agent.md              # LaTeX compilation, figures
 ├── prompts/                         # Invocable prompts
 │   ├── spawn.prompt.md              # /spawn — single agent dispatch
@@ -197,13 +197,25 @@ src/voronoi/data/
 │   ├── evidence-system/             # Findings, belief maps, journal
 │   ├── investigation-protocol/      # Hypothesis → experiment → finding
 │   ├── strategic-context/           # Decision rationale across cycles
-│   └── agent-standup/               # Cross-agent progress aggregation
+│   ├── agent-standup/               # Cross-agent progress aggregation
+│   ├── adversarial-review/          # Critic review protocol
+│   ├── compilation-protocol/        # LaTeX compilation
+│   ├── context-management/          # Context pressure management
+│   ├── copilot-cli-usage/           # Copilot CLI invocation patterns
+│   ├── data-integrity/              # SHA-256 hashing, data preservation
+│   ├── debugging-runbook/           # Debugging diagnostics
+│   ├── deep-research/               # Literature review, prior-art search
+│   ├── figure-generation/           # Figure creation for papers
+│   ├── observability/               # Event logging, monitoring
+│   ├── revise-calibration/          # Calibration iteration protocol
+│   ├── scaffolding/                 # Project scaffolding
+│   └── voronoi-api/                 # Voronoi API reference
 ├── scripts/                         # Runtime shell scripts
 ├── demos/                           # Demo investigations
 └── templates/                       # CLAUDE.md + AGENTS.md for workspaces
 ```
 
-During `voronoi init`, agents/prompts/skills are copied to `.github/` in the target workspace. The prompt builder tells the orchestrator:
+During `voronoi init`, agents/prompts/skills/instructions/hooks are copied to `.github/` in the target workspace. The prompt builder tells the orchestrator:
 > *"Read `.github/agents/swarm-orchestrator.agent.md` NOW — it contains your complete role definition."*
 
 And for each worker, `build_worker_prompt()` reads the role file from `data/agents/` and prepends it to the prompt.
@@ -267,6 +279,42 @@ All 12 roles are available in both DISCOVER and PROVE modes. The difference is *
 | Methodologist 📐 | `methodologist.agent.md` | When rigor escalates | From start (mandatory) | Experimental design review, power analysis |
 | Scribe ✍️ | `scribe.agent.md` | On demand | On demand | LaTeX compilation, figure generation |
 | Worker | `worker-agent.agent.md` | On demand | On demand | Generic tasks |
+
+---
+
+## 5b. Interpretation Layer — Directional Verification & Tribunal
+
+The system doesn't just run experiments; it validates that results *mean* what the investigator predicted. This layer (`src/voronoi/science/interpretation.py`) adds semantic judgment on top of the existing structural gates (EVA, Sentinel, metric contracts).
+
+### Directional Verification
+
+- Pre-registration includes `expected_direction` (e.g., "EWC > Replay on accuracy")
+- Investigator classifies observed direction at finding-commit time: `DIRECTION_MATCH: confirmed | refuted_reversed | inconclusive`
+- Statistician verifies direction against raw data at review time
+- `refuted_reversed` = significant result in the *opposite* direction of prediction → triggers Judgment Tribunal
+
+### Triviality Screening
+
+- Theorist classifies each hypothesis during plan review: NOVEL | EXPECTED | TRIVIAL
+- Feeds into Evaluator's Non-triviality dimension (N in CCSAN)
+- CCSAN formula: 0.25C + 0.20Co + 0.20S + 0.15A + 0.20N
+- Mean N < 0.4 triggers improvement round targeting non-trivial experiments
+
+### Judgment Tribunal
+
+Triggered when findings contradict the causal model or before convergence:
+- **Mid-run**: REFUTED_REVERSED detection → Theorist + Statistician + Methodologist
+- **Pre-convergence**: Mandatory at Analytical+ → + Critic joins
+
+Verdicts: EXPLAINED | ANOMALY_UNRESOLVED (blocks convergence) | ARTIFACT (DESIGN_INVALID) | TRIVIAL
+
+### Continuation Proposals
+
+Generated at review time from tribunal verdicts + self-critique. Ranked by information gain. Shown to PI during `/voronoi review` and accessible via `/voronoi deliberate`.
+
+### Deliberation Mode
+
+New interaction layer between `/ask` (one-shot) and `/continue` (full run). `/voronoi deliberate [codename]` loads full investigation context and enables multi-turn Socratic reasoning about results without spawning agents.
 
 ---
 
@@ -334,7 +382,7 @@ stateDiagram-v2
     Running --> Complete : deliverable + convergence
     Running --> Complete : tmux exits
     Running --> Failed : launch error
-    Running --> Exhausted : timeout 8h
+    Running --> Exhausted : timeout 48h
     Complete --> [*] : teaser + PDF to Telegram
     Exhausted --> [*] : partial results delivered
 ```
@@ -349,7 +397,7 @@ stateDiagram-v2
 - Reads `.swarm/experiments.tsv` and `.swarm/success-criteria.json` for track assessment
 - Reads `.swarm/eval-score.json` for evaluator score propagation
 - Detects completion: `deliverable.md` (standard) or `+ convergence.json` (analytical+)
-- Enforces timeout (configurable, default 8h)
+- Enforces timeout (configurable, default 48h)
 
 ### Telegram Notifications
 
@@ -378,7 +426,6 @@ Messages use a conversational buddy style — narrative updates instead of data 
 | Findings | Beads entries | Effect size, CI, N, stat test, data hash, robustness |
 | Raw Data | `data/raw/` | CSV/JSON with SHA-256 integrity hash |
 | Belief Map | `.swarm/belief-map.json` | Hypothesis probabilities, information-gain prioritization |
-| Journal | `.swarm/journal.md` | Narrative continuity across OODA cycles |
 | Strategic Context | `.swarm/strategic-context.md` | Decision rationale, dead ends, remaining gaps |
 | Orchestrator Checkpoint | `.swarm/orchestrator-checkpoint.json` | Compressed orchestrator state — survives restarts |
 | Experiment Ledger | `.swarm/experiments.tsv` | Append-only chronological record of all experiments |
@@ -711,7 +758,7 @@ timestamp	task_id	branch	metric_name	metric_value	status	description
 | tmux `; exit` | Session dies when agent finishes — dispatcher detects completion. |
 | Atomic queue claiming | `next_ready()` marks as running in same transaction — no double-dispatch. |
 | `.github/` fallback copy | `_ensure_github_files()` copies even if `voronoi init` subprocess fails. |
-| Timeout (8h default) | Prevents zombie investigations; writes exhaustion convergence. |
+| Timeout (48h default) | Prevents zombie investigations; writes exhaustion convergence. |
 | Inner verify loop before escalation | Workers retry against own errors (Ralph pattern) before bothering orchestrator. |
 | **Experimental Validity Audit (EVA)** | Catches experiments that run but don't test what they claim (truncation, caching, collapsed conditions). Prevents meaningless results from entering the evidence store. |
 | Metric contracts (shape at dispatch, fill at pre-reg) | Bridges open-ended investigations with comparable cross-agent metrics. |

@@ -642,18 +642,6 @@ def handle_belief(project_dir: str) -> str:
     return "🧠 No belief map found. Start an investigation to generate one."
 
 
-def handle_journal(project_dir: str, max_lines: int = 30) -> str:
-    search_dirs = [ws for ws, _ in _get_active_workspaces(project_dir)]
-    search_dirs.append(project_dir)
-    for base in search_dirs:
-        journal_path = Path(base) / ".swarm" / "journal.md"
-        if journal_path.exists():
-            lines = journal_path.read_text().strip().split("\n")
-            content = "\n".join(lines[-max_lines:])
-            return f"📓 *Journal* (last {max_lines} lines)\n\n{content}"
-    return "📓 No journal found. Start a workflow to begin recording."
-
-
 def handle_finding(project_dir: str, finding_id: str) -> str:
     search_dirs = [ws for ws, _ in _get_active_workspaces(project_dir)]
     search_dirs.append(project_dir)
@@ -786,14 +774,7 @@ def _gather_workspace_context(ws: Path) -> dict:
             "items": task_list[:30],  # cap
         }
 
-    # Journal (last 20 lines)
-    journal_path = swarm / "journal.md"
-    if journal_path.exists():
-        try:
-            lines = journal_path.read_text().strip().split("\n")
-            ctx["journal_tail"] = "\n".join(lines[-20:])
-        except OSError:
-            pass
+    # Journal (removed — was structurally broken, see BUG-001)
 
     return ctx
 
@@ -1191,3 +1172,116 @@ def handle_ops(project_dir: str, sub: str, *, ops_allowed: bool = True) -> str:
     if len(output) > _OPS_MAX_OUTPUT:
         output = output[:_OPS_MAX_OUTPUT] + "\n… (truncated)"
     return f"🔧 *ops {sub}* — {ts}\n\n```\n{output}\n```"
+
+
+# ---------------------------------------------------------------------------
+# Deliberation — multi-turn Socratic reasoning about results
+# ---------------------------------------------------------------------------
+
+def handle_deliberate(project_dir: str, codename: str = "") -> str:
+    """Load investigation context for Socratic deliberation.
+
+    Returns a structured context summary suitable for multi-turn reasoning
+    about investigation results.  This is NOT a one-shot answer like /ask;
+    it prepares the system for an interactive dialogue about what the
+    results mean and what to do next.
+    """
+    q = _get_queue(project_dir)
+
+    # Find the investigation by codename, or most recent
+    target_inv = None
+    if codename:
+        for inv in q.get_recent(limit=50):
+            if inv.codename and inv.codename.lower() == codename.lower():
+                target_inv = inv
+                break
+        if target_inv is None:
+            return f"No investigation found with codename '{codename}'."
+    else:
+        recent = q.get_recent(limit=10)
+        # Prefer completed/review status, then running
+        for status_pref in ("review", "complete", "running"):
+            for inv in recent:
+                if inv.status == status_pref:
+                    target_inv = inv
+                    break
+            if target_inv:
+                break
+        if target_inv is None and recent:
+            target_inv = recent[0]
+        if target_inv is None:
+            return "No investigations found. Run one first."
+
+    ws_path = target_inv.workspace_path
+    if not ws_path or not Path(ws_path).exists():
+        return f"Workspace for '{target_inv.codename or target_inv.id}' not found on disk."
+
+    ws = Path(ws_path)
+    label = target_inv.codename or f"#{target_inv.id}"
+
+    # Gather context
+    sections: list[str] = [f"*Deliberation context for {label}*\n"]
+
+    # Belief map
+    try:
+        from voronoi.science import load_belief_map
+        bm = load_belief_map(ws)
+        if bm.hypotheses:
+            sections.append("*Hypotheses:*")
+            for h in bm.hypotheses:
+                status = h.status
+                conf = h.confidence or "?"
+                sections.append(f"  • {h.id} ({h.display_name}): {status} [{conf}]")
+                if h.rationale:
+                    sections.append(f"    Rationale: {h.rationale}")
+            reversed_hyps = [h for h in bm.hypotheses if h.status == "refuted_reversed"]
+            if reversed_hyps:
+                sections.append("\n⚠️ *Directionally reversed hypotheses:*")
+                for h in reversed_hyps:
+                    sections.append(f"  • {h.id}: {h.display_name}")
+    except Exception:
+        pass
+
+    # Tribunal verdicts
+    try:
+        from voronoi.science import load_tribunal_results
+        verdicts = load_tribunal_results(ws)
+        if verdicts:
+            sections.append("\n*Tribunal verdicts:*")
+            for v in verdicts:
+                sections.append(f"  • Finding {v.finding_id}: {v.verdict}")
+                for e in v.explanations:
+                    tested_mark = "✓" if e.tested else "○"
+                    sections.append(f"    [{tested_mark}] {e.id}: {e.theory}")
+    except Exception:
+        pass
+
+    # Claim-evidence registry
+    try:
+        ctx = _gather_workspace_context(ws)
+        criteria = ctx.get("success_criteria", {})
+        if criteria.get("items"):
+            met = criteria.get("met", 0)
+            total = criteria.get("total", 0)
+            sections.append(f"\n*Success criteria:* {met}/{total} met")
+    except Exception:
+        pass
+
+    # Continuation proposals
+    try:
+        from voronoi.science import load_continuation_proposals
+        proposals = load_continuation_proposals(ws)
+        if proposals:
+            sections.append("\n*Proposed follow-ups (ranked by information gain):*")
+            for p in proposals[:5]:
+                sections.append(f"  {p.id}. {p.description} [effort: {p.effort}]")
+                sections.append(f"     Rationale: {p.rationale}")
+    except Exception:
+        pass
+
+    sections.append(
+        "\n_Use `/voronoi continue " + label + " <feedback>` to start a revision round "
+        "based on this deliberation._"
+    )
+
+    return "\n".join(sections)

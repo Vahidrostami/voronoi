@@ -598,3 +598,46 @@ class TestBuildWarmStartContext:
         )
         assert "artifact_manifest" in ctx
         assert "data/" in ctx["artifact_manifest"]
+
+
+# ---------------------------------------------------------------------------
+# Tribunal Prompt
+# ---------------------------------------------------------------------------
+
+class TestTribunalPrompt:
+    def test_build_tribunal_prompt_basic(self):
+        from voronoi.server.prompt import build_tribunal_prompt
+        prompt = build_tribunal_prompt(
+            finding_id="bd-42",
+            trigger="refuted_reversed",
+            hypothesis_id="H2",
+            expected="L4_A outperforms L4_D",
+            observed="L4_D outperforms L4_A",
+        )
+        assert "Judgment Tribunal" in prompt
+        assert "bd-42" in prompt
+        assert "refuted_reversed" in prompt
+        assert "H2" in prompt
+        assert "L4_A outperforms L4_D" in prompt
+        assert "L4_D outperforms L4_A" in prompt
+        assert "anomaly_unresolved" in prompt
+
+    def test_tribunal_prompt_includes_all_roles(self):
+        from voronoi.server.prompt import build_tribunal_prompt
+        prompt = build_tribunal_prompt(
+            finding_id="bd-1",
+            trigger="surprising",
+        )
+        assert "Theorist" in prompt
+        assert "Statistician" in prompt
+        assert "Methodologist" in prompt
+
+    def test_tribunal_prompt_with_causal_dag(self):
+        from voronoi.server.prompt import build_tribunal_prompt
+        prompt = build_tribunal_prompt(
+            finding_id="bd-42",
+            trigger="refuted_reversed",
+            causal_dag_summary="encoding → accessibility → reasoning",
+        )
+        assert "encoding → accessibility → reasoning" in prompt
+        assert "Causal Model Context" in prompt

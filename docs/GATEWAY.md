@@ -44,6 +44,7 @@ class WorkflowMode(Enum):
     RECALL      # "what did we learn", "previous finding"
     GUIDE       # Explicit operator guidance (/voronoi guide)
     ASK         # Mid-investigation question — Q&A about running work
+    DELIBERATE  # Multi-turn Socratic reasoning about results
 ```
 
 ```python
@@ -99,7 +100,7 @@ Splits multi-phase prompts (e.g., "investigate X then build Y") into ordered pha
 | Property | Type | Description |
 |----------|------|-------------|
 | `.is_science` | bool | True if mode is DISCOVER or PROVE |
-| `.is_meta` | bool | True if mode is STATUS, RECALL, GUIDE, or ASK |
+| `.is_meta` | bool | True if mode is STATUS, RECALL, GUIDE, ASK, or DELIBERATE |
 
 ---
 
@@ -114,16 +115,21 @@ Central dispatch point for all user actions. Every Telegram command and programm
 | Function | Returns |
 |----------|---------|
 | `handle_status(project_dir) -> str` | Queue status: queued, running, recent completed |
+| `handle_whatsup(project_dir) -> str` | Conversational status with narrative digest |
+| `handle_howsitgoing(project_dir) -> str` | Experiment metrics, success criteria, belief map, track assessment |
+| `handle_board(project_dir) -> str` | Kanban-style task board snapshot |
 | `handle_ask(project_dir, question) -> str` | Answer a natural-language question about a running investigation |
+| `handle_deliberate(project_dir, codename) -> str` | Load investigation context for Socratic deliberation about results |
 | `handle_tasks(project_dir) -> str` | Open Beads tasks from active workspaces |
 | `handle_health(project_dir) -> str` | System health check (tmux, beads, git, disk) |
 | `handle_ready(project_dir) -> str` | Unblocked tasks ready for work |
+| `handle_details(project_dir) -> str` | Detailed investigation info (workspace, config, agents) |
 | `handle_recall(project_dir, query) -> str` | Workspace recall plus cross-investigation findings |
 | `handle_belief(project_dir) -> str` | Current belief map |
-| `handle_journal(project_dir) -> str` | Investigation journal |
 | `handle_finding(project_dir, finding_id) -> str` | Single finding detail |
+| `handle_claims(project_dir, identifier) -> str` | Current claim ledger state |
 | `handle_results(project_dir) -> str` | Recent investigation results |
-| `handle_guide(project_dir, question) -> str` | Guidance for unclear intent |
+| `handle_ops(project_dir, sub, *, ops_allowed) -> str` | Ops diagnostics (see §13) |
 
 ### Mutation Handlers
 
@@ -138,6 +144,7 @@ Central dispatch point for all user actions. Every Telegram command and programm
 | `handle_complete_investigation(project_dir, id_or_codename) -> str` | Accepts and closes a reviewed investigation |
 | `handle_abort(project_dir, inv_id) -> str` | Aborts investigation |
 | `handle_pivot(project_dir, inv_id, new_question) -> str` | Pivots investigation question |
+| `handle_guide(project_dir, message) -> str` | Writes operator guidance to active workspaces |
 
 ### Iterative Science Handlers
 
@@ -548,7 +555,6 @@ _run_copilot_query()          ← copilot -p "<prompt>" -s --no-color
 | Success criteria | `.swarm/success-criteria.json` | Items, how many met |
 | Belief map | `.swarm/belief-map.json` | Hypotheses with priors/posteriors |
 | Tasks | `bd list --json` | Total, closed, in-progress, items (capped at 30) |
-| Journal | `.swarm/journal.md` | Last 20 lines |
 
 ### Copilot CLI Integration
 
@@ -836,3 +842,44 @@ elif sub == "ops":
 ```
 
 The `route()` method receives `ops_allowed` as a keyword argument (default `True` for CLI usage). The Telegram bridge sets it based on the `ops_users` config list.
+
+---
+
+## 14. Deliberation Mode (`handlers_query.py` — `handle_deliberate`)
+
+### Purpose
+
+Multi-turn Socratic reasoning about investigation results. Sits between `/ask` (one-shot Q&A) and `/continue` (full multi-hour run). Loads full investigation context — belief map, tribunal verdicts, continuation proposals — and prepares for an interactive dialogue about what the results mean and what to do next.
+
+### Trigger
+
+- Explicit: `/voronoi deliberate [codename]`
+- Free-text: "let's brainstorm about these results", "this doesn't make sense", "what should we test next"
+
+### Function
+
+```python
+def handle_deliberate(project_dir: str, codename: str = "") -> str
+```
+
+### Context Loaded
+
+- Belief map with hypothesis states and rationales
+- Directionally reversed hypotheses (highlighted)
+- Tribunal verdicts (if any)
+- Success criteria status
+- Continuation proposals (ranked by information gain)
+
+### Output
+
+Structured context suitable for multi-turn dialogue. Ends with a prompt to use `/voronoi continue <codename> <feedback>` to start a revision round.
+
+### Router Wiring
+
+```python
+elif sub == "deliberate":
+    codename = args[0] if args else ""
+    return handle_deliberate(self.project_dir, codename), None
+```
+
+Free-text routing checks DELIBERATE signals before ASK routing, so "let's brainstorm about these results" correctly routes to deliberation even when an investigation is running.

@@ -70,27 +70,28 @@ Raw data files live in the agent's worktree:
 3. Reviewers independently verify the hash before analysis
 4. Hash mismatch → finding quarantined immediately
 
-## Layer 3: Investigation Journal
+## Layer 3: Strategic Context
 
-Location: `.swarm/journal.md`
+Location: `.swarm/strategic-context.md`
 
-The Synthesizer maintains this running document for narrative continuity across OODA cycles and sessions.
+The orchestrator maintains this living document for strategic continuity across OODA cycles and sessions.
 
-### Journal Entry Format
+### Strategic Context Format
 ```markdown
-## Cycle N — YYYY-MM-DD HH:MM UTC
-**State**: X hypotheses tested, Y confirmed, Z refuted, W inconclusive
-**Key finding**: [most important discovery this cycle]
-**Working theory**: [current best explanation]
-**Next actions**: [planned next steps]
-**Belief map**: [compact hypothesis status summary]
+## Decisions and Rationale
+| Cycle | Decision | Rationale | Alternatives Considered |
+|-------|----------|-----------|------------------------|
+
+## Dead Ends
+| Approach | Cycle Abandoned | Why | Key Finding |
+|----------|----------------|-----|-------------|
 ```
 
 ### Who Reads/Writes
 | Role | Access |
 |------|--------|
-| Orchestrator | Reads at session start for state recovery |
-| Synthesizer | Appends after each cycle |
+| Orchestrator | Creates and updates each OODA cycle |
+| Synthesizer | Reads when building deliverables |
 | Theorist | Reads when building causal models |
 
 ## Layer 4: Belief Map

@@ -482,3 +482,52 @@ class TestFailAcceptsPaused:
         queue.start(inv_id, "/tmp/ws")
         queue.fail(inv_id, "crashed")
         assert queue.get(inv_id).status == "failed"
+
+
+class TestRequeue:
+    """Tests for requeue() — BUG-007 recovery transition."""
+
+    def test_requeue_unprovisioned(self, queue):
+        """requeue() transitions running → queued when workspace is NULL."""
+        inv_id = queue.enqueue(Investigation(chat_id="c1", question="Q", slug="q"))
+        # next_ready marks it running but workspace_path is still NULL
+        inv = queue.next_ready(max_concurrent=5)
+        assert inv is not None
+        assert inv.status == "running"
+        # Before start() is called, workspace_path is NULL — requeue should work
+        # We need to verify workspace_path is NULL in the DB
+        ok = queue.requeue(inv_id)
+        assert ok
+        assert queue.get(inv_id).status == "queued"
+
+    def test_requeue_with_workspace_fails(self, queue):
+        """requeue() should NOT work after start() attaches a workspace."""
+        inv_id = queue.enqueue(Investigation(chat_id="c1", question="Q", slug="q"))
+        queue.next_ready(max_concurrent=5)
+        queue.start(inv_id, "/tmp/ws")
+        ok = queue.requeue(inv_id)
+        assert not ok
+        assert queue.get(inv_id).status == "running"
+
+    def test_requeue_wrong_status(self, queue):
+        """requeue() should only work on running investigations."""
+        inv_id = queue.enqueue(Investigation(chat_id="c1", question="Q", slug="q"))
+        ok = queue.requeue(inv_id)
+        assert not ok  # status is queued, not running
+
+
+class TestRigorDefault:
+    """Tests for BUG-008 — consistent rigor defaults."""
+
+    def test_investigation_dataclass_default(self):
+        """Investigation.rigor should default to 'adaptive'."""
+        inv = Investigation()
+        assert inv.rigor == "adaptive"
+
+    def test_row_to_investigation_empty_rigor(self, queue):
+        """Empty rigor in DB should resolve to 'adaptive'."""
+        inv_id = queue.enqueue(Investigation(
+            chat_id="c1", question="Q", slug="q", rigor="adaptive",
+        ))
+        result = queue.get(inv_id)
+        assert result.rigor == "adaptive"

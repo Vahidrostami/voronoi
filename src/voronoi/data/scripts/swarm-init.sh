@@ -86,18 +86,8 @@ fi
 SWARM_DIR="../${PROJECT_NAME}-swarm"
 mkdir -p "$SWARM_DIR"
 
-# 6. Create .swarm/ directory and investigation journal
+# 6. Create .swarm/ directory
 mkdir -p .swarm
-if [ ! -f ".swarm/journal.md" ]; then
-    cat > .swarm/journal.md << 'JOURNAL'
-# Investigation Journal
-
-> Maintained by the Synthesizer. Read by the Orchestrator at session start and the Theorist when building causal models.
-
-<!-- Append new cycles below. Do not edit previous entries. -->
-JOURNAL
-    echo "✓ Investigation journal initialized at .swarm/journal.md"
-fi
 
 # 6b. Warn about stale state from prior runs
 if [ -f ".swarm/autopilot-state.json" ]; then

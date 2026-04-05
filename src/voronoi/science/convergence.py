@@ -15,6 +15,7 @@ from pathlib import Path
 
 from voronoi.utils import extract_field
 from voronoi.science import consistency as _helpers
+from voronoi.science import interpretation as _interp
 
 logger = logging.getLogger("voronoi.science")
 
@@ -368,12 +369,24 @@ def check_convergence(workspace: Path, rigor: str,
     if contested:
         blockers.append(f"{len(contested)} contested findings")
 
+    # --- Interpretive Coherence Gate (Analytical+) --- #
+    # Check tribunal verdicts — no ANOMALY_UNRESOLVED allowed
+    tribunal_clear, tribunal_blockers = _interp.check_tribunal_clear(workspace)
+    if not tribunal_clear:
+        blockers.extend(tribunal_blockers)
+
+    # Check for directionally reversed hypotheses without explanation
+    has_reversed, reversed_blockers = _interp.has_reversed_hypotheses(workspace)
+    if has_reversed:
+        blockers.extend(reversed_blockers)
+
     if rigor in ("scientific", "experimental"):
         bm = load_belief_map(workspace)
         if not bm.hypotheses:
             blockers.append("No hypotheses in belief map")
         elif not bm.all_resolved():
-            unresolved = [h.name for h in bm.hypotheses if h.status in ("untested", "testing")]
+            unresolved = [h.name for h in bm.hypotheses
+                          if h.status in ("untested", "testing")]
             blockers.append(f"Unresolved hypotheses: {', '.join(unresolved[:3])}")
         theories = _helpers._find_theories(workspace, tasks)
         if not any(t.get("status") == "refuted" for t in theories):
