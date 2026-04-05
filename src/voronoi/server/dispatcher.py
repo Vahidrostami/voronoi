@@ -111,6 +111,7 @@ class RunningInvestigation:
     _criteria_alerts: set = field(default_factory=set)  # Track which criteria-progress alerts have fired
     _sentinel_missing_contract_warned: bool = False  # Track sentinel missing-contract warning
     notified_reversed_hypotheses: set = field(default_factory=set)  # Track which reversed hypotheses have been alerted
+    last_convergence_attempt_at: float = 0  # Throttle _try_convergence_check() calls
 
     @property
     def label(self) -> str:
@@ -522,12 +523,8 @@ class InvestigationDispatcher:
         """Delegate to tmux module."""
         ensure_copilot_auth()
 
-    # Rigor → Copilot CLI --effort mapping
-    _EFFORT_BY_RIGOR: dict[str, str] = {
-        "adaptive": "high",
-        "scientific": "high",
-        "experimental": "xhigh",
-    }
+    # Rigor → Copilot CLI --effort mapping (canonical source: tmux.py)
+    _EFFORT_BY_RIGOR = EFFORT_BY_RIGOR
 
     def _launch_in_tmux(self, session: str, workspace_path: Path,
                         prompt_file: Path | None = None,
@@ -846,12 +843,15 @@ class InvestigationDispatcher:
                 tmp_fd, tmp_path = tempfile.mkstemp(
                     dir=str(sc_path.parent), suffix=".tmp",
                 )
+                closed = False
                 try:
                     os.write(tmp_fd, json.dumps(criteria, indent=2).encode())
                     os.close(tmp_fd)
+                    closed = True
                     os.replace(tmp_path, str(sc_path))
                 except BaseException:
-                    os.close(tmp_fd) if not os.get_inheritable(tmp_fd) else None
+                    if not closed:
+                        os.close(tmp_fd)
                     try:
                         os.unlink(tmp_path)
                     except OSError:
@@ -877,8 +877,10 @@ class InvestigationDispatcher:
             total = len(criteria)
             # Alert at 4h if zero met, again at 8h
             if met == 0 and total > 0:
-                hours_mark = 4 if elapsed_hours < 6 else 8
-                alert_key = f"criteria_zero_{hours_mark}h"
+                if elapsed_hours >= 8:
+                    alert_key = "criteria_zero_8h"
+                else:
+                    alert_key = "criteria_zero_4h"
                 if alert_key not in run._criteria_alerts:
                     run._criteria_alerts.add(alert_key)
                     self.send_message(format_alert(
@@ -1967,7 +1969,12 @@ class InvestigationDispatcher:
             # generate one and re-check immediately (so we don't need to
             # wait for the next poll cycle, which may never come if the
             # agent already exited normally).
-            self._try_convergence_check(run)
+            # Throttle to avoid running the convergence gate script every
+            # poll cycle (30s) when the gate consistently fails.
+            now = time.time()
+            if now - run.last_convergence_attempt_at >= 300:  # 5-minute cooldown
+                run.last_convergence_attempt_at = now
+                self._try_convergence_check(run)
             if conv.exists():
                 try:
                     data = json.loads(conv.read_text())
@@ -2344,18 +2351,29 @@ class InvestigationDispatcher:
 
         # Fallback: check for orphaned copilot processes whose cwd is
         # inside this workspace (workers that outlived their tmux window).
+        # Use `pgrep -f` (not `-fa`) — macOS BSD pgrep lacks the `-a` flag.
         ws_str = str(run.workspace_path)
         try:
             result = subprocess.run(
-                ["pgrep", "-fa", self.config.agent_command],
+                ["pgrep", "-f", self.config.agent_command],
                 capture_output=True, text=True, timeout=10,
             )
             if result.returncode == 0:
-                for line in result.stdout.strip().splitlines():
-                    if ws_str in line:
-                        logger.debug("Orphaned worker process for %s: %s",
-                                     run.label, line[:120])
-                        return True
+                # pgrep -f returns only PIDs; read each process's full
+                # command line via ps to check workspace association.
+                pids = [p.strip() for p in result.stdout.strip().splitlines()
+                        if p.strip()]
+                if pids:
+                    ps_result = subprocess.run(
+                        ["ps", "-p", ",".join(pids), "-o", "pid=,command="],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    if ps_result.returncode == 0:
+                        for line in ps_result.stdout.strip().splitlines():
+                            if ws_str in line:
+                                logger.debug("Orphaned worker process for %s: %s",
+                                             run.label, line[:120])
+                                return True
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             pass
 
@@ -3270,13 +3288,19 @@ class InvestigationDispatcher:
 
             # Transition to review BEFORE sending the notification so that
             # immediate /continue clicks find the correct status (BUG-002).
-            self.queue.review(run.investigation_id)
+            if not self.queue.review(run.investigation_id):
+                logger.warning("Review transition failed for #%d — status may have changed",
+                               run.investigation_id)
+                return
 
             # Build review message with claims
             review_text = self._build_review_message(run, ledger)
             self.send_message(review_text)
         else:
-            self.queue.review(run.investigation_id)
+            if not self.queue.review(run.investigation_id):
+                logger.warning("Review transition failed for #%d — status may have changed",
+                               run.investigation_id)
+                return
             self.send_message(
                 f"🔬 *{run.label}* converged — ready for review.\n"
                 f"Reply with feedback or send `/voronoi continue {run.label}` to iterate."

@@ -319,6 +319,17 @@ def check_convergence(workspace: Path, rigor: str,
     blockers: list[str] = []
     swarm = workspace / ".swarm"
 
+    # --- Interpretive Coherence Gate (Analytical+, includes adaptive) ---
+    # Must run before any early-return path so that tribunal/reversal
+    # blockers are enforced for ALL rigor levels.  See INV-42 and INV-43.
+    tribunal_clear, tribunal_blockers = _interp.check_tribunal_clear(workspace)
+    if not tribunal_clear:
+        blockers.extend(tribunal_blockers)
+
+    has_reversed, reversed_blockers = _interp.has_reversed_hypotheses(workspace)
+    if has_reversed:
+        blockers.extend(reversed_blockers)
+
     if rigor == "adaptive":
         if not (swarm / "deliverable.md").exists():
             blockers.append("No deliverable produced")
@@ -369,16 +380,8 @@ def check_convergence(workspace: Path, rigor: str,
     if contested:
         blockers.append(f"{len(contested)} contested findings")
 
-    # --- Interpretive Coherence Gate (Analytical+) --- #
-    # Check tribunal verdicts — no ANOMALY_UNRESOLVED allowed
-    tribunal_clear, tribunal_blockers = _interp.check_tribunal_clear(workspace)
-    if not tribunal_clear:
-        blockers.extend(tribunal_blockers)
-
-    # Check for directionally reversed hypotheses without explanation
-    has_reversed, reversed_blockers = _interp.has_reversed_hypotheses(workspace)
-    if has_reversed:
-        blockers.extend(reversed_blockers)
+    # Tribunal and reversed-hypothesis checks already ran above (before
+    # the adaptive early-return) — no need to duplicate here.
 
     if rigor in ("scientific", "experimental"):
         bm = load_belief_map(workspace)

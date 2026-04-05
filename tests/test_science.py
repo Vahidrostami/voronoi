@@ -531,6 +531,37 @@ class TestConvergenceInterpretiveGate:
         reversed_blockers = [b for b in result.blockers if "reversed" in b.lower()]
         assert len(reversed_blockers) == 0
 
+    def test_tribunal_blocks_adaptive_convergence(self, tmp_path, monkeypatch):
+        """INV-42: Tribunal must block convergence even at adaptive rigor."""
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "deliverable.md").write_text("# Done")
+        (tmp_path / ".swarm" / "tribunal-verdicts.json").write_text(json.dumps([
+            {"finding_id": "bd-99", "verdict": "anomaly_unresolved",
+             "explanations": [], "recommended_action": "", "trivial_to_resolve": False,
+             "tribunal_agents": [], "timestamp": "2026-01-01T00:00:00Z"}
+        ]))
+        monkeypatch.setattr("voronoi.science.consistency._run_bd",
+                            lambda *a, **kw: (1, ""))
+        result = check_convergence(tmp_path, "adaptive", eval_score=0.80)
+        assert result.converged is False
+        assert any("tribunal" in b.lower() or "anomaly" in b.lower() for b in result.blockers)
+
+    def test_reversed_blocks_adaptive_convergence(self, tmp_path, monkeypatch):
+        """INV-43: Reversed hypothesis must block convergence at adaptive rigor."""
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "deliverable.md").write_text("# Done")
+        (tmp_path / ".swarm" / "belief-map.json").write_text(json.dumps({
+            "hypotheses": [
+                {"id": "H1", "name": "test", "status": "refuted_reversed",
+                 "evidence": ["bd-10"]},
+            ]
+        }))
+        monkeypatch.setattr("voronoi.science.consistency._run_bd",
+                            lambda *a, **kw: (1, ""))
+        result = check_convergence(tmp_path, "adaptive", eval_score=0.80)
+        assert result.converged is False
+        assert any("reversed" in b.lower() for b in result.blockers)
+
 
 # ---------------------------------------------------------------------------
 # Paradigm Stress

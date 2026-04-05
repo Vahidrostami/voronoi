@@ -2001,6 +2001,33 @@ class TestReliabilityFixes:
         d._check_criteria_progress(run, elapsed_hours=5.0)
         assert not any("success criteria met" in m for m in msgs)
 
+    def test_check_criteria_progress_4h_vs_8h_alert_keys(self, dispatcher_setup):
+        """BUG-005: 4h alert fires at 4-7h, 8h alert fires at 8h+."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True, exist_ok=True)
+        (swarm / "success-criteria.json").write_text(json.dumps([
+            {"id": "SC1", "description": "test", "met": False},
+        ]))
+
+        # At 6h, the 4h alert should fire (not the 8h alert)
+        d._check_criteria_progress(run, elapsed_hours=6.0)
+        assert "criteria_zero_4h" in run._criteria_alerts
+        assert "criteria_zero_8h" not in run._criteria_alerts
+        assert len(msgs) == 1
+
+        # At 9h, the 8h alert should also fire
+        d._check_criteria_progress(run, elapsed_hours=9.0)
+        assert "criteria_zero_8h" in run._criteria_alerts
+        assert len(msgs) == 2
+
 
 class TestAuthDetection:
     def test_looks_like_auth_failure_detects_patterns(self, dispatcher_setup):
@@ -2649,13 +2676,14 @@ class TestOrphanedWorkerDetection:
         }))
 
         tmux_no_session = MagicMock(returncode=1)
-        pgrep_found = MagicMock(
+        pgrep_pids = MagicMock(returncode=0, stdout="12345\n")
+        ps_output = MagicMock(
             returncode=0,
             stdout=f"12345 copilot --allow-all -p @{tmp_path}/.swarm/prompt.txt\n",
         )
 
         with patch("voronoi.server.dispatcher.subprocess.run",
-                    side_effect=[tmux_no_session, pgrep_found]):
+                    side_effect=[tmux_no_session, pgrep_pids, ps_output]):
             assert d._has_active_workers(run) is True
 
     def test_no_orphan_when_pgrep_empty(self, dispatcher_setup):
@@ -2682,7 +2710,7 @@ class TestOrphanedWorkerDetection:
             assert d._has_active_workers(run) is False
 
     def test_no_orphan_when_pgrep_unavailable(self, dispatcher_setup):
-        """Should return False when pgrep is not available."""
+        """Should return False when pgrep is not available (e.g. containers)."""
         d, msgs, docs, tmp_path = dispatcher_setup
         run = RunningInvestigation(
             investigation_id=1,
@@ -2707,6 +2735,33 @@ class TestOrphanedWorkerDetection:
 
         with patch("voronoi.server.dispatcher.subprocess.run",
                     side_effect=side_effect):
+            assert d._has_active_workers(run) is False
+
+    def test_orphan_not_detected_when_ps_no_match(self, dispatcher_setup):
+        """pgrep finds PIDs but ps shows they belong to a different workspace."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "orchestrator-checkpoint.json").write_text(json.dumps({
+            "active_workers": ["worker-1"]
+        }))
+
+        tmux_no_session = MagicMock(returncode=1)
+        pgrep_pids = MagicMock(returncode=0, stdout="99999\n")
+        ps_other_workspace = MagicMock(
+            returncode=0,
+            stdout="99999 copilot --allow-all -p @/some/other/workspace/.swarm/prompt.txt\n",
+        )
+
+        with patch("voronoi.server.dispatcher.subprocess.run",
+                    side_effect=[tmux_no_session, pgrep_pids, ps_other_workspace]):
             assert d._has_active_workers(run) is False
 
 
@@ -4070,3 +4125,92 @@ class TestAuthThreshold:
             "Run gh auth login to fix."
         )
         assert d._looks_like_auth_failure(log_tail) is True
+
+
+class TestConvergenceCheckThrottle:
+    """BUG-003: _is_complete should throttle _try_convergence_check calls."""
+
+    def test_convergence_check_throttled(self, dispatcher_setup):
+        """_try_convergence_check should only run once per 5-minute window."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+            rigor="scientific",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True, exist_ok=True)
+        (swarm / "deliverable.md").write_text("# Results")
+
+        # First call should attempt convergence check (sets timestamp)
+        with patch.object(d, "_try_convergence_check"):
+            d._is_complete(run)
+
+        # Second call within 5 minutes should NOT re-attempt
+        with patch.object(d, "_try_convergence_check") as mock_conv2:
+            d._is_complete(run)
+            assert mock_conv2.call_count == 0
+
+    def test_convergence_check_runs_after_cooldown(self, dispatcher_setup):
+        """_try_convergence_check should run again after 5-minute cooldown."""
+        import time as _time
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+            rigor="scientific",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True, exist_ok=True)
+        (swarm / "deliverable.md").write_text("# Results")
+
+        # Simulate a past attempt 6 minutes ago
+        run.last_convergence_attempt_at = _time.time() - 360
+
+        with patch.object(d, "_try_convergence_check") as mock_conv:
+            d._is_complete(run)
+            assert mock_conv.call_count == 1
+
+
+class TestReviewTransitionCheck:
+    """BUG-004: _transition_to_review should check queue.review() return value."""
+
+    def test_review_transition_failure_aborts_notification(self, dispatcher_setup):
+        """If queue.review() returns False, no review message should be sent."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        from voronoi.server.queue import Investigation
+        inv = Investigation(
+            id=1, chat_id="test", status="running", question="test",
+            slug="test", lineage_id=1, cycle_number=1,
+        )
+
+        with patch.object(d.queue, "get", return_value=inv), \
+             patch.object(d.queue, "review", return_value=False), \
+             patch("voronoi.server.dispatcher.InvestigationDispatcher._sync_findings_to_ledger"):
+            d._transition_to_review(run)
+
+        # No review message should have been sent
+        assert not any("review" in m.lower() or "converged" in m.lower() for m in msgs)
+
+
+class TestEffortMappingSingleSource:
+    """BUG-007: Dispatcher should use tmux module's EFFORT_BY_RIGOR."""
+
+    def test_dispatcher_uses_tmux_mapping(self):
+        """_EFFORT_BY_RIGOR on dispatcher should be the exact same object as tmux."""
+        from voronoi.server.dispatcher import InvestigationDispatcher
+        from voronoi.server.tmux import EFFORT_BY_RIGOR
+        assert InvestigationDispatcher._EFFORT_BY_RIGOR is EFFORT_BY_RIGOR

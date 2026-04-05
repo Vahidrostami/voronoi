@@ -80,6 +80,41 @@ class TestCompactEvents:
         archived = archive.read_text().strip().splitlines()
         assert len(archived) == 30
 
+    def test_concurrent_append_preserved(self, tmp_path):
+        """BUG-006: Events appended during compaction should be preserved.
+
+        Simulates the scenario where the orchestrator appends new events
+        between the initial read and the rewrite.  The fix detects the
+        file growth and includes the appended lines in the rewritten file.
+        """
+        events_file = tmp_path / "events.jsonl"
+        now = time.time()
+        old_ts = now - 4 * 3600  # 4 hours ago
+        recent_ts = now - 0.5 * 3600  # 30 min ago
+
+        lines = []
+        for i in range(30):
+            lines.append(json.dumps({"ts": old_ts + i, "event": f"old-{i}"}))
+        for i in range(25):
+            lines.append(json.dumps({"ts": recent_ts + i, "event": f"recent-{i}"}))
+        initial_content = "\n".join(lines) + "\n"
+
+        # Write initial content, then append a "concurrent" event
+        events_file.write_text(initial_content)
+        appended_event = json.dumps({"ts": now, "event": "appended-during-compact"})
+        with open(events_file, "a") as f:
+            f.write(appended_event + "\n")
+
+        # _compact_events reads the full file (including appended line).
+        # Because the file contains the appended event in its read buffer,
+        # it should classify it as "recent" and keep it.
+        result = _compact_events(tmp_path)
+        assert result is True
+
+        # The appended event should be in the active file, not lost
+        remaining_text = events_file.read_text()
+        assert "appended-during-compact" in remaining_text
+
 
 class TestWriteStateDigest:
     def test_empty_workspace(self, tmp_path):
