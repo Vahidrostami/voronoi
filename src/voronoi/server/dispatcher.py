@@ -963,11 +963,43 @@ class InvestigationDispatcher:
 
         return False
 
+    # Directive priority order — higher index = higher priority.
+    # _write_directive refuses to overwrite a higher-priority directive.
+    _DIRECTIVE_PRIORITY: dict[str, int] = {
+        "context_advisory": 1,
+        "context_warning": 2,
+        "context_critical": 3,
+        "sentinel_violation": 4,
+    }
+
     def _write_directive(self, run: RunningInvestigation,
                          level: str, message: str) -> None:
-        """Write a dispatcher directive file for the orchestrator to poll."""
+        """Write a dispatcher directive file for the orchestrator to poll.
+
+        Refuses to overwrite an existing directive with higher priority
+        so that sentinel violations are not clobbered by context
+        directives and vice versa.
+        """
         directive_path = run.workspace_path / ".swarm" / "dispatcher-directive.json"
         directive_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Check existing directive priority
+        new_priority = self._DIRECTIVE_PRIORITY.get(level, 0)
+        if directive_path.exists():
+            try:
+                existing = json.loads(directive_path.read_text())
+                if isinstance(existing, dict):
+                    existing_level = existing.get("directive", "") or existing.get("level", "")
+                    existing_priority = self._DIRECTIVE_PRIORITY.get(existing_level, 0)
+                    if existing_priority > new_priority:
+                        logger.debug(
+                            "Skipping %s directive for %s — higher-priority %s already set",
+                            level, run.label, existing_level,
+                        )
+                        return
+            except (json.JSONDecodeError, OSError):
+                pass
+
         elapsed_hours = (time.time() - run.started_at) / 3600
         data = {
             "directive": level,
@@ -1645,10 +1677,12 @@ class InvestigationDispatcher:
         if swarm_dir:
             for path in sorted(swarm_dir.glob("agent-*")):
                 if path.is_dir():
-                    for name in ("orchestrator-checkpoint.json", "checkpoint.json"):
-                        p = path / ".swarm" / name
-                        if p.exists():
-                            candidates.append(p)
+                    # Only look for the canonical orchestrator checkpoint name
+                    # in worktrees — "checkpoint.json" is too generic and may
+                    # match worker-internal state files.
+                    p = path / ".swarm" / "orchestrator-checkpoint.json"
+                    if p.exists():
+                        candidates.append(p)
 
         latest: dict | None = None
         latest_ts = float("-inf")
@@ -2001,8 +2035,9 @@ class InvestigationDispatcher:
         """
         try:
             from voronoi.science import check_convergence, write_convergence
+            effective_rigor = self._effective_rigor(run)
             result = check_convergence(
-                run.workspace_path, run.rigor,
+                run.workspace_path, effective_rigor,
                 eval_score=run.eval_score,
                 improvement_rounds=run.improvement_rounds,
             )
@@ -2015,7 +2050,7 @@ class InvestigationDispatcher:
                 if gate_script.exists() and gate_script.stat().st_mode & 0o111:
                     try:
                         gate_result = subprocess.run(
-                            [str(gate_script), str(run.workspace_path), run.rigor],
+                            [str(gate_script), str(run.workspace_path), effective_rigor],
                             capture_output=True, text=True, timeout=30,
                             cwd=str(run.workspace_path),
                         )
@@ -2039,7 +2074,9 @@ class InvestigationDispatcher:
     def _handle_completion(self, run: RunningInvestigation, *,
                            failed: bool = False,
                            failure_reason: str = "") -> None:
-        # HARD GATE: refuse to declare success while DESIGN_INVALID is open
+        # HARD GATE: refuse to declare success while DESIGN_INVALID is open.
+        # Mark as failed so the investigation doesn't become a zombie —
+        # the agent session is already dead at this point.
         if not failed and self._has_open_design_invalid(run):
             logger.warning("Completion blocked for %s: DESIGN_INVALID tasks still open",
                            run.label)
@@ -2048,7 +2085,8 @@ class InvestigationDispatcher:
                 "Completion blocked — experiments flagged as DESIGN_INVALID are still open. "
                 "Fix the design and re-run."
             ))
-            return
+            failed = True
+            failure_reason = "DESIGN_INVALID tasks still open at completion"
 
         elapsed = (time.time() - run.started_at) / 60
         total_tasks = len(run.task_snapshot)
@@ -2932,7 +2970,7 @@ class InvestigationDispatcher:
                 "**NEAR-CONVERGENCE RESTART — keep this session lean:**\n"
                 "1. Do NOT read `.github/agents/swarm-orchestrator.agent.md` — you already know the protocol\n"
                 "2. Read ONLY: checkpoint (above) + `bd ready` + dispatcher-directive\n"
-                "3. Verify convergence: run `./scripts/convergence-gate.sh . " + run.rigor + "`\n"
+                "3. Verify convergence: run `./scripts/convergence-gate.sh . " + effective_rigor + "`\n"
                 "4. If gate passes: commit, close remaining beads, write convergence.json\n"
                 "5. If gate fails: fix the specific blocker, then re-run gate\n"
                 "6. Do NOT re-read paper, belief map, eval score, or claim-evidence unless gate fails\n"

@@ -182,10 +182,18 @@ class SandboxManager:
 
 def exec_in_sandbox_or_host(
     workspace_path: str, command: list[str], timeout: int = 120,
+    *, sandbox_required: bool = False,
 ) -> tuple[int, str]:
     """Execute a command in sandbox if available, otherwise on host.
 
     Reads .sandbox-id from workspace to determine container.
+
+    Parameters
+    ----------
+    sandbox_required : bool
+        If True, do NOT fall through to host execution when Docker
+        fails.  Returns an error instead.  Use this for commands that
+        must respect sandbox resource/network limits (INV-30).
     """
     sandbox_file = Path(workspace_path) / ".sandbox-id"
     if sandbox_file.exists():
@@ -198,7 +206,13 @@ def exec_in_sandbox_or_host(
                 )
                 return result.returncode, (result.stdout + result.stderr).strip()
             except (subprocess.TimeoutExpired, FileNotFoundError):
+                if sandbox_required:
+                    return 1, "Docker execution failed and sandbox_required=True"
                 pass  # Fall through to host execution
+        elif sandbox_required:
+            return 1, f"Invalid container ID in .sandbox-id: {container_id!r}"
+    elif sandbox_required:
+        return 1, "No .sandbox-id found and sandbox_required=True"
 
     # Host fallback
     try:

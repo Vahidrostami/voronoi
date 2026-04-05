@@ -1151,7 +1151,12 @@ class TestDeliberate:
     """Test handle_deliberate and router wiring."""
 
     def test_deliberate_no_investigations(self, tmp_path):
-        result = handle_deliberate(str(tmp_path))
+        # Mock the queue to return no investigations so the test is
+        # isolated from the real ~/.voronoi/queue.db (BUG-006).
+        mock_queue = MagicMock()
+        mock_queue.get_recent.return_value = []
+        with patch("voronoi.gateway.handlers_query._get_queue", return_value=mock_queue):
+            result = handle_deliberate(str(tmp_path))
         assert "No investigation" in result or "not found" in result.lower()
 
     def test_router_routes_deliberate(self, tmp_path):

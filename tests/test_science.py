@@ -463,6 +463,24 @@ class TestConvergence:
         assert result.converged is True
         assert result.status == "diminishing_returns"
 
+    def test_adaptive_zero_score_no_rounds_converges(self, tmp_path):
+        """BUG-010: eval_score=0, no improvement rounds → 'All tasks complete'."""
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "deliverable.md").write_text("# Done")
+        result = check_convergence(tmp_path, "adaptive", eval_score=0.0,
+                                    improvement_rounds=0)
+        assert result.converged is True
+        assert result.status == "converged"
+
+    def test_adaptive_zero_score_with_rounds_diminishing(self, tmp_path):
+        """BUG-010: eval_score=0, improvement_rounds>=1 → diminishing_returns."""
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "deliverable.md").write_text("# Done")
+        result = check_convergence(tmp_path, "adaptive", eval_score=0.0,
+                                    improvement_rounds=2)
+        assert result.converged is True
+        assert result.status == "diminishing_returns"
+
     def test_write_convergence(self, tmp_path):
         result = ConvergenceResult(True, "converged", "All done", score=0.85)
         path = write_convergence(tmp_path, result)

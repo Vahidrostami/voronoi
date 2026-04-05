@@ -209,3 +209,34 @@ class TestDockerCacheTTL:
 
         result = sm.is_docker_available()
         assert result is False  # returns cached value
+
+
+class TestSandboxRequiredFlag:
+    """BUG-011: sandbox_required prevents silent fallthrough to host."""
+
+    def test_sandbox_required_no_sandbox_file(self, tmp_path):
+        """sandbox_required=True with no .sandbox-id returns error."""
+        code, output = exec_in_sandbox_or_host(
+            str(tmp_path), ["echo", "test"], sandbox_required=True,
+        )
+        assert code == 1
+        assert "sandbox_required" in output
+
+    def test_sandbox_required_false_falls_through(self, tmp_path):
+        """sandbox_required=False (default) falls through to host."""
+        code, output = exec_in_sandbox_or_host(
+            str(tmp_path), ["echo", "hello"],
+        )
+        assert code == 0
+        assert "hello" in output
+
+    def test_sandbox_required_docker_fails(self, tmp_path):
+        """sandbox_required=True with Docker failure returns error."""
+        (tmp_path / ".sandbox-id").write_text("abcdef123456")
+        with patch("voronoi.server.sandbox.subprocess.run",
+                   side_effect=FileNotFoundError("docker")):
+            code, output = exec_in_sandbox_or_host(
+                str(tmp_path), ["echo", "test"], sandbox_required=True,
+            )
+        assert code == 1
+        assert "sandbox_required" in output

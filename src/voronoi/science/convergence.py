@@ -350,8 +350,13 @@ def check_convergence(workspace: Path, rigor: str,
             return ConvergenceResult(False, "not_ready",
                                      f"Score {eval_score:.2f} — improvement round needed",
                                      score=eval_score, blockers=blockers)
-        if eval_score <= 0.0:
+        if eval_score <= 0.0 and improvement_rounds == 0:
             return ConvergenceResult(True, "converged", "All tasks complete")
+        if eval_score <= 0.0 and improvement_rounds >= 1:
+            # Evaluator was attempted but scored zero — diminishing returns
+            return ConvergenceResult(True, "diminishing_returns",
+                                     f"Max improvement rounds reached (score=0.0)",
+                                     score=eval_score)
         # Score in (0.0, 0.50): needs improvement if rounds remain
         if eval_score < 0.50 and improvement_rounds < 2:
             return ConvergenceResult(False, "not_ready",

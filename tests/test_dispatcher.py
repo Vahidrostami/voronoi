@@ -4214,3 +4214,181 @@ class TestEffortMappingSingleSource:
         from voronoi.server.dispatcher import InvestigationDispatcher
         from voronoi.server.tmux import EFFORT_BY_RIGOR
         assert InvestigationDispatcher._EFFORT_BY_RIGOR is EFFORT_BY_RIGOR
+
+
+class TestBug005EffectiveRigorInConvergence:
+    """BUG-005: _try_convergence_check must use effective rigor, not run.rigor."""
+
+    def test_try_convergence_uses_effective_rigor(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "deliverable.md").write_text("# Done")
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+            rigor="adaptive",
+        )
+        # Simulate escalation: adaptive → scientific
+        run.last_rigor = "scientific"
+
+        d._try_convergence_check(run)
+
+        # With scientific rigor and no eval score, convergence should NOT
+        # be written because check_convergence adds "No evaluator score" blocker.
+        conv_path = tmp_path / ".swarm" / "convergence.json"
+        if conv_path.exists():
+            data = json.loads(conv_path.read_text())
+            # If written, it must NOT be "converged" with zero eval_score
+            # under scientific rigor.
+            assert data.get("status") != "converged" or data.get("score", 0) >= 0.5
+
+
+class TestBug007DesignInvalidDoesNotZombie:
+    """BUG-007: _handle_completion with DESIGN_INVALID must not return early."""
+
+    def test_design_invalid_transitions_to_failed(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        (tmp_path / ".swarm").mkdir()
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        run.task_snapshot = {
+            "bd-1": {"status": "open", "title": "Exp",
+                     "notes": "DESIGN_INVALID: bad setup"},
+        }
+
+        mock_queue = MagicMock()
+        d._queue = mock_queue
+
+        with patch("voronoi.server.dispatcher.cleanup_tmux"):
+            d._handle_completion(run, failed=False)
+
+        # Must have called fail() — not silently returned
+        mock_queue.fail.assert_called_once()
+        # Must have sent a message about the block
+        assert any("DESIGN_INVALID" in m for m in msgs)
+
+
+class TestBug008DirectivePriority:
+    """BUG-008: Higher-priority directives must not be clobbered."""
+
+    def test_sentinel_not_clobbered_by_context(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+
+        # Write a sentinel directive first (highest priority)
+        d._write_directive(run, "sentinel_violation", "Contract violated")
+        data1 = json.loads((swarm / "dispatcher-directive.json").read_text())
+        assert data1["directive"] == "sentinel_violation"
+
+        # Context warning should NOT overwrite sentinel
+        d._write_directive(run, "context_warning", "10h elapsed")
+        data2 = json.loads((swarm / "dispatcher-directive.json").read_text())
+        assert data2["directive"] == "sentinel_violation"
+
+    def test_context_critical_overwrites_advisory(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+
+        d._write_directive(run, "context_advisory", "6h elapsed")
+        d._write_directive(run, "context_critical", "14h elapsed")
+        data = json.loads((swarm / "dispatcher-directive.json").read_text())
+        assert data["directive"] == "context_critical"
+
+
+class TestBug009WorkerCheckpointExclusion:
+    """BUG-009: _latest_checkpoint must not read 'checkpoint.json' from worktrees."""
+
+    def test_ignores_worker_checkpoint_json(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+
+        # Write orchestrator checkpoint in main workspace
+        (swarm / "orchestrator-checkpoint.json").write_text(json.dumps({
+            "cycle": 5, "phase": "investigating",
+            "last_updated": "2026-01-01T00:00:00+00:00",
+        }))
+
+        # Create a fake worker worktree with a generic checkpoint.json
+        swarm_dir = tmp_path.parent / f"{tmp_path.name}-swarm"
+        worker = swarm_dir / "agent-explorer" / ".swarm"
+        worker.mkdir(parents=True)
+        (worker / "checkpoint.json").write_text(json.dumps({
+            "cycle": 1, "phase": "complete",
+            "last_updated": "2026-12-31T00:00:00+00:00",
+        }))
+
+        cp = d._latest_checkpoint(run)
+        assert cp is not None
+        # Must return the orchestrator's data, not the worker's
+        assert cp["cycle"] == 5
+        assert cp["phase"] == "investigating"
+
+
+class TestBug012ResumePromptEffectiveRigor:
+    """BUG-012: Near-convergence resume must use effective rigor."""
+
+    def test_resume_prompt_uses_effective_rigor(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test question?",
+            mode="discover",
+            rigor="adaptive",
+        )
+        run.last_rigor = "scientific"
+
+        # Write a near-convergence checkpoint
+        (swarm / "orchestrator-checkpoint.json").write_text(json.dumps({
+            "cycle": 10, "phase": "converging",
+            "blockers": "", "remaining": [],
+        }))
+        # Write the original prompt file (required by _build_resume_prompt)
+        (swarm / "orchestrator-prompt.txt").write_text("original prompt")
+
+        resume_path = d._build_resume_prompt(run)
+        content = resume_path.read_text()
+
+        # Must reference "scientific" rigor, not "adaptive"
+        assert "convergence-gate.sh . scientific" in content
