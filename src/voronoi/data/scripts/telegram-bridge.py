@@ -532,8 +532,8 @@ def run_bot(config: dict) -> None:
     if app.job_queue is not None:
         # misfire_grace_time=None means "run the job no matter how late" —
         # these are idempotent polls, so running late after macOS App Nap
-        # or system throttle is fine.  Without this, APScheduler's 1-second
-        # default causes noisy "Run time was missed" warnings.
+        # or system throttle is fine.  Without this, APScheduler would drop
+        # jobs that fire more than 1 second past their scheduled time.
         _job_kw: dict = {"misfire_grace_time": None}
         app.job_queue.run_repeating(_job_dispatch, interval=10, first=5,
                                     job_kwargs=_job_kw)
@@ -629,6 +629,16 @@ def main() -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("telegram").setLevel(logging.WARNING)
     logging.getLogger("apscheduler").setLevel(logging.WARNING)
+
+    # APScheduler always logs "Run time of job was missed" at WARNING when a job
+    # fires late (e.g. after macOS App Nap or system sleep), even when
+    # misfire_grace_time=None ensures the job still runs.  These warnings are
+    # expected and handled — suppress them so they don't clutter the log.
+    class _MisfireFilter(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            return "Run time of job" not in record.getMessage()
+
+    logging.getLogger("apscheduler.executors.default").addFilter(_MisfireFilter())
     config = load_config(args.config)
 
     if not config["bot_token"]:
