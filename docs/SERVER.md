@@ -308,7 +308,9 @@ class InvestigationDispatcher:
    - Skip if not due for update (< progress_interval since last)
    - Refresh eval score from `.swarm/eval-score.json`
    - Check if tmux session still alive
-   - Get events via `_check_progress()`:
+   - Get events via `_check_progress(session_alive)`:
+     - **When session alive**: skips `bd list --json` (agent's MCP server holds exclusive Dolt lock); downstream checks receive `tasks=None` and return empty
+     - **When session dead**: reads tasks normally via `bd list --json`
      - `_diff_tasks()` — compares task snapshot for new/started/completed tasks
      - `_check_findings()` — detects new FINDING tasks and SERENDIPITY notes (deduplicates via notified set)
      - `_check_design_invalid()` — detects DESIGN_INVALID flags in open tasks
@@ -683,7 +685,7 @@ class WorkspaceManager:
 2. Initialize git repo
 3. Write `PROMPT.md` with user question
 4. Run `voronoi init`
-5. Initialize Beads
+5. Initialize Beads in **server mode** (`bd init --quiet --server`) so the dispatcher can query tasks concurrently while the agent's MCP server holds the database open
 
 ### Workspace Naming Convention
 

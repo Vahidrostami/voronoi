@@ -186,15 +186,10 @@ class TestProgressMonitoring:
             mode="discover",
         )
 
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(
-                returncode=0,
-                stdout=json.dumps([
-                    {"id": "bd-5", "title": "FINDING: EWC beats replay d=0.82", "notes": "EFFECT_SIZE:0.82"},
-                ]),
-                stderr="",
-            )
-            events = d._check_findings(run)
+        tasks = [
+            {"id": "bd-5", "title": "FINDING: EWC beats replay d=0.82", "notes": "EFFECT_SIZE:0.82"},
+        ]
+        events = d._check_findings(run, tasks)
 
         assert len(events) == 1
         assert "FINDING" in events[0]["msg"]
@@ -610,9 +605,29 @@ class TestHeartbeatStallDetection:
                 ]),
                 stderr="",
             )
-            events = d._check_progress(run)
+            events = d._check_progress(run, session_alive=False)
 
         assert all(event["type"] != "heartbeat_stall" for event in events)
+
+    def test_check_progress_skips_bd_when_session_alive(self, dispatcher_setup):
+        """_check_progress must not call bd list --json while the agent session
+        is alive — the MCP server holds an exclusive Dolt lock."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        run.task_snapshot = {"bd-1": {"status": "open", "title": "Task 1", "notes": ""}}
+
+        with patch("voronoi.beads.run_bd_json", side_effect=AssertionError("should not be called")) as _:
+            # Should NOT call run_bd_json at all when session is alive
+            events = d._check_progress(run, session_alive=True)
+
+        # No task events because bd was skipped, but phase detection still works
+        assert isinstance(events, list)
 
 
 # ---------------------------------------------------------------------------

@@ -14,11 +14,10 @@ import time
 logger = logging.getLogger("voronoi.beads")
 
 # Retry settings for embedded Dolt exclusive lock contention (beads v1.0.0).
-# The embedded backend holds an flock for the entire lifetime of each bd
-# command, so concurrent callers fail immediately.  We retry with exponential
-# backoff until the lock is released.
-_LOCK_RETRIES = 5
-_LOCK_INITIAL_WAIT = 0.1  # seconds
+# With server mode (the default for Voronoi workspaces since April 2026)
+# lock contention is rare, but we keep a short retry for robustness.
+_LOCK_RETRIES = 2
+_LOCK_INITIAL_WAIT = 0.2  # seconds
 _LOCK_ERROR_FRAGMENT = "another process holds the exclusive lock"
 
 

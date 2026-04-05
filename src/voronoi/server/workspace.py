@@ -241,7 +241,13 @@ class WorkspaceManager:
             logger.debug("Failed to restore AGENTS.md in %s", workspace_path, exc_info=True)
 
     def _ensure_beads(self, workspace_path: Path) -> None:
-        """Initialize Beads (bd) in a workspace if not already present."""
+        """Initialize Beads (bd) in a workspace if not already present.
+
+        Uses ``--server`` mode so the dispatcher (outer loop) can query
+        Beads concurrently while the agent's MCP server holds the
+        database open.  Embedded mode uses an exclusive flock held for
+        the entire process lifetime, blocking all external readers.
+        """
         beads_dir = workspace_path / ".beads"
         if beads_dir.is_dir():
             return
@@ -249,13 +255,13 @@ class WorkspaceManager:
             return
         try:
             subprocess.run(
-                ["bd", "init", "--quiet"],
+                ["bd", "init", "--quiet", "--server"],
                 cwd=str(workspace_path),
                 capture_output=True, text=True, timeout=30,
                 input="Y\n",
             )
         except (FileNotFoundError, subprocess.TimeoutExpired):
-            logger.debug("voronoi init failed in %s", workspace_path, exc_info=True)
+            logger.debug("bd init failed in %s", workspace_path, exc_info=True)
 
     def _ensure_github_files(self, workspace_path: Path) -> None:
         """Copy runtime agents/prompts/skills/instructions/hooks to .github/ in the workspace, plus scripts/ and templates."""

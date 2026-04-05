@@ -623,7 +623,7 @@ class InvestigationDispatcher:
                                inv_id)
                 continue
 
-            events = self._check_progress(run)
+            events = self._check_progress(run, session_alive=session_alive)
             events.extend(self._check_event_log(run))
             if events:
                 # If orchestrator is parked, accumulate events for resume prompt
@@ -1279,21 +1279,29 @@ class InvestigationDispatcher:
         except Exception as e:
             logger.debug("Workspace compaction failed for %s: %s", run.label, e)
 
-    def _check_progress(self, run: RunningInvestigation) -> list[dict]:
+    def _check_progress(self, run: RunningInvestigation, *,
+                         session_alive: bool = False) -> list[dict]:
         events: list[dict] = []
         tasks: list[dict] | None = None
-        from voronoi.beads import run_bd_json
-        code, parsed = run_bd_json("list", "--json", cwd=str(run.workspace_path))
-        if code == 0 and parsed is not None:
-            if isinstance(parsed, list):
-                tasks = parsed
-                events.extend(self._diff_tasks(run, tasks))
-            else:
-                logger.warning("bd list --json returned non-list for #%d: %s",
-                               run.investigation_id, type(parsed).__name__)
-        elif code != 0:
-            logger.debug("bd list --json failed for #%d (exit=%d)",
-                         run.investigation_id, code)
+
+        # When the agent session is alive its MCP server holds an exclusive
+        # flock on the embedded Dolt database.  Calling ``bd list --json``
+        # will always fail with a lock error, burning ~3s of retries per
+        # poll cycle.  Skip the call entirely and rely on the cached
+        # task_snapshot for downstream checks.
+        if not session_alive:
+            from voronoi.beads import run_bd_json
+            code, parsed = run_bd_json("list", "--json", cwd=str(run.workspace_path))
+            if code == 0 and parsed is not None:
+                if isinstance(parsed, list):
+                    tasks = parsed
+                    events.extend(self._diff_tasks(run, tasks))
+                else:
+                    logger.warning("bd list --json returned non-list for #%d: %s",
+                                   run.investigation_id, type(parsed).__name__)
+            elif code != 0:
+                logger.debug("bd list --json failed for #%d (exit=%d)",
+                             run.investigation_id, code)
         events.extend(self._check_findings(run, tasks))
         events.extend(self._check_design_invalid(run, tasks))
         events.extend(self._check_sentinel(run))
@@ -1342,11 +1350,7 @@ class InvestigationDispatcher:
                          tasks: list[dict] | None = None) -> list[dict]:
         events: list[dict] = []
         if tasks is None:
-            from voronoi.beads import run_bd_json
-            code, parsed = run_bd_json("list", "--json", cwd=str(run.workspace_path))
-            if code != 0 or not isinstance(parsed, list):
-                return events
-            tasks = parsed
+            return events
 
         for task in tasks:
             tid = task.get("id", "")

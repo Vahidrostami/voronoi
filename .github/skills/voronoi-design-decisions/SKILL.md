@@ -69,6 +69,7 @@ This is Voronoi's design memory. Before proposing any architectural change, chec
 | Simulator/mock data bypass | Temptation to replace real LLM calls with fake data. | INV-16: Fewer real data points > any number of fake ones. |
 | Redis/in-memory store for state | Faster, cleaner API — but requires external infrastructure. | Files are boring, reliable, don't need setup. Concurrent access is rare. |
 | Two-loop system (drop dispatcher) | Collapses reliability onto orchestrator, which loses context under pressure. | Three loops: Python for reliability, LLM for strategy, LLM for focus. |
+| Beads embedded mode for workspaces | Exclusive flock held for entire MCP server lifetime blocks dispatcher reads. Hundreds of lock-error warnings per investigation. | Use `bd init --server` so dispatcher and agent can access Beads concurrently. |
 
 ---
 
@@ -78,7 +79,7 @@ This is Voronoi's design memory. Before proposing any architectural change, chec
 |------|---------|----------|----------|
 | Resume prompt ambiguity | Checkpoint may say `phase=converged, 7/13 met` while `success-criteria.json` says `0/13 met` during restart. False failure loops. | High | `dispatcher.py:_build_resume_prompt()` |
 | Sentinel audit enforcement | INV-40 says "cannot be bypassed" but nothing structurally prevents orchestrator from deleting `sentinel-audit.json`. | Medium | `dispatcher.py` / `science.py` |
-| Beads vs Investigation granularity | Different update semantics. Beads doesn't track investigation-level state. Can cause stale progress digests. | Medium | `queue.db` (global) vs `.beads/` (per-workspace) |
+| Beads vs Investigation granularity | Different update semantics. Beads doesn't track investigation-level state. Mitigated by server-mode init and session_alive guard in dispatcher. | Low | `queue.db` (global) vs `.beads/` (per-workspace) |
 | Context thresholds vs actual overflow | Stated overflow risk is 6–10h, but thresholds fire at 12h/20h/28h. Advisory only. | Medium | `dispatcher.py` |
 | Convergence failure classification | `blocked` status isn't persisted to `convergence.json`. On restart, orchestrator may not know it's blocked. | Medium | `dispatcher.py:check_convergence()` |
 | Paradigm stress threshold | Count contradictions ≥ 3 → flag. No principled threshold. May miss subtle tensions or false-trigger. | Low | `swarm-orchestrator.agent.md` |

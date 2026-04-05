@@ -164,3 +164,33 @@ class TestWorkspaceManagement:
         wm.provision_lab(2, "replay", "Replay question")
         active = wm.list_active()
         assert len(active) == 2
+
+
+class TestEnsureBeads:
+    """Tests for _ensure_beads — server-mode initialization."""
+
+    def test_ensure_beads_passes_server_flag(self, tmp_path):
+        wm = WorkspaceManager(tmp_path / "voronoi")
+        ws = tmp_path / "workspace"
+        ws.mkdir()
+
+        with patch("shutil.which", return_value="/usr/local/bin/bd"), \
+             patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            wm._ensure_beads(ws)
+
+        mock_run.assert_called_once()
+        cmd = mock_run.call_args[0][0]
+        assert "--server" in cmd
+        assert "--quiet" in cmd
+
+    def test_ensure_beads_skips_when_dir_exists(self, tmp_path):
+        wm = WorkspaceManager(tmp_path / "voronoi")
+        ws = tmp_path / "workspace"
+        ws.mkdir()
+        (ws / ".beads").mkdir()
+
+        with patch("subprocess.run") as mock_run:
+            wm._ensure_beads(ws)
+
+        mock_run.assert_not_called()
