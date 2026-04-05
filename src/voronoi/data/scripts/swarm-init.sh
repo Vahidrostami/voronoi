@@ -66,7 +66,22 @@ fi
 
 # 3. Initialize Beads
 if [ ! -d ".beads" ]; then
-    echo "Y" | timeout 30 bd init --quiet 2>/dev/null || true
+    # Use timeout if available (Linux), gtimeout (Homebrew coreutils on macOS),
+    # or fall back to a background-process timeout for vanilla macOS.
+    if command -v timeout >/dev/null 2>&1; then
+        echo "Y" | timeout 30 bd init --quiet 2>/dev/null || true
+    elif command -v gtimeout >/dev/null 2>&1; then
+        echo "Y" | gtimeout 30 bd init --quiet 2>/dev/null || true
+    else
+        # Portable timeout: run bd init in background, kill after 30s
+        echo "Y" | bd init --quiet 2>/dev/null &
+        _bd_pid=$!
+        ( sleep 30 && kill "$_bd_pid" 2>/dev/null ) &
+        _timer_pid=$!
+        wait "$_bd_pid" 2>/dev/null || true
+        kill "$_timer_pid" 2>/dev/null || true
+        wait "$_timer_pid" 2>/dev/null || true
+    fi
     if [ -d ".beads" ]; then
         echo "✓ Beads initialized"
     else
