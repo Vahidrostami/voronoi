@@ -204,6 +204,7 @@ class DispatcherConfig:
     timeout_hours: int          # 8
     max_retries: int            # 2
     stall_minutes: int          # 45
+    park_timeout_hours: int     # 4 (force-wake parked orchestrator after this)
 ```
 
 ### RunningInvestigation (`server/dispatcher.py`)

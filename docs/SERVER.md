@@ -346,8 +346,10 @@ Wake conditions (`_needs_orchestrator()`):
 
 Worker liveness (`_has_active_workers()`):
 1. Reads the swarm tmux session name from `.swarm-config.json` (`tmux_session` field, written by `swarm-init.sh`). Falls back to `{orchestrator_session}-swarm` if the config file is missing.
-2. Checks if any workers listed in the checkpoint have a matching tmux window in the swarm session.
+2. Checks if any workers listed in the checkpoint have a matching tmux window in the swarm session **with an active agent process** — uses `tmux list-panes -F #{pane_current_command}` to verify the pane is running an agent (not a leftover shell like `bash`/`zsh`).
 3. Falls back to `pgrep` for orphaned processes whose cwd is inside the workspace.
+
+**Park timeout safety net**: If the orchestrator remains parked longer than `park_timeout_hours` (default 4h), the dispatcher force-wakes it regardless of worker state. This prevents indefinite stall if liveness detection has a false positive.
 
 Findings and serendipity are accumulated and delivered in the resume prompt — they do NOT trigger immediate wake because they are not time-sensitive. The orchestrator evaluates them with fresh context.
 

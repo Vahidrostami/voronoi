@@ -2650,7 +2650,7 @@ class TestOrphanedWorkerDetection:
             "tmux_session": "inv-1-coupled-decisions-swarm"
         }))
 
-        # tmux has-session succeeds for the config-derived name, list-windows shows the worker
+        # tmux has-session succeeds, list-windows shows worker, list-panes shows copilot alive
         def side_effect(cmd, **kwargs):
             if cmd[0] == "tmux" and cmd[1] == "has-session":
                 # Verify it's checking the name from config, not the constructed one
@@ -2658,10 +2658,52 @@ class TestOrphanedWorkerDetection:
                 return MagicMock(returncode=0)
             if cmd[0] == "tmux" and cmd[1] == "list-windows":
                 return MagicMock(returncode=0, stdout="worker-1\norchestrator\n")
+            if cmd[0] == "tmux" and cmd[1] == "list-panes":
+                return MagicMock(returncode=0, stdout="copilot\n")
             return MagicMock(returncode=1, stdout="")
 
         with patch("voronoi.server.dispatcher.subprocess.run", side_effect=side_effect):
             assert d._has_active_workers(run) is True
+
+    def test_window_exists_but_process_dead(self, dispatcher_setup):
+        """Window with worker name exists but copilot exited — dead bash shell.
+
+        This is the critical production failure from inv-36: workers completed
+        but tmux windows remained with bash prompts, causing _has_active_workers
+        to return True forever and the orchestrator to never wake.
+        """
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="voronoi-inv-1",
+            question="test",
+            mode="discover",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "orchestrator-checkpoint.json").write_text(json.dumps({
+            "active_workers": ["agent-scout", "agent-scengen"]
+        }))
+        (tmp_path / ".swarm-config.json").write_text(json.dumps({
+            "tmux_session": "inv-1-coupled-decisions-swarm"
+        }))
+
+        def side_effect(cmd, **kwargs):
+            if cmd[0] == "tmux" and cmd[1] == "has-session":
+                return MagicMock(returncode=0)  # session exists
+            if cmd[0] == "tmux" and cmd[1] == "list-windows":
+                return MagicMock(returncode=0,
+                                stdout="agent-scout\nagent-scengen\norchestrator\n")
+            if cmd[0] == "tmux" and cmd[1] == "list-panes":
+                # copilot exited, only bash shell remains
+                return MagicMock(returncode=0, stdout="bash\n")
+            if cmd[0] == "pgrep":
+                return MagicMock(returncode=1, stdout="")  # no orphans
+            return MagicMock(returncode=1, stdout="")
+
+        with patch("voronoi.server.dispatcher.subprocess.run", side_effect=side_effect):
+            assert d._has_active_workers(run) is False
 
     def test_swarm_session_fallback_when_no_config(self, dispatcher_setup):
         """Should fall back to tmux_session + '-swarm' when no config file."""
@@ -3496,6 +3538,81 @@ class TestOrchestratorParking:
         assert run.orchestrator_parked is True
         mock_restart.assert_not_called()
         assert 1 in d.running
+
+    def test_park_timeout_force_wakes(self, dispatcher_setup):
+        """Parked orchestrator should be force-woken after park_timeout_hours.
+
+        Safety net for BUG-002: even if _has_active_workers falsely returns
+        True (e.g. dead shell windows), the timeout guarantees recovery.
+        """
+        d, msgs, docs, tmp_path = dispatcher_setup
+        mock_queue = MagicMock()
+        d._queue = mock_queue
+        d.config.park_timeout_hours = 4
+
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "orchestrator-prompt.txt").write_text("original prompt")
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test question",
+            mode="discover",
+        )
+        run.orchestrator_parked = True
+        # Parked 5 hours ago (exceeds 4h limit)
+        run.last_parked_digest_at = time.time() - 5 * 3600
+        d.running[1] = run
+
+        with patch.object(d, "_check_abort_signal"), \
+             patch.object(d, "check_human_gates"), \
+             patch.object(d, "_refresh_eval_score"), \
+             patch.object(d, "_sync_criteria_from_checkpoint"), \
+             patch.object(d, "_check_progress", return_value=[]), \
+             patch.object(d, "_check_event_log", return_value=[]), \
+             patch.object(d, "_has_active_workers", return_value=True), \
+             patch.object(d, "_wake_from_park", return_value=True) as mock_wake, \
+             patch("voronoi.server.dispatcher.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1)  # session dead
+            d.poll_progress()
+
+        mock_wake.assert_called_once_with(run)
+        assert 1 in d.running
+
+    def test_park_timeout_not_triggered_when_within_limit(self, dispatcher_setup):
+        """Parked orchestrator should NOT be force-woken before timeout."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        run.orchestrator_parked = True
+        # Parked 1 hour ago (within 4h limit)
+        run.last_parked_digest_at = time.time() - 1 * 3600
+        d.running[1] = run
+
+        with patch.object(d, "_check_abort_signal"), \
+             patch.object(d, "check_human_gates"), \
+             patch.object(d, "_refresh_eval_score"), \
+             patch.object(d, "_sync_criteria_from_checkpoint"), \
+             patch.object(d, "_check_progress", return_value=[]), \
+             patch.object(d, "_check_event_log", return_value=[]), \
+             patch.object(d, "_has_active_workers", return_value=True), \
+             patch.object(d, "_needs_orchestrator", return_value=False), \
+             patch.object(d, "_try_restart") as mock_restart, \
+             patch("voronoi.server.dispatcher.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1)  # session dead
+            d.poll_progress()
+
+        # Should stay parked — timeout not reached
+        assert run.orchestrator_parked is True
+        mock_restart.assert_not_called()
 
 
 class TestPromptBuilderLifecycle:

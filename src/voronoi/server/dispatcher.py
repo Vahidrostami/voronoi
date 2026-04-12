@@ -74,6 +74,7 @@ class DispatcherConfig:
     context_critical_hours: int = 14   # "dispatch Scribe NOW" directive
     compact_interval_hours: int = 6    # workspace state compaction interval
     max_context_restarts: int = 2      # max proactive context refreshes
+    park_timeout_hours: int = 4        # force-wake parked orchestrator after this
 
 
 @dataclass
@@ -703,6 +704,15 @@ class InvestigationDispatcher:
                     # defer restart until workers finish or an urgent event arrives.
                     if run.orchestrator_parked:
                         # Already parked — check if workers are still running
+                        parked_hours = (now - run.last_parked_digest_at) / 3600 if run.last_parked_digest_at else 0
+                        if parked_hours >= self.config.park_timeout_hours:
+                            # Safety net: force-wake after timeout regardless of worker state
+                            logger.warning("Investigation #%d force-waking — "
+                                           "parked for %.1fh (limit %dh)",
+                                           inv_id, parked_hours,
+                                           self.config.park_timeout_hours)
+                            self._wake_from_park(run)
+                            continue  # don't add to completed_ids
                         if self._has_active_workers(run):
                             # Workers still running — check for urgent wakes
                             if self._needs_orchestrator(run):
@@ -2400,26 +2410,62 @@ class InvestigationDispatcher:
             pass
         if not swarm_session:
             swarm_session = run.tmux_session + "-swarm"
+        # Check if the swarm tmux session exists at all (once, not per-worker)
+        try:
+            result = subprocess.run(
+                ["tmux", "has-session", "-t", swarm_session],
+                capture_output=True, timeout=5,
+            )
+            if result.returncode != 0:
+                # Session gone — skip to orphan check
+                workers = []
+        except (subprocess.TimeoutExpired, OSError):
+            workers = []
+
         for worker in workers:
             try:
-                result = subprocess.run(
-                    ["tmux", "has-session", "-t", swarm_session],
-                    capture_output=True, timeout=5,
-                )
-                if result.returncode != 0:
-                    continue
-                # Session exists — check for a window matching this worker
+                # Check for a window matching this worker AND verify the
+                # process inside the pane is still a copilot/agent process,
+                # not a dead shell.  tmux windows survive after the foreground
+                # process exits, leaving an idle bash prompt — we must not
+                # treat those as "alive".
                 result = subprocess.run(
                     ["tmux", "list-windows", "-t", swarm_session, "-F",
                      "#{window_name}"],
                     capture_output=True, text=True, timeout=5,
                 )
-                if result.returncode == 0:
-                    windows = result.stdout.strip().splitlines()
-                    if any(worker in w for w in windows):
-                        logger.debug("Worker %s still alive for %s",
-                                     worker, run.label)
+                if result.returncode != 0:
+                    continue
+                windows = result.stdout.strip().splitlines()
+                if not any(worker in w for w in windows):
+                    continue
+                # Window exists — now check if the pane process is still
+                # an agent (not just a leftover shell)
+                pane_result = subprocess.run(
+                    ["tmux", "list-panes", "-t",
+                     f"{swarm_session}:{worker}", "-F",
+                     "#{pane_current_command}"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if pane_result.returncode == 0:
+                    cmds = pane_result.stdout.strip().splitlines()
+                    # A live worker has an agent process (copilot, claude,
+                    # node, python, etc.) — not a bare shell
+                    shell_names = {"bash", "zsh", "sh", "fish", "dash",
+                                   "csh", "tcsh", "ksh", "login"}
+                    if any(c.strip() and c.strip() not in shell_names
+                           for c in cmds):
+                        logger.debug("Worker %s still alive for %s "
+                                     "(pane_cmd=%s)",
+                                     worker, run.label,
+                                     cmds[0] if cmds else "?")
                         return True
+                    else:
+                        logger.debug("Worker %s window exists but process "
+                                     "exited (pane_cmd=%s) for %s",
+                                     worker,
+                                     cmds[0] if cmds else "?",
+                                     run.label)
             except (subprocess.TimeoutExpired, OSError):
                 continue
 
