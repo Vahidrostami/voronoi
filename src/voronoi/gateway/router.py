@@ -196,7 +196,7 @@ class CommandRouter:
             return "\u274c Could not list demos."
         if not demos:
             return "No demos available."
-        lines = ["\ud83c\udfae *Available Demos*\n"]
+        lines = ["\U0001F3AE *Available Demos*\n"]
         for d in demos:
             marker = "\u2713" if d["has_prompt"] else "\u25cb"
             lines.append(f"  {marker} `{d['name']}` \u2014 {d['description']}")
