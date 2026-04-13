@@ -1,63 +1,41 @@
-# Demo: Epistemic Trajectories
+# Demo: Phase Transitions in Multi-Source Reasoning
 
-**When knowledge sources have incompatible epistemic types, does preserving their native semantics during encoding enable cross-source reasoning — specifically constraint-boundary detection — that raw-text concatenation structurally cannot perform?**
+**Do LLMs exhibit sharp phase transitions when reasoning over heterogeneous knowledge sources as structural complexity increases? Does knowledge compilation shift the critical threshold?**
 
-A multi-agent system that compiles heterogeneous knowledge sources into epistemic-type-preserving representations, then validates whether this compilation enables cross-source constraint detection and systematically prunes the feasible trajectory space of coupled decision levers.
+A benchmark with deterministic ground truth: synthetic decision scenarios with known causal DAGs, planted cross-source constraints, and forward-simulable outcomes. Scenarios are parameterized along a **knowledge complexity axis** $K$ (3–15 coupled levers, 1-hop to 3-hop constraint chains) and tested across **4–5 models** spanning sub-frontier to frontier capability.
 
 ## What It Does
 
-Generates synthetic RGM (Revenue Growth Management) scenarios with planted effects — including cross-source constraint boundaries that are **structurally undetectable** from any single source in isolation. A 2×2 factorial tests encoding and source diversity; a pipeline observation tests feasible trajectory pruning. A real-data validation phase confirms the invariants exist outside synthetic construction.
+Maps the interaction surface of (model capability) × (knowledge complexity) × (encoding format) with deterministic evaluation. No LLM-as-judge variance.
 
 ### Core Thesis
 
-Knowledge compilation (not retrieval) is the bottleneck. RAG answers "which knowledge is relevant?" — this framework answers "how should knowledge be represented for joint reasoning?" The two are orthogonal and composable. The primary evidence is **constraint-boundary detection**: data alone recommends an action, policy alone states a rule, but neither source in isolation reveals the conflict. Cross-source reasoning is structurally mandatory.
+Knowledge compilation is not a capability crutch — it is a **complexity management mechanism** with a model-dependent activation threshold $K_c(M)$. Below $K_c$, compilation saves tokens (2–5× compression). Above $K_c$, it saves reasoning quality. L4 encoding is Pareto-optimal across the entire range.
 
-### 2×2 Factorial Design
+### Design: 2 × 6 × M Factorial
 
-|  | **Data-only** | **All-sources** |
-|--|---------------|-----------------|
-| **L1 (raw text)** | L1-D | L1-A |
-| **L4 (structured)** | L4-D | L4-A |
+**Encoding:** L1 (raw text) vs L4 (compiled epistemic-type-preserving encoding)
 
-Three hypothesis tests (primary first):
+**Knowledge Complexity ($K$):** 6 levels from $K_1$ (3 levers, 1-hop constraints) to $K_6$ (15 levers, 3-hop cascading constraints with temporal coupling)
 
-| Claim | Test | Status |
-|-------|------|--------|
-| **Encoding enables cross-source reasoning** | **Interaction: source benefit larger at L4 than L1** | **Primary** |
-| Encoding reduces Constraint Violation Rate | L4-A CVR < L1-A | Co-primary |
-| Encoding reduces Decision Regret | Main effect of encoding (L4 vs L1) | Secondary/expected |
+**Models:** 4–5 models spanning sub-frontier to frontier capability
 
-The interaction is the headline finding. The main effect (structured > raw) is expected — pre-computed statistics outperforming raw rows is not novel. The novel claim is that encoding *enables* cross-source reasoning that raw text *destroys*.
-
-### E3: Feasible Trajectory Pruning
-
-Full pipeline on all scenarios at L4-all. The pipeline systematically narrows the combinatorial decision space through three pruning stages:
-
-1. **Parallel diagnostic agents** — eliminate infeasible/dominated trajectories along complementary dimensions
-2. **Causal synthesis** — assemble surviving evidence into structured interventions (lever, direction, scope, mechanism)
-3. **Quality gate** — filter for evidence density, constraint alignment, actionability, testability, novelty
-
-Output: a small set of **feasible trajectories** — causally grounded paths through the coupled lever space, not point recommendations. Compression scales with dimensionality: 15–30× for 5-lever, 100–270× for 10+.
-
-### Signal Chain
-
-`encoding → single LLM discovery call → evaluation`. No pipeline between encoding and evaluation.
-
-### Planted Effect Types (priority order)
-
-| Category | Why It's Primary | What Encoding Fixes |
-|----------|-----------------|---------------------|
-| **Constraint boundary** | Structurally requires cross-source reasoning — no single source detects it | Typed constraint vectors with threshold + cross-reference with data |
-| Interaction effect | Non-additive coupling invisible to single-lever analysis | Cross-lever interaction profiles |
-| Simpson's paradox | Aggregate masks subgroup reversal | Segment-level stats pre-computed |
+Always all-sources (data + policy + expert + playbook). The question is not "does adding sources help?" but "does *compiling* sources help, and when?"
 
 ### Evaluation
 
-Two co-primary metrics, both fully deterministic (no LLM judge):
-- **Decision Regret**: forward-simulate through known causal DAG. Measures practical value.
-- **Constraint Violation Rate**: does the recommendation violate known policy constraints? Measures safety. **Primary evidence for the thesis.**
+Two co-primary metrics, fully deterministic:
+- **Decision Regret**: forward-simulate through known causal DAG
+- **Constraint Violation Rate**: recommendation vs ground-truth constraint rules
 
-Secondary: Variable Recall, Direction Accuracy, Causal Edge Recovery F1, cross-run reliability, failure rate.
+Plus **token efficiency** metrics: input/output tokens, compression ratios, cost per correct decision.
+
+### Key Figures
+
+1. **Phase diagram**: Encoding benefit vs $K$, one curve per model — crossing zero at model-specific $K_c$
+2. **Pareto frontier**: Accuracy vs tokens — L4 always up-and-left of L1
+3. **Cascade detection heatmap**: Models × constraint depth — diagonal failure boundary
+4. **Cost per correct decision**: L4 cheaper everywhere
 
 ## How to Run
 
@@ -68,11 +46,10 @@ voronoi demo run epistemic-trajectories
 ## Phases
 
 ```
-Phase −1: Encoding pre-flight (1 scenario, 0 LLM calls)
-Phase 0:  Difficulty calibration (9 scenarios, L1-D + L1-A, k=3)
-Phase 0.5: Real-data validation (2-3 public datasets, qualitative)
-Phase 1:  Pilot (6 scenarios, all 4 cells, k=3, 2 models)
-Phase 2:  Full (36 scenarios × 4 cells × k=3 runs)
+Phase −1: Encoding pre-flight (6 scenarios, 0 LLM calls)
+Phase 0:  Complexity calibration (6 scenarios × 2 encodings × 1 model, k=3)
+Phase 1:  Multi-model pilot (6 scenarios × 2 encodings × M models, k=3)
+Phase 2:  Full (36 scenarios × 2 encodings × M models, k=3)
 Phase 3:  Paper + webapp (gated on Phase 2)
 ```
 
@@ -81,12 +58,14 @@ Phase 3:  Paper + webapp (gated on Phase 2)
 ```
 demos/epistemic-trajectories/
   output/
-    results.json             # Per-scenario per-cell per-run Decision Regret + CVR + ANOVA
+    results.json              # Per-scenario per-encoding per-model per-run: regret, CVR, tokens
+    token_efficiency.json     # Compression ratios, cost per correct decision, Pareto data
     deterministic_metrics.json
     reliability_metrics.json
-    pipeline_scores.json     # Feasible trajectory pruning + random baseline
+    pipeline_scores.json      # Trajectory pruning + random baseline
+    cascade_detection.json
+    phase_transitions.json    # Per-model K_c estimates + CIs
     encoding_hashes.json
-    real_data_validation.json  # Phase 0.5 qualitative results
     paper/
       paper.tex + paper.pdf + figures/
     index.html
@@ -97,15 +76,16 @@ demos/epistemic-trajectories/
 
 ## Success Criteria
 
-1. Interaction effect on Decision Regret: encoding enables cross-source reasoning (p < 0.017)
-2. L4-A Constraint Violation Rate < L1-A (p < 0.05)
-3. Pipeline feasible-trajectory recall > random recall (p < 0.05)
-4. Dose-response: encoding effect increases with difficulty tier
-5. Paper compiles with figures from actual data
+1. Encoding × Complexity interaction on Decision Regret (p < 0.017)
+2. L4 CVR < L1 CVR at $K \geq K_4$ (p < 0.05)
+3. Per-model phase transition $K_c$ estimable via logistic breakpoint
+4. L4 Pareto-dominates on cost-accuracy in ≥80% of cells
+5. Pipeline compression scales with $K$ (correlation > 0.7)
+6. Paper compiles with figures from actual data
 
 ## Call Budget
 
-~1,850 LLM calls (k=3 throughout, includes second-model pilot).
+~3,200 LLM calls for M=4 models (k=3 throughout, includes Phase 1 multi-model pilot).
 
 ## Prerequisites
 
