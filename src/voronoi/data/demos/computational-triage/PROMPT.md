@@ -1,20 +1,20 @@
-# Context Engineering as a Scaling Axis: From Computational Triage to Multi-Agent Amplification
+# Don't Ask the Solver to Build the Problem: Evidence Encoding for LLM Reasoning Over Constrained Decision Spaces
 
-Produce a complete academic paper — with empirical evidence from controlled experiments — demonstrating that **computational triage** (separating deterministic evidence processing from heuristic reasoning) is a scaling axis for LLM reasoning, and that its benefits **amplify in multi-agent architectures**. The paper must be rigorous enough for a top-tier venue (NeurIPS, ICML, AAAI, Management Science).
+Produce a complete academic paper — with empirical evidence from controlled experiments — demonstrating that **evidence encoding** (transforming unstructured multi-source evidence into a solver-tractable representation before LLM inference) is a scaling axis for LLM reasoning, and that its benefits **amplify in multi-agent architectures**. The paper must be rigorous enough for a top-tier venue (NeurIPS, ICML, AAAI, Management Science).
 
 ---
 
 ## Abstract
 
-> Large language models increasingly serve as reasoning engines over high-dimensional decision problems where heterogeneous evidence — quantitative data, policy constraints, and expert beliefs — must be integrated under combinatorial constraint structures. Raw-text prompting forces the model to perform two fundamentally different operations in a single forward pass: *deterministic computation* (signal extraction, constraint propagation, conflict detection) and *heuristic reasoning* (tradeoff evaluation, feasibility judgment, action recommendation). We argue this conflation — not model capability — is the primary bottleneck.
+> Large language models increasingly serve as reasoning engines over high-dimensional decision problems where heterogeneous evidence — quantitative data, policy constraints, and expert beliefs — must be integrated under combinatorial constraint structures. Raw-text prompting forces the model to simultaneously *construct* the constraint graph from unstructured evidence AND *search* for a solution — in a single forward pass. In classical constraint satisfaction, this conflation is catastrophically inefficient: no SAT solver searches without first running unit propagation, arc consistency, and nogood learning. We argue the same principle applies to LLM reasoning — the bottleneck is not model capability but evidence representation.
 >
-> We formalize **computational triage** — the principled separation of deterministic evidence processing from heuristic inference — and propose a three-stage Context Engineering Protocol (CEP): (1) signal extraction via statistical profiling replaces raw data with decision-relevant features, (2) constraint propagation vectorizes policy rules and annotates binding status, and (3) conflict detection flags cross-source contradictions explicitly. Together, these operations constitute structured search-space pruning over what would otherwise be an NP-hard combinatorial optimization.
+> We formalize **evidence encoding** — the transformation of unstructured evidence into a solver-tractable representation — and propose a three-stage Evidence Encoding Protocol (EEP): (1) signal encoding via statistical profiling replaces raw data with decision-relevant features (analogous to variable ordering), (2) constraint encoding vectorizes policy rules and annotates binding status (analogous to arc consistency), and (3) conflict encoding flags cross-source contradictions explicitly (analogous to nogood clause learning). Together, these stages constitute the same class of operations that make NP-hard constraint satisfaction problems tractable in practice — applied to LLM context.
 >
-> We validate this framework in two studies. **Study 1** is a pre-registered single-agent factorial ($N \geq 1{,}000$; $\geq 4$ models; six cumulative complexity levels; $\geq 36$ scenarios with known causal DAGs). It establishes six findings: (F1) context representation explains $\geq 70\%$ of variance in reasoning accuracy, rivaling model identity; (F2) the advantage is consistent across complexity levels — no phase transition; (F3) weaker models benefit disproportionately; (F4) triaged representations achieve $\geq 90\%$ Pareto dominance at 38–257$\times$ token compression; (F5) the advantage does not scale with compression magnitude, implicating structural benefits beyond token reduction; (F6) the effect replicates internally and is confirmed non-parametrically.
+> We validate this framework in two studies. **Study 1** is a pre-registered single-agent factorial ($N \geq 1{,}000$; $\geq 4$ models; six cumulative complexity levels; $\geq 36$ scenarios with known causal DAGs). It establishes six findings: (F1) evidence encoding explains $\geq 70\%$ of variance in reasoning accuracy, rivaling model identity; (F2) the advantage is consistent across complexity levels — no phase transition; (F3) weaker models benefit disproportionately; (F4) encoded representations achieve $\geq 90\%$ Pareto dominance at 38–257$\times$ token compression; (F5) the advantage does not scale with compression magnitude, implicating structural benefits beyond token reduction; (F6) the effect replicates internally and is confirmed non-parametrically.
 >
-> **Study 2** extends the framework to multi-agent architectures using a $2 \times 2 \times 6$ factorial (encoding $\times$ architecture $\times$ complexity; $N \geq 500$). Three agents independently analyze each scenario, and a synthesizer integrates their findings. Four additional findings emerge: (F7) multi-agent ensembles with triaged context outperform the best single agent with triaged context (amplification); (F8) triage reduces inter-agent disagreement, producing more coherent ensemble inputs for synthesis; (F9) multi-agent benefit is larger under triaged context than raw text (encoding $\times$ architecture interaction); (F10) the multi-agent advantage increases with complexity — triage enables ensemble gains precisely where single agents fail.
+> **Study 2** extends the framework to multi-agent architectures using a $2 \times 2 \times 6$ factorial (encoding $\times$ architecture $\times$ complexity; $N \geq 500$). Three agents independently analyze each scenario, and a synthesizer integrates their findings. Four additional findings emerge: (F7) multi-agent ensembles with encoded context outperform the best single agent with encoded context (amplification); (F8) encoding reduces inter-agent disagreement, producing more coherent ensemble inputs for synthesis; (F9) multi-agent benefit is larger under encoded context than raw text (encoding $\times$ architecture interaction); (F10) the multi-agent advantage increases with complexity — encoding enables ensemble gains precisely where single agents fail.
 >
-> Together, these results position context engineering as a third scaling axis. Where model scaling improves the engine and test-time compute extends thinking time, context engineering improves the fuel — and multi-agent architectures multiply the return on that investment.
+> Together, these results position evidence encoding as a third scaling axis — orthogonal to model scaling (better engine) and test-time compute (more thinking time). Evidence encoding improves the fuel, and multi-agent architectures multiply the return on that investment.
 
 This abstract is the contract. Every claim made above must be substantiated with experimental evidence in the paper. Any finding that fails its statistical gate must be reported honestly — as a null, a trend, or a design limitation. Do NOT fabricate results to match the abstract.
 
@@ -22,7 +22,7 @@ This abstract is the contract. Every claim made above must be substantiated with
 
 ## Paradigm Positioning
 
-The paper MUST include a section (Introduction or Related Work) that positions computational triage in the progression of context-handling paradigms. Use this framing:
+The paper MUST include a section (Introduction or Related Work) that positions evidence encoding in the progression of context-handling paradigms:
 
 ```
                       what changes    what's fixed     bottleneck addressed
@@ -33,14 +33,34 @@ RAG era (2020–):      Retrieve →      Concatenate →    Reason
 CoT era (2022–):      Retrieve →      Concatenate →    Think step-by-step → Reason
                       (relevant docs)  (raw text)      reasoning depth
 
-Triage era (this):    Retrieve →      TRIAGE →         Reason
+Encode era (this):    Retrieve →      ENCODE →         Reason
                       (relevant docs)  (structured)    evidence quality
 ─────────────────────────────────────────────────────────────────────────────
 ```
 
-**The key insight:** RAG solved *what* to retrieve. CoT solved *how* to reason. Both accept raw context — neither asks whether the *representation* of that context is fit for reasoning. Triage addresses the missing link: the gap between retrieval and reasoning is not a reasoning gap, it is a *representation* gap. You do not need the model to think harder — you need to give it evidence it can think *with*.
+**The key insight:** RAG solved *what* to retrieve. CoT solved *how* to reason. Both accept raw context — neither asks whether the *representation* of that context is fit for reasoning. Evidence encoding addresses the missing link: the gap between retrieval and reasoning is not a reasoning gap, it is a *representation* gap. You do not need the model to think harder — you need to give it evidence it can think *with*.
 
-CoT and triage are **orthogonal axes**: CoT extends reasoning time (test-time compute), triage extends evidence quality (context engineering). They compose — an agent can reason step-by-step over triaged evidence. The paper should position this explicitly and note that the experiment holds CoT constant (same prompt) while varying only the evidence representation.
+CoT and encoding are **orthogonal axes**: CoT extends reasoning time (test-time compute), encoding transforms evidence quality. They compose — an agent can reason step-by-step over encoded evidence. The experiment holds CoT constant (same prompt) while varying only the evidence representation.
+
+---
+
+## Theoretical Framework: Evidence Encoding as CSP Compilation
+
+The paper MUST include a theoretical section that connects evidence encoding to constraint satisfaction. This is not a metaphor — it is a structural equivalence.
+
+**Core observation:** LLM reasoning over multi-source evidence is structurally equivalent to solving a constraint satisfaction problem (CSP) where the solver must simultaneously *construct the constraint graph* from unstructured text AND *search for a solution* — in a single forward pass. In classical CSP solving, this conflation is known to destroy tractability. The standard pipeline is: encode the problem (variable ordering, arc consistency, nogood learning), THEN solve. Our EEP stages are instances of this encoding:
+
+| EEP Stage | Evidence operation | CSP encoding equivalent | What it eliminates |
+|:----------|:-------------------|:-----------------------|:-------------------|
+| 1. Signal encoding | Statistical profiles, ranked correlations | Variable ordering heuristic — rank variables by marginal impact | Forces attention to highest-signal dimensions first |
+| 2. Constraint encoding | Typed vectors with binding status, cascading refs | Arc consistency / bound propagation — propagate bounds through constraint graph | Eliminates provably infeasible lever settings before the solver engages |
+| 3. Conflict encoding | Explicit cross-source contradiction flags | Nogood clause learning — record which source combinations are inconsistent | Prunes branches that would lead to contradictions |
+
+**The Darwiche connection:** Knowledge compilation (Darwiche & Marquis, 2002) transforms a propositional theory from one language (CNF) into another (OBDD, DNNF) to make downstream queries tractable. Evidence encoding performs the same operation in a new domain — transforming unstructured evidence into a representation that makes LLM reasoning tractable. The benefit comes from the *structural transformation*, not from compression.
+
+**Why F2 (consistent advantage) follows from CSP theory:** The advantage is flat across complexity because encoding removes a *fixed overhead* — the cost of constructing the constraint model from unstructured text — rather than a complexity-dependent overhead. At low $K$, the search space is small but the LLM still wastes attention parsing raw data to discover constraint structure. At high $K$, the search space is huge but encoding is also more aggressive. The overhead is structural, so the benefit is consistent.
+
+**Caveats:** LLM forward passes are not formally equivalent to CSP solvers. The mapping is structural (same *class* of operations, same *direction* of benefit) rather than formal. The $\eta^2_p$ result is consistent with CSP theory but not derived from it.
 
 ## How This Applies to Agents and Multi-Agent Systems
 
@@ -48,36 +68,31 @@ The paper MUST include a section that makes the agent connection explicit, groun
 
 ### Layer 1: Per-Call Quality (Study 1)
 
-Every agent — whether it plans, retrieves, reasons, or acts — makes LLM calls. Each call processes context and produces output. Study 1 proves that *the quality of each individual call* improves dramatically under triage ($\eta^2_p \geq 0.50$). This is the **atomic unit** of agent behavior. If the fuel is low-quality, no architecture compensates.
+Every agent — whether it plans, retrieves, reasons, or acts — makes LLM calls. Each call processes context and produces output. Study 1 proves that *the quality of each individual call* improves dramatically under encoding ($\eta^2_p \geq 0.50$). This is the **atomic unit** of agent behavior. If the fuel is low-quality, no architecture compensates.
 
-Practical implication: any agentic system (ReAct, Reflexion, AutoGPT, multi-agent swarms) that feeds evidence into LLM calls benefits from triaging that evidence first. The cost is deterministic preprocessing (once); the benefit accrues at every call.
+Practical implication: any agentic system (ReAct, Reflexion, AutoGPT, multi-agent swarms) that feeds evidence into LLM calls benefits from encoding that evidence first. The cost is deterministic (once); the benefit accrues at every call.
 
 ### Layer 2: Multi-Agent Coordination (Study 2)
 
 Study 2 tests the simplest non-trivial multi-agent architecture: parallel analysts → synthesizer. This is the *minimal experimental unit* for multi-agent claims. We test whether:
 
 - **Ensemble diversity emerges from stochastic reasoning** — same model, same prompt, same evidence, different reasoning paths
-- **Triaged context creates a shared analytical vocabulary** — correlation coefficients, constraint IDs, belief objects — that makes synthesis tractable. Raw text produces findings in incomparable natural language, making synthesis an alignment problem on top of an integration problem
+- **Encoded context creates a shared analytical vocabulary** — correlation coefficients, constraint IDs, belief objects — that makes synthesis tractable. Raw text produces findings in incomparable natural language, making synthesis an alignment problem on top of an integration problem
 - **Multi-agent benefit is gated by evidence quality** — the encoding × architecture interaction tests whether multi-agent helps *only when* the context is structured enough for meaningful synthesis
-
-This directly addresses the critique from the prior run: "You have Conditions C and D. You don't have A or B." Study 2 fills that gap with controlled experimentation.
 
 ### Layer 3: Implications for Agentic Architectures (Discussion)
 
-The paper MUST include a discussion section that connects the empirical findings to the broader agent landscape. Ground each claim in specific findings:
+Ground each claim in specific findings:
 
 | Claim | Evidence | What it means for agents |
 |-------|----------|-------------------------|
-| Context quality > context quantity | F1: encoding explains $\geq 70\%$ of variance | Agent memory systems should triage stored knowledge, not just retrieve it |
-| Triage once, use everywhere | F4: Pareto dominance | In a pipeline of N agents making M calls, triage cost is O(1) while benefit is O(N×M) |
-| Weaker agents gain most | F3: capability × encoding interaction | Cost-sensitive multi-agent swarms (which use cheaper models for most subtasks) benefit disproportionately |
-| Triage enables synthesis | F8: inter-agent agreement under Triaged | Structured representations make agent outputs commensurable — synthesis becomes aggregation, not translation |
-| Multi-agent scales with complexity | F10: architecture × complexity interaction | Triage + multi-agent is most valuable precisely where it's most needed — high-dimensional problems |
+| Context quality > context quantity | F1: encoding explains $\geq 70\%$ of variance | Agent memory systems should encode stored knowledge, not just retrieve it |
+| Encode once, use everywhere | F4: Pareto dominance | In a pipeline of N agents making M calls, encoding cost is O(1) while benefit is O(N×M) |
+| Weaker agents gain most | F3: capability × encoding interaction | Cost-sensitive multi-agent swarms benefit disproportionately |
+| Encoding enables synthesis | F8: inter-agent agreement under Encoded | Structured representations make agent outputs commensurable — synthesis becomes aggregation, not translation |
+| Multi-agent scales with complexity | F10: architecture × complexity interaction | Encoding + multi-agent is most valuable precisely where it's most needed |
 
-**What we do NOT claim (and why):**
-- We do not claim triage helps *iterative* agents (plan → act → observe → revise). Our architecture is single-shot (parallel → synthesize). Iterative agents introduce state management, tool use, and credit assignment — untested.
-- We do not claim triage replaces retrieval. Triage operates *after* retrieval — it structures what was retrieved. RAG + Triage compose.
-- We do not claim the 3-agent ensemble is optimal. The paper tests 1 vs 3, not 3 vs 5 vs 10. Ensemble size optimization is future work.
+**Scope:** We test single-shot (parallel → synthesize), not iterative agents. We test 1 vs 3 agents, not ensemble size optimization. Encoding operates *after* retrieval — RAG + Encoding compose.
 
 ---
 
@@ -85,7 +100,7 @@ The paper MUST include a discussion section that connects the empirical findings
 
 ### Purpose
 
-Reproduce and extend the six findings from the computational triage framework. This establishes the single-agent baseline (Conditions C and D) that Study 2 builds upon.
+Reproduce and extend the six findings from the evidence encoding framework. This establishes the single-agent baseline (Conditions C and D) that Study 2 builds upon.
 
 ### Design: 2 × 6 × M Factorial
 
@@ -94,9 +109,9 @@ Reproduce and extend the six findings from the computational triage framework. T
 | Level | What the LLM receives |
 |-------|----------------------|
 | **Raw** | CSV with headers + ALL raw rows, policy as flat prose, expert opinions as prose. No pre-computation. |
-| **Triaged** | Statistical profiles (raw rows removed), tiered constraint vectors with cross-references, temporal belief objects with confidence/decay/conflicts. Prose removed. |
+| **Encoded** | Statistical profiles (raw rows removed), tiered constraint vectors with cross-references, temporal belief objects with confidence/decay/conflicts. Prose removed. |
 
-Triaged replaces Raw, never appends. The natural compression is a feature — report Triaged/Raw token ratio per scenario.
+Encoded replaces Raw, never appends. The natural compression is a feature — report Encoded/Raw token ratio per scenario.
 
 **B. Knowledge Complexity ($K$)** — 6 cumulative levels:
 
@@ -116,7 +131,7 @@ Constraint depth = reasoning hops to detect a violation:
 
 **C. Model** — $\geq 4$ models spanning the capability range. Use whatever models are available via `copilot` CLI at experiment time. Aim for meaningful capability spread — at least one sub-frontier and one frontier model.
 
-**Always all-sources.** Every cell includes data + policies + expert beliefs + playbook. The question is whether *triaging* sources helps — not whether adding sources helps.
+**Always all-sources.** Every cell includes data + policies + expert beliefs + playbook. The question is whether *encoding* sources helps — not whether adding sources helps.
 
 ### Scenario Generation
 
@@ -126,7 +141,9 @@ Each scenario defines a causal DAG over lever columns with:
 - Natural collinearity from shared upstream causes
 - Noise injection calibrated to the $K$ level and difficulty tier
 
-**Calibrate to realistic distributions** (RGM domain):
+**Domain: Revenue Growth Management (RGM).** RGM is a canonical instance of high-dimensional constrained decision-making under heterogeneous evidence: continuous/discrete levers (price, promotion depth, distribution coverage, shelf share, trade spend) form a coupled optimization; margin floors, promotion caps, and regulatory limits create a constraint graph with multi-hop cascading; and conflicting sources (data says increase promo, policy caps at 20%, expert says increase further) produce conflicting assignments in the CSP. This is not a synthetic toy problem — it instantiates the structural properties that make real enterprise decision optimization hard.
+
+**Calibrate to realistic distributions:**
 - Prices: $1.99–$12.99, modal $3.99
 - Promo depth: 10–40%, mass at 15–25%
 - SKU counts: 5–200
@@ -176,9 +193,9 @@ Category-blind. No analytical hints.
 
 ### Purpose
 
-Test whether the benefits of computational triage amplify in multi-agent architectures. This study provides the empirical evidence that the single-agent paper cannot claim.
+Test whether the benefits of evidence encoding amplify in multi-agent architectures.
 
-Study 1 establishes that triage improves each LLM call. But modern AI systems are not single calls — they are **pipelines of agents**, each making decisions with imperfect context. Study 2 asks: when multiple agents independently reason over the same evidence and a synthesizer integrates their findings, does triage compound? The hypothesis: triage creates a shared analytical vocabulary (structured features, typed constraints, explicit conflicts) that makes multi-agent synthesis tractable. Without it, synthesis is translation *and* integration; with it, synthesis is integration alone.
+Study 1 establishes that encoding improves each LLM call. Study 2 asks: when multiple agents independently reason over the same evidence and a synthesizer integrates their findings, does encoding compound? The hypothesis: encoding creates a shared analytical vocabulary (structured features, typed constraints, explicit conflicts) that makes synthesis tractable. Without it, synthesis is translation *and* integration; with it, synthesis is integration alone.
 
 ### Architecture
 
@@ -214,7 +231,7 @@ Evaluation
 
 | Factor | Levels |
 |--------|--------|
-| Encoding | Raw, Triaged |
+| Encoding | Raw, Encoded |
 | Architecture | Single-agent (1 analyst), Multi-agent (3 analysts → synthesizer) |
 | Complexity ($K$) | $K_1$ through $K_6$ |
 | Model | Same $M$ models as Study 1 |
@@ -224,7 +241,7 @@ Evaluation
 | | Single agent | Multi-agent (3 → synth) |
 |---|---|---|
 | **Raw** | Cell C (baseline) | Cell A |
-| **Triaged** | Cell D (prior result) | Cell B |
+| **Encoded** | Cell D (prior result) | Cell B |
 
 Study 1 provides Cells C and D. Study 2 adds Cells A and B.
 
@@ -287,9 +304,9 @@ From the 2 × 2 × 6 factorial:
 
 | # | Claim in abstract | Statistical test | What it measures |
 |---|---|---|---|
-| T1 | Encoding main effect (replication) | Triaged vs Raw, pooled across architecture and $K$ | Does triage still help? |
+| T1 | Encoding main effect (replication) | Encoded vs Raw, pooled across architecture and $K$ | Does encoding still help? |
 | T2 | Architecture main effect | Multi vs single, pooled across encoding and $K$ | Does multi-agent help at all? |
-| T3 | Encoding × architecture interaction | $(B - D) > (A - C)$: multi-agent benefit larger under Triaged | Does triage *enable* multi-agent gains? |
+| T3 | Encoding × architecture interaction | $(B - D) > (A - C)$: multi-agent benefit larger under Encoded | Does encoding *enable* multi-agent gains? |
 | T4 | Architecture × complexity interaction | Multi-agent advantage at $K_5$–$K_6$ vs $K_1$–$K_2$ | Does multi-agent help more at high complexity? |
 
 **Priority order:** T1 is replication (must pass). T2 is the headline multi-agent finding. T3 is the interaction that justifies the combined story. T4 is secondary/exploratory.
@@ -301,7 +318,7 @@ From the 2 × 2 × 6 factorial:
 | **Inter-agent agreement** | Jaccard similarity on variable sets across 3 analysts' findings. Mean per scenario. |
 | **Synthesis improvement** | $\text{regret}(\text{synthesis}) - \text{regret}(\text{best individual})$. Negative = synthesis helped. |
 | **Synthesis degradation rate** | Proportion of scenarios where synthesis regret $>$ best individual regret. |
-| **Agreement × encoding** | Mean agreement under Triaged vs Raw. Prediction: Triaged produces higher agreement (structured input → more convergent reasoning). |
+| **Agreement × encoding** | Mean agreement under Encoded vs Raw. Prediction: Encoded produces higher agreement (structured input → more convergent reasoning). |
 | **Ensemble diversity** | 1 − mean pairwise Jaccard across 3 analysts. Measures reasoning path variety. |
 | **Diversity–accuracy tradeoff** | Correlation of ensemble diversity with synthesis regret. Prediction: moderate diversity optimal. |
 | **Cost per correct decision** | Total tokens (3 discovery + 1 synthesis) × price / max(1 − regret, 0.01). Compare multi vs single. |
@@ -309,29 +326,25 @@ From the 2 × 2 × 6 factorial:
 
 ### Multi-Agent Predictions (pre-registered)
 
-These predictions are based on logical reasoning from the single-agent findings. They must be tested, not assumed.
+These predictions must be tested, not assumed.
 
-1. **Triaged agreement > Raw agreement** — Structured encoding constrains reasoning to the same analytical features, producing more convergent findings across agents. Raw text allows each agent to latch onto different surface patterns.
-
-2. **Synthesis helps Triaged more than Raw** — When 3 agents operate on triaged context, they produce findings that share a common analytical vocabulary (correlation coefficients, constraint IDs, belief objects). Synthesis can meaningfully compare and aggregate them. When 3 agents operate on raw text, their findings are expressed in incomparable terms, making synthesis harder.
-
-3. **Multi-agent advantage increases with $K$** — At low complexity, a single Triaged agent finds everything. At high complexity, individual agents miss different effects due to attention constraints. Multi-agent ensembles with triaged context recover more effects because different agents catch different things — and triage makes synthesis possible.
-
-4. **Synthesis degradation rate $< 20\%$** — The synthesizer should rarely make things worse. But it might — if it discards a correct minority finding or over-weights an incorrect majority. Report this honestly.
-
-5. **Cost amortization is favorable at high $K$** — At $K_6$, multi-agent Triaged costs $\sim 4\times$ single Triaged (3 discovery + 1 synthesis), but if regret drops by $> 25\%$, the cost per correct decision decreases.
+1. **Encoded agreement > Raw agreement** — Structured encoding constrains reasoning to shared analytical features, producing more convergent findings. Raw text lets each agent latch onto different surface patterns.
+2. **Synthesis helps Encoded more than Raw** — Encoded context produces findings with a common vocabulary (coefficients, constraint IDs, belief objects) that synthesis can aggregate. Raw text produces incomparable findings.
+3. **Multi-agent advantage increases with $K$** — At low complexity, a single Encoded agent finds everything. At high complexity, agents miss different effects; encoding makes synthesis of partial views possible.
+4. **Synthesis degradation rate $< 20\%$** — Report honestly if the synthesizer discards correct minority findings.
+5. **Cost amortization is favorable at high $K$** — At $K_6$, multi-Encoded costs $\sim 4\times$ single-Encoded, but cost per correct decision should decrease if regret drops $> 25\%$.
 
 ---
 
-## CEP: The Context Engineering Protocol
+## EEP: The Evidence Encoding Protocol
 
-### Stage 1: Signal Extraction
+### Stage 1: Signal Encoding
 
 Replace raw data tables with statistical profiles: means, standard deviations, ranges, pairwise correlations with outcome variables. Rank variables by signal strength. Compute subgroup-level statistics where grouping variables exist. Add cross-lever interaction profiles for lever triples when $K \geq K_3$.
 
-This is NOT feature engineering in the ML sense. LLMs do not learn representations at inference time — they perform a single forward pass through a fixed model. Deterministic preprocessing is a permanent structural advantage.
+This is NOT feature engineering in the ML sense. LLMs do not learn representations at inference time — they perform a single forward pass through a fixed model. Deterministic encoding is a permanent structural advantage — analogous to variable ordering in CSP solving.
 
-### Stage 2: Constraint Propagation
+### Stage 2: Constraint Encoding
 
 Parse prose policy documents into typed constraint vectors:
 ```
@@ -341,7 +354,7 @@ C3: C2 triggers C4 on distribution (cascading)
 ```
 Annotate binding status, headroom, and cascading relationships. Cross-reference with data signals: `"Data recommends increasing discount_pct (r=+0.35). Conflicts with RULE_003."`
 
-### Stage 3: Conflict Detection
+### Stage 3: Conflict Encoding
 
 Cross-reference expert beliefs against constraints and data signals. Flag conflicts explicitly:
 ```
@@ -352,11 +365,11 @@ This eliminates the implicit $O(s^2)$ search the model would otherwise perform.
 
 ### Encoding Rules
 
-- **Triaged replaces Raw — never appends.** Token compression is inherent.
+- **Encoded replaces Raw — never appends.** Token compression is inherent.
 - **No placeholder lines.** No `"(statistical profile complete)"` filler.
 - **Character ratio [0.7×, 1.5×]** achieved through real analytical content.
-- **Every Triaged constraint section must contain populated rules** — not just headers.
-- **Every Triaged belief object must have** populated claims, confidence, decay, evidence, segment_validity.
+- **Every Encoded constraint section must contain populated rules** — not just headers.
+- **Every Encoded belief object must have** populated claims, confidence, decay, evidence, segment_validity.
 
 ---
 
@@ -374,7 +387,7 @@ This eliminates the implicit $O(s^2)$ search the model would otherwise perform.
 | Metric | How computed |
 |---|---|
 | Input tokens | Count per-scenario using model-appropriate tokenizer |
-| Token compression ratio | $\text{Raw tokens} / \text{Triaged tokens}$ per scenario per $K$ |
+| Token compression ratio | $\text{Raw tokens} / \text{Encoded tokens}$ per scenario per $K$ |
 | Cost per correct decision | $\text{total tokens} \times \text{price per token} / \max(1 - \text{regret}, 0.01)$ |
 | Regret per kilotoken | $\text{regret} / (\text{input tokens} / 1000)$ |
 
@@ -405,13 +418,13 @@ This eliminates the implicit $O(s^2)$ search the model would otherwise perform.
 
 | Test | Hypothesis | α (corrected) |
 |---|---|---|
-| Encoding main effect | Triaged regret < Raw regret | 0.017 |
+| Encoding main effect | Encoded regret < Raw regret | 0.017 |
 | Encoding × complexity | Interaction: advantage changes with $K$ | 0.017 |
 | Encoding × model | Weaker models gain more | 0.017 |
 
 Supplemented by Wilcoxon signed-rank on cell-mean differences. Cohen's $d$ at each (model, $K$) cell. 95% CIs for all contrasts.
 
-**Pareto analysis**: For each (model, $K$) cell, determine whether Triaged dominates Raw on both accuracy AND token cost. Report dominance share with 95% CI.
+**Pareto analysis**: For each (model, $K$) cell, determine whether Encoded dominates Raw on both accuracy AND token cost. Report dominance share with 95% CI.
 
 ### Study 2 Analysis
 
@@ -419,15 +432,15 @@ Supplemented by Wilcoxon signed-rank on cell-mean differences. Cohen's $d$ at ea
 
 | Test | Hypothesis | α (corrected) |
 |---|---|---|
-| T1: Encoding main effect | Triaged < Raw (replication) | 0.0125 |
+| T1: Encoding main effect | Encoded < Raw (replication) | 0.0125 |
 | T2: Architecture main effect | Multi < Single | 0.0125 |
-| T3: Encoding × architecture | Multi-agent benefit larger under Triaged | 0.0125 |
+| T3: Encoding × architecture | Multi-agent benefit larger under Encoded | 0.0125 |
 | T4: Architecture × complexity | Multi-agent advantage increases with $K$ | 0.0125 |
 
 Report all four tests regardless of significance. Report effect sizes ($\eta^2_p$, Cohen's $d$) and 95% CIs. Report partial eta-squared for each factor and interaction.
 
 **Multi-agent specific analyses:**
-- Paired $t$-test on inter-agent agreement: Triaged vs Raw
+- Paired $t$-test on inter-agent agreement: Encoded vs Raw
 - Wilcoxon signed-rank on synthesis improvement: is median negative (synthesis helps)?
 - Cost-effectiveness analysis: cost per unit regret reduction for multi vs single
 
@@ -438,9 +451,9 @@ Report all four tests regardless of significance. Report effect sizes ($\eta^2_p
 ### Phase −1: Encoding + Synthesis Pre-Flight (0 LLM calls)
 
 For 1 scenario at each $K$ level (6 total):
-1. Generate Raw and Triaged encodings. Print token counts and character counts.
-2. Triaged constraint sections MUST contain populated rules. If empty → fix scenario generator.
-3. Triaged belief objects MUST have all fields populated.
+1. Generate Raw and Encoded encodings. Print token counts and character counts.
+2. Encoded constraint sections MUST contain populated rules. If empty → fix scenario generator.
+3. Encoded belief objects MUST have all fields populated.
 4. Forward-simulate data-optimal action → CVR > 0 at $\geq K_2$.
 5. Source conflicts present: data recommends X, policy/expert opposes X.
 6. No placeholder filler lines. Character ratio [0.7×, 1.5×] via content.
@@ -455,27 +468,27 @@ Run on the median-capability model. Single-agent only (no multi-agent yet).
 
 Verify:
 - **Complexity gradient exists:** Raw regret increases with $K$ (Spearman $\rho > 0.7$)
-- **Triaged degrades slower:** Triaged regret increases slower than Raw with $K$
-- **Separation at high $K$:** Triaged regret $<$ Raw regret at $K_5$ and $K_6$ by $\geq 0.15$
-- **No ceiling at low $K$:** both Raw and Triaged have non-zero regret at $K_1$
+- **Encoded degrades slower:** Encoded regret increases slower than Raw with $K$
+- **Separation at high $K$:** Encoded regret $<$ Raw regret at $K_5$ and $K_6$ by $\geq 0.15$
+- **No ceiling at low $K$:** both Raw and Encoded have non-zero regret at $K_1$
 - **CVR $> 0$** at $K \geq K_3$ for Raw
 
 If the gradient is too weak, increase constraint depth or add more rows. **Max 2 calibration attempts.**
 
 ### Phase 1: Multi-Model + Multi-Agent Pilot (6 scenarios, k=3)
 
-One scenario per $K$ level. Run ALL 4 cells (single-Raw, single-Triaged, multi-Raw, multi-Triaged) × all models.
+One scenario per $K$ level. Run ALL 4 cells (single-Raw, single-Encoded, multi-Raw, multi-Encoded) × all models.
 
 **Single-agent gates (Study 1):**
-- Each model shows encoding benefit at high $K$ ($\text{Triaged regret} < \text{Raw regret}$)
-- No model shows Raw > Triaged at low $K$ (encoding never hurts accuracy)
+- Each model shows encoding benefit at high $K$ ($\text{Encoded regret} < \text{Raw regret}$)
+- No model shows Raw > Encoded at low $K$ (encoding never hurts accuracy)
 - Token compression ratio consistent across models
 
 **Multi-agent gates (Study 2):**
-- Multi-Triaged regret $\leq$ single-Triaged regret in $\geq 50\%$ of (model, $K$) cells (multi-agent doesn't consistently hurt)
+- Multi-Encoded regret $\leq$ single-Encoded regret in $\geq 50\%$ of (model, $K$) cells (multi-agent doesn't consistently hurt)
 - Synthesis produces valid JSON in $\geq 95\%$ of runs
 - Inter-agent agreement is computable (findings share enough structure to compare)
-- At least one model shows multi-Triaged $<$ single-Triaged at $K \geq K_4$
+- At least one model shows multi-Encoded $<$ single-Encoded at $K \geq K_4$
 - Synthesis degradation rate $< 40\%$ (synthesis doesn't make things worse too often)
 
 **If multi-agent gates fail:**
@@ -513,7 +526,7 @@ Report ALL planned tests regardless of significance. Report effect sizes ($\eta^
 
 ## E3: Pipeline Compression
 
-Run full pipeline on all scenarios at Triaged (single-agent). Separate from the factorial.
+Run full pipeline on all scenarios at Encoded (single-agent). Separate from the factorial.
 
 Report:
 - Compression ratio: `naive_space / pipeline_output_size`, expect 15–270× scaling with $K$
@@ -526,41 +539,36 @@ Report:
 ## Key Figures (mandatory for the paper)
 
 ### Figure 1: Framework Diagram
-Computational triage: Raw (top) asks LLM to compute AND reason. Triaged (bottom) offloads deterministic operations. Show both single-agent and multi-agent pipelines.
-
-**Include the paradigm progression** (RAG → CoT → Triage) as a callout or sub-panel in Figure 1, showing how triage addresses the representation gap that RAG and CoT leave open.
+Evidence encoding: Raw (top) asks LLM to construct the constraint graph AND reason. Encoded (bottom) offloads deterministic encoding operations (signal, constraint, conflict). Show both single-agent and multi-agent pipelines. Include paradigm progression (RAG → CoT → Encode) as a callout.
 
 ### Figure 2: Study 1 Main Result
-Direction accuracy by complexity and encoding. Pooled across models + per-model breakdown. Triaged outperforms Raw at every level for every model.
+Direction accuracy by complexity and encoding. Pooled across models + per-model breakdown. Encoded outperforms Raw at every level for every model.
 
 ### Figure 3: Consistency / Compression Paradox
-Left: Triaged advantage is flat across complexity. Right: compression grows but advantage stays flat.
+Left: Encoded advantage is flat across complexity. Right: compression grows but advantage stays flat. Connect to CSP theory: fixed overhead from constraint graph construction.
 
 ### Figure 4: Model × Encoding Interaction
 Weaker models benefit most. Advantage magnitude vs model capability.
 
 ### Figure 5: Pareto Frontier
-Accuracy vs tokens. Triaged up-and-left of Raw everywhere.
+Accuracy vs tokens. Encoded up-and-left of Raw everywhere.
 
 ### Figure 6: Multi-Agent Amplification (Study 2)
-Left: Decision Regret by encoding × architecture (4-cell comparison). Right: Amplification factor (multi/single regret ratio) by $K$ level for Raw vs Triaged.
+Left: Decision Regret by encoding × architecture (4-cell comparison). Right: Amplification factor (multi/single regret ratio) by $K$ level for Raw vs Encoded.
 
 ### Figure 7: Inter-Agent Agreement
-Left: Agreement rate (Jaccard) by encoding. Triaged $>$ Raw. Right: Relationship between agreement and synthesis quality.
+Left: Agreement rate (Jaccard) by encoding. Encoded $>$ Raw. Right: Relationship between agreement and synthesis quality.
 
 ### Figure 8: Cost-Effectiveness
-Cost per correct decision for all 4 cells at $K_4$ (most practically relevant). Multi-Triaged should be cheaper per correct decision than single-Raw, despite higher total cost.
+Cost per correct decision for all 4 cells at $K_4$ (most practically relevant). Multi-Encoded should be cheaper per correct decision than single-Raw, despite higher total cost.
 
 ### Figure 9: Phase Diagram
-$x$: Complexity ($K_1$–$K_6$). $y$: Encoding benefit (Raw regret $-$ Triaged regret). Separate curves for single-agent and multi-agent. Multi-agent curve should be above single-agent curve at high $K$.
+$x$: Complexity ($K_1$–$K_6$). $y$: Encoding benefit (Raw regret $-$ Encoded regret). Separate curves for single-agent and multi-agent. Multi-agent curve should be above single-agent curve at high $K$.
 
-Design additional figures as needed. These nine are mandatory.
+### Figure 10: CSP Analogy + Agent Implications
+Combined figure: (a) CSP encoding pipeline mapped to EEP stages, (b) cost structure: encoding is O(1), benefit is O(N×M) across agents and calls, (c) paradigm timeline (RAG → CoT → Encode, showing orthogonal axes).
 
-### Figure 10: Paradigm Progression
-Visual timeline showing RAG era (2020–), CoT era (2022–), Triage era (this paper). For each: the pipeline (Retrieve → ? → Reason), what it changes, and what bottleneck it addresses. Show that CoT and Triage are orthogonal axes (reasoning depth vs evidence quality) and compose.
-
-### Figure 11: Agent Architecture Implications
-Diagram showing how triage fits into agentic pipelines: (a) single-agent with triage (Study 1), (b) multi-agent with triage (Study 2), (c) projected: iterative agent with triage (future work). Show cost structure: triage is O(1) preprocessing, benefit is O(N×M) across agents and calls.
+Design additional figures as needed. These ten are mandatory.
 
 ---
 
@@ -569,7 +577,7 @@ Diagram showing how triage fits into agentic pipelines: (a) single-agent with tr
 1. **Same model for all cells within a model's run.** Each model tested independently. Same model for all 3 analysts + synthesizer in multi-agent cells.
 2. **Never truncate rows.** All rows delivered to LLM. Reduce columns if context is tight.
 3. **Category-blind prompts.** Both discovery and synthesis prompts. No analytical hints.
-4. **Triaged replaces Raw, never appends.**
+4. **Encoded replaces Raw, never appends.**
 5. **Single entry point:** `run_experiments.py`.
 6. **LLM calls via** `copilot -p "<prompt>" -s --no-color --allow-all`. Cache by prompt hash.
 7. **Ground truth used only for evaluation.** Never loaded by the reasoning system.
@@ -594,7 +602,7 @@ Diagram showing how triage fits into agentic pipelines: (a) single-agent with tr
 2. **$k = 1$ collapses variance.** Fix: $k \geq 3$ always.
 3. **$\leq 500$ rows too easy.** Frontier LLMs scan small tables trivially. Fix: $\geq 1000$ rows.
 4. **Simple constraints trivially parsed.** Fix: $\geq 3$ conditions with nested disjunction at $K \geq K_2$.
-5. **Empty Triaged encoding.** Prior run: encoder rendered empty constraint headers, padded with filler. Fix: scenario generator must populate rules. Verify Phase −1.
+5. **Empty Encoded output.** Prior run: encoder rendered empty constraint headers, padded with filler. Fix: scenario generator must populate rules. Verify Phase −1.
 6. **Source content redundant with data.** Fix: $\geq 60\%$ conflicting sources.
 7. **Constraint floor effect.** Fix: $\geq 50\%$ CVR $> 0$ at $K \geq K_2$.
 8. **Discovery prompt category-hinting.** Fix: genuinely category-blind prompt.
@@ -626,10 +634,10 @@ Diagram showing how triage fits into agentic pipelines: (a) single-agent with tr
 | ID | Criterion | How measured |
 |---|---|---|
 | **SC7** | Multi-agent amplification | Architecture main effect $p < 0.0125$ on Decision Regret |
-| **SC8** | Triage enables multi-agent | Encoding × architecture interaction $p < 0.0125$ |
-| **SC9** | Agreement is higher under Triaged | Paired $t$-test on inter-agent Jaccard, $p < 0.05$ |
+| **SC8** | Encoding enables multi-agent | Encoding × architecture interaction $p < 0.0125$ |
+| **SC9** | Agreement is higher under Encoded | Paired $t$-test on inter-agent Jaccard, $p < 0.05$ |
 | **SC10** | Multi-agent scales with complexity | Architecture × complexity interaction $p < 0.05$ |
-| **SC11** | Cost-effective at high $K$ | Cost per correct decision: multi-Triaged $<$ single-Raw at $K \geq K_4$ |
+| **SC11** | Cost-effective at high $K$ | Cost per correct decision: multi-Encoded $<$ single-Raw at $K \geq K_4$ |
 | **SC12** | Synthesis rarely degrades | Synthesis degradation rate $< 20\%$ |
 
 **If SC1–SC6 pass but SC7–SC12 fail:** The paper is still publishable as a strong single-agent study with an honest multi-agent negative result section. This is scientifically valuable — it establishes the conditions under which multi-agent does NOT help, bounding the claim space for future work.
