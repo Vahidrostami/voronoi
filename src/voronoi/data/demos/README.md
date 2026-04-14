@@ -4,6 +4,7 @@ Example scenarios to test the agent swarm orchestrator. Each demo includes a rea
 
 | Demo | Description | Agents | Waves |
 |------|-------------|--------|-------|
+| [Computational Triage](computational-triage/) | Context engineering scaling axis — single-agent replication + multi-agent amplification | 8+ | 4 |
 | [Coupled Decisions](coupled-decisions/) | Multi-agent reasoning over coupled commercial levers | 8+ | 4 |
 | [Epistemic Trajectories](epistemic-trajectories/) | Knowledge compilation + cross-source constraint detection + feasible trajectory pruning | 8+ | 4 |
 | [Forgetting Cure](forgetting-cure/) | Brain-inspired anti-forgetting strategies — computational neuroscience | 9 | 4 |
