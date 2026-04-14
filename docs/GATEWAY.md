@@ -659,7 +659,7 @@ Sent on investigation completion:
 ### PDF Strategy Chain
 
 Tries each strategy in order, stops at first success:
-1. **Pre-compiled PDF** — agent may have generated one
+1. **Pre-compiled PDF** — searches targeted directories (`output/paper/`, `paper/`) for any PDF, then broad directories (`output/`, `demos/*/output/`) for paper-named files only (`paper.pdf`, `report.pdf`, `manuscript.pdf`). Figure/chart PDFs in broad directories are excluded. Falls back to the PDF sibling of the main `.tex` file.
 2. **LaTeX compilation** — tries latexmk, pdflatex, tectonic
 3. **Pandoc** — markdown → PDF
 4. **fpdf2** — basic markdown → PDF
