@@ -95,12 +95,16 @@ class TestServerConfig:
         config.save()
         assert config.config_path.exists()
 
-    def test_model_defaults_empty(self, tmp_path):
+    def test_model_defaults_empty(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("VORONOI_ORCHESTRATOR_MODEL", raising=False)
+        monkeypatch.delenv("VORONOI_WORKER_MODEL", raising=False)
         config = ServerConfig(base_dir=str(tmp_path / "voronoi"))
         assert config.orchestrator_model == ""
         assert config.worker_model == ""
 
-    def test_model_save_and_load(self, tmp_path):
+    def test_model_save_and_load(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("VORONOI_ORCHESTRATOR_MODEL", raising=False)
+        monkeypatch.delenv("VORONOI_WORKER_MODEL", raising=False)
         base = tmp_path / "voronoi"
         config = ServerConfig(base_dir=str(base))
         config.orchestrator_model = "claude-opus-4.6"

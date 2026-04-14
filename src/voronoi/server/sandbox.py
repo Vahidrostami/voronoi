@@ -7,11 +7,18 @@ Graceful fallback to host when Docker is unavailable.
 
 from __future__ import annotations
 
+import re
 import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+
+# Docker container IDs are lowercase hex, 12-64 chars
+_CONTAINER_ID_RE = re.compile(r"^[a-f0-9]{12,64}$")
+
+# Re-check Docker availability every 60 seconds
+_DOCKER_CHECK_TTL = 60.0
 
 
 @dataclass
@@ -41,10 +48,13 @@ class SandboxManager:
     def __init__(self, config: Optional[SandboxConfig] = None):
         self.config = config or SandboxConfig()
         self._docker_available: Optional[bool] = None
+        self._docker_checked_at: float = 0
 
     def is_docker_available(self) -> bool:
-        """Check if Docker daemon is running."""
-        if self._docker_available is not None:
+        """Check if Docker daemon is running (cached with TTL)."""
+        now = time.monotonic()
+        if (self._docker_available is not None
+                and now - self._docker_checked_at < _DOCKER_CHECK_TTL):
             return self._docker_available
         try:
             result = subprocess.run(
@@ -54,6 +64,7 @@ class SandboxManager:
             self._docker_available = result.returncode == 0
         except (FileNotFoundError, subprocess.TimeoutExpired):
             self._docker_available = False
+        self._docker_checked_at = now
         return self._docker_available
 
     def start(self, investigation_id: int, workspace_path: str) -> Optional[SandboxInfo]:
@@ -171,15 +182,23 @@ class SandboxManager:
 
 def exec_in_sandbox_or_host(
     workspace_path: str, command: list[str], timeout: int = 120,
+    *, sandbox_required: bool = False,
 ) -> tuple[int, str]:
     """Execute a command in sandbox if available, otherwise on host.
 
     Reads .sandbox-id from workspace to determine container.
+
+    Parameters
+    ----------
+    sandbox_required : bool
+        If True, do NOT fall through to host execution when Docker
+        fails.  Returns an error instead.  Use this for commands that
+        must respect sandbox resource/network limits (INV-30).
     """
     sandbox_file = Path(workspace_path) / ".sandbox-id"
     if sandbox_file.exists():
         container_id = sandbox_file.read_text().strip()
-        if container_id:
+        if container_id and _CONTAINER_ID_RE.match(container_id):
             try:
                 result = subprocess.run(
                     ["docker", "exec", "-w", "/workspace", container_id] + command,
@@ -187,7 +206,13 @@ def exec_in_sandbox_or_host(
                 )
                 return result.returncode, (result.stdout + result.stderr).strip()
             except (subprocess.TimeoutExpired, FileNotFoundError):
+                if sandbox_required:
+                    return 1, "Docker execution failed and sandbox_required=True"
                 pass  # Fall through to host execution
+        elif sandbox_required:
+            return 1, f"Invalid container ID in .sandbox-id: {container_id!r}"
+    elif sandbox_required:
+        return 1, "No .sandbox-id found and sandbox_required=True"
 
     # Host fallback
     try:

@@ -8,7 +8,8 @@ from pathlib import Path
 
 from voronoi.gateway.progress import (
     format_launch, format_complete, format_failure, format_alert,
-    format_restart, format_pause, format_duration, progress_bar, estimate_remaining,
+    format_negative_result, format_restart, format_wake, format_pause,
+    format_duration, progress_bar, estimate_remaining,
     build_digest, build_digest_whatsup, assess_track_status,
     phase_description, phase_position, _synthesize_narrative,
     VOICE_PHASE_VARIANTS, MSG_TYPE_MILESTONE, MSG_TYPE_STATUS,
@@ -54,6 +55,19 @@ class TestBuddyFormatters:
         msg = format_restart("Synapse", 1, 2, clean_exit=False)
         assert "hit a bump" in msg
 
+    def test_format_wake_with_events(self):
+        msg = format_wake("Synapse", n_events=5)
+        assert "Synapse" in msg
+        assert "workers finished" in msg
+        assert "5 events" in msg
+        assert "restarting" not in msg  # must NOT look like a crash
+
+    def test_format_wake_no_events(self):
+        msg = format_wake("Synapse", n_events=0)
+        assert "Synapse" in msg
+        assert "workers finished" in msg
+        assert "events" not in msg
+
     def test_format_pause(self):
         msg = format_pause("Synapse", "auth expired", 7200, 5, 20)
         assert "Synapse" in msg
@@ -72,6 +86,21 @@ class TestBuddyFormatters:
         assert format_duration(300) == "5min"
         assert format_duration(3600) == "1h"
         assert format_duration(5400) == "1h 30min"
+
+    def test_format_negative_result(self):
+        msg = format_negative_result("Synapse", 7200, 12, 15, eval_score=0.78,
+                                     reason="Hypothesis falsified with d=0.02")
+        assert "Synapse" in msg
+        assert "negative result" in msg.lower()
+        assert "rigorously" in msg.lower()
+        assert "0.78" in msg
+        assert "falsified" in msg
+
+    def test_format_negative_result_no_score(self):
+        msg = format_negative_result("Synapse", 3600, 8, 10)
+        assert "Synapse" in msg
+        assert "negative result" in msg.lower()
+        assert "0." not in msg  # no score line when score=0
 
 
 class TestProgressBar:
@@ -218,6 +247,40 @@ class TestBuildDigest:
         assert "Experiment" in msg
         assert "1 good" in msg
         assert "Observed artifacts" in msg
+
+
+    def test_digest_with_serendipity(self, tmp_path):
+        msg, msg_type = build_digest(
+            codename="Synapse",
+            mode="discover",
+            phase="investigating",
+            elapsed_sec=5400,
+            task_snapshot={"t1": {"status": "in_progress", "notes": ""}},
+            workspace=tmp_path,
+            events_since_last=[
+                {"type": "serendipity",
+                 "msg": "🔮 *Unexpected observation*\nMemory leak correlates with GC pauses\n_Agent investigator noticed something outside the plan._"},
+            ],
+        )
+        assert "🔮" in msg
+        assert "Memory leak" in msg
+        assert msg_type == MSG_TYPE_MILESTONE
+
+    def test_digest_with_rigor_escalation(self, tmp_path):
+        msg, msg_type = build_digest(
+            codename="Synapse",
+            mode="discover",
+            phase="investigating",
+            elapsed_sec=7200,
+            task_snapshot={"t1": {"status": "in_progress", "notes": ""}},
+            workspace=tmp_path,
+            events_since_last=[
+                {"type": "rigor_escalation",
+                 "msg": "📐 *Rigor escalated* → scientific\n_pre-registration · hypothesis testing_"},
+            ],
+        )
+        assert "📐" in msg
+        assert msg_type == MSG_TYPE_MILESTONE
 
 
 class TestBuildDigestWhatsup:
@@ -377,3 +440,32 @@ class TestMessageTypes:
             ],
         )
         assert msg_type == MSG_TYPE_STATUS
+
+
+class TestReadTsvRows:
+    """Tests for _read_tsv_rows — TSV parsing edge cases."""
+
+    def test_short_row_padded_not_dropped(self, tmp_path):
+        """Rows with fewer fields than the header must be padded, not dropped (BUG-006)."""
+        from voronoi.gateway.progress import _read_tsv_rows
+
+        tsv = tmp_path / "data.tsv"
+        tsv.write_text(
+            "a\tb\tc\n"
+            "1\t2\t3\n"
+            "4\t5\n"      # short row - 2 fields instead of 3
+        )
+        rows = _read_tsv_rows(tsv)
+        assert len(rows) == 2
+        assert rows[0] == {"a": "1", "b": "2", "c": "3"}
+        assert rows[1] == {"a": "4", "b": "5", "c": ""}
+
+    def test_single_field_row_padded(self, tmp_path):
+        """A row with only one field gets remaining fields padded."""
+        from voronoi.gateway.progress import _read_tsv_rows
+
+        tsv = tmp_path / "data.tsv"
+        tsv.write_text("x\ty\tz\nonly_one\n")
+        rows = _read_tsv_rows(tsv)
+        assert len(rows) == 1
+        assert rows[0] == {"x": "only_one", "y": "", "z": ""}

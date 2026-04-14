@@ -26,7 +26,7 @@ class Investigation:
     question: str = ""
     slug: str = ""
     mode: str = "discover"         # discover | prove
-    rigor: str = "scientific"
+    rigor: str = "adaptive"
     codename: str = ""               # brain-themed codename (e.g. "Dopamine")
     workspace_path: Optional[str] = None
     sandbox_id: Optional[str] = None
@@ -35,6 +35,7 @@ class Investigation:
     demo_source: Optional[str] = None  # demo name:path for demo-originated investigations
     lineage_id: Optional[int] = None   # root investigation ID for claim ledger scoping
     cycle_number: int = 1              # iteration round within a lineage
+    pi_feedback: str = ""               # PI feedback for continuation rounds
     created_at: float = field(default_factory=time.time)
     started_at: Optional[float] = None
     completed_at: Optional[float] = None
@@ -115,6 +116,10 @@ CREATE INDEX IF NOT EXISTS idx_inv_repo ON investigations(repo);
 _MIGRATION_ADD_LINEAGE = """
 ALTER TABLE investigations ADD COLUMN lineage_id INTEGER;
 ALTER TABLE investigations ADD COLUMN cycle_number INTEGER NOT NULL DEFAULT 1;
+"""
+
+_MIGRATION_ADD_PI_FEEDBACK = """
+ALTER TABLE investigations ADD COLUMN pi_feedback TEXT NOT NULL DEFAULT '';
 """
 
 _MIGRATION_ADD_REVIEW_STATUS = """
@@ -221,6 +226,11 @@ class InvestigationQueue:
                 )
             except sqlite3.IntegrityError:
                 conn.executescript(_MIGRATION_ADD_REVIEW_STATUS)
+            # Migrate existing databases that lack pi_feedback column
+            try:
+                conn.execute("SELECT pi_feedback FROM investigations LIMIT 1")
+            except sqlite3.OperationalError:
+                conn.executescript(_MIGRATION_ADD_PI_FEEDBACK)
         finally:
             conn.close()
 
@@ -257,12 +267,13 @@ class InvestigationQueue:
             cursor = conn.execute(
                 "INSERT INTO investigations "
                 "(chat_id, status, investigation_type, repo, question, slug, "
-                " mode, rigor, codename, parent_id, lineage_id, cycle_number, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " mode, rigor, codename, parent_id, lineage_id, cycle_number, "
+                " pi_feedback, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (inv.chat_id, "queued", inv.investigation_type, inv.repo,
                  inv.question, inv.slug, inv.mode, inv.rigor,
                  inv.codename, inv.parent_id, inv.lineage_id,
-                 inv.cycle_number, inv.created_at),
+                 inv.cycle_number, inv.pi_feedback, inv.created_at),
             )
             inv_id: int = cursor.lastrowid  # type: ignore[assignment]
             # Assign a deterministic codename if none was provided
@@ -343,11 +354,15 @@ class InvestigationQueue:
             )
 
     def fail(self, investigation_id: int, error: str) -> None:
-        """Mark an investigation as failed."""
+        """Mark an investigation as failed.
+
+        Accepts both running and paused investigations so that a paused
+        investigation can be failed without an intermediate resume step.
+        """
         with self._connect() as conn:
             conn.execute(
                 "UPDATE investigations SET status='failed', completed_at=?, "
-                "error=? WHERE id=? AND status='running'",
+                "error=? WHERE id=? AND status IN ('running', 'paused')",
                 (time.time(), error, investigation_id),
             )
 
@@ -358,6 +373,21 @@ class InvestigationQueue:
                 "UPDATE investigations SET status='cancelled', completed_at=? "
                 "WHERE id=? AND status='queued'",
                 (time.time(), investigation_id),
+            )
+            return cursor.rowcount > 0
+
+    def abort(self, investigation_id: int, error: str = "Aborted by operator") -> bool:
+        """Abort a running investigation — transition running → cancelled.
+
+        Unlike ``cancel()`` (which only works on queued rows) this handles
+        investigations that are already in progress.
+        Returns True if the status was actually changed.
+        """
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE investigations SET status='cancelled', completed_at=?, "
+                "error=? WHERE id=? AND status='running'",
+                (time.time(), error, investigation_id),
             )
             return cursor.rowcount > 0
 
@@ -388,6 +418,40 @@ class InvestigationQueue:
                 "started_at=?, completed_at=NULL "
                 "WHERE id=? AND status IN ('paused', 'failed')",
                 (time.time(), investigation_id),
+            )
+            return cursor.rowcount > 0
+
+    def fail_paused(self, investigation_id: int, error: str) -> bool:
+        """Atomically transition a paused investigation to failed.
+
+        Unlike the two-step ``resume()`` + ``fail()`` dance, this is a
+        single SQL statement so there is no window where the investigation
+        is in 'running' state without a live agent.
+        Returns True if the status was actually changed.
+        """
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE investigations SET status='failed', error=?, completed_at=? "
+                "WHERE id=? AND status='paused'",
+                (error, time.time(), investigation_id),
+            )
+            return cursor.rowcount > 0
+
+    def requeue(self, investigation_id: int) -> bool:
+        """Reset a running-but-unprovisioned investigation back to queued.
+
+        This is a recovery transition for the crash window between
+        ``next_ready()`` (which marks the row running) and ``start()``
+        (which attaches the workspace).  Only succeeds if the row is
+        running AND has no workspace_path yet.
+
+        Returns True if the status was actually changed.
+        """
+        with self._connect(immediate=True) as conn:
+            cursor = conn.execute(
+                "UPDATE investigations SET status='queued', started_at=NULL "
+                "WHERE id=? AND status='running' AND workspace_path IS NULL",
+                (investigation_id,),
             )
             return cursor.rowcount > 0
 
@@ -423,11 +487,16 @@ class InvestigationQueue:
         """Create a continuation investigation from a completed or reviewed one.
 
         Creates a new investigation with:
-        - Same question (+ feedback appended if given)
+        - Same question (original, never mutated)
+        - pi_feedback stores the PI's feedback for this round
         - parent_id set to the current investigation
         - Same lineage_id (for claim ledger scoping)
         - Incremented cycle_number
         - Same workspace_path (workspace reuse)
+
+        All three operations (enqueue, workspace transfer, parent status)
+        are performed in a single IMMEDIATE transaction so concurrent
+        dispatchers cannot claim the row before the workspace is set.
 
         Returns the new investigation ID, or None if the source is invalid.
         """
@@ -437,39 +506,53 @@ class InvestigationQueue:
         if inv.status not in ("review", "complete"):
             return None
 
-        question = inv.question
-        if feedback:
-            question = f"{question}\n\n## PI Feedback (Round {inv.cycle_number})\n{feedback}"
+        # Use the original question — feedback goes in pi_feedback, not
+        # appended to the question.  Strip any prior-round feedback that
+        # was appended by older code.
+        question = inv.question.split("\n\n## PI Feedback")[0]
 
         lineage = inv.lineage_id or investigation_id
 
         from voronoi.server.runner import make_slug
-        new_inv = Investigation(
-            chat_id=inv.chat_id,
-            investigation_type=inv.investigation_type,
-            repo=inv.repo,
-            question=question,
-            slug=make_slug(inv.question),
-            mode=inv.mode,
-            rigor=inv.rigor,
-            codename=inv.codename,  # keep same codename across rounds
-            parent_id=investigation_id,
-            lineage_id=lineage,
-            cycle_number=inv.cycle_number + 1,
-        )
-        new_id = self.enqueue(new_inv)
+        slug = make_slug(question)
 
-        # Transfer workspace path so continuation reuses the workspace
-        if inv.workspace_path:
-            with self._connect() as conn:
+        # Assign codename deterministically — done inside the transaction
+        # so the row is fully populated before COMMIT.
+        with self._connect(immediate=True) as conn:
+            now = time.time()
+            cursor = conn.execute(
+                "INSERT INTO investigations "
+                "(chat_id, status, investigation_type, repo, question, slug, "
+                " mode, rigor, codename, parent_id, lineage_id, cycle_number, "
+                " pi_feedback, workspace_path, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (inv.chat_id, "queued", inv.investigation_type, inv.repo,
+                 question, slug, inv.mode, inv.rigor,
+                 inv.codename, investigation_id, lineage,
+                 inv.cycle_number + 1, feedback,
+                 inv.workspace_path,  # workspace reuse — set atomically
+                 now),
+            )
+            new_id: int = cursor.lastrowid  # type: ignore[assignment]
+
+            # Assign a deterministic codename if none was provided
+            if not inv.codename:
+                from voronoi.gateway.codename import codename_for_id
+                codename = codename_for_id(new_id)
                 conn.execute(
-                    "UPDATE investigations SET workspace_path=? WHERE id=?",
-                    (inv.workspace_path, new_id),
+                    "UPDATE investigations SET codename=? WHERE id=?",
+                    (codename, new_id),
                 )
 
-        # Mark the source as complete if it was in review
-        if inv.status == "review":
-            with self._connect() as conn:
+            # Set lineage_id to self if this is a root investigation
+            if lineage is None:
+                conn.execute(
+                    "UPDATE investigations SET lineage_id=? WHERE id=?",
+                    (new_id, new_id),
+                )
+
+            # Mark the source as complete if it was in review
+            if inv.status == "review":
                 conn.execute(
                     "UPDATE investigations SET status='complete' WHERE id=? AND status='review'",
                     (investigation_id,),
@@ -616,6 +699,11 @@ class InvestigationQueue:
             cycle_number = row["cycle_number"] or 1
         except (IndexError, KeyError):
             pass
+        pi_feedback = ""
+        try:
+            pi_feedback = row["pi_feedback"] or ""
+        except (IndexError, KeyError):
+            pass
         return Investigation(
             id=row["id"],
             chat_id=row["chat_id"],
@@ -625,7 +713,7 @@ class InvestigationQueue:
             question=row["question"],
             slug=row["slug"],
             mode=row["mode"],
-            rigor=row["rigor"],
+            rigor=row["rigor"] or "adaptive",
             codename=row["codename"],
             workspace_path=row["workspace_path"],
             sandbox_id=row["sandbox_id"],
@@ -634,6 +722,7 @@ class InvestigationQueue:
             demo_source=demo_source,
             lineage_id=lineage_id,
             cycle_number=cycle_number,
+            pi_feedback=pi_feedback,
             created_at=row["created_at"],
             started_at=row["started_at"],
             completed_at=row["completed_at"],

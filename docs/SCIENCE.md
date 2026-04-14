@@ -10,10 +10,11 @@ The science layer (`src/voronoi/science/`) enforces the scientific rigor framewo
 
 | Submodule | Responsibility |
 |-----------|---------------|
-| `_helpers.py` | Beads queries, consistency gate, paradigm stress, heartbeat stall, finding interpretation, claim-evidence I/O, success criteria I/O |
+| `consistency.py` | Beads queries, consistency gate, paradigm stress, heartbeat stall, finding interpretation, claim-evidence I/O, success criteria I/O |
 | `convergence.py` | Belief map, orchestrator checkpoint, convergence detection |
 | `fabrication.py` | Anti-fabrication verification, simulation bypass detection |
 | `gates.py` | Dispatch/merge gates, pre-registration, invariants, calibration, replication |
+| `claims.py` | Cross-run claim ledger, provenance, objections, self-critique |
 
 All public symbols are re-exported from `science/__init__.py`, so `from voronoi.science import X` works as before.
 
@@ -29,7 +30,7 @@ Rigor is determined by mode: DISCOVER uses adaptive rigor (starts analytical, es
 | Statistician review | — | YES | YES | YES |
 | Finding interpretation | — | YES | YES | YES |
 | Claim-evidence registry | — | YES | YES | YES |
-| Final evaluation (CCSA) | — | YES | YES | YES |
+| Final evaluation (CCSAN) | — | YES | YES | YES |
 | Methodologist design review | — | YES (advisory) | YES (mandatory) | YES (mandatory) |
 | Pre-registration | — | YES | YES | YES |
 | Pre-reg compliance audit | — | YES | YES | YES |
@@ -94,26 +95,47 @@ def validate_pre_registration(task_notes: str, rigor: str) -> tuple[bool, list[s
 
 ### Purpose
 
-Tracks hypothesis probabilities across OODA cycles. Drives information-gain prioritization — the orchestrator pursues hypotheses with highest expected information gain.
+Tracks hypotheses across OODA cycles with evidence-linked reasoning. Drives information-gain prioritization — the orchestrator pursues hypotheses with highest expected information gain. Each hypothesis records not just a confidence level but **why** the agent believes it and **what would change their mind**.
+
+### Confidence Tiers
+
+Instead of raw probabilities, hypotheses use ordinal confidence tiers that LLMs can reliably distinguish:
+
+| Tier | Meaning | Uncertainty | When to use |
+|------|---------|:-----------:|-------------|
+| `unknown` | No idea either way | 1.0 | Initial hypothesis, no evidence gathered |
+| `hunch` | Slight lean, minimal evidence | 0.7 | After literature scan or domain reasoning |
+| `supported` | Evidence points this way | 0.4 | After one or more experiments/analyses |
+| `strong` | Multiple independent lines agree | 0.15 | Multiple confirmations from different methods |
+| `resolved` | Confirmed or refuted | 0.0 | Final state — investigation for this hypothesis is done |
+
+Agents MUST provide a `rationale` when changing confidence or status, explaining what evidence drove the change.
 
 ### Data Structures
 
 ```python
+CONFIDENCE_TIERS: dict[str, float] = {
+    "unknown": 1.0, "hunch": 0.7, "supported": 0.4, "strong": 0.15, "resolved": 0.0,
+}
+
 @dataclass
 class Hypothesis:
     id: str
     name: str
-    prior: float           # Initial probability [0, 1]
-    posterior: float        # Updated probability [0, 1]
-    status: str            # active | confirmed | rejected | merged
+    prior: float           # Initial probability [0, 1] (legacy, kept for compat)
+    posterior: float        # Updated probability [0, 1] (legacy, kept for compat)
+    status: str            # untested | testing | confirmed | refuted | merged
     evidence: list[str]    # Finding IDs supporting/refuting
     testability: float     # How easily tested [0, 1]
     impact: float          # How important if true [0, 1]
+    confidence: str        # Ordinal tier: unknown | hunch | supported | strong | resolved
+    rationale: str         # Why the agent believes this — evidence chain
+    next_test: str         # What experiment/analysis would change confidence
 
     @property
-    def uncertainty(self) -> float: ...        # Entropy measure
+    def uncertainty(self) -> float: ...        # From confidence tier (preferred) or posterior
     @property
-    def information_gain(self) -> float: ...   # Expected info gain
+    def information_gain(self) -> float: ...   # uncertainty × impact × testability
 ```
 
 ```python
@@ -130,6 +152,8 @@ class BeliefMap:
 `.swarm/belief-map.json` — read/written by orchestrator at each OODA cycle.
 
 **Schema contract**: `hypotheses` MUST be a JSON array of objects (not an object map keyed by ID). Both the Python loader and the shell convergence gate validate this on load. Non-conforming data (e.g., object maps) is automatically migrated to the array format and **persisted back to disk** so subsequent reads don't re-trigger migration warnings.
+
+Legacy data without `confidence`/`rationale`/`next_test` fields is accepted — the loader infers `confidence` from `posterior` and defaults `rationale`/`next_test` to empty strings.
 
 ### Functions
 
@@ -823,3 +847,94 @@ Locked claims' supporting artifacts become immutable in subsequent runs. The dis
 - Pending objections
 - Immutable artifact paths
 - PI feedback
+
+---
+
+## 18. Scientific Interpretation Layer
+
+### Purpose
+
+The interpretation layer adds *semantic judgment* to the existing structural gates (EVA, Sentinel, metric contracts). It answers: "Does this result make scientific sense?" — not just "Did the experiment run correctly?"
+
+### Module
+
+`src/voronoi/science/interpretation.py` — all public symbols re-exported from `voronoi.science`.
+
+### Four Mechanisms
+
+#### 18.1 Directional Hypothesis Verification
+
+Every finding carries a three-state directional classification:
+
+| State | Meaning | Trigger |
+|-------|---------|---------|
+| `confirmed` | Significant + correct direction | Normal flow |
+| `refuted_reversed` | Significant + **opposite** direction | Triggers Judgment Tribunal |
+| `inconclusive` | Not significant | No action needed |
+
+The Investigator classifies direction at finding-commit time by comparing observed effect direction to the pre-registered `EXPECTED_DIRECTION` field. The Statistician verifies at review time.
+
+**Convergence impact**: A `refuted_reversed` hypothesis blocks convergence at Analytical+ rigor until the finding is explained by a Tribunal verdict.
+
+```python
+def classify_direction(expected_direction: str, observed_direction: str, significant: bool) -> str
+```
+
+#### 18.2 Triviality Screening
+
+Classifies hypotheses as NOVEL / EXPECTED / TRIVIAL during plan review. The Theorist performs this classification; `screen_triviality()` provides a structured output format.
+
+| Classification | Action |
+|---|---|
+| `novel` | Full experiment |
+| `expected` | Sanity check, don't headline |
+| `trivial` | Skip or reframe |
+
+```python
+def screen_triviality(hypothesis_id: str, hypothesis_statement: str, ...) -> TrivialityResult
+```
+
+#### 18.3 Interpretation Requests & Judgment Tribunal
+
+When a finding contradicts the causal model, an `InterpretationRequest` triggers the Judgment Tribunal — a multi-agent deliberation (Theorist + Statistician + Methodologist, plus Critic at pre-convergence).
+
+**Triggers**: `refuted_reversed`, contradiction, `SURPRISING` flag, pre-convergence review.
+
+**Tribunal output**: `.swarm/tribunal-verdicts.json` — a list of `TribunalResult` objects.
+
+| Verdict | Action | Convergence |
+|---------|--------|:-----------:|
+| `explained` | Explanation tested from existing data | Allowed |
+| `anomaly_unresolved` | Needs new experiment | **Blocked** |
+| `artifact` | Experimental design flaw | **Blocked** (DESIGN_INVALID) |
+| `trivial` | Result is obvious | Allowed, downgraded in deliverable |
+
+**Tribunal composition**:
+
+| Tribunal Type | When | Agents |
+|---|---|---|
+| Mid-run | REFUTED_REVERSED or SURPRISING detected | Theorist + Statistician + Methodologist |
+| Pre-convergence | Before any convergence at Analytical+ | Theorist + Statistician + Methodologist + Critic |
+
+```python
+def check_tribunal_clear(workspace: Path) -> tuple[bool, list[str]]
+def has_reversed_hypotheses(workspace: Path) -> tuple[bool, list[str]]
+```
+
+#### 18.4 Continuation Proposals
+
+After self-critique, the system generates ranked follow-up experiment proposals from tribunal verdicts, challenged claims, and single-evidence claims.
+
+```python
+def generate_continuation_proposals(ledger: ClaimLedger, tribunal_results: list[TribunalResult] | None = None) -> list[ContinuationProposal]
+```
+
+Proposals are ranked by information gain and saved to `.swarm/continuation-proposals.json` for PI review during `/deliberate` or `/review`.
+
+### Evaluator Scoring: CCSAN
+
+The evaluator formula gains a fifth dimension **N (Non-triviality)**:
+
+$$\text{OVERALL} = 0.25C + 0.20C_o + 0.20S + 0.15A + 0.20N$$
+
+Non-triviality below 0.4 triggers an improvement round.

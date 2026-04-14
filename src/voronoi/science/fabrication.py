@@ -12,7 +12,7 @@ from pathlib import Path
 
 from voronoi.utils import extract_field
 
-from voronoi.science._helpers import _fetch_tasks
+from voronoi.science.consistency import _fetch_tasks
 
 logger = logging.getLogger("voronoi.science")
 

@@ -9,6 +9,7 @@ from voronoi.gateway.intent import (
     WorkflowMode,
     classify,
     classify_compound,
+    classify_for_new_investigation,
 )
 
 
@@ -131,6 +132,150 @@ class TestFreeTextScience:
     def test_low_confidence_goes_to_guide(self):
         r = classify("hello, how are you?")
         assert r.mode == WorkflowMode.GUIDE
+        assert r.confidence < 0.5
+
+
+# ---------------------------------------------------------------------------
+# ASK intent — mid-investigation questions
+# ---------------------------------------------------------------------------
+
+class TestAskIntent:
+    """Test ASK intent classification for mid-investigation questions."""
+
+    def test_ask_command(self):
+        r = classify("/voronoi ask what have the agents found so far?")
+        assert r.mode == WorkflowMode.ASK
+        assert r.confidence == 1.0
+
+    def test_what_have_agents_found(self):
+        r = classify("What have the agents found so far?")
+        assert r.mode == WorkflowMode.ASK
+
+    def test_any_results_yet(self):
+        r = classify("Any results yet?")
+        assert r.mode == WorkflowMode.ASK
+
+    def test_any_new_results(self):
+        r = classify("any new results?")
+        assert r.mode == WorkflowMode.ASK
+
+    def test_any_recent_findings(self):
+        r = classify("any recent findings?")
+        assert r.mode == WorkflowMode.ASK
+
+    def test_how_is_the_results(self):
+        r = classify("how is the results so far?")
+        assert r.mode == WorkflowMode.ASK
+
+    def test_how_are_the_experiments(self):
+        r = classify("how are the experiments going?")
+        assert r.mode == WorkflowMode.ASK
+
+    def test_what_does_the_data_show(self):
+        r = classify("What does the data show about the experiments?")
+        assert r.mode == WorkflowMode.ASK
+
+    def test_how_is_it_going(self):
+        r = classify("How are things going so far?")
+        assert r.mode == WorkflowMode.ASK
+
+    def test_update_me_on_progress(self):
+        r = classify("Update me on the progress")
+        assert r.mode == WorkflowMode.ASK
+
+    def test_which_classifiers_are_best(self):
+        r = classify("Which classifiers are showing the best results so far?")
+        assert r.mode == WorkflowMode.ASK
+
+    def test_can_you_summarize_findings(self):
+        r = classify("Can you summarize the findings so far?")
+        assert r.mode == WorkflowMode.ASK
+
+    def test_ask_is_meta(self):
+        r = classify("What have we found so far?")
+        assert r.is_meta is True
+        assert r.is_science is False
+
+
+# ---------------------------------------------------------------------------
+# DELIBERATE intent — multi-turn reasoning about results
+# ---------------------------------------------------------------------------
+
+class TestDeliberateIntent:
+    """Test DELIBERATE intent classification."""
+
+    def test_deliberate_command(self):
+        r = classify("/voronoi deliberate dopamine")
+        assert r.mode == WorkflowMode.DELIBERATE
+        assert r.confidence == 1.0
+
+    def test_brainstorm_classifies_deliberate(self):
+        r = classify("Let's brainstorm about these results")
+        assert r.mode == WorkflowMode.DELIBERATE
+
+    def test_doesnt_make_sense_classifies_deliberate(self):
+        r = classify("This result doesn't make sense to me")
+        assert r.mode == WorkflowMode.DELIBERATE
+
+    def test_think_through_results(self):
+        r = classify("Let's think through the findings together")
+        assert r.mode == WorkflowMode.DELIBERATE
+
+    def test_interpret_results(self):
+        r = classify("Help me interpret the results")
+        assert r.mode == WorkflowMode.DELIBERATE
+
+    def test_what_should_we_test_next(self):
+        r = classify("What should we test next based on these findings?")
+        assert r.mode == WorkflowMode.DELIBERATE
+
+    def test_deliberate_is_meta(self):
+        r = classify("/voronoi deliberate test")
+        assert r.is_meta is True
+        assert r.is_science is False
+
+
+# ---------------------------------------------------------------------------
+# State-aware classifier (classify_for_new_investigation)
+# ---------------------------------------------------------------------------
+
+class TestClassifyForNewInvestigation:
+    """Test the simplified classifier used when no investigation is running."""
+
+    def test_never_returns_ask(self):
+        """classify_for_new_investigation never returns ASK — the router handles that via state."""
+        for text in ["any new results?", "how is the results so far?",
+                     "update me on progress", "what have the agents found?"]:
+            r = classify_for_new_investigation(text)
+            assert r.mode != WorkflowMode.ASK, f"Got ASK for: {text}"
+
+    def test_never_returns_guide(self):
+        """classify_for_new_investigation never returns GUIDE — defaults to DISCOVER."""
+        r = classify_for_new_investigation("hello how are you")
+        assert r.mode == WorkflowMode.DISCOVER
+        assert r.confidence < 0.5  # low confidence → router will prompt
+
+    def test_discover_question(self):
+        r = classify_for_new_investigation("Why is our model accuracy dropping?")
+        assert r.mode == WorkflowMode.DISCOVER
+        assert r.confidence >= 0.5
+
+    def test_prove_question(self):
+        r = classify_for_new_investigation("Test whether increasing sample size improves significance")
+        assert r.mode == WorkflowMode.PROVE
+
+    def test_recall_question(self):
+        r = classify_for_new_investigation("What did we learn about caching last time?")
+        assert r.mode == WorkflowMode.RECALL
+
+    def test_empty_returns_discover_low_confidence(self):
+        r = classify_for_new_investigation("")
+        assert r.mode == WorkflowMode.DISCOVER
+        assert r.confidence == 0.0
+
+    def test_ambiguous_text_defaults_to_discover_low_confidence(self):
+        r = classify_for_new_investigation("yo what's up")
+        assert r.mode == WorkflowMode.DISCOVER
         assert r.confidence < 0.5
 
 

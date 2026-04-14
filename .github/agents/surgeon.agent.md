@@ -87,6 +87,16 @@ After completing a change:
 ### Changed Files
 List of files modified with brief description
 
+### Spec Sync Verification
+For EVERY change, verify and report:
+- [ ] Checked SPEC-INDEX.md for affected modules — list which rows apply
+- [ ] Updated docs/<X>.md section <Y> (or: no spec change needed because <reason>)
+- [ ] Verified README.md still accurate (or: no public surface change)
+- [ ] Checked INVARIANTS.md (or: no invariant affected)
+- [ ] Grepped docs/ and .github/ for any hardcoded paths to files you moved/renamed/deleted
+
+If you cannot check a box, explain why. Do NOT skip this section.
+
 ### Spec Updates
 Which spec sections were updated (if any)
 

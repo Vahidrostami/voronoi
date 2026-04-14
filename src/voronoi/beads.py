@@ -9,8 +9,16 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
+import time
 
 logger = logging.getLogger("voronoi.beads")
+
+# Retry settings for embedded Dolt exclusive lock contention (beads v1.0.0).
+# With server mode (the default for Voronoi workspaces since April 2026)
+# lock contention is rare, but we keep a short retry for robustness.
+_LOCK_RETRIES = 2
+_LOCK_INITIAL_WAIT = 0.2  # seconds
+_LOCK_ERROR_FRAGMENT = "another process holds the exclusive lock"
 
 
 class BeadsError(Exception):
@@ -32,34 +40,47 @@ def run_bd(*args: str, cwd: str | None = None,
         beads_dir = os.path.join(cwd, ".beads")
         if os.path.isdir(beads_dir):
             env["BEADS_DIR"] = beads_dir
-    try:
-        result = subprocess.run(
-            ["bd", *args],
-            capture_output=True, text=True, timeout=30,
-            cwd=cwd, env=env,
-        )
-        if result.stderr:
-            logger.debug("bd %s stderr: %s", " ".join(args), result.stderr.strip())
-        if result.returncode != 0:
-            logger.warning("bd %s exited with code %d (stderr: %s)",
-                           " ".join(args), result.returncode,
-                           result.stderr.strip()[:200])
+
+    wait = _LOCK_INITIAL_WAIT
+    for attempt in range(_LOCK_RETRIES + 1):
+        try:
+            result = subprocess.run(
+                ["bd", *args],
+                capture_output=True, text=True, timeout=30,
+                cwd=cwd, env=env,
+            )
+            if result.stderr:
+                logger.debug("bd %s stderr: %s", " ".join(args), result.stderr.strip())
+            if result.returncode != 0:
+                # Retry on embedded Dolt exclusive lock contention
+                if (_LOCK_ERROR_FRAGMENT in result.stderr
+                        and attempt < _LOCK_RETRIES):
+                    logger.debug("bd %s: lock contention, retry %d/%d in %.1fs",
+                                 " ".join(args), attempt + 1, _LOCK_RETRIES, wait)
+                    time.sleep(wait)
+                    wait = min(wait * 2, 2.0)
+                    continue
+                logger.warning("bd %s exited with code %d (stderr: %s)",
+                               " ".join(args), result.returncode,
+                               result.stderr.strip()[:200])
+                if strict:
+                    raise BeadsError(
+                        f"bd {' '.join(args)} failed (exit={result.returncode}): "
+                        f"{result.stderr.strip()[:200]}"
+                    )
+            return result.returncode, result.stdout.strip()
+        except FileNotFoundError:
+            logger.error("bd command not found — is beads installed?")
             if strict:
-                raise BeadsError(
-                    f"bd {' '.join(args)} failed (exit={result.returncode}): "
-                    f"{result.stderr.strip()[:200]}"
-                )
-        return result.returncode, result.stdout.strip()
-    except FileNotFoundError:
-        logger.error("bd command not found — is beads installed?")
-        if strict:
-            raise BeadsError("bd command not found")
-        return 1, ""
-    except subprocess.TimeoutExpired:
-        logger.error("bd %s timed out after 30s", " ".join(args))
-        if strict:
-            raise BeadsError(f"bd {' '.join(args)} timed out")
-        return 1, ""
+                raise BeadsError("bd command not found")
+            return 1, ""
+        except subprocess.TimeoutExpired:
+            logger.error("bd %s timed out after 30s", " ".join(args))
+            if strict:
+                raise BeadsError(f"bd {' '.join(args)} timed out")
+            return 1, ""
+    # Exhausted retries — return last result
+    return result.returncode, result.stdout.strip()
 
 
 def run_bd_json(*args: str, cwd: str | None = None) -> tuple[int, list | dict | None]:

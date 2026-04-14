@@ -42,8 +42,8 @@ print(f'  {len(validated)} validated | {len(pending)} pending review | {len(find
 " 2>/dev/null || true
 
 echo ""
-echo "=== JOURNAL (last 10 lines) ==="
-tail -10 .swarm/journal.md 2>/dev/null || echo "No investigation journal"
+echo "=== STRATEGIC CONTEXT (last 10 lines) ==="
+tail -10 .swarm/strategic-context.md 2>/dev/null || echo "No strategic context"
 ```
 
 Present as a compact summary:

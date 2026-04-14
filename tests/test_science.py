@@ -8,6 +8,7 @@ import pytest
 from voronoi.science import (
     AntiFabricationResult,
     BeliefMap,
+    CONFIDENCE_TIERS,
     CalibrationResult,
     ConsistencyConflict,
     ConvergenceResult,
@@ -60,7 +61,7 @@ from voronoi.science import (
     validate_experiment_contract,
     validate_phase_gate,
 )
-from voronoi.science._helpers import _fetch_tasks
+from voronoi.science.consistency import _fetch_tasks
 
 
 # ---------------------------------------------------------------------------
@@ -70,14 +71,14 @@ from voronoi.science._helpers import _fetch_tasks
 class TestFetchTasksFiltering:
     def test_filters_non_dict_elements(self, monkeypatch):
         """_fetch_tasks should filter out non-dict elements to prevent AttributeError."""
-        monkeypatch.setattr("voronoi.science._helpers._run_bd",
+        monkeypatch.setattr("voronoi.science.consistency._run_bd",
                             lambda *a, **kw: (0, json.dumps([{"id": "1"}, "string_item", 42])))
         result = _fetch_tasks(Path("/fake"))
         assert result == [{"id": "1"}]
 
     def test_returns_none_for_all_strings(self, monkeypatch):
         """_fetch_tasks returns None when filtering leaves no dicts."""
-        monkeypatch.setattr("voronoi.science._helpers._run_bd",
+        monkeypatch.setattr("voronoi.science.consistency._run_bd",
                             lambda *a, **kw: (0, json.dumps(["a", "b", "c"])))
         result = _fetch_tasks(Path("/fake"))
         assert result is None
@@ -260,6 +261,65 @@ class TestBeliefMap:
         assert loaded.hypotheses[0].posterior == 0.8
         assert loaded.hypotheses[0].status == "confirmed"
 
+    def test_confidence_tier_uncertainty(self):
+        """Confidence tier should drive uncertainty, not posterior."""
+        h = Hypothesis(id="H1", name="test", prior=0.5, posterior=0.9,
+                       confidence="unknown")
+        assert h.uncertainty == pytest.approx(1.0)
+        h2 = Hypothesis(id="H2", name="test", prior=0.5, posterior=0.5,
+                        confidence="strong")
+        assert h2.uncertainty == pytest.approx(0.15)
+
+    def test_confidence_tier_fallback_to_posterior(self):
+        """Without confidence tier, fall back to posterior-based uncertainty."""
+        h = Hypothesis(id="H1", name="test", prior=0.5, posterior=0.5)
+        assert h.uncertainty == pytest.approx(1.0)
+        assert h.confidence == ""
+
+    def test_display_name_fallback(self):
+        """display_name should fall back to id when name is empty."""
+        h = Hypothesis(id="H1", name="", prior=0.5, posterior=0.5)
+        assert h.display_name == "H1"
+        h2 = Hypothesis(id="H2", name="Encoding helps", prior=0.5, posterior=0.5)
+        assert h2.display_name == "Encoding helps"
+
+    def test_confidence_tiers_all_valid(self):
+        """All confidence tiers should have defined uncertainty values."""
+        for tier, uncertainty in CONFIDENCE_TIERS.items():
+            h = Hypothesis(id="H1", name="test", prior=0.5, posterior=0.5,
+                           confidence=tier)
+            assert h.uncertainty == pytest.approx(uncertainty)
+
+    def test_save_and_load_with_confidence(self, tmp_path):
+        """New fields should roundtrip through save/load."""
+        bm = BeliefMap(cycle=1)
+        bm.add_hypothesis(Hypothesis(
+            id="H1", name="Microbiome drives response",
+            prior=0.5, posterior=0.5,
+            confidence="supported",
+            rationale="bd-18 showed enrichment in responders (p=0.02)",
+            next_test="Germ-free mice experiment",
+        ))
+        save_belief_map(tmp_path, bm)
+        loaded = load_belief_map(tmp_path)
+        h = loaded.hypotheses[0]
+        assert h.confidence == "supported"
+        assert h.rationale == "bd-18 showed enrichment in responders (p=0.02)"
+        assert h.next_test == "Germ-free mice experiment"
+
+    def test_load_legacy_infers_confidence(self, tmp_path):
+        """Legacy data without confidence field should get it inferred from posterior."""
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "belief-map.json").write_text(json.dumps({
+            "hypotheses": [
+                {"id": "H1", "name": "test", "prior": 0.5, "posterior": 0.5},
+                {"id": "H2", "name": "test2", "prior": 0.5, "posterior": 0.95},
+            ]
+        }))
+        bm = load_belief_map(tmp_path)
+        assert bm.hypotheses[0].confidence == "unknown"  # posterior=0.5 → max uncertainty
+        assert bm.hypotheses[1].confidence == "strong"    # posterior=0.95 → near resolved
+
     def test_load_missing(self, tmp_path):
         bm = load_belief_map(tmp_path)
         assert bm.hypotheses == []
@@ -403,6 +463,24 @@ class TestConvergence:
         assert result.converged is True
         assert result.status == "diminishing_returns"
 
+    def test_adaptive_zero_score_no_rounds_converges(self, tmp_path):
+        """BUG-010: eval_score=0, no improvement rounds → 'All tasks complete'."""
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "deliverable.md").write_text("# Done")
+        result = check_convergence(tmp_path, "adaptive", eval_score=0.0,
+                                    improvement_rounds=0)
+        assert result.converged is True
+        assert result.status == "converged"
+
+    def test_adaptive_zero_score_with_rounds_diminishing(self, tmp_path):
+        """BUG-010: eval_score=0, improvement_rounds>=1 → diminishing_returns."""
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "deliverable.md").write_text("# Done")
+        result = check_convergence(tmp_path, "adaptive", eval_score=0.0,
+                                    improvement_rounds=2)
+        assert result.converged is True
+        assert result.status == "diminishing_returns"
+
     def test_write_convergence(self, tmp_path):
         result = ConvergenceResult(True, "converged", "All done", score=0.85)
         path = write_convergence(tmp_path, result)
@@ -411,6 +489,96 @@ class TestConvergence:
         assert data["converged"] is True
         assert data["status"] == "converged"
         assert data["score"] == 0.85
+
+
+class TestConvergenceInterpretiveGate:
+    """Test that the Interpretive Coherence Gate blocks convergence."""
+
+    def test_tribunal_unresolved_blocks_convergence(self, tmp_path, monkeypatch):
+        """ANOMALY_UNRESOLVED tribunal verdict should block convergence."""
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "deliverable.md").write_text("# Done")
+        # Write an unresolved tribunal verdict
+        (tmp_path / ".swarm" / "tribunal-verdicts.json").write_text(json.dumps([
+            {"finding_id": "bd-42", "verdict": "anomaly_unresolved",
+             "explanations": [], "recommended_action": "", "trivial_to_resolve": False,
+             "tribunal_agents": [], "timestamp": "2026-01-01T00:00:00Z"}
+        ]))
+        # Stub out bd calls to avoid subprocess
+        monkeypatch.setattr("voronoi.science.consistency._run_bd",
+                            lambda *a, **kw: (1, ""))
+        result = check_convergence(tmp_path, "scientific", eval_score=0.80)
+        assert result.converged is False
+        assert any("tribunal" in b.lower() or "anomaly" in b.lower() for b in result.blockers)
+
+    def test_reversed_hypothesis_blocks_convergence(self, tmp_path, monkeypatch):
+        """Directionally reversed hypothesis without explanation should block convergence."""
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "deliverable.md").write_text("# Done")
+        (tmp_path / ".swarm" / "belief-map.json").write_text(json.dumps({
+            "hypotheses": [
+                {"id": "H2", "name": "interaction", "status": "refuted_reversed",
+                 "evidence": ["bd-42"]},
+            ]
+        }))
+        monkeypatch.setattr("voronoi.science.consistency._run_bd",
+                            lambda *a, **kw: (1, ""))
+        result = check_convergence(tmp_path, "scientific", eval_score=0.80)
+        assert result.converged is False
+        assert any("reversed" in b.lower() for b in result.blockers)
+
+    def test_explained_reversed_does_not_block(self, tmp_path, monkeypatch):
+        """A reversed hypothesis with a tribunal EXPLAINED verdict should not block."""
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "deliverable.md").write_text("# Done")
+        (tmp_path / ".swarm" / "belief-map.json").write_text(json.dumps({
+            "hypotheses": [
+                {"id": "H2", "name": "interaction", "status": "refuted_reversed",
+                 "evidence": ["bd-42"]},
+            ]
+        }))
+        (tmp_path / ".swarm" / "tribunal-verdicts.json").write_text(json.dumps([
+            {"finding_id": "bd-42", "verdict": "explained",
+             "explanations": [], "recommended_action": "", "trivial_to_resolve": False,
+             "tribunal_agents": [], "timestamp": "2026-01-01T00:00:00Z"}
+        ]))
+        monkeypatch.setattr("voronoi.science.consistency._run_bd",
+                            lambda *a, **kw: (1, ""))
+        result = check_convergence(tmp_path, "scientific", eval_score=0.80)
+        # Should not be blocked by reversed hypothesis (it's explained)
+        reversed_blockers = [b for b in result.blockers if "reversed" in b.lower()]
+        assert len(reversed_blockers) == 0
+
+    def test_tribunal_blocks_adaptive_convergence(self, tmp_path, monkeypatch):
+        """INV-42: Tribunal must block convergence even at adaptive rigor."""
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "deliverable.md").write_text("# Done")
+        (tmp_path / ".swarm" / "tribunal-verdicts.json").write_text(json.dumps([
+            {"finding_id": "bd-99", "verdict": "anomaly_unresolved",
+             "explanations": [], "recommended_action": "", "trivial_to_resolve": False,
+             "tribunal_agents": [], "timestamp": "2026-01-01T00:00:00Z"}
+        ]))
+        monkeypatch.setattr("voronoi.science.consistency._run_bd",
+                            lambda *a, **kw: (1, ""))
+        result = check_convergence(tmp_path, "adaptive", eval_score=0.80)
+        assert result.converged is False
+        assert any("tribunal" in b.lower() or "anomaly" in b.lower() for b in result.blockers)
+
+    def test_reversed_blocks_adaptive_convergence(self, tmp_path, monkeypatch):
+        """INV-43: Reversed hypothesis must block convergence at adaptive rigor."""
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "deliverable.md").write_text("# Done")
+        (tmp_path / ".swarm" / "belief-map.json").write_text(json.dumps({
+            "hypotheses": [
+                {"id": "H1", "name": "test", "status": "refuted_reversed",
+                 "evidence": ["bd-10"]},
+            ]
+        }))
+        monkeypatch.setattr("voronoi.science.consistency._run_bd",
+                            lambda *a, **kw: (1, ""))
+        result = check_convergence(tmp_path, "adaptive", eval_score=0.80)
+        assert result.converged is False
+        assert any("reversed" in b.lower() for b in result.blockers)
 
 
 # ---------------------------------------------------------------------------
@@ -833,7 +1001,7 @@ class TestEnhancedConsistency:
         assert conflicts[0].conflict_type == "magnitude"
 
     def test_tokenize_removes_stopwords(self):
-        from voronoi.science._helpers import _tokenize_title
+        from voronoi.science.consistency import _tokenize_title
         tokens = _tokenize_title("FINDING: this is a test with some very basic words")
         assert "this" not in tokens
         assert "with" not in tokens
@@ -1066,7 +1234,7 @@ class TestVerifyFindingAgainstData:
 class TestAuditAllFindings:
     def test_no_findings(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
-            "voronoi.science._helpers._fetch_tasks",
+            "voronoi.science.consistency._fetch_tasks",
             lambda ws: [{"id": 1, "title": "Build feature X", "notes": ""}],
         )
         results = audit_all_findings(tmp_path)
@@ -1454,7 +1622,7 @@ class TestConvergenceDesignInvalid:
     def test_design_invalid_blocks_convergence(self, tmp_path, monkeypatch):
         (tmp_path / ".swarm").mkdir()
         monkeypatch.setattr(
-            "voronoi.science._helpers._fetch_tasks",
+            "voronoi.science.consistency._fetch_tasks",
             lambda ws: [
                 {"id": "bd-1", "title": "Test H1", "status": "open",
                  "notes": "DESIGN_INVALID: L1 beats L4, encoding broken"},
@@ -1467,7 +1635,7 @@ class TestConvergenceDesignInvalid:
     def test_closed_design_invalid_does_not_block(self, tmp_path, monkeypatch):
         (tmp_path / ".swarm").mkdir()
         monkeypatch.setattr(
-            "voronoi.science._helpers._fetch_tasks",
+            "voronoi.science.consistency._fetch_tasks",
             lambda ws: [
                 {"id": "bd-1", "title": "Test H1", "status": "closed",
                  "notes": "DESIGN_INVALID: was broken, now fixed"},
@@ -1487,7 +1655,7 @@ class TestConvergenceSuccessCriteria:
         save_success_criteria(tmp_path, [
             {"id": "SC1", "description": "L4 > L1", "met": False},
         ])
-        monkeypatch.setattr("voronoi.science._helpers._fetch_tasks", lambda ws: [])
+        monkeypatch.setattr("voronoi.science.consistency._fetch_tasks", lambda ws: [])
         result = check_convergence(tmp_path, "scientific", eval_score=0.80)
         assert result.converged is False
         assert any("SC1" in b for b in result.blockers)
@@ -1498,13 +1666,13 @@ class TestConvergenceSuccessCriteria:
             {"id": "SC1", "description": "L4 > L1", "met": True},
             {"id": "SC2", "description": "Pipeline 10x", "met": True},
         ])
-        monkeypatch.setattr("voronoi.science._helpers._fetch_tasks", lambda ws: [])
+        monkeypatch.setattr("voronoi.science.consistency._fetch_tasks", lambda ws: [])
         result = check_convergence(tmp_path, "scientific", eval_score=0.80)
         assert not any("Success criterion" in b for b in result.blockers)
 
     def test_no_criteria_file_does_not_block(self, tmp_path, monkeypatch):
         (tmp_path / ".swarm").mkdir()
-        monkeypatch.setattr("voronoi.science._helpers._fetch_tasks", lambda ws: [])
+        monkeypatch.setattr("voronoi.science.consistency._fetch_tasks", lambda ws: [])
         result = check_convergence(tmp_path, "scientific", eval_score=0.80)
         assert not any("Success criterion" in b for b in result.blockers)
 
@@ -1519,10 +1687,10 @@ class TestConvergenceScientificCriteriaOverride:
 
     def _stub_helpers(self, monkeypatch):
         """Remove science-specific blocker sources so we isolate the criteria override."""
-        monkeypatch.setattr("voronoi.science._helpers._fetch_tasks", lambda ws: [])
-        monkeypatch.setattr("voronoi.science._helpers._find_theories",
+        monkeypatch.setattr("voronoi.science.consistency._fetch_tasks", lambda ws: [])
+        monkeypatch.setattr("voronoi.science.consistency._find_theories",
                             lambda ws, tasks: [{"status": "refuted"}])
-        monkeypatch.setattr("voronoi.science._helpers._find_tested_predictions",
+        monkeypatch.setattr("voronoi.science.consistency._find_tested_predictions",
                             lambda ws, tasks: [{"id": "pred-1"}])
 
     def test_scientific_criteria_met_overrides_low_score(self, tmp_path, monkeypatch):
@@ -1584,7 +1752,7 @@ class TestConvergenceHypothesisAlignment:
     def test_contradicting_hypothesis_blocks(self, tmp_path, monkeypatch):
         (tmp_path / ".swarm").mkdir()
         monkeypatch.setattr(
-            "voronoi.science._helpers._fetch_tasks",
+            "voronoi.science.consistency._fetch_tasks",
             lambda ws: [
                 {"id": "bd-5", "title": "Primary experiment", "status": "open",
                  "notes": "RESULT_CONTRADICTS_HYPOTHESIS:Expected L4>L1 but observed L1>L4"},
@@ -1597,7 +1765,7 @@ class TestConvergenceHypothesisAlignment:
     def test_closed_contradiction_does_not_block(self, tmp_path, monkeypatch):
         (tmp_path / ".swarm").mkdir()
         monkeypatch.setattr(
-            "voronoi.science._helpers._fetch_tasks",
+            "voronoi.science.consistency._fetch_tasks",
             lambda ws: [
                 {"id": "bd-5", "title": "Primary experiment", "status": "closed",
                  "notes": "RESULT_CONTRADICTS_HYPOTHESIS:Was broken, redesigned"},
@@ -1947,13 +2115,13 @@ class TestConvergenceSuccessCriteriaOverride:
 class TestNegativeResultConvergence:
     def test_negative_result_with_contradiction(self, tmp_path, monkeypatch):
         """Valid negative result: hypothesis falsified, deliverable exists, no design invalid."""
-        monkeypatch.setattr("voronoi.science._helpers._fetch_tasks", lambda w: [
+        monkeypatch.setattr("voronoi.science.consistency._fetch_tasks", lambda w: [
             {"id": "bd-1", "status": "closed", "title": "Experiment",
              "notes": "RESULT_CONTRADICTS_HYPOTHESIS:Expected L4>L1 but L1>L4"},
         ])
-        monkeypatch.setattr("voronoi.science._helpers._find_theories",
+        monkeypatch.setattr("voronoi.science.consistency._find_theories",
             lambda w, t=None: [{"id": "T1", "status": "refuted"}])
-        monkeypatch.setattr("voronoi.science._helpers._find_tested_predictions",
+        monkeypatch.setattr("voronoi.science.consistency._find_tested_predictions",
             lambda w, t=None: ["P1"])
         swarm = tmp_path / ".swarm"
         swarm.mkdir()
@@ -1975,11 +2143,11 @@ class TestNegativeResultConvergence:
 
     def test_negative_result_blocked_by_design_invalid(self, tmp_path, monkeypatch):
         """Negative result should NOT converge if DESIGN_INVALID is present."""
-        monkeypatch.setattr("voronoi.science._helpers._fetch_tasks", lambda w: [
+        monkeypatch.setattr("voronoi.science.consistency._fetch_tasks", lambda w: [
             {"id": "bd-1", "status": "open", "title": "Experiment",
              "notes": "RESULT_CONTRADICTS_HYPOTHESIS:X\nDESIGN_INVALID:broken"},
         ])
-        monkeypatch.setattr("voronoi.science._helpers._find_design_invalid",
+        monkeypatch.setattr("voronoi.science.consistency._find_design_invalid",
             lambda w, t=None: ["bd-1"])
         swarm = tmp_path / ".swarm"
         swarm.mkdir()

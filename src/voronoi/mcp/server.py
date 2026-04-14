@@ -105,16 +105,13 @@ def _build_registry() -> None:
             "hypothesis": {"type": "string", "description": "Expected outcome/prediction"},
             "method": {"type": "string", "description": "Experimental method/design"},
             "controls": {"type": "string", "description": "Control conditions"},
-            "expected_result": {"type": "string", "description": "Concrete expected outcome used by science gates"},
             "sample_size": {"type": "integer", "description": "Planned sample size"},
             "stat_test": {"type": "string", "description": "Planned statistical test"},
-            "effect_size": {"type": "string", "description": "Planned effect size for power analysis (for example 'd=0.50')"},
             "alpha": {"type": "number", "description": "Significance level (default 0.05)"},
             "power": {"type": "number", "description": "Power target (default 0.80)"},
-            "confounds": {"type": "string", "description": "Known confounds or threats to validity"},
             "sensitivity_plan": {"type": "string", "description": "Sensitivity analysis plan"},
         },
-        required=["task_id", "hypothesis", "method", "controls", "expected_result", "sample_size", "stat_test", "effect_size"],
+        required=["task_id", "hypothesis", "method", "controls", "sample_size", "stat_test"],
     )
     _register_tool(
         "voronoi_write_checkpoint", tools_swarm.write_checkpoint,
@@ -132,13 +129,6 @@ def _build_registry() -> None:
             "next_actions": {"type": "array", "description": "Orchestrator TODO list"},
             "eval_score": {"type": "number", "description": "Evaluator quality score"},
             "context_window_remaining_pct": {"type": "number", "description": "Remaining context 0.0-1.0"},
-            "mode": {"type": "string", "description": "Investigation mode (for example discover or prove)"},
-            "rigor": {"type": "string", "description": "Investigation rigor level"},
-            "criteria_status": {"type": "object", "description": "Success-criteria status map"},
-            "improvement_rounds": {"type": "integer", "description": "Current evaluator improvement round"},
-            "tokens_this_cycle": {"type": "integer", "description": "Tokens spent in the current cycle"},
-            "tokens_cumulative": {"type": "integer", "description": "Cumulative token budget"},
-            "context_snapshot": {"type": "object", "description": "Structured /context output: {model, model_limit, total_used, system_tokens, message_tokens, free_tokens, buffer_tokens}"},
         },
         required=["cycle", "phase"],
     )
@@ -308,20 +298,9 @@ def run_server() -> None:
         try:
             message = json.loads(line)
         except json.JSONDecodeError:
-            error_resp = {
-                "jsonrpc": "2.0",
-                "id": None,
-                "error": {"code": -32700, "message": "Parse error"},
-            }
-            sys.stdout.write(json.dumps(error_resp) + "\n")
-            sys.stdout.flush()
             continue
 
         response = _process_message(message)
         if response is not None:
             sys.stdout.write(json.dumps(response) + "\n")
             sys.stdout.flush()
-
-
-if __name__ == "__main__":
-    run_server()

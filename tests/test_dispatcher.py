@@ -5,6 +5,7 @@ The dispatcher now only: dispatch_next() + poll_progress().
 """
 
 import json
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -52,6 +53,21 @@ class TestDispatchNext:
         d.dispatch_next()
         assert len(msgs) == 0
 
+    def test_dispatch_next_skips_claim_while_launching(self, dispatcher_setup):
+        """dispatch_next should skip queue claim when a launch is in progress."""
+        d, msgs, docs, _ = dispatcher_setup
+        mock_queue = MagicMock()
+        mock_queue.next_ready.return_value = None
+        d._queue = mock_queue
+
+        # Simulate a launch in progress
+        d._launching.add(99)
+        d.dispatch_next()
+
+        # next_ready should NOT have been called — we skipped the claim phase
+        mock_queue.next_ready.assert_not_called()
+        d._launching.discard(99)
+
     def test_abort_kills_running(self, dispatcher_setup):
         d, msgs, docs, tmp_path = dispatcher_setup
         mock_queue = MagicMock()
@@ -69,9 +85,12 @@ class TestDispatchNext:
             d._handle_abort()
 
         assert len(d.running) == 0
-        mock_queue.fail.assert_called_once()
+        mock_queue.abort.assert_called_once()
 
-    def test_recover_running_scientific_requires_completion_gate(self, dispatcher_setup):
+    def test_recover_running_readopts_dead_investigation(self, dispatcher_setup):
+        """Recovery re-adopts dead investigations into self.running
+        instead of calling _handle_completion inline, so poll_progress
+        handles completion on the next cycle (keeps dispatch_next fast)."""
         d, msgs, docs, tmp_path = dispatcher_setup
         mock_queue = MagicMock()
         d._queue = mock_queue
@@ -94,13 +113,12 @@ class TestDispatchNext:
         ]
 
         with patch("voronoi.server.dispatcher.subprocess.run", return_value=MagicMock(returncode=1)), \
-             patch.object(d, "_try_restart", return_value=False) as try_restart, \
              patch.object(d, "_handle_completion") as handle_completion:
             d._recover_running()
 
-        try_restart.assert_called_once()
-        assert handle_completion.call_count == 1
-        assert handle_completion.call_args.kwargs["failed"] is True
+        # Dead investigation is re-adopted, not completed inline
+        assert 1 in d.running
+        handle_completion.assert_not_called()
 
 
 class TestProgressMonitoring:
@@ -168,19 +186,83 @@ class TestProgressMonitoring:
             mode="discover",
         )
 
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(
-                returncode=0,
-                stdout=json.dumps([
-                    {"id": "bd-5", "title": "FINDING: EWC beats replay d=0.82", "notes": "EFFECT_SIZE:0.82"},
-                ]),
-                stderr="",
-            )
-            events = d._check_findings(run)
+        tasks = [
+            {"id": "bd-5", "title": "FINDING: EWC beats replay d=0.82", "notes": "EFFECT_SIZE:0.82"},
+        ]
+        events = d._check_findings(run, tasks)
 
         assert len(events) == 1
         assert "FINDING" in events[0]["msg"]
         assert "bd-5" in run.notified_findings
+
+    def test_serendipity_detection_from_notes(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+
+        tasks = [
+            {"id": "bd-8", "title": "Investigate latency",
+             "notes": "SERENDIPITY: Cache hit rate correlates with memory pressure"},
+        ]
+        events = d._check_findings(run, tasks)
+
+        serendipity = [e for e in events if e["type"] == "serendipity"]
+        assert len(serendipity) == 1
+        assert "Unexpected observation" in serendipity[0]["msg"]
+        assert "Cache hit rate" in serendipity[0]["msg"]
+        assert "serendipity:bd-8" in run.notified_findings
+
+    def test_serendipity_not_duplicated(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+
+        tasks = [
+            {"id": "bd-8", "title": "Investigate latency",
+             "notes": "SERENDIPITY: Something unexpected"},
+        ]
+        d._check_findings(run, tasks)
+        events2 = d._check_findings(run, tasks)  # second call
+        serendipity = [e for e in events2 if e["type"] == "serendipity"]
+        assert len(serendipity) == 0  # not duplicated
+
+    def test_rigor_escalation_notification(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+            rigor="adaptive",
+            last_rigor="adaptive",
+        )
+
+        # Write checkpoint with escalated rigor
+        (swarm / "orchestrator-checkpoint.json").write_text(json.dumps({
+            "phase": "investigating",
+            "rigor": "scientific",
+            "eval_score": 0.0,
+        }))
+
+        events = d._detect_phase(run)
+        rigor_events = [e for e in events if e["type"] == "rigor_escalation"]
+        assert len(rigor_events) == 1
+        assert "scientific" in rigor_events[0]["msg"]
+        assert run.last_rigor == "scientific"
 
     def test_progress_bar_format(self, dispatcher_setup):
         d, msgs, docs, tmp_path = dispatcher_setup
@@ -232,6 +314,43 @@ class TestProgressMonitoring:
         # Science investigations go to review, not complete
         mock_queue.review.assert_called_once_with(1)
         assert len(msgs) >= 1
+
+    def test_handle_completion_negative_result(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        mock_queue = MagicMock()
+        d._queue = mock_queue
+
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "deliverable.md").write_text("# Null Result\nHypothesis not supported.")
+        (swarm / "convergence.json").write_text(json.dumps({
+            "status": "negative_result",
+            "converged": True,
+            "reason": "Hypothesis falsified — d=0.02, p=0.78",
+        }))
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="Does X improve Y?",
+            mode="discover",
+            codename="Synapse",
+        )
+        run.task_snapshot = {"bd-1": {"status": "closed", "title": "Experiment"}}
+        run.eval_score = 0.78
+
+        mock_inv = MagicMock()
+        mock_inv.lineage_id = None
+        mock_inv.cycle_number = 1
+        mock_queue.get.return_value = mock_inv
+
+        with patch("voronoi.server.dispatcher.subprocess.run"):
+            d._handle_completion(run)
+
+        # Should use format_negative_result, not format_failure
+        assert any("negative result" in m.lower() for m in msgs)
+        assert not any("didn't make it" in m for m in msgs)
 
     def test_handle_completion_failed_calls_fail(self, dispatcher_setup):
         """When tmux exits without deliverable, should call queue.fail()."""
@@ -396,7 +515,7 @@ class TestAbortSignal:
             d._check_abort_signal()
 
         assert len(d.running) == 0
-        mock_queue.fail.assert_called_once()
+        mock_queue.abort.assert_called_once()
         # Signal file should be cleaned up
         assert not (ws / ".swarm" / "abort-signal").exists()
 
@@ -486,9 +605,29 @@ class TestHeartbeatStallDetection:
                 ]),
                 stderr="",
             )
-            events = d._check_progress(run)
+            events = d._check_progress(run, session_alive=False)
 
         assert all(event["type"] != "heartbeat_stall" for event in events)
+
+    def test_check_progress_skips_bd_when_session_alive(self, dispatcher_setup):
+        """_check_progress must not call bd list --json while the agent session
+        is alive — the MCP server holds an exclusive Dolt lock."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        run.task_snapshot = {"bd-1": {"status": "open", "title": "Task 1", "notes": ""}}
+
+        with patch("voronoi.beads.run_bd_json", side_effect=AssertionError("should not be called")) as _:
+            # Should NOT call run_bd_json at all when session is alive
+            events = d._check_progress(run, session_alive=True)
+
+        # No task events because bd was skipped, but phase detection still works
+        assert isinstance(events, list)
 
 
 # ---------------------------------------------------------------------------
@@ -1894,6 +2033,33 @@ class TestReliabilityFixes:
         d._check_criteria_progress(run, elapsed_hours=5.0)
         assert not any("success criteria met" in m for m in msgs)
 
+    def test_check_criteria_progress_4h_vs_8h_alert_keys(self, dispatcher_setup):
+        """BUG-005: 4h alert fires at 4-7h, 8h alert fires at 8h+."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True, exist_ok=True)
+        (swarm / "success-criteria.json").write_text(json.dumps([
+            {"id": "SC1", "description": "test", "met": False},
+        ]))
+
+        # At 6h, the 4h alert should fire (not the 8h alert)
+        d._check_criteria_progress(run, elapsed_hours=6.0)
+        assert "criteria_zero_4h" in run._criteria_alerts
+        assert "criteria_zero_8h" not in run._criteria_alerts
+        assert len(msgs) == 1
+
+        # At 9h, the 8h alert should also fire
+        d._check_criteria_progress(run, elapsed_hours=9.0)
+        assert "criteria_zero_8h" in run._criteria_alerts
+        assert len(msgs) == 2
+
 
 class TestAuthDetection:
     def test_looks_like_auth_failure_detects_patterns(self, dispatcher_setup):
@@ -2044,13 +2210,14 @@ class TestPauseInvestigation:
         mock_inv.started_at = time.time() - 7200  # 2 hours ago
         mock_inv.completed_at = time.time() - 7200  # paused 2 hours ago
         mock_queue.get_paused.return_value = [mock_inv]
-        mock_queue.resume.return_value = True
+        mock_queue.fail_paused.return_value = True
         d._queue = mock_queue
 
         d._check_paused_timeouts()
 
-        mock_queue.resume.assert_called_once_with(1)
-        mock_queue.fail.assert_called_once()
+        # Atomic transition: paused → failed (no intermediate resume)
+        mock_queue.fail_paused.assert_called_once()
+        mock_queue.resume.assert_not_called()
         assert any("auto-failed" in m.lower() for m in msgs)
 
     def test_try_restart_auth_failure_pauses(self, dispatcher_setup):
@@ -2463,6 +2630,109 @@ class TestStateDigestCriteriaXref:
 class TestOrphanedWorkerDetection:
     """Tests for orphaned process detection in _has_active_workers."""
 
+    def test_swarm_session_from_config(self, dispatcher_setup):
+        """Should read swarm session name from .swarm-config.json (BUG-002 fix)."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="voronoi-inv-1",
+            question="test",
+            mode="discover",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "orchestrator-checkpoint.json").write_text(json.dumps({
+            "active_workers": ["worker-1"]
+        }))
+        # Write config with a different session name than what the dispatcher would construct
+        (tmp_path / ".swarm-config.json").write_text(json.dumps({
+            "tmux_session": "inv-1-coupled-decisions-swarm"
+        }))
+
+        # tmux has-session succeeds, list-windows shows worker, list-panes shows copilot alive
+        def side_effect(cmd, **kwargs):
+            if cmd[0] == "tmux" and cmd[1] == "has-session":
+                # Verify it's checking the name from config, not the constructed one
+                assert cmd[3] == "inv-1-coupled-decisions-swarm"
+                return MagicMock(returncode=0)
+            if cmd[0] == "tmux" and cmd[1] == "list-windows":
+                return MagicMock(returncode=0, stdout="worker-1\norchestrator\n")
+            if cmd[0] == "tmux" and cmd[1] == "list-panes":
+                return MagicMock(returncode=0, stdout="copilot\n")
+            return MagicMock(returncode=1, stdout="")
+
+        with patch("voronoi.server.dispatcher.subprocess.run", side_effect=side_effect):
+            assert d._has_active_workers(run) is True
+
+    def test_window_exists_but_process_dead(self, dispatcher_setup):
+        """Window with worker name exists but copilot exited — dead bash shell.
+
+        This is the critical production failure from inv-36: workers completed
+        but tmux windows remained with bash prompts, causing _has_active_workers
+        to return True forever and the orchestrator to never wake.
+        """
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="voronoi-inv-1",
+            question="test",
+            mode="discover",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "orchestrator-checkpoint.json").write_text(json.dumps({
+            "active_workers": ["agent-scout", "agent-scengen"]
+        }))
+        (tmp_path / ".swarm-config.json").write_text(json.dumps({
+            "tmux_session": "inv-1-coupled-decisions-swarm"
+        }))
+
+        def side_effect(cmd, **kwargs):
+            if cmd[0] == "tmux" and cmd[1] == "has-session":
+                return MagicMock(returncode=0)  # session exists
+            if cmd[0] == "tmux" and cmd[1] == "list-windows":
+                return MagicMock(returncode=0,
+                                stdout="agent-scout\nagent-scengen\norchestrator\n")
+            if cmd[0] == "tmux" and cmd[1] == "list-panes":
+                # copilot exited, only bash shell remains
+                return MagicMock(returncode=0, stdout="bash\n")
+            if cmd[0] == "pgrep":
+                return MagicMock(returncode=1, stdout="")  # no orphans
+            return MagicMock(returncode=1, stdout="")
+
+        with patch("voronoi.server.dispatcher.subprocess.run", side_effect=side_effect):
+            assert d._has_active_workers(run) is False
+
+    def test_swarm_session_fallback_when_no_config(self, dispatcher_setup):
+        """Should fall back to tmux_session + '-swarm' when no config file."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="voronoi-inv-1",
+            question="test",
+            mode="discover",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "orchestrator-checkpoint.json").write_text(json.dumps({
+            "active_workers": ["worker-1"]
+        }))
+        # No .swarm-config.json — should fall back
+
+        def side_effect(cmd, **kwargs):
+            if cmd[0] == "tmux" and cmd[1] == "has-session":
+                assert cmd[3] == "voronoi-inv-1-swarm"  # fallback name
+                return MagicMock(returncode=1)
+            if cmd[0] == "pgrep":
+                return MagicMock(returncode=1, stdout="")
+            return MagicMock(returncode=1, stdout="")
+
+        with patch("voronoi.server.dispatcher.subprocess.run", side_effect=side_effect):
+            assert d._has_active_workers(run) is False
+
     def test_orphaned_process_detected(self, dispatcher_setup):
         """Should detect orphaned copilot processes referencing workspace."""
         d, msgs, docs, tmp_path = dispatcher_setup
@@ -2480,13 +2750,14 @@ class TestOrphanedWorkerDetection:
         }))
 
         tmux_no_session = MagicMock(returncode=1)
-        pgrep_found = MagicMock(
+        pgrep_pids = MagicMock(returncode=0, stdout="12345\n")
+        ps_output = MagicMock(
             returncode=0,
             stdout=f"12345 copilot --allow-all -p @{tmp_path}/.swarm/prompt.txt\n",
         )
 
         with patch("voronoi.server.dispatcher.subprocess.run",
-                    side_effect=[tmux_no_session, pgrep_found]):
+                    side_effect=[tmux_no_session, pgrep_pids, ps_output]):
             assert d._has_active_workers(run) is True
 
     def test_no_orphan_when_pgrep_empty(self, dispatcher_setup):
@@ -2513,7 +2784,7 @@ class TestOrphanedWorkerDetection:
             assert d._has_active_workers(run) is False
 
     def test_no_orphan_when_pgrep_unavailable(self, dispatcher_setup):
-        """Should return False when pgrep is not available."""
+        """Should return False when pgrep is not available (e.g. containers)."""
         d, msgs, docs, tmp_path = dispatcher_setup
         run = RunningInvestigation(
             investigation_id=1,
@@ -2538,6 +2809,33 @@ class TestOrphanedWorkerDetection:
 
         with patch("voronoi.server.dispatcher.subprocess.run",
                     side_effect=side_effect):
+            assert d._has_active_workers(run) is False
+
+    def test_orphan_not_detected_when_ps_no_match(self, dispatcher_setup):
+        """pgrep finds PIDs but ps shows they belong to a different workspace."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "orchestrator-checkpoint.json").write_text(json.dumps({
+            "active_workers": ["worker-1"]
+        }))
+
+        tmux_no_session = MagicMock(returncode=1)
+        pgrep_pids = MagicMock(returncode=0, stdout="99999\n")
+        ps_other_workspace = MagicMock(
+            returncode=0,
+            stdout="99999 copilot --allow-all -p @/some/other/workspace/.swarm/prompt.txt\n",
+        )
+
+        with patch("voronoi.server.dispatcher.subprocess.run",
+                    side_effect=[tmux_no_session, pgrep_pids, ps_other_workspace]):
             assert d._has_active_workers(run) is False
 
 
@@ -2749,3 +3047,1498 @@ class TestCleanupWorktrees:
             d._cleanup_worktrees(run)
 
         assert not env_file.exists()
+
+
+# ---------------------------------------------------------------------------
+# Continuation dispatch tests
+# ---------------------------------------------------------------------------
+
+
+class TestContinuationDispatch:
+    """Test that /voronoi continue reuses workspace and injects warm-start."""
+
+    def test_prepare_continuation_archives_and_clears_stale_files(self, dispatcher_setup):
+        """Archived artifacts should not remain live in the next round."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "deliverable.md").write_text("# Old deliverable\n")
+        (swarm / "events.jsonl").write_text('{"event":"finding"}\n')
+        (swarm / "convergence.json").write_text('{"status":"converged"}')
+
+        mock_queue = MagicMock()
+        mock_queue.get.return_value = SimpleNamespace(
+            id=1,
+            cycle_number=1,
+            lineage_id=None,
+        )
+        d._queue = mock_queue
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+
+        with patch("voronoi.server.dispatcher.subprocess.run"):
+            d.prepare_continuation(run)
+
+        archive_dir = swarm / "archive" / "run-1"
+        assert (archive_dir / "deliverable.md").exists()
+        assert (archive_dir / "events.jsonl").exists()
+        assert not (swarm / "deliverable.md").exists()
+        assert not (swarm / "events.jsonl").exists()
+        assert not (swarm / "convergence.json").exists()
+
+    def test_prepare_continuation_prevents_stale_completion(self, dispatcher_setup):
+        """A reused workspace must not look complete before the new round starts."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "deliverable.md").write_text("# Old deliverable\n")
+
+        mock_queue = MagicMock()
+        mock_queue.get.return_value = SimpleNamespace(
+            id=1,
+            cycle_number=1,
+            lineage_id=None,
+        )
+        d._queue = mock_queue
+
+        prior_run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+            rigor="adaptive",
+        )
+
+        with patch("voronoi.server.dispatcher.subprocess.run"):
+            d.prepare_continuation(prior_run)
+
+        continued_run = RunningInvestigation(
+            investigation_id=2,
+            workspace_path=tmp_path,
+            tmux_session="test-2",
+            question="test",
+            mode="discover",
+            rigor="adaptive",
+        )
+
+        assert d._is_complete(continued_run) is False
+
+    def test_continue_reuses_workspace(self, dispatcher_setup):
+        """Continuation with existing workspace should NOT provision a new one."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+
+        # Create a fake existing workspace
+        ws = tmp_path / "active" / "inv-1-test"
+        ws.mkdir(parents=True)
+        (ws / ".swarm").mkdir()
+
+        mock_queue = MagicMock()
+        inv = SimpleNamespace(
+            id=2, chat_id="c1", question="Does X work?",
+            slug="does-x-work", mode="discover", rigor="scientific",
+            codename="Dopamine", workspace_path=str(ws),
+            investigation_type="lab", parent_id=1, lineage_id=1,
+            cycle_number=2, pi_feedback="test more cases",
+        )
+        parent_inv = SimpleNamespace(
+            id=1, chat_id="c1", question="Does X work?",
+            slug="does-x-work", mode="discover", rigor="scientific",
+            codename="Dopamine", workspace_path=str(ws),
+            investigation_type="lab", parent_id=None, lineage_id=1,
+            cycle_number=1, pi_feedback="",
+        )
+        mock_queue.get.side_effect = lambda id: parent_inv if id == 1 else inv
+        mock_queue.get_demo_source.return_value = None
+        d._queue = mock_queue
+
+        mock_ws_mgr = MagicMock()
+        d._workspace_mgr = mock_ws_mgr
+
+        with patch.object(d, '_launch_in_tmux'), \
+             patch.object(d, '_build_prompt', return_value="prompt"), \
+             patch.object(d, 'prepare_continuation') as mock_prep:
+            d._launch_investigation(inv)
+
+        # Should NOT have called provision_lab or provision_repo
+        mock_ws_mgr.provision_lab.assert_not_called()
+        mock_ws_mgr.provision_repo.assert_not_called()
+        # Should call prepare_continuation
+        mock_prep.assert_called_once()
+        # Workspace path in queue.start should be the old one
+        mock_queue.start.assert_called_once_with(2, str(ws))
+
+    def test_continue_provisions_fresh_when_workspace_missing(self, dispatcher_setup):
+        """If continuation workspace is gone, fall back to fresh provisioning."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+
+        mock_queue = MagicMock()
+        inv = SimpleNamespace(
+            id=2, chat_id="c1", question="Does X work?",
+            slug="does-x-work", mode="discover", rigor="scientific",
+            codename="Dopamine", workspace_path="/nonexistent/path",
+            investigation_type="lab", parent_id=1, lineage_id=1,
+            cycle_number=2, pi_feedback="",
+        )
+        mock_queue.get.return_value = inv
+        mock_queue.get_demo_source.return_value = None
+        d._queue = mock_queue
+
+        new_ws = tmp_path / "active" / "inv-2-does-x-work"
+        new_ws.mkdir(parents=True)
+        mock_ws_mgr = MagicMock()
+        mock_ws_mgr.provision_lab.return_value = SimpleNamespace(path=str(new_ws))
+        d._workspace_mgr = mock_ws_mgr
+
+        with patch.object(d, '_launch_in_tmux'), \
+             patch.object(d, '_build_prompt', return_value="prompt"), \
+             patch.object(d, '_patch_swarm_config'):
+            d._launch_investigation(inv)
+
+        # Should provision fresh since workspace is missing
+        mock_ws_mgr.provision_lab.assert_called_once()
+
+    def test_continue_injects_warm_start_context(self, dispatcher_setup):
+        """Continuation prompt should include warm-start context."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+
+        # Create ledger for warm-start
+        from voronoi.science.claims import ClaimLedger, save_ledger, PROVENANCE_RUN_EVIDENCE
+        ledger = ClaimLedger()
+        ledger.add_claim("L4 > L1", PROVENANCE_RUN_EVIDENCE, effect_summary="d=0.8")
+        ledger.assert_claim("C1")
+        save_ledger(1, ledger, base_dir=tmp_path)
+
+        inv = SimpleNamespace(
+            id=2, chat_id="c1", question="Does X work?",
+            slug="does-x-work", mode="discover", rigor="scientific",
+            codename="Dopamine", workspace_path=str(tmp_path),
+            investigation_type="lab", parent_id=1, lineage_id=1,
+            cycle_number=2, pi_feedback="Control for tokenizer differences",
+        )
+
+        mock_queue = MagicMock()
+        mock_queue.get.return_value = inv
+        d._queue = mock_queue
+
+        prompt = d._build_prompt(inv, Path(tmp_path))
+
+        assert "Round 2" in prompt
+        assert "Continuation" in prompt
+        assert "L4 > L1" in prompt
+        assert "Control for tokenizer" in prompt
+
+    def test_fresh_investigation_no_warm_start(self, dispatcher_setup):
+        """Non-continuation should NOT include warm-start context."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+
+        inv = SimpleNamespace(
+            id=1, chat_id="c1", question="Does X work?",
+            slug="does-x-work", mode="discover", rigor="scientific",
+            codename="Dopamine", workspace_path=str(tmp_path),
+            investigation_type="lab", parent_id=None, lineage_id=1,
+            cycle_number=1, pi_feedback="",
+        )
+
+        mock_queue = MagicMock()
+        mock_queue.get.return_value = inv
+        d._queue = mock_queue
+
+        prompt = d._build_prompt(inv, Path(tmp_path))
+
+        assert "Continuation" not in prompt
+        assert "PI Feedback" not in prompt
+
+    def test_review_message_uses_cycle_number(self, dispatcher_setup):
+        """Review message should show cycle_number, not improvement_rounds."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+
+        mock_queue = MagicMock()
+        inv = SimpleNamespace(
+            id=1, codename="Dopamine", cycle_number=3,
+            lineage_id=1,
+        )
+        mock_queue.get.return_value = inv
+        d._queue = mock_queue
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+            codename="Dopamine",
+        )
+        run.improvement_rounds = 1  # Should NOT be used
+        run.eval_score = 0.85
+
+        from voronoi.science.claims import ClaimLedger
+        ledger = ClaimLedger()
+
+        msg = d._build_review_message(run, ledger)
+        assert "Round 3" in msg
+        assert "Round 1" not in msg
+
+
+class TestOrchestratorParking:
+    """Tests for the dispatcher-as-outer-loop parking mechanism."""
+
+    def test_pending_events_field_exists(self):
+        """RunningInvestigation should have pending_events and orchestrator_parked fields."""
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=Path("/tmp/test"),
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        assert run.pending_events == []
+        assert run.orchestrator_parked is False
+        assert run.last_parked_digest_at == 0
+
+    def test_accumulate_parked_events(self, dispatcher_setup):
+        """Events should be accumulated when orchestrator is parked."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        events = [
+            {"type": "task_done", "msg": "✅ Finished: baseline"},
+            {"type": "finding", "msg": "🔬 Effect size d=1.47"},
+            {"type": "progress", "msg": "📊 5/10 tasks"},  # Should be filtered out
+        ]
+        d._accumulate_parked_events(run, events)
+        assert len(run.pending_events) == 2
+        assert run.pending_events[0]["type"] == "task_done"
+        assert run.pending_events[1]["type"] == "finding"
+
+    def test_accumulate_caps_at_50(self, dispatcher_setup):
+        """Pending events should be capped at 50."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        events = [{"type": "task_done", "msg": f"task {i}"} for i in range(60)]
+        d._accumulate_parked_events(run, events)
+        assert len(run.pending_events) == 50
+
+    def test_resume_prompt_includes_pending_events(self, dispatcher_setup):
+        """Resume prompt should include pending events section."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test question",
+            mode="discover",
+        )
+        run.pending_events = [
+            {"type": "task_done", "msg": "✅ Finished: baseline"},
+            {"type": "finding", "msg": "🔬 Effect size d=1.47"},
+        ]
+
+        prompt_file = tmp_path / ".swarm" / "orchestrator-prompt.txt"
+        prompt_file.parent.mkdir(parents=True, exist_ok=True)
+        prompt_file.write_text("Original prompt")
+
+        resume_file = d._build_resume_prompt(run)
+        content = resume_file.read_text()
+        assert "Events Since Your Last Session" in content
+        assert "Effect size d=1.47" in content
+        # Events should be drained after building prompt
+        assert run.pending_events == []
+
+    def test_resume_prompt_wake_label(self, dispatcher_setup):
+        """Resume prompt should say WAKE when orchestrator was parked."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test question",
+            mode="discover",
+        )
+        run.orchestrator_parked = True
+
+        prompt_file = tmp_path / ".swarm" / "orchestrator-prompt.txt"
+        prompt_file.parent.mkdir(parents=True, exist_ok=True)
+        prompt_file.write_text("Original prompt")
+
+        resume_file = d._build_resume_prompt(run)
+        content = resume_file.read_text()
+        assert "WAKE" in content
+        assert run.orchestrator_parked is False
+
+    def test_needs_orchestrator_no_workers(self, dispatcher_setup):
+        """Should wake when no active workers remain."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        # No checkpoint, no workers → _has_active_workers returns False → wake
+        with patch.object(d, '_has_active_workers', return_value=False):
+            assert d._needs_orchestrator(run) is True
+
+    def test_needs_orchestrator_design_invalid(self, dispatcher_setup):
+        """Should wake immediately on DESIGN_INVALID."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        # Workers still alive but DESIGN_INVALID found
+        with patch.object(d, '_has_active_workers', return_value=True), \
+             patch('voronoi.beads.run_bd_json',
+                   return_value=(0, [{"id": "bd-5", "status": "open",
+                                     "notes": "DESIGN_INVALID: bad design",
+                                     "title": "test"}])):
+            assert d._needs_orchestrator(run) is True
+
+    def test_needs_orchestrator_workers_running_no_urgency(self, dispatcher_setup):
+        """Should NOT wake when workers running and no urgent events."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        with patch.object(d, '_has_active_workers', return_value=True), \
+             patch('voronoi.beads.run_bd_json',
+                   return_value=(0, [{"id": "bd-5", "status": "in_progress",
+                                     "notes": "running normally",
+                                     "title": "experiment"}])):
+            assert d._needs_orchestrator(run) is False
+
+    def test_park_wake_does_not_consume_retry(self, dispatcher_setup):
+        """When workers finish and orchestrator was parked, wake should
+        NOT increment retry_count (BUG-001 regression test)."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        mock_queue = MagicMock()
+        d._queue = mock_queue
+
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "orchestrator-prompt.txt").write_text("original prompt")
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test question",
+            mode="discover",
+        )
+        run.orchestrator_parked = True
+        run.retry_count = 0
+        d.running[1] = run
+
+        with patch.object(d, "_check_abort_signal"), \
+             patch.object(d, "check_human_gates"), \
+             patch.object(d, "_refresh_eval_score"), \
+             patch.object(d, "_sync_criteria_from_checkpoint"), \
+             patch.object(d, "_check_progress", return_value=[]), \
+             patch.object(d, "_check_event_log", return_value=[]), \
+             patch.object(d, "_has_active_workers", return_value=False), \
+             patch.object(d, "_launch_in_tmux"), \
+             patch("voronoi.server.dispatcher.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1)  # session dead
+            d.poll_progress()
+
+        # retry_count must remain 0 — wake is not a crash
+        assert run.retry_count == 0
+        assert run.orchestrator_parked is False
+        # Should send a wake message, not a restart message
+        assert any("workers finished" in m for m in msgs)
+        assert not any("restarting" in m for m in msgs)
+
+    def test_park_wake_uses_wake_from_park(self, dispatcher_setup):
+        """poll_progress should call _wake_from_park when parked + workers done."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        mock_queue = MagicMock()
+        d._queue = mock_queue
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        run.orchestrator_parked = True
+        d.running[1] = run
+
+        with patch.object(d, "_check_abort_signal"), \
+             patch.object(d, "check_human_gates"), \
+             patch.object(d, "_refresh_eval_score"), \
+             patch.object(d, "_sync_criteria_from_checkpoint"), \
+             patch.object(d, "_check_progress", return_value=[]), \
+             patch.object(d, "_check_event_log", return_value=[]), \
+             patch.object(d, "_has_active_workers", return_value=False), \
+             patch.object(d, "_wake_from_park", return_value=True) as mock_wake, \
+             patch("voronoi.server.dispatcher.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1)  # session dead
+            d.poll_progress()
+
+        mock_wake.assert_called_once_with(run)
+        # Should NOT have been removed from running
+        assert 1 in d.running
+
+    def test_parked_workers_still_running_stays_parked(self, dispatcher_setup):
+        """When parked and workers still alive, should continue parking."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        run.orchestrator_parked = True
+        d.running[1] = run
+
+        with patch.object(d, "_check_abort_signal"), \
+             patch.object(d, "check_human_gates"), \
+             patch.object(d, "_refresh_eval_score"), \
+             patch.object(d, "_sync_criteria_from_checkpoint"), \
+             patch.object(d, "_check_progress", return_value=[]), \
+             patch.object(d, "_check_event_log", return_value=[]), \
+             patch.object(d, "_has_active_workers", return_value=True), \
+             patch.object(d, "_needs_orchestrator", return_value=False), \
+             patch.object(d, "_try_restart") as mock_restart, \
+             patch("voronoi.server.dispatcher.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1)  # session dead
+            d.poll_progress()
+
+        # Should stay parked and NOT call _try_restart
+        assert run.orchestrator_parked is True
+        mock_restart.assert_not_called()
+        assert 1 in d.running
+
+    def test_park_timeout_force_wakes(self, dispatcher_setup):
+        """Parked orchestrator should be force-woken after park_timeout_hours.
+
+        Safety net for BUG-002: even if _has_active_workers falsely returns
+        True (e.g. dead shell windows), the timeout guarantees recovery.
+        """
+        d, msgs, docs, tmp_path = dispatcher_setup
+        mock_queue = MagicMock()
+        d._queue = mock_queue
+        d.config.park_timeout_hours = 4
+
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "orchestrator-prompt.txt").write_text("original prompt")
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test question",
+            mode="discover",
+        )
+        run.orchestrator_parked = True
+        # Parked 5 hours ago (exceeds 4h limit)
+        run.last_parked_digest_at = time.time() - 5 * 3600
+        d.running[1] = run
+
+        with patch.object(d, "_check_abort_signal"), \
+             patch.object(d, "check_human_gates"), \
+             patch.object(d, "_refresh_eval_score"), \
+             patch.object(d, "_sync_criteria_from_checkpoint"), \
+             patch.object(d, "_check_progress", return_value=[]), \
+             patch.object(d, "_check_event_log", return_value=[]), \
+             patch.object(d, "_has_active_workers", return_value=True), \
+             patch.object(d, "_wake_from_park", return_value=True) as mock_wake, \
+             patch("voronoi.server.dispatcher.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1)  # session dead
+            d.poll_progress()
+
+        mock_wake.assert_called_once_with(run)
+        assert 1 in d.running
+
+    def test_park_timeout_not_triggered_when_within_limit(self, dispatcher_setup):
+        """Parked orchestrator should NOT be force-woken before timeout."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        run.orchestrator_parked = True
+        # Parked 1 hour ago (within 4h limit)
+        run.last_parked_digest_at = time.time() - 1 * 3600
+        d.running[1] = run
+
+        with patch.object(d, "_check_abort_signal"), \
+             patch.object(d, "check_human_gates"), \
+             patch.object(d, "_refresh_eval_score"), \
+             patch.object(d, "_sync_criteria_from_checkpoint"), \
+             patch.object(d, "_check_progress", return_value=[]), \
+             patch.object(d, "_check_event_log", return_value=[]), \
+             patch.object(d, "_has_active_workers", return_value=True), \
+             patch.object(d, "_needs_orchestrator", return_value=False), \
+             patch.object(d, "_try_restart") as mock_restart, \
+             patch("voronoi.server.dispatcher.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1)  # session dead
+            d.poll_progress()
+
+        # Should stay parked — timeout not reached
+        assert run.orchestrator_parked is True
+        mock_restart.assert_not_called()
+
+
+class TestPromptBuilderLifecycle:
+    """Tests for the updated prompt.py lifecycle framing."""
+
+    def test_prompt_includes_lifecycle_contract(self):
+        """Orchestrator prompt should mention episodic session lifecycle."""
+        from voronoi.server.prompt import build_orchestrator_prompt
+        prompt = build_orchestrator_prompt(
+            question="test question",
+            mode="discover",
+            rigor="adaptive",
+        )
+        assert "strategist" in prompt.lower()
+        assert "exit" in prompt.lower()
+        assert "sleep" in prompt.lower() or "idle-loop" in prompt.lower()
+
+    def test_prompt_forbids_sleep_polling(self):
+        """Orchestrator prompt should explicitly forbid sleep and ps aux."""
+        from voronoi.server.prompt import build_orchestrator_prompt
+        prompt = build_orchestrator_prompt(
+            question="test question",
+            mode="discover",
+            rigor="adaptive",
+        )
+        assert "Do NOT" in prompt
+        assert "nohup" in prompt.lower() or "background subprocess" in prompt.lower()
+
+
+# ---------------------------------------------------------------------------
+# Bug fix tests: poll_progress TimeoutExpired (BUG-001)
+# ---------------------------------------------------------------------------
+
+class TestPollProgressTimeoutExpired:
+    """BUG-001: tmux has-session in poll_progress must handle TimeoutExpired."""
+
+    def test_tmux_timeout_skips_investigation(self, dispatcher_setup):
+        """TimeoutExpired from tmux has-session should skip, not crash."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        d.running[1] = run
+
+        with patch.object(d, "_check_abort_signal"), \
+             patch.object(d, "check_human_gates"), \
+             patch.object(d, "_refresh_eval_score"), \
+             patch.object(d, "_sync_criteria_from_checkpoint"), \
+             patch("voronoi.server.dispatcher.subprocess.run",
+                   side_effect=subprocess.TimeoutExpired(cmd="tmux", timeout=10)):
+            # Should NOT raise — just skip
+            d.poll_progress()
+
+        # Investigation should still be running (not removed)
+        assert 1 in d.running
+
+
+# ---------------------------------------------------------------------------
+# Bug fix tests: _check_sentinel checkpoint path (BUG-002)
+# ---------------------------------------------------------------------------
+
+class TestSentinelCheckpointPath:
+    """BUG-002: _check_sentinel should use _find_checkpoint, not hardcoded path."""
+
+    def test_sentinel_reads_canonical_checkpoint_name(self, dispatcher_setup):
+        """Phase detection should work with orchestrator-checkpoint.json (canonical)."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+
+        # Write contract (minimal, will pass)
+        (swarm / "experiment-contract.json").write_text(json.dumps({
+            "experiment_id": "e1",
+            "independent_variable": "x",
+            "conditions": [],
+            "manipulation_checks": [],
+            "required_outputs": [],
+            "degeneracy_checks": [],
+            "phase_gates": [],
+        }))
+
+        # Write checkpoint using CANONICAL name (not the short one)
+        (swarm / "orchestrator-checkpoint.json").write_text(json.dumps({
+            "phase": "investigating",
+        }))
+
+        run = RunningInvestigation(
+            investigation_id=1, workspace_path=tmp_path,
+            tmux_session="test", question="test", mode="prove",
+            rigor="scientific",
+        )
+
+        events = d._check_sentinel(run)
+
+        # Verify audit was written and phase was captured
+        audit_path = swarm / "sentinel-audit.json"
+        assert audit_path.exists()
+        audit_data = json.loads(audit_path.read_text())
+        assert audit_data.get("_last_phase") == "investigating"
+
+
+# ---------------------------------------------------------------------------
+# Bug fix tests: Atomic fail_paused (BUG-003)
+# ---------------------------------------------------------------------------
+
+class TestFailPausedAtomic:
+    """BUG-003: queue.fail_paused() atomic paused → failed transition."""
+
+    def test_fail_paused_transitions_atomically(self, tmp_path):
+        """fail_paused should transition paused → failed in one step."""
+        from voronoi.server.queue import InvestigationQueue, Investigation
+        q = InvestigationQueue(tmp_path / "test.db")
+        inv = Investigation(
+            id=0, chat_id="test", status="queued",
+            investigation_type="lab", repo=None,
+            question="test?", slug="test", mode="discover",
+            rigor="adaptive", codename="Test",
+            workspace_path=None, sandbox_id=None,
+            github_url=None, parent_id=None, demo_source=None,
+            lineage_id=None, cycle_number=1,
+            created_at=time.time(), started_at=None,
+            completed_at=None, error=None,
+        )
+        inv_id = q.enqueue(inv)
+
+        # Transition to running then paused
+        claimed = q.next_ready(5)
+        assert claimed is not None
+        q.pause(inv_id, "test pause")
+        fetched = q.get(inv_id)
+        assert fetched.status == "paused"
+
+        # Atomic fail_paused
+        result = q.fail_paused(inv_id, "timed out")
+        assert result is True
+        fetched = q.get(inv_id)
+        assert fetched.status == "failed"
+        assert fetched.error == "timed out"
+
+    def test_fail_paused_only_affects_paused(self, tmp_path):
+        """fail_paused should not affect non-paused investigations."""
+        from voronoi.server.queue import InvestigationQueue, Investigation
+        q = InvestigationQueue(tmp_path / "test.db")
+        inv = Investigation(
+            id=0, chat_id="test", status="queued",
+            investigation_type="lab", repo=None,
+            question="test?", slug="test", mode="discover",
+            rigor="adaptive", codename="Test",
+            workspace_path=None, sandbox_id=None,
+            github_url=None, parent_id=None, demo_source=None,
+            lineage_id=None, cycle_number=1,
+            created_at=time.time(), started_at=None,
+            completed_at=None, error=None,
+        )
+        inv_id = q.enqueue(inv)
+        # Still queued — fail_paused should return False
+        result = q.fail_paused(inv_id, "should not work")
+        assert result is False
+        assert q.get(inv_id).status == "queued"
+
+
+# ---------------------------------------------------------------------------
+# Bug fix tests: Effective rigor and completion gate (BUG-004 + BUG-005)
+# ---------------------------------------------------------------------------
+
+class TestEffectiveRigor:
+    """BUG-004/005: Adaptive rigor completion must account for escalation."""
+
+    def test_effective_rigor_returns_adaptive_when_not_escalated(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1, workspace_path=tmp_path,
+            tmux_session="test", question="test",
+            mode="discover", rigor="adaptive",
+        )
+        assert d._effective_rigor(run) == "adaptive"
+
+    def test_effective_rigor_returns_escalated_level(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1, workspace_path=tmp_path,
+            tmux_session="test", question="test",
+            mode="discover", rigor="adaptive",
+            last_rigor="scientific",
+        )
+        assert d._effective_rigor(run) == "scientific"
+
+    def test_effective_rigor_non_adaptive_unchanged(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1, workspace_path=tmp_path,
+            tmux_session="test", question="test",
+            mode="prove", rigor="scientific",
+        )
+        assert d._effective_rigor(run) == "scientific"
+
+    def test_escalated_adaptive_requires_convergence(self, dispatcher_setup):
+        """Adaptive investigation that escalated should need convergence."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1, workspace_path=tmp_path,
+            tmux_session="test", question="test",
+            mode="discover", rigor="adaptive",
+            last_rigor="scientific",  # escalated
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "deliverable.md").write_text("# Results\n")
+        # No convergence.json → should NOT be complete
+        assert d._is_complete(run) is False
+
+    def test_non_escalated_adaptive_deliverable_only(self, dispatcher_setup):
+        """Adaptive investigation NOT escalated should complete with deliverable only."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1, workspace_path=tmp_path,
+            tmux_session="test", question="test",
+            mode="discover", rigor="adaptive",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "deliverable.md").write_text("# Results\n")
+        assert d._is_complete(run) is True
+
+    def test_escalated_adaptive_completes_with_convergence(self, dispatcher_setup):
+        """Escalated adaptive + deliverable + convergence → complete."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1, workspace_path=tmp_path,
+            tmux_session="test", question="test",
+            mode="discover", rigor="adaptive",
+            last_rigor="scientific",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "deliverable.md").write_text("# Results\n")
+        (swarm / "convergence.json").write_text(json.dumps({
+            "status": "converged", "converged": True,
+        }))
+        assert d._is_complete(run) is True
+
+    def test_detect_phase_logs_rigor_sync(self, dispatcher_setup):
+        """_detect_phase should log when effective rigor is synced."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+
+        run = RunningInvestigation(
+            investigation_id=1, workspace_path=tmp_path,
+            tmux_session="test", question="test",
+            mode="discover", rigor="adaptive",
+            last_rigor="adaptive",
+        )
+
+        # Checkpoint shows rigor escalated to scientific
+        (swarm / "orchestrator-checkpoint.json").write_text(json.dumps({
+            "phase": "investigating",
+            "rigor": "scientific",
+        }))
+
+        events = d._detect_phase(run)
+        # Should fire a rigor_escalation event
+        rigor_events = [e for e in events if e["type"] == "rigor_escalation"]
+        assert len(rigor_events) == 1
+        assert run.last_rigor == "scientific"
+
+    def test_recover_running_restores_last_rigor(self, dispatcher_setup):
+        """_recover_running should restore last_rigor from checkpoint."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        mock_queue = MagicMock()
+        d._queue = mock_queue
+
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        # Checkpoint shows rigor escalated
+        (swarm / "orchestrator-checkpoint.json").write_text(json.dumps({
+            "phase": "investigating",
+            "rigor": "scientific",
+        }))
+
+        mock_queue.get_running.return_value = [
+            SimpleNamespace(
+                id=1,
+                workspace_path=str(tmp_path),
+                question="test",
+                mode="discover",
+                codename="Cortex",
+                chat_id="123",
+                rigor="adaptive",
+                started_at=time.time(),
+            )
+        ]
+
+        with patch("voronoi.server.dispatcher.subprocess.run",
+                   return_value=MagicMock(returncode=0)):
+            d._recover_running()
+
+        assert 1 in d.running
+        # _restore_task_snapshot is skipped for alive sessions (avoids
+        # Dolt lock contention with the running agent's MCP server).
+        assert d.running[1].last_rigor == "scientific"
+
+
+# ---------------------------------------------------------------------------
+# Bug-fix regression tests
+# ---------------------------------------------------------------------------
+
+class TestFix01RequeueUnprovisioned:
+    """FIX-01: Claimed-but-not-launched investigations should be requeued, not failed."""
+
+    def test_recover_running_requeues_no_workspace(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        mock_queue = MagicMock()
+        d._queue = mock_queue
+
+        mock_queue.get_running.return_value = [
+            SimpleNamespace(
+                id=42,
+                workspace_path=None,
+                question="test",
+                mode="discover",
+                codename="Cortex",
+                chat_id="123",
+                rigor="adaptive",
+                started_at=time.time(),
+            )
+        ]
+
+        with patch("voronoi.server.dispatcher.subprocess.run"):
+            d._recover_running()
+
+        # Should NOT have called fail
+        mock_queue.fail.assert_not_called()
+        # Should have been requeued (not tracked)
+        assert 42 not in d.running
+
+
+class TestFix03EffectiveRigorHumanGates:
+    """FIX-03: Human gates must use effective rigor, not raw run.rigor."""
+
+    def test_human_gate_fires_for_escalated_adaptive(self, dispatcher_setup):
+        """check_human_gates should fire when adaptive escalated to scientific."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+
+        ws = tmp_path / "ws"
+        (ws / ".swarm").mkdir(parents=True)
+        (ws / ".swarm" / "human-gate.json").write_text(
+            '{"status":"pending","gate":"prereg","summary":"Need approval"}'
+        )
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=ws,
+            tmux_session="test-session",
+            question="Q",
+            mode="discover",
+            rigor="adaptive",
+            last_rigor="scientific",
+            codename="Cortex",
+        )
+        d.running[1] = run
+
+        with patch("voronoi.server.dispatcher.subprocess.run"):
+            d.check_human_gates()
+
+        assert len(msgs) == 1
+        assert "Human Review" in msgs[0]
+
+    def test_human_gate_skipped_for_pure_adaptive(self, dispatcher_setup):
+        """check_human_gates should skip non-escalated adaptive investigations."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+
+        ws = tmp_path / "ws"
+        (ws / ".swarm").mkdir(parents=True)
+        (ws / ".swarm" / "human-gate.json").write_text(
+            '{"status":"pending","gate":"prereg","summary":"Need approval"}'
+        )
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=ws,
+            tmux_session="test-session",
+            question="Q",
+            mode="discover",
+            rigor="adaptive",
+            last_rigor="",
+            codename="Cortex",
+        )
+        d.running[1] = run
+
+        d.check_human_gates()
+
+        assert len(msgs) == 0
+
+    def test_resume_prompt_uses_effective_rigor(self, dispatcher_setup):
+        """Resume prompt should use escalated rigor, not raw adaptive."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+
+        ws = tmp_path / "ws"
+        (ws / ".swarm").mkdir(parents=True)
+        (ws / ".swarm" / "orchestrator-prompt.txt").write_text("original")
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=ws,
+            tmux_session="test-session",
+            question="Q",
+            mode="discover",
+            rigor="adaptive",
+            last_rigor="scientific",
+            codename="Cortex",
+        )
+
+        resume = d._build_resume_prompt(run).read_text()
+        assert "**Rigor:** scientific" in resume
+        assert "convergence-gate.sh . scientific" in resume
+
+
+class TestFix04ScopedAbort:
+    """FIX-04: Abort should scope to specific investigation + use cancelled status."""
+
+    def test_abort_scoped_to_one_investigation(self, dispatcher_setup):
+        """Aborting one investigation should not kill others."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        mock_queue = MagicMock()
+        d._queue = mock_queue
+
+        d.running[1] = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path / "ws1",
+            tmux_session="s1",
+            question="Q1",
+            mode="discover",
+        )
+        d.running[2] = RunningInvestigation(
+            investigation_id=2,
+            workspace_path=tmp_path / "ws2",
+            tmux_session="s2",
+            question="Q2",
+            mode="discover",
+        )
+
+        with patch("subprocess.run"):
+            d._handle_abort(inv_id=1)
+
+        assert 1 not in d.running
+        assert 2 in d.running
+        mock_queue.abort.assert_called_once_with(1, "Aborted by operator")
+
+
+# ---------------------------------------------------------------------------
+# Reversed hypothesis detection (Judgment Tribunal trigger)
+# ---------------------------------------------------------------------------
+
+class TestReversedHypothesisDetection:
+    def test_detects_reversed_hypothesis(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        (tmp_path / ".swarm").mkdir(exist_ok=True)
+        import json
+        (tmp_path / ".swarm" / "belief-map.json").write_text(json.dumps({
+            "hypotheses": [
+                {"id": "H2", "name": "interaction", "status": "refuted_reversed",
+                 "evidence": ["bd-42"]},
+            ]
+        }))
+        events = d._check_reversed_hypotheses(run)
+        assert len(events) == 1
+        assert "Tribunal" in events[0]["msg"]
+
+    def test_does_not_re_notify(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        (tmp_path / ".swarm").mkdir(exist_ok=True)
+        import json
+        (tmp_path / ".swarm" / "belief-map.json").write_text(json.dumps({
+            "hypotheses": [
+                {"id": "H2", "name": "interaction", "status": "refuted_reversed",
+                 "evidence": ["bd-42"]},
+            ]
+        }))
+        events1 = d._check_reversed_hypotheses(run)
+        events2 = d._check_reversed_hypotheses(run)
+        assert len(events1) == 1
+        assert len(events2) == 0  # Already notified
+
+    def test_writes_interpretation_request(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        (tmp_path / ".swarm").mkdir(exist_ok=True)
+        import json
+        (tmp_path / ".swarm" / "belief-map.json").write_text(json.dumps({
+            "hypotheses": [
+                {"id": "H2", "name": "interaction", "status": "refuted_reversed",
+                 "evidence": ["bd-42"]},
+            ]
+        }))
+        d._check_reversed_hypotheses(run)
+        req_path = tmp_path / ".swarm" / "interpretation-request.json"
+        assert req_path.exists()
+        data = json.loads(req_path.read_text())
+        assert data["trigger"] == "refuted_reversed"
+
+    def test_no_events_without_reversals(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        (tmp_path / ".swarm").mkdir(exist_ok=True)
+        import json
+        (tmp_path / ".swarm" / "belief-map.json").write_text(json.dumps({
+            "hypotheses": [
+                {"id": "H1", "name": "encoding", "status": "confirmed"},
+            ]
+        }))
+        events = d._check_reversed_hypotheses(run)
+        assert len(events) == 0
+
+
+class TestTimeoutCap:
+    """Tests for BUG-005 — timeout override capped at _MAX_TIMEOUT_HOURS."""
+
+    def test_timeout_override_capped(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        (tmp_path / ".swarm").mkdir(exist_ok=True)
+        (tmp_path / ".swarm" / "timeout_hours").write_text("99999")
+        result = d._effective_timeout(run)
+        assert result == d._MAX_TIMEOUT_HOURS
+
+    def test_timeout_override_within_cap(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        (tmp_path / ".swarm").mkdir(exist_ok=True)
+        (tmp_path / ".swarm" / "timeout_hours").write_text("72")
+        result = d._effective_timeout(run)
+        assert result == 72
+
+    def test_timeout_no_override(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        result = d._effective_timeout(run)
+        assert result == d.config.timeout_hours
+
+
+class TestNotificationStatePersistence:
+    """Tests for BUG-003 — notification state survives dispatcher restart."""
+
+    def test_save_and_restore_notification_state(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        (tmp_path / ".swarm").mkdir(exist_ok=True)
+
+        run.notified_findings.add("finding-1")
+        run.notified_findings.add("finding-2")
+        run.notified_design_invalid.add("task-3")
+        run._criteria_alerts.add("criteria_zero_4h")
+        run._sentinel_missing_contract_warned = True
+        run.notified_paradigm_stress = True
+
+        run.save_notification_state()
+
+        # Create a fresh run and restore state
+        run2 = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        assert len(run2.notified_findings) == 0  # fresh
+        run2.restore_notification_state()
+
+        assert "finding-1" in run2.notified_findings
+        assert "finding-2" in run2.notified_findings
+        assert "task-3" in run2.notified_design_invalid
+        assert "criteria_zero_4h" in run2._criteria_alerts
+        assert run2._sentinel_missing_contract_warned is True
+        assert run2.notified_paradigm_stress is True
+
+    def test_restore_missing_file(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        # Should not raise — gracefully handles missing file
+        run.restore_notification_state()
+        assert len(run.notified_findings) == 0
+
+
+class TestAuthThreshold:
+    """Tests for BUG-006 — auth failure detection requires 3+ markers."""
+
+    def test_two_markers_insufficient(self, dispatcher_setup):
+        """Two auth markers should NOT trigger auth failure detection."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        # Only 2 markers: "authenticate" and "credentials"
+        log_tail = "Need to authenticate with valid credentials"
+        assert d._looks_like_auth_failure(log_tail) is False
+
+    def test_three_markers_sufficient(self, dispatcher_setup):
+        """Three auth markers should trigger."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        log_tail = (
+            "Need to authenticate with valid credentials.\n"
+            "Run gh auth login to fix."
+        )
+        assert d._looks_like_auth_failure(log_tail) is True
+
+
+class TestConvergenceCheckThrottle:
+    """BUG-003: _is_complete should throttle _try_convergence_check calls."""
+
+    def test_convergence_check_throttled(self, dispatcher_setup):
+        """_try_convergence_check should only run once per 5-minute window."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+            rigor="scientific",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True, exist_ok=True)
+        (swarm / "deliverable.md").write_text("# Results")
+
+        # First call should attempt convergence check (sets timestamp)
+        with patch.object(d, "_try_convergence_check"):
+            d._is_complete(run)
+
+        # Second call within 5 minutes should NOT re-attempt
+        with patch.object(d, "_try_convergence_check") as mock_conv2:
+            d._is_complete(run)
+            assert mock_conv2.call_count == 0
+
+    def test_convergence_check_runs_after_cooldown(self, dispatcher_setup):
+        """_try_convergence_check should run again after 5-minute cooldown."""
+        import time as _time
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+            rigor="scientific",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True, exist_ok=True)
+        (swarm / "deliverable.md").write_text("# Results")
+
+        # Simulate a past attempt 6 minutes ago
+        run.last_convergence_attempt_at = _time.time() - 360
+
+        with patch.object(d, "_try_convergence_check") as mock_conv:
+            d._is_complete(run)
+            assert mock_conv.call_count == 1
+
+
+class TestReviewTransitionCheck:
+    """BUG-004: _transition_to_review should check queue.review() return value."""
+
+    def test_review_transition_failure_aborts_notification(self, dispatcher_setup):
+        """If queue.review() returns False, no review message should be sent."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        from voronoi.server.queue import Investigation
+        inv = Investigation(
+            id=1, chat_id="test", status="running", question="test",
+            slug="test", lineage_id=1, cycle_number=1,
+        )
+
+        with patch.object(d.queue, "get", return_value=inv), \
+             patch.object(d.queue, "review", return_value=False), \
+             patch("voronoi.server.dispatcher.InvestigationDispatcher._sync_findings_to_ledger"):
+            d._transition_to_review(run)
+
+        # No review message should have been sent
+        assert not any("review" in m.lower() or "converged" in m.lower() for m in msgs)
+
+
+class TestEffortMappingSingleSource:
+    """BUG-007: Dispatcher should use tmux module's EFFORT_BY_RIGOR."""
+
+    def test_dispatcher_uses_tmux_mapping(self):
+        """_EFFORT_BY_RIGOR on dispatcher should be the exact same object as tmux."""
+        from voronoi.server.dispatcher import InvestigationDispatcher
+        from voronoi.server.tmux import EFFORT_BY_RIGOR
+        assert InvestigationDispatcher._EFFORT_BY_RIGOR is EFFORT_BY_RIGOR
+
+
+class TestBug005EffectiveRigorInConvergence:
+    """BUG-005: _try_convergence_check must use effective rigor, not run.rigor."""
+
+    def test_try_convergence_uses_effective_rigor(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "deliverable.md").write_text("# Done")
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+            rigor="adaptive",
+        )
+        # Simulate escalation: adaptive → scientific
+        run.last_rigor = "scientific"
+
+        d._try_convergence_check(run)
+
+        # With scientific rigor and no eval score, convergence should NOT
+        # be written because check_convergence adds "No evaluator score" blocker.
+        conv_path = tmp_path / ".swarm" / "convergence.json"
+        if conv_path.exists():
+            data = json.loads(conv_path.read_text())
+            # If written, it must NOT be "converged" with zero eval_score
+            # under scientific rigor.
+            assert data.get("status") != "converged" or data.get("score", 0) >= 0.5
+
+
+class TestBug007DesignInvalidDoesNotZombie:
+    """BUG-007: _handle_completion with DESIGN_INVALID must not return early."""
+
+    def test_design_invalid_transitions_to_failed(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        (tmp_path / ".swarm").mkdir()
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        run.task_snapshot = {
+            "bd-1": {"status": "open", "title": "Exp",
+                     "notes": "DESIGN_INVALID: bad setup"},
+        }
+
+        mock_queue = MagicMock()
+        d._queue = mock_queue
+
+        with patch("voronoi.server.dispatcher.cleanup_tmux"):
+            d._handle_completion(run, failed=False)
+
+        # Must have called fail() — not silently returned
+        mock_queue.fail.assert_called_once()
+        # Must have sent a message about the block
+        assert any("DESIGN_INVALID" in m for m in msgs)
+
+
+class TestBug008DirectivePriority:
+    """BUG-008: Higher-priority directives must not be clobbered."""
+
+    def test_sentinel_not_clobbered_by_context(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+
+        # Write a sentinel directive first (highest priority)
+        d._write_directive(run, "sentinel_violation", "Contract violated")
+        data1 = json.loads((swarm / "dispatcher-directive.json").read_text())
+        assert data1["directive"] == "sentinel_violation"
+
+        # Context warning should NOT overwrite sentinel
+        d._write_directive(run, "context_warning", "10h elapsed")
+        data2 = json.loads((swarm / "dispatcher-directive.json").read_text())
+        assert data2["directive"] == "sentinel_violation"
+
+    def test_context_critical_overwrites_advisory(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+
+        d._write_directive(run, "context_advisory", "6h elapsed")
+        d._write_directive(run, "context_critical", "14h elapsed")
+        data = json.loads((swarm / "dispatcher-directive.json").read_text())
+        assert data["directive"] == "context_critical"
+
+
+class TestBug009WorkerCheckpointExclusion:
+    """BUG-009: _latest_checkpoint must not read 'checkpoint.json' from worktrees."""
+
+    def test_ignores_worker_checkpoint_json(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+
+        # Write orchestrator checkpoint in main workspace
+        (swarm / "orchestrator-checkpoint.json").write_text(json.dumps({
+            "cycle": 5, "phase": "investigating",
+            "last_updated": "2026-01-01T00:00:00+00:00",
+        }))
+
+        # Create a fake worker worktree with a generic checkpoint.json
+        swarm_dir = tmp_path.parent / f"{tmp_path.name}-swarm"
+        worker = swarm_dir / "agent-explorer" / ".swarm"
+        worker.mkdir(parents=True)
+        (worker / "checkpoint.json").write_text(json.dumps({
+            "cycle": 1, "phase": "complete",
+            "last_updated": "2026-12-31T00:00:00+00:00",
+        }))
+
+        cp = d._latest_checkpoint(run)
+        assert cp is not None
+        # Must return the orchestrator's data, not the worker's
+        assert cp["cycle"] == 5
+        assert cp["phase"] == "investigating"
+
+
+class TestBug012ResumePromptEffectiveRigor:
+    """BUG-012: Near-convergence resume must use effective rigor."""
+
+    def test_resume_prompt_uses_effective_rigor(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test question?",
+            mode="discover",
+            rigor="adaptive",
+        )
+        run.last_rigor = "scientific"
+
+        # Write a near-convergence checkpoint
+        (swarm / "orchestrator-checkpoint.json").write_text(json.dumps({
+            "cycle": 10, "phase": "converging",
+            "blockers": "", "remaining": [],
+        }))
+        # Write the original prompt file (required by _build_resume_prompt)
+        (swarm / "orchestrator-prompt.txt").write_text("original prompt")
+
+        resume_path = d._build_resume_prompt(run)
+        content = resume_path.read_text()
+
+        # Must reference "scientific" rigor, not "adaptive"
+        assert "convergence-gate.sh . scientific" in content

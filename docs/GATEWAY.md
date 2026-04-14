@@ -2,53 +2,59 @@
 
 > Intent classification, command routing, conversation memory, knowledge recall, reporting, and Telegram integration.
 
-**TL;DR**: `intent.py` classifies text → mode+rigor. `router.py` dispatches all commands via `CommandRouter` class + free-text handler. `memory.py` = per-chat SQLite. `knowledge.py` searches past findings. `report.py` generates teasers, reports, manuscripts, and PDFs (LaTeX→pandoc→fpdf2 chain). `progress.py` builds narrative digest updates (replaces per-event streaming). `telegram-bridge.py` adds inline buttons, group support, singleton lock. All in `src/voronoi/gateway/`.
+**TL;DR**: `intent.py` classifies text → mode+rigor. `router.py` dispatches commands via `CommandRouter` class + free-text handler, delegating to `handlers_query.py`, `handlers_mutate.py`, and `handlers_workflow.py`. `memory.py` = per-chat SQLite. `knowledge.py` searches past findings. `report.py` generates teasers, reports, manuscripts, and PDFs (via `evidence.py` for data extraction and `pdf.py` for rendering). `progress.py` builds narrative digest updates. `telegram-bridge.py` adds inline buttons, group support, singleton lock. All in `src/voronoi/gateway/`.
 
 ## 1. Module Map
 
 ```
 src/voronoi/gateway/
-├── __init__.py       # Empty — namespace package
-├── intent.py         # Intent classifier: text → mode + rigor
-├── router.py         # Central command router for all user actions
-├── config.py         # Configuration loading (.env, .swarm-config.json)
-├── memory.py         # Per-chat SQLite conversation memory
-├── knowledge.py      # Knowledge store recall (search past findings)
-├── literature.py     # Semantic Scholar API integration
-├── progress.py       # Progress formatting helpers (Telegram)
-├── report.py         # Report/manuscript generation from workspace
-├── codename.py       # Brain-themed codename generator
-└── handoff.py        # Science → engineering handoff protocol
+├── __init__.py            # Empty — namespace package
+├── intent.py              # Intent classifier: text → mode + rigor
+├── router.py              # Central command router (thin dispatch layer)
+├── handlers_query.py      # Read-only status/progress/knowledge handlers
+├── handlers_mutate.py     # Task/investigation state change handlers
+├── handlers_workflow.py   # Investigation enqueue (discover/prove/demo)
+├── config.py              # Configuration loading (.env, .swarm-config.json)
+├── memory.py              # Per-chat SQLite conversation memory
+├── knowledge.py           # Knowledge store recall (search past findings)
+├── literature.py          # Semantic Scholar API integration
+├── progress.py            # Progress formatting helpers (Telegram)
+├── report.py              # Report/manuscript generation facade
+├── evidence.py            # Evidence extraction and rendering
+├── pdf.py                 # PDF generation strategy chain
+├── codename.py            # Brain-themed codename generator
+└── handoff.py             # Science → engineering handoff protocol
 ```
 
 ## 2. Intent Classifier (`intent.py`)
 
 ### Purpose
 
-Maps free-text user input to a workflow mode and rigor level. This is the first decision point in every request.
+Maps free-text user input to a workflow mode and rigor level. Used for explicit `/voronoi` command parsing and as a fallback classifier.
+
+**Note:** For free-text routing in Telegram, the router uses **state-aware dispatch** instead of calling `classify()` directly. See §3 (Router).
 
 ### Enums
 
 ```python
 class WorkflowMode(Enum):
-    BUILD       # "build", "implement", "deploy", "refactor"
-    INVESTIGATE # "why", "root cause", "hypotheses"
-    EXPLORE     # "which best", "compare", "evaluate"
-    HYBRID      # "figure out and fix", "paper", "manuscript"
+    DISCOVER    # Open question — adaptive rigor
+    PROVE       # Specific hypothesis — full science gates
     STATUS      # "/voronoi status"
     RECALL      # "what did we learn", "previous finding"
-    GUIDE       # Fallback — unclear intent
+    GUIDE       # Explicit operator guidance (/voronoi guide)
+    ASK         # Mid-investigation question — Q&A about running work
+    DELIBERATE  # Multi-turn Socratic reasoning about results
 ```
 
 ```python
 class RigorLevel(Enum):
-    STANDARD      # Build tasks — Builder + Critic only
-    ANALYTICAL    # + Scout, Statistician, Explorer, Synthesizer, Evaluator
-    SCIENTIFIC    # + Methodologist, Theorist, all gates
-    EXPERIMENTAL  # + replication, full pipeline
+    ADAPTIVE      # DISCOVER — starts light, escalates
+    SCIENTIFIC    # PROVE — full gates from the start
+    EXPERIMENTAL  # PROVE + replication
 ```
 
-### Core Function
+### Core Functions
 
 ```python
 def classify(text: str) -> ClassifiedIntent
@@ -60,11 +66,17 @@ def classify(text: str) -> ClassifiedIntent
 
 **Classification priority** (highest to lowest):
 1. Explicit `/voronoi <command>` patterns — exact match
-2. Pattern matching against signal banks (investigate, explore, build, hybrid, etc.)
-3. Rigor escalation signals (experimental > scientific > analytical)
-4. Fallback to `GUIDE` mode (confidence 0.3) if no signals match
+2. ASK signals (mid-investigation questions)
+3. PROVE signals (specific hypotheses, controlled experiments)
+4. DISCOVER signals (open questions, building, exploring)
+5. RECALL signals (knowledge queries)
+6. Fallback to `GUIDE` mode (confidence 0.3) if no signals match
 
-**Invariant**: When in doubt, classify **higher** rigor — gates can be skipped but not added retroactively.
+```python
+def classify_for_new_investigation(text: str) -> ClassifiedIntent
+```
+
+**Purpose**: Simplified classifier used by the state-aware router when **no investigation is running**. Only returns DISCOVER, PROVE, or RECALL — never ASK or GUIDE. Low-confidence messages default to DISCOVER (the router prompts the user).
 
 ### Compound Intent
 
@@ -78,20 +90,17 @@ Splits multi-phase prompts (e.g., "investigate X then build Y") into ordered pha
 
 | Bank | Example triggers |
 |------|-----------------|
-| `_INVESTIGATE_SIGNALS` | "why", "root cause", "hypothesis", "correlation" |
-| `_EXPLORE_SIGNALS` | "which best", "compare", "evaluation", "tradeoffs" |
-| `_EXPERIMENTAL_SIGNALS` | "A/B test", "controlled trial", "p-value" |
-| `_ANALYTICAL_SIGNALS` | "optimize", "measure", "metrics", "effect size" |
-| `_BUILD_SIGNALS` | "build", "implement", "deploy", "refactor" |
-| `_HYBRID_SIGNALS` | "paper", "manuscript", "figure out and fix" |
-| `_RECALL_SIGNALS` | "what did we learn", "previous finding" |
+| `_PROVE_SIGNALS` | "test whether", "prove", "A/B test", "controlled trial", "sample size" |
+| `_DISCOVER_SIGNALS` | "why", "root cause", "compare", "build", "optimize", "paper on" |
+| `_RECALL_SIGNALS` | "what did we learn", "previous finding", "history of" |
+| `_ASK_SIGNALS` | "any results", "how is the results", "update me on", "what have agents found" |
 
 ### ClassifiedIntent Properties
 
 | Property | Type | Description |
 |----------|------|-------------|
-| `.is_science` | bool | True if mode is INVESTIGATE, EXPLORE, or HYBRID |
-| `.is_meta` | bool | True if mode is STATUS or RECALL |
+| `.is_science` | bool | True if mode is DISCOVER or PROVE |
+| `.is_meta` | bool | True if mode is STATUS, RECALL, GUIDE, ASK, or DELIBERATE |
 
 ---
 
@@ -106,15 +115,21 @@ Central dispatch point for all user actions. Every Telegram command and programm
 | Function | Returns |
 |----------|---------|
 | `handle_status(project_dir) -> str` | Queue status: queued, running, recent completed |
+| `handle_whatsup(project_dir) -> str` | Conversational status with narrative digest |
+| `handle_howsitgoing(project_dir) -> str` | Experiment metrics, success criteria, belief map, track assessment |
+| `handle_board(project_dir) -> str` | Kanban-style task board snapshot |
+| `handle_ask(project_dir, question) -> str` | Answer a natural-language question about a running investigation |
+| `handle_deliberate(project_dir, codename) -> str` | Load investigation context for Socratic deliberation about results |
 | `handle_tasks(project_dir) -> str` | Open Beads tasks from active workspaces |
 | `handle_health(project_dir) -> str` | System health check (tmux, beads, git, disk) |
 | `handle_ready(project_dir) -> str` | Unblocked tasks ready for work |
-| `handle_recall(project_dir, query) -> str` | Knowledge store search results |
+| `handle_details(project_dir) -> str` | Detailed investigation info (workspace, config, agents) |
+| `handle_recall(project_dir, query) -> str` | Workspace recall plus cross-investigation findings |
 | `handle_belief(project_dir) -> str` | Current belief map |
-| `handle_journal(project_dir) -> str` | Investigation journal |
 | `handle_finding(project_dir, finding_id) -> str` | Single finding detail |
+| `handle_claims(project_dir, identifier) -> str` | Current claim ledger state |
 | `handle_results(project_dir) -> str` | Recent investigation results |
-| `handle_guide(project_dir, question) -> str` | Guidance for unclear intent |
+| `handle_ops(project_dir, sub, *, ops_allowed) -> str` | Ops diagnostics (see §13) |
 
 ### Mutation Handlers
 
@@ -129,6 +144,7 @@ Central dispatch point for all user actions. Every Telegram command and programm
 | `handle_complete_investigation(project_dir, id_or_codename) -> str` | Accepts and closes a reviewed investigation |
 | `handle_abort(project_dir, inv_id) -> str` | Aborts investigation |
 | `handle_pivot(project_dir, inv_id, new_question) -> str` | Pivots investigation question |
+| `handle_guide(project_dir, message) -> str` | Writes operator guidance to active workspaces |
 
 ### Iterative Science Handlers
 
@@ -139,7 +155,7 @@ Central dispatch point for all user actions. Every Telegram command and programm
 | `handle_complete_investigation(project_dir, id_or_codename) -> str` | Accept and close a reviewed investigation |
 | `handle_claims(project_dir, id_or_codename) -> str` | Show current claim ledger state |
 
-These handlers interact with the Claim Ledger (`~/.voronoi/ledgers/<lineage_id>/claim-ledger.json`). The `continue` handler parses natural-language feedback for `lock C1`, `challenge C2: reason` patterns and updates the ledger before creating the continuation investigation.
+These handlers interact with the Claim Ledger (`~/.voronoi/ledgers/<lineage_id>/claim-ledger.json`). The `continue` handler parses natural-language feedback for `lock C1`, `challenge C2: reason` patterns and updates the ledger before creating the continuation investigation. PI feedback is stored in the `pi_feedback` field on `Investigation` — it is NOT appended to the question text. The dispatcher reads `pi_feedback` to build the warm-start prompt context.
 
 ### Workflow Handlers
 
@@ -183,6 +199,7 @@ These handlers interact with the Claim Ledger (`~/.voronoi/ledgers/<lineage_id>/
 |-----|--------|-------------|
 | `bot_token` | `VORONOI_TG_BOT_TOKEN` | Telegram bot token |
 | `user_allowlist` | `VORONOI_ALLOWED_USERS` | Comma-separated Telegram user IDs |
+| `ops_users` | `VORONOI_TG_OPS_USERS` | Comma-separated user IDs/usernames for `/voronoi ops`. Falls back to `user_allowlist` if not set. |
 | `bridge_enabled` | `.swarm-config.json` | Whether Telegram bridge is active |
 | `project_dir` | `.swarm-config.json` | Default project directory |
 | `project_name` | `.swarm-config.json` | Human-readable project name |
@@ -260,7 +277,7 @@ class ConversationMemory:
 
 ### Purpose
 
-Search past findings and evidence from completed investigations. Powers the `/recall` command.
+Search past findings and evidence from the current workspace plus completed investigations. Powers the `/recall` command.
 
 ### Finding Data Structure
 
@@ -300,6 +317,21 @@ class KnowledgeStore:
 - **Keyword scoring**: Weighted word overlap on title + notes, boosted for completed findings and investigations.
 
 Weighted combination: 60% keyword + 40% BM25. Falls back to keyword-only if FTS5 is unavailable.
+
+### FederatedKnowledge API
+
+```python
+class FederatedKnowledge:
+    def __init__(self, db_path: Path | None = None): ...
+    def sync_findings(self, investigation_id: str, codename: str, workspace: Path) -> int: ...
+    def search(self, query: str, max_results: int = 10) -> list[Finding]: ...
+    def format_search_response(self, query: str, max_results: int = 5) -> str: ...
+```
+
+**Cross-investigation search**: Persistent SQLite index at `~/.voronoi/knowledge.db`. The dispatcher syncs findings from every completed investigation via `sync_findings()`. `/recall` first searches the active workspace, then appends non-duplicate cross-investigation findings from the federated index. Search queries return findings with `codename:task_id` composite IDs. The index prefers FTS5 when available and falls back to `LIKE` search on SQLite builds without FTS5. This enables:
+- Detecting redundant work across investigations
+- Surfacing prior findings when starting new investigations
+- Building a cumulative knowledge base that grows with each completed study
 
 ---
 
@@ -418,12 +450,11 @@ def build_digest(
 
 Returns `(message_text, message_type)`. The message_type tells the delivery layer whether to edit-in-place (`MSG_TYPE_STATUS`) or send a new message (`MSG_TYPE_MILESTONE`).
 
-Produces a phase-aware message with adaptive sections:
-1. **Header**: `*Codename* · 2h 15min · Phase 4/8`
-2. **Narrative**: Synthesized from artifacts, or VOICE variant fallback
+Produces a **narrative-first** message with an optional metrics footer:
+1. **Header**: `*Codename* — 2h 15min`
+2. **Narrative paragraph**: Conversational summary merging phase description, agent activity, and "so what?" calibration into a single readable paragraph. Uses `_build_narrative_paragraph()` which synthesizes from artifacts, folds in agent count and pace, and adds context like "normal at this stage" or "results are looking strong."
 3. **Milestones**: `✓` completions, `★` findings, `⚠` problems (since last update)
-4. **Progress**: Bar only when `closed > 0`; task count only during early phases
-5. **Experiments**: From `.swarm/experiments.tsv`
+4. **Metrics footer**: Compact progress section with bar, experiments, criteria, quality — visually separated from the narrative
 6. **Criteria**: Adaptive — count with context label mid-run, full list in detail view
 7. **Quality**: Score with voice label ("solid" vs "improving")
 8. **Track assessment**: Only `off_track` always shown; `watch` suppressed in early phases
@@ -464,6 +495,7 @@ def format_failure(codename: str, reason: str, elapsed_sec: float, closed: int,
                    total: int, log_tail: str, retry_count: int, max_retries: int) -> str
 def format_alert(codename: str, message: str) -> str
 def format_restart(codename: str, attempt: int, max_retries: int, log_tail: str) -> str
+def format_wake(codename: str, n_events: int = 0) -> str
 def format_pause(codename: str, reason: str, elapsed_sec: float,
                  closed: int, total: int) -> str
 ```
@@ -477,6 +509,93 @@ def estimate_remaining(elapsed_sec: float, done: int, total: int) -> str
 def phase_description(mode: str, phase: str, codename: str = "") -> str  # VOICE-rotated or static
 def phase_position(phase: str) -> tuple[int, int]     # Journey position (step, total)
 ```
+
+---
+
+## 8b. Mid-Investigation Q&A (`handlers_query.py` — `handle_ask`)
+
+### Purpose
+
+Lets users ask natural-language questions about running investigations and get conversational answers without terminal access. Gathers workspace artifacts (experiments.tsv, success-criteria.json, belief-map.json, task list, journal, findings) and sends them with the user's question to Copilot CLI for a one-shot LLM answer. Falls back to keyword-based synthesis when Copilot is unavailable.
+
+### Function
+
+```python
+def handle_ask(project_dir: str, question: str) -> str
+```
+
+**Invoked by**: `/voronoi ask <question>` command or ASK intent from free-text classification.
+
+**Returns**: A conversational LLM-generated answer grounded in workspace data (primary), or a keyword-matched structured response (fallback).
+
+### Architecture
+
+```
+User question
+    │
+    ▼
+_gather_workspace_context()   ← reads experiments, criteria, beliefs, tasks, journal
+    │
+    ▼
+_build_ask_prompt()           ← system prompt + workspace JSON + user question
+    │
+    ▼
+_run_copilot_query()          ← copilot -p "<prompt>" -s --no-color
+    │
+    ├── success → return LLM answer
+    │
+    └── failure → _answer_from_context()  ← keyword-based fallback
+```
+
+### Data Sources
+
+| Artifact | Path | What's gathered |
+|----------|------|-----------------|
+| Experiments | `.swarm/experiments.tsv` | Total, passed, discarded, crashed, details (capped at 20) |
+| Success criteria | `.swarm/success-criteria.json` | Items, how many met |
+| Belief map | `.swarm/belief-map.json` | Hypotheses with priors/posteriors |
+| Tasks | `bd list --json` | Total, closed, in-progress, items (capped at 30) |
+
+### Copilot CLI Integration
+
+Uses the same Copilot CLI that agents use, with the configured worker model:
+
+- Binary: `copilot` (must be on PATH)
+- Model: `VORONOI_WORKER_MODEL` env var (falls back to Copilot default)
+- Flags: `-p <prompt> -s --no-color`
+- Timeout: 60 seconds
+- Prompt instructs LLM to answer ONLY from workspace data, format for Telegram
+
+### Fallback: Keyword-Based Synthesis
+
+When Copilot is unavailable (not installed, auth expired, timeout), falls back to `_answer_from_context()` which uses keyword matching:
+
+| Question about... | Keywords matched | Data sources used |
+|-------------------|------------------|-------------------|
+| Experiments/results | experiment, result, data, show, found, finding | `experiments.tsv`, findings |
+| Failures/crashes | fail, crash, error, wrong, problem, issue | `experiments.tsv` (crash/discard), task notes |
+| Specific methods | classifier, model, method, algorithm, ... | `experiments.tsv` descriptions |
+| Hypotheses/beliefs | hypothes, belief, theory, leading | `belief-map.json` |
+| Success criteria | criteri, success, progress, track, going | `success-criteria.json`, tasks |
+| General | *(catch-all)* | All sources combined |
+
+**Keyword priority**: The method-specific branch is checked *before* the hypothesis branch to prevent generic words from misrouting classifier/model questions.
+
+**Float safety**: Hypothesis prior/posterior values are converted via `_safe_float()` which returns 0.0 for non-numeric values (`"N/A"`, `None`, `"TBD"`). This prevents crashes when LLM agents write non-numeric belief map entries.
+
+### Safety Measures
+
+- **Response length cap**: Both LLM and fallback responses are capped at 3500 characters (`_ASK_MAX_RESPONSE`) to stay within Telegram's 4096-character message limit. Truncated responses end with `… _(truncated)_`.
+- **Prompt injection defense**: The user's question is placed inside a code fence (```` ``` ````) in the LLM prompt, with an explicit instruction to treat it as data, not follow any instructions it may contain.
+
+### Design Decisions
+
+- **LLM-first, fallback-safe**: Copilot CLI provides natural conversational answers; keyword matching ensures the feature works without external dependencies.
+- **Multi-investigation**: Scans all running investigations and returns answers per codename.
+- **Grounded answers**: System prompt instructs LLM to answer ONLY from workspace data — no hallucination.
+- **Graceful degradation**: When artifacts don't exist yet (early phases), says so explicitly rather than returning empty data.
+- **Read-only**: Never modifies workspace state. Safe to call at any time.
+- **No runtime dependency**: Copilot CLI is an optional external tool, not a Python dependency.
 
 ---
 
@@ -639,10 +758,17 @@ Parses `/voronoi <subcommand> [args]`, routes through `CommandRouter.route()`, a
 
 ### Free-Text Handler
 
-Processes non-command messages:
+Processes non-command messages using **state-aware routing**:
 - Checks user allowlist
 - Skips group messages unless bot is @mentioned or message is a reply to bot
-- Strips @botname, classifies via `CommandRouter.handle_free_text()`
+- Strips @botname, routes via `CommandRouter.handle_free_text()`
+
+**State-aware routing logic:**
+- If an investigation is running → route to ASK (LLM-powered Q&A about the investigation)
+- If no investigation is running → classify as DISCOVER/PROVE and start a new investigation
+- Greetings → intro message
+
+This eliminates the old regex-based ASK classification, which missed natural phrasings like "any new results?" or "how is the results so far?" and defaulted to GUIDE ("Guidance noted"). Now any free text while an investigation is running gets a real answer.
 
 ### Inline Button Callbacks
 
@@ -675,3 +801,85 @@ Dispatcher callbacks (`send_message`, `send_document`) use `call_soon_threadsafe
 ### Message Sending
 
 All sends use Markdown parse mode with best-effort fallback to plain text. Document attachments sent separately, failures logged but don't break text delivery.
+
+## 13. Ops Commands (`handlers_query.py:handle_ops`)
+
+### Purpose
+
+Read-only server diagnostics exposed via `/voronoi ops <command>`. Gives operators visibility into the server's runtime state (tmux sessions, processes, disk usage, logs) without requiring a separate SSH session.
+
+### Security Model
+
+- **No user input reaches a shell.** Each ops subcommand maps to a hardcoded `subprocess.run([...])` invocation with a fixed argument list. The subcommand name is matched against an allowlist dict — unknown subcommands are rejected.
+- **Ops-user restriction.** Gated by `VORONOI_TG_OPS_USERS` env var (comma-separated user IDs/usernames). Falls back to `VORONOI_TG_USER_ALLOWLIST` if not set. The router receives an `ops_allowed` flag from the bridge, which checks this list before forwarding.
+- **Output truncation.** Subprocess output is truncated to 3500 characters to stay within Telegram's 4096-char message limit (accounting for header/timestamp formatting).
+
+### Available Commands
+
+| Subcommand | Subprocess | Description |
+|------------|------------|-------------|
+| `tmux` | `tmux list-sessions` | List active tmux sessions |
+| `agents` | `ps aux \| grep -E 'copilot\|claude'` | Show agent-related processes |
+| `disk` | `du -sh ~/.voronoi/active/*` | Disk usage per investigation workspace |
+| `logs` | `tail -30 <latest agent.log>` | Last 30 lines of most recent agent log |
+| *(no args)* | — | Show available ops subcommands |
+
+### Function Signature
+
+```python
+def handle_ops(project_dir: str, sub: str, *, ops_allowed: bool = True) -> str:
+```
+
+- `ops_allowed=False` → returns an unauthorized message without executing anything
+- Unknown subcommand → returns help listing available commands
+
+### Router Wiring
+
+```python
+elif sub == "ops":
+    ops_sub = args[0] if args else ""
+    return handle_ops(self.project_dir, ops_sub, ops_allowed=ops_allowed), None
+```
+
+The `route()` method receives `ops_allowed` as a keyword argument (default `True` for CLI usage). The Telegram bridge sets it based on the `ops_users` config list.
+
+---
+
+## 14. Deliberation Mode (`handlers_query.py` — `handle_deliberate`)
+
+### Purpose
+
+Multi-turn Socratic reasoning about investigation results. Sits between `/ask` (one-shot Q&A) and `/continue` (full multi-hour run). Loads full investigation context — belief map, tribunal verdicts, continuation proposals — and prepares for an interactive dialogue about what the results mean and what to do next.
+
+### Trigger
+
+- Explicit: `/voronoi deliberate [codename]`
+- Free-text: "let's brainstorm about these results", "this doesn't make sense", "what should we test next"
+
+### Function
+
+```python
+def handle_deliberate(project_dir: str, codename: str = "") -> str
+```
+
+### Context Loaded
+
+- Belief map with hypothesis states and rationales
+- Directionally reversed hypotheses (highlighted)
+- Tribunal verdicts (if any)
+- Success criteria status
+- Continuation proposals (ranked by information gain)
+
+### Output
+
+Structured context suitable for multi-turn dialogue. Ends with a prompt to use `/voronoi continue <codename> <feedback>` to start a revision round.
+
+### Router Wiring
+
+```python
+elif sub == "deliberate":
+    codename = args[0] if args else ""
+    return handle_deliberate(self.project_dir, codename), None
+```
+
+Free-text routing checks DELIBERATE signals before ASK routing, so "let's brainstorm about these results" correctly routes to deliberation even when an investigation is running.

@@ -28,7 +28,7 @@
 <br/>
 
 <details>
-<summary>Hypothesis proof (simpler flow)</summary>
+<summary>Hypothesis proof</summary>
 <br/>
 <img src="assets/voronoi-demo.svg" alt="Voronoi — hypothesis-driven proof" width="800"/>
 </details>
@@ -161,6 +161,8 @@ graph TD
 |---------|-------------|
 | `/voronoi discover <question>` | Open exploration — adaptive rigor, creative agents |
 | `/voronoi prove <hypothesis>` | Structured hypothesis testing — full science gates |
+| `/voronoi ask <question>` | Ask about a running investigation — get answers without terminal access |
+| `/voronoi deliberate [codename]` | Multi-turn reasoning about results — brainstorm what findings mean |
 | `/voronoi status` | Conversational status — what's happening? |
 | `/voronoi progress` | Are we on track? Metrics, criteria, belief map |
 | `/voronoi results [id]` | View past investigation results |
@@ -261,23 +263,27 @@ src/voronoi/
   cli.py                  # init, upgrade, demo, server
   utils.py                # shared field extraction, note parsing
   beads.py                # Beads subprocess helpers
-  science/                # rigor gates (5 modules)
-    convergence.py  fabrication.py  gates.py  _helpers.py  claims.py
+  science/                # rigor gates (6 modules)
+    claims.py  consistency.py  convergence.py  fabrication.py  gates.py  interpretation.py
   gateway/                # Telegram interface
     config.py  router.py  report.py  intent.py
+    handlers_query.py  handlers_mutate.py  handlers_workflow.py
     memory.py  knowledge.py  handoff.py  progress.py
-    codename.py  literature.py
+    codename.py  literature.py  evidence.py  pdf.py
   server/
     prompt.py  dispatcher.py  queue.py  workspace.py
     sandbox.py  publisher.py  runner.py  events.py
-    compact.py  repo_url.py
+    compact.py  repo_url.py  snapshot.py  tmux.py
   mcp/                    # MCP server — validated tool interface
-    server.py  tools_beads.py  tools_swarm.py  validators.py
+    __main__.py  server.py  tools_beads.py  tools_swarm.py  validators.py
   data/                   # Runtime files (shipped with pip install)
-    agents/               # Role definitions — canonical location
-    skills/               # Skill definitions — canonical location
-    prompts/              # Invocable prompts — canonical location
+    agents/               # Role definitions (12 roles)
+    demos/                # Built-in demo investigations
+    hooks/                # Lifecycle hooks (session start, data protection)
+    instructions/         # Scoped agent instructions (auto-applied by file context)
+    prompts/              # Invocable prompts
     scripts/              # Runtime scripts (spawn, merge, etc.)
+    skills/               # Domain skills (22 specialized workflows)
     templates/            # CLAUDE.md + AGENTS.md for investigation workspaces
 ```
 
@@ -308,18 +314,26 @@ Each agent is a **full Copilot CLI session** in its own **tmux window** with its
 
 <br/>
 
-| Capability | **Voronoi** | CrewAI | AutoGen | MetaGPT |
-|:-----------|:----------:|:------:|:-------:|:-------:|
-| Parallel agents in git worktrees | ✅ | — | — | — |
-| Hypothesis management | ✅ | — | — | — |
-| Statistical rigor gates | ✅ | — | — | — |
-| Pre-registration & replication | ✅ | — | — | — |
-| Evidence system (SHA-256) | ✅ | — | — | — |
-| Iterative science (claim ledger) | ✅ | — | — | — |
-| Telegram-native interface | ✅ | — | — | — |
-| Docker-sandboxed execution | ✅ | — | ✅ | — |
-| Role-based specialization | ✅ (12) | ✅ | ✅ | ✅ (6) |
-| Works with any LLM agent | ✅ | ✅ | ✅ | — |
+Voronoi orchestrates coding agents for scientific investigation. Here's how it compares to standalone coding agents and AI research tools:
+
+| Capability | **Voronoi** | Claude Code | Codex CLI | OpenClaw | Devin | OpenHands | AI Scientist |
+|:-----------|:----------:|:-----------:|:---------:|:--------:|:-----:|:---------:|:------------:|
+| Multi-agent parallel execution | ✅ | — | — | ✅ | — | — | — |
+| Isolated git worktrees | ✅ | — | — | — | — | — | — |
+| Hypothesis management | ✅ | — | — | — | — | — | ✅ |
+| Statistical rigor gates | ✅ | — | — | — | — | — | — |
+| Pre-registration & replication | ✅ | — | — | — | — | — | — |
+| Evidence chain (SHA-256) | ✅ | — | — | — | — | — | — |
+| Iterative science (claim ledger) | ✅ | — | — | — | — | — | — |
+| Self-healing execution | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
+| Sandboxed execution | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
+| Report / manuscript generation | ✅ | — | — | — | — | — | ✅ |
+| Role-based specialization | ✅ (12) | — | — | — | — | — | ✅ |
+| Telegram-native interface | ✅ | — | — | — | — | — | — |
+| Works with any LLM agent | ✅ | — | — | — | — | — | — |
+| Open source | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ |
+
+<sup>**Claude Code** and **Codex CLI** are single-agent coding tools. **[OpenClaw](https://github.com/openclaw/openclaw)** is an open-source multi-agent coding framework. **Devin** is an autonomous developer. **[OpenHands](https://github.com/All-Hands-AI/OpenHands)** is an open-source agent platform. **[AI Scientist](https://github.com/SakanaAI/AI-Scientist)** (Sakana AI) automates ML paper writing. Voronoi wraps agents like these and adds parallel orchestration + scientific methodology.</sup>
 
 </details>
 
@@ -328,11 +342,12 @@ Each agent is a **full Copilot CLI session** in its own **tmux window** with its
 
 <br/>
 
-**Prerequisites**: Python 3.10+ · [Beads](https://github.com/steveyegge/beads) · [tmux](https://github.com/tmux/tmux) · [Copilot CLI](https://githubnext.com/projects/copilot-cli/) (or Claude)
+**Prerequisites**: Python 3.10+ · [Beads](https://github.com/steveyegge/beads) · [tmux](https://github.com/tmux/tmux) · [GitHub Copilot CLI](https://docs.github.com/en/copilot/using-github-copilot/using-github-copilot-in-the-command-line) (or [Claude Code](https://docs.anthropic.com/en/docs/claude-code))
 
 ```bash
-brew install beads tmux gh   # macOS
-pip install voronoi[report]  # optional: PDF generation
+brew install beads tmux                        # macOS
+pip install voronoi[report]                     # optional: PDF generation
+# Install Copilot CLI: see https://docs.github.com/en/copilot
 ```
 
 **Telegram**: Get bot token from @BotFather → set `VORONOI_TG_BOT_TOKEN` in `~/.voronoi/.env` → `voronoi server start`
@@ -349,7 +364,7 @@ pip install voronoi[report]  # optional: PDF generation
 
 ```bash
 git clone https://github.com/Vahidrostami/voronoi && cd voronoi
-pip install -e . && pytest   # 829 tests
+pip install -e . && pytest   # 1243 tests
 ```
 
 See [DESIGN.md](DESIGN.md) for the full design philosophy.

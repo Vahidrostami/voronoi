@@ -104,7 +104,11 @@ def _compact_events(swarm: Path) -> bool:
     events_file = swarm / "events.jsonl"
     if not events_file.exists():
         return False
+
+    # Record the byte position at read time so we can detect events
+    # appended between our read and our write (TOCTOU mitigation).
     try:
+        original_size = events_file.stat().st_size
         raw = events_file.read_text()
     except OSError:
         return False
@@ -145,6 +149,20 @@ def _compact_events(swarm: Path) -> bool:
         logger.warning("Failed to write events archive: %s", e)
         return False
 
+    # Before rewriting, check if the file grew since we read it.
+    # If it did, append the new bytes to our recent set to avoid losing
+    # events that the orchestrator appended during compaction.
+    try:
+        current_size = events_file.stat().st_size
+        if current_size > original_size:
+            with open(events_file) as f:
+                f.seek(original_size)
+                appended = f.read()
+            appended_lines = [l for l in appended.strip().splitlines() if l.strip()]
+            recent.extend(appended_lines)
+    except OSError:
+        pass  # best-effort; proceed with what we have
+
     try:
         events_file.write_text("\n".join(recent) + "\n" if recent else "")
     except OSError as e:
@@ -174,8 +192,9 @@ def _write_state_digest(workspace: Path) -> bool:
             if isinstance(criteria, list) and criteria:
                 # Check checkpoint for a potentially fresher criteria_status
                 cp_cs: dict = {}
-                cp_path = swarm / "orchestrator-checkpoint.json"
-                if cp_path.exists():
+                from voronoi.utils import find_checkpoint
+                cp_path = find_checkpoint(workspace)
+                if cp_path is not None:
                     try:
                         cp = json.loads(cp_path.read_text())
                         if isinstance(cp, dict):

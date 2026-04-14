@@ -134,6 +134,20 @@ def log_verify_step(
     ))
 
 
+def log_serendipity(
+    workspace: Path,
+    *,
+    agent: str,
+    task_id: str,
+    description: str,
+) -> None:
+    """Convenience: log a serendipitous/unexpected observation."""
+    append_event(workspace, SwarmEvent(
+        agent=agent, task_id=task_id, event="serendipity",
+        status="ok", detail=description,
+    ))
+
+
 def log_context_snapshot(
     workspace: Path,
     *,

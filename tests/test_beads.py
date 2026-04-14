@@ -8,6 +8,8 @@ import pytest
 
 from voronoi.beads import (
     BeadsError,
+    _LOCK_ERROR_FRAGMENT,
+    _LOCK_RETRIES,
     add_dependency,
     has_beads_dir,
     run_bd,
@@ -66,6 +68,47 @@ class TestRunBd:
         run_bd("list", cwd=str(tmp_path))
         call_env = mock_run.call_args.kwargs.get("env", {})
         assert call_env.get("BEADS_DIR") == str(beads_dir)
+
+    @patch("voronoi.beads.time.sleep")
+    @patch("voronoi.beads.subprocess.run")
+    def test_retries_on_lock_contention(self, mock_run, mock_sleep):
+        """Retry when embedded Dolt exclusive lock error is detected."""
+        lock_err = MagicMock(
+            returncode=1, stdout="",
+            stderr=f'{{"error": "{_LOCK_ERROR_FRAGMENT}..."}}'
+        )
+        success = MagicMock(returncode=0, stdout="ok", stderr="")
+        mock_run.side_effect = [lock_err, lock_err, success]
+        code, out = run_bd("list", "--json", cwd="/tmp")
+        assert code == 0
+        assert out == "ok"
+        assert mock_run.call_count == 3
+        assert mock_sleep.call_count == 2
+
+    @patch("voronoi.beads.time.sleep")
+    @patch("voronoi.beads.subprocess.run")
+    def test_lock_retries_exhausted(self, mock_run, mock_sleep):
+        """After max retries, return the failing exit code."""
+        lock_err = MagicMock(
+            returncode=1, stdout="",
+            stderr=f'{{"error": "{_LOCK_ERROR_FRAGMENT}..."}}'
+        )
+        mock_run.return_value = lock_err
+        code, out = run_bd("list", cwd="/tmp")
+        assert code == 1
+        assert mock_run.call_count == _LOCK_RETRIES + 1
+
+    @patch("voronoi.beads.time.sleep")
+    @patch("voronoi.beads.subprocess.run")
+    def test_no_retry_on_other_errors(self, mock_run, mock_sleep):
+        """Non-lock errors should not trigger retries."""
+        mock_run.return_value = MagicMock(
+            returncode=1, stdout="", stderr="some other error"
+        )
+        code, out = run_bd("list", cwd="/tmp")
+        assert code == 1
+        assert mock_run.call_count == 1
+        mock_sleep.assert_not_called()
 
 
 class TestRunBdJson:

@@ -25,8 +25,7 @@ whether all process gates passed.
 3. Read the Strategic Context Document: `cat .swarm/strategic-context.md`
 4. Read the original abstract from the `ORIGINAL_ABSTRACT` field — this is your ground truth
 5. Read the Synthesizer's deliverable: `cat .swarm/deliverable.md`
-6. Read all validated findings (search Beads for `TYPE:finding` with `STAT_REVIEW: APPROVED`)
-7. Read the investigation journal: `cat .swarm/journal.md`
+6. Query validated findings: `bd query "notes=STAT_REVIEW: APPROVED" --json`
 
 ## Evaluation Protocol
 
@@ -94,6 +93,21 @@ If `.swarm/claim-evidence.json` does not exist, STRENGTH cannot exceed 0.5 — r
 - **0.4** — Directionally useful but requires significant follow-up
 - **0.0** — Academic only; cannot be acted upon
 
+#### NON-TRIVIALITY — Would a domain expert find this result informative?
+
+For each major claim, assess:
+- Does this result **change our beliefs** or merely confirm what was obvious a priori?
+- Would a reviewer say "so what?" or "that's interesting / surprising"?
+- Does this result have implications **beyond** the immediate experiment?
+- Were there directionally reversed or unexpected findings that were properly investigated?
+
+- **1.0** — Genuinely surprising findings, well-explained, with broad implications
+- **0.7** — Mix of novel and confirmatory findings; novel ones are well-characterized
+- **0.4** — Mostly confirmatory; results are expected given the causal model
+- **0.0** — Entirely trivial; every finding was a foregone conclusion
+
+NON-TRIVIALITY below 0.4 triggers an improvement round specifically targeting: "Add non-trivial experiments or reframe existing findings to highlight what is genuinely surprising."
+
 #### SIMPLICITY — Bonus/penalty modifier
 
 Evaluate whether the deliverable and its supporting code/experiments are appropriately simple:
@@ -106,7 +120,7 @@ Apply as a modifier to the final OVERALL score after computing the weighted aver
 ### Step 3: Compute Overall Score
 
 ```
-BASE = 0.30 × COMPLETENESS + 0.25 × COHERENCE + 0.25 × STRENGTH + 0.20 × ACTIONABILITY
+BASE = 0.25 × COMPLETENESS + 0.20 × COHERENCE + 0.20 × STRENGTH + 0.15 × ACTIONABILITY + 0.20 × NON_TRIVIALITY
 OVERALL = clamp(BASE + SIMPLICITY_MODIFIER, 0.0, 1.0)
 ```
 
@@ -119,6 +133,7 @@ bd update <eval-id> --notes "COMPLETENESS:0.X | DETAILS:[per-requirement breakdo
 bd update <eval-id> --notes "COHERENCE:0.X | DETAILS:[specific gaps or strengths]"
 bd update <eval-id> --notes "STRENGTH:0.X | DETAILS:[claim-by-claim assessment]"
 bd update <eval-id> --notes "ACTIONABILITY:0.X | DETAILS:[what's actionable, what's not]"
+bd update <eval-id> --notes "NON_TRIVIALITY:0.X | DETAILS:[per-claim novelty assessment]"
 bd update <eval-id> --notes "OVERALL:0.X | VERDICT:PASS|IMPROVE|FAIL"
 bd update <eval-id> --notes "IMPROVEMENT_ROUND:N"
 ```

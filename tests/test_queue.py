@@ -311,8 +311,10 @@ class TestReviewAndContinue:
         assert new_inv.status == "queued"
         assert new_inv.parent_id == inv_id
         assert new_inv.cycle_number == 2
-        assert "PI Feedback" in new_inv.question
-        assert "test more" in new_inv.question
+        # Feedback stored in pi_feedback, NOT appended to question
+        assert new_inv.pi_feedback == "test more"
+        assert "PI Feedback" not in new_inv.question
+        assert new_inv.question == "Q"
         assert new_inv.workspace_path == "/tmp/ws"
         # Original transitions to complete
         assert queue.get(inv_id).status == "complete"
@@ -377,3 +379,155 @@ class TestReviewAndContinue:
         queue.start(inv_id, "/tmp/ws")
         # Still running, can't accept
         assert queue.accept(inv_id) is False
+
+    def test_continue_stores_pi_feedback_separately(self, queue):
+        """PI feedback should be stored in pi_feedback field, not question."""
+        inv_id = queue.enqueue(Investigation(chat_id="c1", question="Does X work?", slug="q"))
+        queue.start(inv_id, "/tmp/ws")
+        queue.complete(inv_id)
+        new_id = queue.continue_investigation(inv_id, "increase sample size to N=500")
+        new_inv = queue.get(new_id)
+        assert new_inv.pi_feedback == "increase sample size to N=500"
+        assert new_inv.question == "Does X work?"
+        assert "PI Feedback" not in new_inv.question
+
+    def test_continue_no_feedback(self, queue):
+        """Continuation without feedback should have empty pi_feedback."""
+        inv_id = queue.enqueue(Investigation(chat_id="c1", question="Q", slug="q"))
+        queue.start(inv_id, "/tmp/ws")
+        queue.complete(inv_id)
+        new_id = queue.continue_investigation(inv_id)
+        new_inv = queue.get(new_id)
+        assert new_inv.pi_feedback == ""
+        assert new_inv.question == "Q"
+
+    def test_continue_strips_legacy_feedback_from_question(self, queue):
+        """If the question had old-style feedback appended, strip it."""
+        inv_id = queue.enqueue(Investigation(
+            chat_id="c1",
+            question="Does X work?\n\n## PI Feedback (Round 1)\nold feedback",
+            slug="q",
+        ))
+        queue.start(inv_id, "/tmp/ws")
+        queue.complete(inv_id)
+        new_id = queue.continue_investigation(inv_id, "new feedback")
+        new_inv = queue.get(new_id)
+        assert new_inv.question == "Does X work?"
+        assert new_inv.pi_feedback == "new feedback"
+
+    def test_continue_sets_workspace_atomically(self, queue):
+        """Continuation should have workspace_path set before row is visible."""
+        inv_id = queue.enqueue(Investigation(chat_id="c1", question="Q", slug="q"))
+        queue.start(inv_id, "/tmp/ws")
+        queue.complete(inv_id)
+        new_id = queue.continue_investigation(inv_id)
+        new_inv = queue.get(new_id)
+        assert new_inv.workspace_path == "/tmp/ws"
+        assert new_inv.status == "queued"
+
+    def test_continue_marks_parent_complete_atomically(self, queue):
+        """Continuation from review should mark parent complete in same transaction."""
+        inv_id = queue.enqueue(Investigation(chat_id="c1", question="Q", slug="q"))
+        queue.start(inv_id, "/tmp/ws")
+        queue.review(inv_id)
+        new_id = queue.continue_investigation(inv_id, "iterate")
+        parent = queue.get(inv_id)
+        assert parent.status == "complete"
+        child = queue.get(new_id)
+        assert child.workspace_path == "/tmp/ws"
+
+
+class TestAbortTransition:
+    def test_abort_running_produces_cancelled(self, queue):
+        """abort() should transition running → cancelled."""
+        inv_id = queue.enqueue(Investigation(chat_id="c1", question="Q", slug="q"))
+        queue.start(inv_id, "/tmp/ws")
+        ok = queue.abort(inv_id, "Aborted by operator")
+        assert ok is True
+        inv = queue.get(inv_id)
+        assert inv.status == "cancelled"
+        assert inv.error == "Aborted by operator"
+
+    def test_abort_not_running_returns_false(self, queue):
+        """abort() should only work on running investigations."""
+        inv_id = queue.enqueue(Investigation(chat_id="c1", question="Q", slug="q"))
+        ok = queue.abort(inv_id)
+        assert ok is False
+        assert queue.get(inv_id).status == "queued"
+
+    def test_cancelled_not_resumable(self, queue):
+        """Cancelled investigations should NOT be resumable."""
+        inv_id = queue.enqueue(Investigation(chat_id="c1", question="Q", slug="q"))
+        queue.start(inv_id, "/tmp/ws")
+        queue.abort(inv_id)
+        ok = queue.resume(inv_id)
+        assert ok is False
+        assert queue.get(inv_id).status == "cancelled"
+
+
+class TestFailAcceptsPaused:
+    def test_fail_from_paused(self, queue):
+        """fail() should work on paused investigations."""
+        inv_id = queue.enqueue(Investigation(chat_id="c1", question="Q", slug="q"))
+        queue.start(inv_id, "/tmp/ws")
+        queue.pause(inv_id, "auth expired")
+        queue.fail(inv_id, "timed out")
+        inv = queue.get(inv_id)
+        assert inv.status == "failed"
+        assert inv.error == "timed out"
+
+    def test_fail_from_running(self, queue):
+        """fail() should still work on running investigations."""
+        inv_id = queue.enqueue(Investigation(chat_id="c1", question="Q", slug="q"))
+        queue.start(inv_id, "/tmp/ws")
+        queue.fail(inv_id, "crashed")
+        assert queue.get(inv_id).status == "failed"
+
+
+class TestRequeue:
+    """Tests for requeue() — BUG-007 recovery transition."""
+
+    def test_requeue_unprovisioned(self, queue):
+        """requeue() transitions running → queued when workspace is NULL."""
+        inv_id = queue.enqueue(Investigation(chat_id="c1", question="Q", slug="q"))
+        # next_ready marks it running but workspace_path is still NULL
+        inv = queue.next_ready(max_concurrent=5)
+        assert inv is not None
+        assert inv.status == "running"
+        # Before start() is called, workspace_path is NULL — requeue should work
+        # We need to verify workspace_path is NULL in the DB
+        ok = queue.requeue(inv_id)
+        assert ok
+        assert queue.get(inv_id).status == "queued"
+
+    def test_requeue_with_workspace_fails(self, queue):
+        """requeue() should NOT work after start() attaches a workspace."""
+        inv_id = queue.enqueue(Investigation(chat_id="c1", question="Q", slug="q"))
+        queue.next_ready(max_concurrent=5)
+        queue.start(inv_id, "/tmp/ws")
+        ok = queue.requeue(inv_id)
+        assert not ok
+        assert queue.get(inv_id).status == "running"
+
+    def test_requeue_wrong_status(self, queue):
+        """requeue() should only work on running investigations."""
+        inv_id = queue.enqueue(Investigation(chat_id="c1", question="Q", slug="q"))
+        ok = queue.requeue(inv_id)
+        assert not ok  # status is queued, not running
+
+
+class TestRigorDefault:
+    """Tests for BUG-008 — consistent rigor defaults."""
+
+    def test_investigation_dataclass_default(self):
+        """Investigation.rigor should default to 'adaptive'."""
+        inv = Investigation()
+        assert inv.rigor == "adaptive"
+
+    def test_row_to_investigation_empty_rigor(self, queue):
+        """Empty rigor in DB should resolve to 'adaptive'."""
+        inv_id = queue.enqueue(Investigation(
+            chat_id="c1", question="Q", slug="q", rigor="adaptive",
+        ))
+        result = queue.get(inv_id)
+        assert result.rigor == "adaptive"

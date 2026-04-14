@@ -23,15 +23,15 @@ must be backed by data, and every experiment must be pre-registered before execu
 3. Read your STRATEGIC_CONTEXT — understand how this experiment fits the whole
 4. Check for REQUIRES/GATE artifacts — STOP if missing
 5. **Check for METRIC_CONTRACT** in task notes — note the metric shape, baseline value, and acceptance criteria
-6. At Scientific+ rigor: verify `METHODOLOGIST_REVIEW: APPROVED` exists in your task notes
-   - If missing or REJECTED: report BLOCKED and STOP
+6. At Experimental rigor: verify `METHODOLOGIST_REVIEW: APPROVED` exists in your task notes — report BLOCKED and STOP if missing or REJECTED
+   At Scientific rigor: check for `METHODOLOGIST_REVIEW` — if REJECTED, report BLOCKED; if absent, proceed (Scientific gating is advisory)
 
 ## Pre-Registration (MANDATORY)
 
 Before running ANY experiment, register your plan:
 
 ```bash
-bd update <your-task-id> --notes "PRE_REG: HYPOTHESIS=[what you expect] | METHOD=[how you'll test] | CONTROLS=[what you'll control for] | EXPECTED_RESULT=[specific prediction] | CONFOUNDS=[known threats] | STAT_TEST=[planned test] | SAMPLE_SIZE=[N] | ALPHA=[significance level]"
+bd update <your-task-id> --notes "PRE_REG: HYPOTHESIS=[what you expect] | METHOD=[how you'll test] | CONTROLS=[what you'll control for] | EXPECTED_RESULT=[specific prediction] | EXPECTED_DIRECTION=[higher_is_better|lower_is_better|positive|negative] | CONFOUNDS=[known threats] | STAT_TEST=[planned test] | SAMPLE_SIZE=[N] | ALPHA=[significance level]"
 ```
 
 **Fill the metric contract** (if METRIC_CONTRACT present in task notes):
@@ -182,7 +182,20 @@ bd update <finding-id> --notes "SOURCE_TASK:<your-task-id>"
 bd update <finding-id> --notes "EFFECT_SIZE:<d or r> | CI_95:[lo, hi] | N:<n> | STAT_TEST:<test> | P:<p>"
 bd update <finding-id> --notes "DATA_FILE:<path> | DATA_HASH:sha256:<hash>"
 bd update <finding-id> --notes "SENSITIVITY: [summary] | ROBUST:<yes|no>"
+bd update <finding-id> --notes "DIRECTION_MATCH:<confirmed|refuted_reversed|inconclusive>"
+bd update <finding-id> --notes "TRIVIALITY_SELF:<novel|expected|trivial>"
 ```
+
+#### Directional Verification (MANDATORY)
+Compare the observed effect direction to the pre-registered `EXPECTED_DIRECTION`:
+
+- **confirmed**: Significant + same direction as predicted
+- **refuted_reversed**: Significant + OPPOSITE direction to prediction (THIS IS CRITICAL — do not mark "confirmed" for a significant result in the wrong direction)
+- **inconclusive**: Not statistically significant
+
+If `DIRECTION_MATCH:refuted_reversed`, the orchestrator WILL trigger a Judgment Tribunal
+to understand why. This is not a failure on your part — it is a scientifically important
+finding that demands explanation.
 
 ## Pre-Registration Deviations
 

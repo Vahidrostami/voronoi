@@ -210,14 +210,6 @@ class KnowledgeStore:
             # FTS5 not available or query syntax error — degrade gracefully
             return {}
 
-    def get_journal(self, max_lines: int = 30) -> Optional[str]:
-        """Read the latest journal entries."""
-        journal = Path(self.project_dir) / ".swarm" / "journal.md"
-        if not journal.exists():
-            return None
-        lines = journal.read_text().strip().split("\n")
-        return "\n".join(lines[-max_lines:])
-
     def get_belief_map(self) -> Optional[str]:
         """Read the current belief map."""
         # Check for belief map in .swarm/
@@ -231,10 +223,15 @@ class KnowledgeStore:
                 data = json.loads(belief_json.read_text())
                 lines = ["*Belief Map*\n"]
                 for h in data.get("hypotheses", []):
-                    name = h.get("name", "?")
-                    prior = h.get("prior", "?")
-                    status = h.get("status", "?")
-                    lines.append(f"• {name}: P={prior} [{status}]")
+                    name = h.get("name") or h.get("id") or "?"
+                    confidence = h.get("confidence", "")
+                    status = h.get("status", "untested")
+                    label = confidence.upper() if confidence else f"P={h.get('prior', '?')}"
+                    entry = f"• {name}: {label} [{status}]"
+                    rationale = h.get("rationale", "")
+                    if rationale:
+                        entry += f"\n  {rationale}"
+                    lines.append(entry)
                 return "\n".join(lines)
             except (json.JSONDecodeError, ValueError):
                 return belief_json.read_text().strip()
@@ -255,6 +252,213 @@ class KnowledgeStore:
             return f"📚 No findings match: _{_escape_md(query)}_\n\nThe knowledge store is empty or no tasks match your query."
 
         lines = [f"📚 *{len(findings)} finding(s)* for: _{_escape_md(query)}_\n"]
+        for i, f in enumerate(findings, 1):
+            lines.append(f"{i}. {f.format_telegram()}")
+            lines.append("")
+
+        return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Federated Knowledge Index — cross-investigation search
+# ---------------------------------------------------------------------------
+
+
+def _default_knowledge_db() -> Path:
+    return Path.home() / ".voronoi" / "knowledge.db"
+
+
+class FederatedKnowledge:
+    """Persistent FTS5 index across all investigations.
+
+    Stores findings from every completed investigation in a single
+    SQLite database at ``~/.voronoi/knowledge.db``, enabling cross-
+    investigation search.
+    """
+
+    def __init__(self, db_path: Path | None = None):
+        self.db_path = db_path or _default_knowledge_db()
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._fts_enabled = False
+        self._init_db()
+
+    def _init_db(self) -> None:
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS findings ("
+                "  id TEXT, investigation TEXT, codename TEXT,"
+                "  title TEXT, notes TEXT, effect_size TEXT,"
+                "  valence TEXT, confidence TEXT, robust TEXT,"
+                "  synced_at REAL,"
+                "  PRIMARY KEY (id, investigation)"
+                ")"
+            )
+            try:
+                conn.execute(
+                    "CREATE VIRTUAL TABLE IF NOT EXISTS findings_fts USING fts5("
+                    "  title, notes, content=findings,"
+                    "  content_rowid=rowid"
+                    ")"
+                )
+                conn.execute(
+                    "CREATE TRIGGER IF NOT EXISTS findings_ai AFTER INSERT ON findings BEGIN"
+                    "  INSERT INTO findings_fts(rowid, title, notes)"
+                    "  VALUES (new.rowid, new.title, new.notes);"
+                    "END"
+                )
+                conn.execute(
+                    "CREATE TRIGGER IF NOT EXISTS findings_ad AFTER DELETE ON findings BEGIN"
+                    "  INSERT INTO findings_fts(findings_fts, rowid, title, notes)"
+                    "  VALUES ('delete', old.rowid, old.title, old.notes);"
+                    "END"
+                )
+                conn.execute(
+                    "CREATE TRIGGER IF NOT EXISTS findings_au AFTER UPDATE ON findings BEGIN"
+                    "  INSERT INTO findings_fts(findings_fts, rowid, title, notes)"
+                    "  VALUES ('delete', old.rowid, old.title, old.notes);"
+                    "  INSERT INTO findings_fts(rowid, title, notes)"
+                    "  VALUES (new.rowid, new.title, new.notes);"
+                    "END"
+                )
+
+                # External-content FTS tables can drift across old versions,
+                # manual edits, or partially initialized databases. Rebuilding
+                # here keeps recall correct without relying on shadow-table
+                # count heuristics.
+                conn.execute("INSERT INTO findings_fts(findings_fts) VALUES ('rebuild')")
+                self._fts_enabled = True
+            except sqlite3.OperationalError:
+                self._fts_enabled = False
+            conn.commit()
+        finally:
+            conn.close()
+
+    def sync_findings(self, investigation_id: str, codename: str,
+                      workspace: Path) -> int:
+        """Sync FINDING tasks from a workspace into the global index.
+
+        Returns the number of new findings indexed.
+        """
+        code, output = _run_bd("list", "--json", cwd=str(workspace))
+        if code != 0:
+            return 0
+        try:
+            tasks = json.loads(output)
+        except (json.JSONDecodeError, ValueError):
+            return 0
+
+        count = 0
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            import time
+            for task in tasks:
+                if not isinstance(task, dict):
+                    continue
+                title = task.get("title", "")
+                if "FINDING" not in title.upper():
+                    continue
+                tid = task.get("id", "")
+                notes = task.get("notes", "")
+                parsed = _parse_finding_notes(notes)
+                exists = conn.execute(
+                    "SELECT 1 FROM findings WHERE id = ? AND investigation = ?",
+                    (tid, investigation_id),
+                ).fetchone()
+                conn.execute(
+                    "INSERT INTO findings "
+                    "(id, investigation, codename, title, notes,"
+                    " effect_size, valence, confidence, robust, synced_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                    " ON CONFLICT(id, investigation) DO UPDATE SET"
+                    " codename = excluded.codename,"
+                    " title = excluded.title,"
+                    " notes = excluded.notes,"
+                    " effect_size = excluded.effect_size,"
+                    " valence = excluded.valence,"
+                    " confidence = excluded.confidence,"
+                    " robust = excluded.robust,"
+                    " synced_at = excluded.synced_at",
+                    (tid, investigation_id, codename, title, notes,
+                     parsed.get("effect_size", ""),
+                     parsed.get("valence", ""),
+                     parsed.get("confidence", ""),
+                     parsed.get("robust", ""),
+                     time.time()),
+                )
+                if exists is None:
+                    count += 1
+            conn.commit()
+        finally:
+            conn.close()
+        return count
+
+    def search(self, query: str, max_results: int = 10) -> list[Finding]:
+        """Search across all investigations for matching findings."""
+        if not self.db_path.exists() or not query.strip():
+            return []
+
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            # Escape query for FTS5
+            words = [w.replace('"', '') for w in query.split() if w.replace('"', '')]
+            escaped = " ".join(f'"{w}"' for w in words)
+            if not escaped:
+                return []
+
+            if self._fts_enabled:
+                try:
+                    cursor = conn.execute(
+                        "SELECT f.id, f.title, f.notes, f.investigation, f.codename,"
+                        "       f.effect_size, f.valence, f.confidence, f.robust,"
+                        "       bm25(findings_fts) as score"
+                        "  FROM findings_fts"
+                        "  JOIN findings f ON findings_fts.rowid = f.rowid"
+                        "  WHERE findings_fts MATCH ?"
+                        "  ORDER BY score"
+                        "  LIMIT ?",
+                        (escaped, max_results),
+                    )
+                except sqlite3.OperationalError:
+                    return []
+            else:
+                like_query = f"%{' '.join(words).lower()}%"
+                cursor = conn.execute(
+                    "SELECT id, title, notes, investigation, codename,"
+                    "       effect_size, valence, confidence, robust"
+                    "  FROM findings"
+                    "  WHERE lower(title || ' ' || notes) LIKE ?"
+                    "  ORDER BY synced_at DESC"
+                    "  LIMIT ?",
+                    (like_query, max_results),
+                )
+
+            results: list[Finding] = []
+            for row in cursor:
+                f = Finding(
+                    id=f"{row[4]}:{row[0]}" if row[4] else row[0],
+                    title=row[1],
+                    status="closed",
+                    priority=1,
+                    notes=row[2].split("\n") if row[2] else [],
+                    effect_size=row[5] or None,
+                    valence=row[6] or None,
+                    confidence=row[7] or None,
+                    robust=row[8] or None,
+                )
+                results.append(f)
+            return results
+        finally:
+            conn.close()
+
+    def format_search_response(self, query: str, max_results: int = 5) -> str:
+        """Format a federated search response for Telegram."""
+        findings = self.search(query, max_results=max_results)
+
+        if not findings:
+            return f"🌐 No cross-investigation findings match: _{_escape_md(query)}_"
+
+        lines = [f"🌐 *{len(findings)} finding(s)* across investigations for: _{_escape_md(query)}_\n"]
         for i, f in enumerate(findings, 1):
             lines.append(f"{i}. {f.format_telegram()}")
             lines.append("")

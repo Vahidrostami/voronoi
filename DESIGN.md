@@ -18,10 +18,11 @@ flowchart TB
     end
 
     subgraph Gateway["Gateway Layer"]
-        INTENT["Intent Classifier\nintent.py\nmode + rigor"]
+        INTENT["Intent Classifier\nintent.py\nmode + rigor + ASK"]
         ROUTER["Command Router\nrouter.py"]
         CONFIG["Config\nconfig.py"]
         MEM["Conversation Memory\nmemory.py"]
+        ASK_H["Ask Handler\nhandlers_query.py\nLLM-powered Q&A\n(copilot CLI one-shot)"]
     end
 
     subgraph Server["Server Layer"]
@@ -105,7 +106,7 @@ flowchart LR
 | Runtime agents/skills | ✅ `voronoi init` | ✅ `_ensure_github_files()` fallback |
 | Prompt builder | ✅ `prompt.py` | ✅ `prompt.py` (same function) |
 | Progress updates | stdout | Telegram messages every 30s |
-| Timeout detection | KeyboardInterrupt | Configurable (default 8h) |
+| Timeout detection | KeyboardInterrupt | Configurable (default 48h) |
 | Completion | Agent exits | tmux dies OR deliverable.md + convergence.json |
 
 ---
@@ -178,7 +179,7 @@ src/voronoi/data/
 │   ├── methodologist.agent.md       # Experimental design review
 │   ├── statistician.agent.md        # CI, effect sizes, data integrity
 │   ├── synthesizer.agent.md         # Consistency checks, deliverable
-│   ├── evaluator.agent.md           # Final scoring (CCSA formula)
+│   ├── evaluator.agent.md           # Final scoring (CCSAN formula)
 │   └── scribe.agent.md              # LaTeX compilation, figures
 ├── prompts/                         # Invocable prompts
 │   ├── spawn.prompt.md              # /spawn — single agent dispatch
@@ -186,7 +187,8 @@ src/voronoi/data/
 │   ├── standup.prompt.md            # /standup — cross-agent status
 │   ├── progress.prompt.md           # /progress — progress check
 │   └── teardown.prompt.md           # /teardown — cleanup
-├── skills/                          # Domain knowledge (9 skills)
+├── skills/                          # Domain knowledge (loaded on demand)
+│   ├── worker-lifecycle/            # ★ Dispatch → monitor → merge → cleanup
 │   ├── beads-tracking/              # bd commands, task lifecycle
 │   ├── git-worktree-management/     # Worktree create/merge/cleanup
 │   ├── branch-merging/              # Safe merge protocol
@@ -195,13 +197,25 @@ src/voronoi/data/
 │   ├── evidence-system/             # Findings, belief maps, journal
 │   ├── investigation-protocol/      # Hypothesis → experiment → finding
 │   ├── strategic-context/           # Decision rationale across cycles
-│   └── agent-standup/               # Cross-agent progress aggregation
+│   ├── agent-standup/               # Cross-agent progress aggregation
+│   ├── adversarial-review/          # Critic review protocol
+│   ├── compilation-protocol/        # LaTeX compilation
+│   ├── context-management/          # Context pressure management
+│   ├── copilot-cli-usage/           # Copilot CLI invocation patterns
+│   ├── data-integrity/              # SHA-256 hashing, data preservation
+│   ├── debugging-runbook/           # Debugging diagnostics
+│   ├── deep-research/               # Literature review, prior-art search
+│   ├── figure-generation/           # Figure creation for papers
+│   ├── observability/               # Event logging, monitoring
+│   ├── revise-calibration/          # Calibration iteration protocol
+│   ├── scaffolding/                 # Project scaffolding
+│   └── voronoi-api/                 # Voronoi API reference
 ├── scripts/                         # Runtime shell scripts
 ├── demos/                           # Demo investigations
 └── templates/                       # CLAUDE.md + AGENTS.md for workspaces
 ```
 
-During `voronoi init`, agents/prompts/skills are copied to `.github/` in the target workspace. The prompt builder tells the orchestrator:
+During `voronoi init`, agents/prompts/skills/instructions/hooks are copied to `.github/` in the target workspace. The prompt builder tells the orchestrator:
 > *"Read `.github/agents/swarm-orchestrator.agent.md` NOW — it contains your complete role definition."*
 
 And for each worker, `build_worker_prompt()` reads the role file from `data/agents/` and prepends it to the prompt.
@@ -265,6 +279,42 @@ All 12 roles are available in both DISCOVER and PROVE modes. The difference is *
 | Methodologist 📐 | `methodologist.agent.md` | When rigor escalates | From start (mandatory) | Experimental design review, power analysis |
 | Scribe ✍️ | `scribe.agent.md` | On demand | On demand | LaTeX compilation, figure generation |
 | Worker | `worker-agent.agent.md` | On demand | On demand | Generic tasks |
+
+---
+
+## 5b. Interpretation Layer — Directional Verification & Tribunal
+
+The system doesn't just run experiments; it validates that results *mean* what the investigator predicted. This layer (`src/voronoi/science/interpretation.py`) adds semantic judgment on top of the existing structural gates (EVA, Sentinel, metric contracts).
+
+### Directional Verification
+
+- Pre-registration includes `expected_direction` (e.g., "EWC > Replay on accuracy")
+- Investigator classifies observed direction at finding-commit time: `DIRECTION_MATCH: confirmed | refuted_reversed | inconclusive`
+- Statistician verifies direction against raw data at review time
+- `refuted_reversed` = significant result in the *opposite* direction of prediction → triggers Judgment Tribunal
+
+### Triviality Screening
+
+- Theorist classifies each hypothesis during plan review: NOVEL | EXPECTED | TRIVIAL
+- Feeds into Evaluator's Non-triviality dimension (N in CCSAN)
+- CCSAN formula: 0.25C + 0.20Co + 0.20S + 0.15A + 0.20N
+- Mean N < 0.4 triggers improvement round targeting non-trivial experiments
+
+### Judgment Tribunal
+
+Triggered when findings contradict the causal model or before convergence:
+- **Mid-run**: REFUTED_REVERSED detection → Theorist + Statistician + Methodologist
+- **Pre-convergence**: Mandatory at Analytical+ → + Critic joins
+
+Verdicts: EXPLAINED | ANOMALY_UNRESOLVED (blocks convergence) | ARTIFACT (DESIGN_INVALID) | TRIVIAL
+
+### Continuation Proposals
+
+Generated at review time from tribunal verdicts + self-critique. Ranked by information gain. Shown to PI during `/voronoi review` and accessible via `/voronoi deliberate`.
+
+### Deliberation Mode
+
+New interaction layer between `/ask` (one-shot) and `/continue` (full run). `/voronoi deliberate [codename]` loads full investigation context and enables multi-turn Socratic reasoning about results without spawning agents.
 
 ---
 
@@ -332,7 +382,7 @@ stateDiagram-v2
     Running --> Complete : deliverable + convergence
     Running --> Complete : tmux exits
     Running --> Failed : launch error
-    Running --> Exhausted : timeout 8h
+    Running --> Exhausted : timeout 48h
     Complete --> [*] : teaser + PDF to Telegram
     Exhausted --> [*] : partial results delivered
 ```
@@ -347,7 +397,7 @@ stateDiagram-v2
 - Reads `.swarm/experiments.tsv` and `.swarm/success-criteria.json` for track assessment
 - Reads `.swarm/eval-score.json` for evaluator score propagation
 - Detects completion: `deliverable.md` (standard) or `+ convergence.json` (analytical+)
-- Enforces timeout (configurable, default 8h)
+- Enforces timeout (configurable, default 48h)
 
 ### Telegram Notifications
 
@@ -376,7 +426,6 @@ Messages use a conversational buddy style — narrative updates instead of data 
 | Findings | Beads entries | Effect size, CI, N, stat test, data hash, robustness |
 | Raw Data | `data/raw/` | CSV/JSON with SHA-256 integrity hash |
 | Belief Map | `.swarm/belief-map.json` | Hypothesis probabilities, information-gain prioritization |
-| Journal | `.swarm/journal.md` | Narrative continuity across OODA cycles |
 | Strategic Context | `.swarm/strategic-context.md` | Decision rationale, dead ends, remaining gaps |
 | Orchestrator Checkpoint | `.swarm/orchestrator-checkpoint.json` | Compressed orchestrator state — survives restarts |
 | Experiment Ledger | `.swarm/experiments.tsv` | Append-only chronological record of all experiments |
@@ -709,7 +758,7 @@ timestamp	task_id	branch	metric_name	metric_value	status	description
 | tmux `; exit` | Session dies when agent finishes — dispatcher detects completion. |
 | Atomic queue claiming | `next_ready()` marks as running in same transaction — no double-dispatch. |
 | `.github/` fallback copy | `_ensure_github_files()` copies even if `voronoi init` subprocess fails. |
-| Timeout (8h default) | Prevents zombie investigations; writes exhaustion convergence. |
+| Timeout (48h default) | Prevents zombie investigations; writes exhaustion convergence. |
 | Inner verify loop before escalation | Workers retry against own errors (Ralph pattern) before bothering orchestrator. |
 | **Experimental Validity Audit (EVA)** | Catches experiments that run but don't test what they claim (truncation, caching, collapsed conditions). Prevents meaningless results from entering the evidence store. |
 | Metric contracts (shape at dispatch, fill at pre-reg) | Bridges open-ended investigations with comparable cross-agent metrics. |
@@ -729,28 +778,37 @@ voronoi/
 ├── utils.py                # Shared field extraction, note parsing, title cleaning
 ├── science/                # Science gate enforcement (subpackage)
 │   ├── __init__.py         # Re-exports all public symbols
-│   ├── _helpers.py         # Beads queries, consistency, interpretation, I/O
+│   ├── consistency.py      # Beads queries, consistency, paradigm stress, interpretation
 │   ├── convergence.py      # Belief map, checkpoint, convergence detection
 │   ├── fabrication.py      # Anti-fabrication, simulation bypass
 │   ├── gates.py            # Dispatch/merge gates, pre-reg, invariants, calibration
 │   └── claims.py           # Claim Ledger — cross-run scientific state
 ├── gateway/
 │   ├── intent.py           # Free-text → mode + rigor classification
-│   ├── router.py           # Command dispatch (investigate · demo · status · guide)
+│   ├── router.py           # Command dispatch (thin layer, delegates to handlers)
+│   ├── handlers_query.py   # Read-only status/progress/knowledge handlers
+│   ├── handlers_mutate.py  # Task/investigation state changes
+│   ├── handlers_workflow.py # Investigation enqueue (discover/prove/demo)
 │   ├── config.py           # .env + .swarm-config.json loading
 │   ├── memory.py           # Conversation history (SQLite)
 │   ├── knowledge.py        # Knowledge store queries
 │   ├── progress.py         # Progress bar formatting, phase labels
-│   ├── report.py           # Teaser + PDF generation
+│   ├── report.py           # Report/manuscript generation facade
+│   ├── evidence.py         # Evidence extraction and rendering
+│   ├── pdf.py              # PDF generation strategy chain
 │   ├── codename.py         # Brain-themed codenames
 │   └── handoff.py          # Voronoi → Anton/MVCHA fix handoff
 └── server/
     ├── prompt.py           # ⭐ Unified orchestrator prompt builder
     ├── queue.py            # Investigation queue (SQLite, atomic claiming)
-    ├── dispatcher.py       # Launch · progress poll · timeout · completion
+    ├── dispatcher.py       # Progress poll · timeout · completion
+    ├── tmux.py             # TMux session launch, auth, cleanup
+    ├── snapshot.py         # WorkspaceSnapshot — read-only .swarm/ state
     ├── workspace.py        # Provision lab/repo workspaces + .github/ fallback
     ├── runner.py           # Server config, slug generation
     ├── publisher.py        # GitHub repo publishing
+    ├── compact.py          # Workspace state compaction
+    ├── events.py           # Structured event log
     ├── sandbox.py          # Docker sandbox config
     └── repo_url.py         # GitHub URL extraction
 ```

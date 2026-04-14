@@ -35,8 +35,8 @@ from voronoi.server.queue import Investigation, InvestigationQueue
 class TestHandleDemo:
     """Test handle_demo routes demo investigations correctly."""
 
-    @patch("voronoi.gateway.router._get_queue")
-    @patch("voronoi.gateway.router.codename_for_id", return_value="Dopamine")
+    @patch("voronoi.gateway.handlers_workflow._get_queue")
+    @patch("voronoi.gateway.handlers_workflow.codename_for_id", return_value="Dopamine")
     def test_demo_enqueues_with_full_prompt(self, mock_cn, mock_gq, tmp_path):
         """The demo's full PROMPT.md content must be the investigation question."""
         # Create a fake demo
@@ -125,7 +125,8 @@ class TestFullTextPassthrough:
         long_question = "Why is our model accuracy " + "dropping " * 20 + "after each retrain cycle?"
         assert len(long_question) > 80  # longer than the old summary limit
 
-        with patch("voronoi.gateway.router.handle_discover") as mock_disc:
+        with patch("voronoi.gateway.router.handle_discover") as mock_disc, \
+             patch.object(router, "_has_running_investigations", return_value=False):
             mock_disc.return_value = "OK"
             router.handle_free_text(long_question, "chat1", True)
 
@@ -609,10 +610,10 @@ class TestCoupledDecisionsCrashFix:
         ])
 
         # Stub out task-based helpers to clear blockers
-        monkeypatch.setattr("voronoi.science._helpers._fetch_tasks", lambda ws: [])
-        monkeypatch.setattr("voronoi.science._helpers._find_theories",
+        monkeypatch.setattr("voronoi.science.consistency._fetch_tasks", lambda ws: [])
+        monkeypatch.setattr("voronoi.science.consistency._find_theories",
                             lambda ws, tasks: [{"status": "refuted"}])
-        monkeypatch.setattr("voronoi.science._helpers._find_tested_predictions",
+        monkeypatch.setattr("voronoi.science.consistency._find_tested_predictions",
                             lambda ws, tasks: [{"id": "pred-1"}])
 
         bm = BeliefMap(hypotheses=[
@@ -643,10 +644,10 @@ class TestCoupledDecisionsCrashFix:
         )
 
         # Stub out task-based helpers
-        monkeypatch.setattr("voronoi.science._helpers._fetch_tasks", lambda ws: [])
-        monkeypatch.setattr("voronoi.science._helpers._find_theories",
+        monkeypatch.setattr("voronoi.science.consistency._fetch_tasks", lambda ws: [])
+        monkeypatch.setattr("voronoi.science.consistency._find_theories",
                             lambda ws, tasks: [{"status": "refuted"}])
-        monkeypatch.setattr("voronoi.science._helpers._find_tested_predictions",
+        monkeypatch.setattr("voronoi.science.consistency._find_tested_predictions",
                             lambda ws, tasks: [{"id": "pred-1"}])
 
         # Provide a resolved belief map
@@ -678,10 +679,10 @@ class TestCoupledDecisionsCrashFix:
         d.running[1] = run
 
         # Stub out science helpers
-        monkeypatch.setattr("voronoi.science._helpers._fetch_tasks", lambda ws: [])
-        monkeypatch.setattr("voronoi.science._helpers._find_theories",
+        monkeypatch.setattr("voronoi.science.consistency._fetch_tasks", lambda ws: [])
+        monkeypatch.setattr("voronoi.science.consistency._find_theories",
                             lambda ws, tasks: [{"status": "refuted"}])
-        monkeypatch.setattr("voronoi.science._helpers._find_tested_predictions",
+        monkeypatch.setattr("voronoi.science.consistency._find_tested_predictions",
                             lambda ws, tasks: [{"id": "pred-1"}])
         from voronoi.science import BeliefMap, Hypothesis, save_belief_map
         bm = BeliefMap(hypotheses=[

@@ -40,6 +40,7 @@ class PreRegistration:
     sensitivity_plan: str = ""
     approved_by: str = ""
     deviations: list[str] = field(default_factory=list)
+    expected_direction: str = ""   # e.g. "higher_is_better", "L4_A < L4_D"
 
     @property
     def is_complete(self) -> bool:
@@ -58,7 +59,8 @@ def parse_pre_registration(notes: str) -> PreRegistration:
         if not line.startswith("PRE_REG"):
             continue
         for fld in ["HYPOTHESIS", "METHOD", "CONTROLS", "EXPECTED_RESULT",
-                     "CONFOUNDS", "STAT_TEST", "SAMPLE_SIZE"]:
+                     "CONFOUNDS", "STAT_TEST", "SAMPLE_SIZE",
+                     "EXPECTED_DIRECTION"]:
             m = re.search(rf"{fld}\s*=\s*\[([^\]]+)\]", line)
             if m:
                 setattr(pre_reg, fld.lower(), m.group(1).strip())

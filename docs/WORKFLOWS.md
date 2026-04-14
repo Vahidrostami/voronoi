@@ -110,7 +110,7 @@ All 12 roles from the start.
 12. **Statistician Review** — Independent recomputation, interpretation metadata
 13. **Critic Review** — Partially blinded adversarial review
 14. **Synthesis** — Claim-evidence registry → deliverable (report or manuscript)
-15. **Evaluation** — CCSA scoring with structured feedback
+15. **Evaluation** — CCSAN scoring with structured feedback
 16. **Convergence** — All hypotheses resolved, no paradigm stress, eval ≥ 0.75
 
 ### Human Review Gates (PROVE mode)
@@ -289,9 +289,46 @@ Each phase has conversational descriptions per mode (not just labels), e.g.:
 
 ---
 
-## 8. Two Loops Architecture
+## 8. Three Loops Architecture
 
-Every workflow runs two nested loops:
+Every workflow runs three nested loops:
+
+### Outer Loop (dispatcher, always-on code)
+
+```
+Collect events → needs_orchestrator? → launch session → check completion → send digest → repeat
+```
+
+The dispatcher is the reliable infrastructure backbone. It:
+- Polls every 10-30 seconds
+- Detects worker completions, findings, SERENDIPITY, DESIGN_INVALID
+- Accumulates events while the orchestrator is parked (`pending_events`)
+- Wakes the orchestrator when strategic decisions are needed
+- Throttles Telegram digests to every 5 minutes while parked (milestones still immediate)
+- Auto-merges completed worker git branches
+- Handles crash recovery, timeouts, auth failures
+
+The dispatcher NEVER makes scientific decisions. It only decides *when* to invoke the orchestrator, based on objective conditions:
+- Workers finished → wake
+- DESIGN_INVALID detected → wake immediately
+- Stall detected → wake
+- Investigation just started → first launch
+
+### Middle Loop (orchestrator, episodic LLM sessions)
+
+```
+Read checkpoint + events-since-last-session → Observe → Orient → Decide → Act → write checkpoint → exit
+```
+
+Each orchestrator session is one strategic pass:
+- Reads checkpoint, belief map, and accumulated events from the dispatcher
+- Runs one or more OODA cycles (multiple if work is fast)
+- Dispatches workers, updates belief map, checks convergence
+- Writes checkpoint with `active_workers` and `next_actions`
+- Exits cleanly when waiting for workers
+- Gets fresh context every session — no degradation from hours of accumulated tool calls
+
+The orchestrator owns ALL scientific reasoning: hypotheses, rigor escalation, serendipity evaluation, convergence decisions. It never monitors processes, sleeps, or manages tmux.
 
 ### Inner Loop (per agent, fast)
 
@@ -305,20 +342,40 @@ The self-verification protocol (test loop + checklist + incremental Beads commit
 - Max retries vary by role (2-5)
 - Only escalates after exhausting self-repair
 
-### Outer Loop (orchestrator, deliberate)
+### Why Three Loops (+ Judgment Loop)
+
+The inner loop prevents agent execution failures from cluttering the orchestrator's strategic view. The outer loop (dispatcher) prevents infrastructure concerns from cluttering the orchestrator's scientific reasoning. The orchestrator only sees "workers finished, here are findings" — never process IDs, tmux windows, or git merge conflicts.
+
+### Judgment Loop (Interpretation)
+
+When a finding contradicts the causal model (`refuted_reversed` status) or pre-convergence review is needed, the dispatcher triggers a **Judgment Tribunal** — a focused multi-agent deliberation session.
 
 ```
-Observe → Orient → Decide → Act → [not converged: repeat]
+Dispatcher detects REFUTED_REVERSED → writes interpretation-request.json
+     ↓
+Orchestrator reads request → dispatches Tribunal session
+     ↓
+Theorist: explain vs causal model → 2-3 competing explanations
+Statistician: robustness check → sensitivity analysis + direction verification
+Methodologist: design artifact check → confound analysis
+(+ Critic at pre-convergence only)
+     ↓
+Output: .swarm/tribunal-verdicts.json
+     ↓
+Verdict: EXPLAINED → allowed to converge
+         ANOMALY_UNRESOLVED → convergence BLOCKED → dispatch follow-up
+         ARTIFACT → DESIGN_INVALID escalation
+         TRIVIAL → downgraded in deliverable
 ```
 
-- Handles strategic decisions
-- Which hypotheses to pursue
-- When to change direction
-- When to converge
+**Tribunal composition:**
 
-### Why Two Loops
+| Type | When | Agents |
+|---|---|---|
+| Mid-run | REFUTED_REVERSED or SURPRISING detected | Theorist + Statistician + Methodologist |
+| Pre-convergence | Before convergence at Analytical+ | Theorist + Statistician + Methodologist + Critic |
 
-The inner loop prevents agent execution failures from cluttering the orchestrator's strategic view. The orchestrator only sees "task complete" or "task exhausted after N attempts" — never individual test failures or lint errors.
+The Judgment Loop is NOT a replacement for any existing loop. It is a targeted intervention that runs between the middle loop (orchestrator) and convergence, ensuring findings are scientifically coherent before the investigation can complete.
 
 ---
 
@@ -371,8 +428,10 @@ Run 2: REVIEW → COMPLETE
 | Mechanism | Where | What it does |
 |-----------|-------|-------------|
 | `review` status | queue.py | Pauses after convergence for PI feedback |
+| `pi_feedback` field | queue.py | Stores PI feedback separately from the question (never mutates question) |
 | Claim Ledger | claims.py | Cross-run scientific state with provenance |
 | Warm-Start Brief | prompt.py | Loads prior claims + PI feedback into new round |
+| Continuation dispatch | dispatcher.py | Detects `parent_id`, reuses workspace, calls `prepare_continuation()` |
 | Workspace reuse | dispatcher.py | Same git repo, archived `.swarm/`, git tags at boundaries |
 | Immutability | gates.py | Locked claims' artifacts can't be modified |
 | Self-critique | claims.py | Auto-identifies weaknesses before showing PI |
@@ -380,12 +439,18 @@ Run 2: REVIEW → COMPLETE
 ### Workspace Handoff Between Runs
 
 When `/continue` is triggered:
-1. Git tag `run-<N>-complete` marks the boundary
-2. `.swarm/` state archived to `.swarm/archive/run-<N>/`
-3. Checkpoint and convergence files cleared for fresh orchestrator
-4. Belief map, experiments.tsv, success criteria carried forward
-5. Worktrees pruned
-6. Locked claims' artifacts written as `file_unchanged` invariants
+1. Dispatcher detects `inv.parent_id` is set and existing `workspace_path` exists on disk
+2. Dispatcher calls `prepare_continuation()` on the prior round's run state:
+   a. Git tag `run-<N>-complete` marks the boundary
+   b. `.swarm/` state archived to `.swarm/archive/run-<N>/`
+  c. Stale run-state files cleared from active `.swarm/` for the fresh orchestrator
+    This includes `deliverable.md`, `events.jsonl`, checkpoint, convergence, and eval artifacts so the next round does not inherit a false-complete state or replay old events.
+   d. Belief map, experiments.tsv, success criteria carried forward
+   e. Worktrees pruned
+   f. Locked claims' artifacts written as `file_unchanged` invariants
+3. `_voronoi_init()` refreshes templates (agents, skills, scripts)
+4. `_build_prompt()` calls `build_warm_start_context()` to inject claim ledger, PI feedback, immutable paths, and artifact manifest into the orchestrator prompt
+5. If workspace directory is missing (user cleaned up), falls back to fresh provisioning with a warning
 
 ### Runs Are Additive
 

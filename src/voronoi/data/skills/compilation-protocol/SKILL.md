@@ -167,16 +167,12 @@ if [ -f "${TEX_STEM}.log" ]; then
     fi
 fi
 
-# 4. Copy to .swarm for delivery
-cp "${TEX_STEM}.pdf" .swarm/report.pdf
-echo "✓ PDF copied to .swarm/report.pdf"
-
-# 5. Commit
-git add "${TEX_STEM}.pdf" .swarm/report.pdf
+# 4. Commit
+git add "${TEX_STEM}.pdf"
 git commit -m "Compile final paper PDF"
 # If `origin` exists, also run: git push origin <branch>
 
-# 6. Update Beads
+# 5. Update Beads
 bd update <task-id> --notes "COMPILATION:SUCCESS | PAGES:<N> | SIZE:<bytes>"
 ```
 
@@ -187,11 +183,11 @@ When the orchestrator creates a compilation task, it should declare:
 ```bash
 bd create "Compile final paper" -t task -p 1
 bd update <id> --notes "REQUIRES:paper.tex,figures/"
-bd update <id> --notes "PRODUCES:.swarm/report.pdf"
+bd update <id> --notes "PRODUCES:paper.pdf"
 bd update <id> --notes "GATE:output/validation_report.json"  # if validation exists
 ```
 
 This ensures:
 - spawn-agent.sh blocks dispatch until all figure files exist
-- merge-agent.sh blocks merge until report.pdf is produced
+- merge-agent.sh blocks merge until paper.pdf is produced
 - The orchestrator can't skip compilation

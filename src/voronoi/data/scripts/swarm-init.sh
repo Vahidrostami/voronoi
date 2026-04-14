@@ -66,7 +66,22 @@ fi
 
 # 3. Initialize Beads
 if [ ! -d ".beads" ]; then
-    echo "Y" | timeout 30 bd init --quiet 2>/dev/null || true
+    # Use timeout if available (Linux), gtimeout (Homebrew coreutils on macOS),
+    # or fall back to a background-process timeout for vanilla macOS.
+    if command -v timeout >/dev/null 2>&1; then
+        echo "Y" | timeout 30 bd init --quiet 2>/dev/null || true
+    elif command -v gtimeout >/dev/null 2>&1; then
+        echo "Y" | gtimeout 30 bd init --quiet 2>/dev/null || true
+    else
+        # Portable timeout: run bd init in background, kill after 30s
+        echo "Y" | bd init --quiet 2>/dev/null &
+        _bd_pid=$!
+        ( sleep 30 && kill "$_bd_pid" 2>/dev/null ) &
+        _timer_pid=$!
+        wait "$_bd_pid" 2>/dev/null || true
+        kill "$_timer_pid" 2>/dev/null || true
+        wait "$_timer_pid" 2>/dev/null || true
+    fi
     if [ -d ".beads" ]; then
         echo "✓ Beads initialized"
     else
@@ -86,18 +101,8 @@ fi
 SWARM_DIR="../${PROJECT_NAME}-swarm"
 mkdir -p "$SWARM_DIR"
 
-# 6. Create .swarm/ directory and investigation journal
+# 6. Create .swarm/ directory
 mkdir -p .swarm
-if [ ! -f ".swarm/journal.md" ]; then
-    cat > .swarm/journal.md << 'JOURNAL'
-# Investigation Journal
-
-> Maintained by the Synthesizer. Read by the Orchestrator at session start and the Theorist when building causal models.
-
-<!-- Append new cycles below. Do not edit previous entries. -->
-JOURNAL
-    echo "✓ Investigation journal initialized at .swarm/journal.md"
-fi
 
 # 6b. Warn about stale state from prior runs
 if [ -f ".swarm/autopilot-state.json" ]; then

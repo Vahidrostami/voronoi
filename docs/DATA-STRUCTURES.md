@@ -15,6 +15,8 @@ class WorkflowMode(Enum):
     STATUS = "status"         # Meta: query swarm state
     RECALL = "recall"         # Meta: search knowledge store
     GUIDE = "guide"           # Meta: operator guidance
+    ASK = "ask"               # Meta: question about a running investigation
+    DELIBERATE = "deliberate" # Meta: multi-turn Socratic reasoning about results
 ```
 
 ### RigorLevel (`gateway/intent.py`)
@@ -44,7 +46,7 @@ class ClassifiedIntent:
     @property
     def is_science(self) -> bool: ...   # DISCOVER | PROVE
     @property
-    def is_meta(self) -> bool: ...      # STATUS | RECALL | GUIDE
+    def is_meta(self) -> bool: ...      # STATUS | RECALL | GUIDE | ASK | DELIBERATE
 ```
 
 ### ClassifiedPhase (`gateway/intent.py`)
@@ -65,19 +67,22 @@ class ClassifiedPhase:
 class Investigation:
     id: int                       # Auto-assigned
     chat_id: str
-    status: str                   # queued | running | paused | complete | failed | cancelled
+    status: str                   # queued | running | paused | review | complete | failed | cancelled
     investigation_type: str       # repo | lab
     repo: str | None
     question: str
     slug: str
-    mode: str                     # investigate | explore | build
-    rigor: str                    # standard | analytical | scientific | experimental
+    mode: str                     # discover | prove
+    rigor: str                    # adaptive | scientific | experimental
     codename: str
     workspace_path: str | None
     sandbox_id: str | None
     github_url: str | None
     parent_id: int | None
     demo_source: str | None
+    lineage_id: int | None        # Root investigation ID for claim ledger scoping
+    cycle_number: int             # Iteration round within a lineage (1, 2, 3...)
+    pi_feedback: str              # PI feedback for this continuation round (empty for root)
     created_at: float
     started_at: float | None
     completed_at: float | None
@@ -199,6 +204,7 @@ class DispatcherConfig:
     timeout_hours: int          # 8
     max_retries: int            # 2
     stall_minutes: int          # 45
+    park_timeout_hours: int     # 4 (force-wake parked orchestrator after this)
 ```
 
 ### RunningInvestigation (`server/dispatcher.py`)
@@ -289,6 +295,7 @@ class PreRegistration:
     sensitivity_plan: str
     approved_by: str
     deviations: list[str]
+    expected_direction: str  # e.g. "higher_is_better", "L4_A < L4_D"
 ```
 
 ### Hypothesis (`science/convergence.py`)
@@ -300,10 +307,78 @@ class Hypothesis:
     name: str
     prior: float
     posterior: float
-    status: str                 # active | confirmed | rejected | merged
+    status: str                 # untested | testing | confirmed | refuted | merged
     evidence: list[str]
     testability: float
     impact: float
+    confidence: str             # unknown | hunch | supported | strong | resolved
+    rationale: str              # Evidence-linked reasoning for current confidence
+    next_test: str              # What would change confidence
+```
+
+**Hypothesis status values**: `untested | testing | confirmed | refuted | refuted_reversed | merged`
+
+`refuted_reversed` indicates a statistically significant result in the **opposite** direction of the prediction. This triggers the Judgment Tribunal.
+
+### Interpretation Layer Dataclasses (`science/interpretation.py`)
+
+```python
+class DirectionMatch:
+    CONFIRMED = "confirmed"           # Significant + correct direction
+    REFUTED_REVERSED = "refuted_reversed"  # Significant + opposite direction
+    INCONCLUSIVE = "inconclusive"      # Not significant
+
+class TrivialityClass:
+    NOVEL = "novel"        # Outcome genuinely uncertain — full investigation
+    EXPECTED = "expected"  # Outcome likely but confirmation useful — sanity check
+    TRIVIAL = "trivial"    # Outcome obvious — skip or reframe
+
+class TribunalVerdict:
+    EXPLAINED = "explained"                    # Coherent explanation found
+    ANOMALY_UNRESOLVED = "anomaly_unresolved"  # No satisfying explanation — BLOCKS convergence
+    ARTIFACT = "artifact"                      # Design flaw — DESIGN_INVALID
+    TRIVIAL = "trivial"                        # Result is expected/obvious
+```
+
+```python
+@dataclass
+class InterpretationRequest:
+    finding_id: str
+    trigger: str               # refuted_reversed | contradiction | surprising | pre_convergence
+    hypothesis_id: str
+    expected: str
+    observed: str
+    causal_edges_violated: list[str]
+    timestamp: str
+
+@dataclass
+class TribunalResult:
+    finding_id: str
+    verdict: str               # TribunalVerdict constant
+    explanations: list[Explanation]
+    recommended_action: str
+    trivial_to_resolve: bool
+    tribunal_agents: list[str]
+    timestamp: str
+
+@dataclass
+class Explanation:
+    id: str                    # E1, E2, etc.
+    theory: str
+    test: str                  # Minimal experiment to test it
+    effort: str                # trivial | moderate | substantial
+    tested: bool
+    test_result: str
+
+@dataclass
+class ContinuationProposal:
+    id: str
+    target_claim: str
+    description: str
+    rationale: str
+    experiment_type: str       # targeted | replication | exploration
+    information_gain: float    # 0.0–1.0
+    effort: str                # trivial | moderate | substantial
 ```
 
 ### ConvergenceResult (`science/convergence.py`)
@@ -448,7 +523,7 @@ CREATE TABLE investigations (
     question TEXT NOT NULL,
     slug TEXT NOT NULL,
     mode TEXT NOT NULL DEFAULT 'discover',
-    rigor TEXT NOT NULL DEFAULT 'adaptive',
+    rigor TEXT NOT NULL DEFAULT 'scientific',
     codename TEXT NOT NULL DEFAULT '',
     workspace_path TEXT,
     sandbox_id TEXT,
@@ -508,7 +583,10 @@ CREATE TABLE conversation_state (
       "status": "confirmed",
       "evidence": ["bd-18", "bd-22"],
       "testability": 0.9,
-      "impact": 0.95
+      "impact": 0.95,
+      "confidence": "strong",
+      "rationale": "bd-18 showed 2.3x improvement in cross-lever recall; bd-22 replicated with different encoder architecture",
+      "next_test": "Test on out-of-distribution domains to check generalization"
     }
   ]
 }

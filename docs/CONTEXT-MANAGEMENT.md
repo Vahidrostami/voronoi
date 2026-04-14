@@ -155,7 +155,7 @@ The orchestrator was instructed to read role files (~10K each) and copy them int
 
 ### 6.2 Solution
 
-`build_worker_prompt()` in `src/voronoi/server/prompt.py` reads role files from disk and assembles complete worker prompts. The orchestrator only writes a ~200 word briefing.
+`build_worker_prompt()` in `src/voronoi/server/prompt.py` reads role files from disk, strips YAML frontmatter (dead token weight), and assembles complete worker prompts. The orchestrator only writes a ~200 word briefing.
 
 ```python
 from voronoi.server.prompt import build_worker_prompt
@@ -271,9 +271,9 @@ The dispatcher monitors session age and self-reported context pressure. When thr
 
 | Hours Elapsed | Directive | Action |
 |---|---|---|
-| `context_advisory_hours` (default 12) | `context_advisory` | Prioritize convergence |
-| `context_warning_hours` (default 20) | `context_warning` | Delegate ALL remaining work to fresh agents |
-| `context_critical_hours` (default 28) | `context_critical` | Write checkpoint and dispatch Scribe NOW |
+| `context_advisory_hours` (default 6) | `context_advisory` | Prioritize convergence |
+| `context_warning_hours` (default 10) | `context_warning` | Delegate ALL remaining work to fresh agents |
+| `context_critical_hours` (default 14) | `context_critical` | Write checkpoint and dispatch Scribe NOW |
 
 ### Self-Reported Context Pressure
 
@@ -312,8 +312,8 @@ The full protocol is documented in the `context-management` skill (`src/voronoi/
 All thresholds are configurable via `~/.voronoi/config.json` or environment variables:
 
 ```json
-{"server": {"context_advisory_hours": 12, "context_warning_hours": 20,
-            "context_critical_hours": 28, "compact_interval_hours": 6}}
+{"server": {"context_advisory_hours": 6, "context_warning_hours": 10,
+            "context_critical_hours": 14, "compact_interval_hours": 6}}
 ```
 
 Environment: `VORONOI_CONTEXT_ADVISORY_HOURS`, `VORONOI_CONTEXT_WARNING_HOURS`, `VORONOI_CONTEXT_CRITICAL_HOURS`, `VORONOI_COMPACT_INTERVAL_HOURS`.

@@ -1,6 +1,7 @@
 """Tests for voronoi.gateway.knowledge — knowledge recall system."""
 
 import json
+import sqlite3
 import tempfile
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -9,6 +10,7 @@ import pytest
 
 from voronoi.gateway.knowledge import (
     Finding,
+    FederatedKnowledge,
     KnowledgeStore,
     _escape_md,
 )
@@ -186,19 +188,6 @@ class TestKnowledgeStoreSearch:
 # ---------------------------------------------------------------------------
 
 class TestKnowledgeStoreFiles:
-    def test_get_journal_exists(self, tmp_path):
-        swarm = tmp_path / ".swarm"
-        swarm.mkdir()
-        (swarm / "journal.md").write_text("## Round 1\nDiscovered X\n\n## Round 2\nConfirmed Y\n")
-        ks = KnowledgeStore(tmp_path)
-        journal = ks.get_journal()
-        assert "Discovered X" in journal
-        assert "Confirmed Y" in journal
-
-    def test_get_journal_missing(self, tmp_path):
-        ks = KnowledgeStore(tmp_path)
-        assert ks.get_journal() is None
-
     def test_get_belief_map_md(self, tmp_path):
         swarm = tmp_path / ".swarm"
         swarm.mkdir()
@@ -237,3 +226,128 @@ class TestKnowledgeStoreFiles:
     def test_get_strategic_context_missing(self, tmp_path):
         ks = KnowledgeStore(tmp_path)
         assert ks.get_strategic_context() is None
+
+
+# ---------------------------------------------------------------------------
+# Federated knowledge index
+# ---------------------------------------------------------------------------
+
+class TestFederatedKnowledge:
+    def test_init_creates_db(self, tmp_path):
+        db_path = tmp_path / "knowledge.db"
+        fk = FederatedKnowledge(db_path)
+        assert db_path.exists()
+
+    def test_init_rebuilds_stale_fts_index(self, tmp_path):
+        db_path = tmp_path / "knowledge.db"
+        FederatedKnowledge(db_path)
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute(
+                "INSERT INTO findings "
+                "(id, investigation, codename, title, notes, effect_size, valence, confidence, robust, synced_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "bd-1", "inv-1", "Alpha", "FINDING: Cache improves throughput",
+                    "VALENCE:positive", "2.3", "positive", "0.9", "yes", 1.0,
+                ),
+            )
+            conn.execute("DELETE FROM findings_fts")
+            conn.commit()
+        finally:
+            conn.close()
+
+        fk = FederatedKnowledge(db_path)
+        results = fk.search("cache")
+
+        assert len(results) == 1
+        assert results[0].id == "Alpha:bd-1"
+
+    @patch("voronoi.gateway.knowledge._run_bd")
+    def test_sync_findings(self, mock_bd, tmp_path):
+        db_path = tmp_path / "knowledge.db"
+        findings_data = [
+            {"id": "bd-5", "title": "FINDING: Cache hit rate improved",
+             "notes": "VALENCE:positive\nEFFECT_SIZE:0.82"},
+            {"id": "bd-6", "title": "Task: setup experiment", "notes": ""},
+            {"id": "bd-7", "title": "FINDING: No effect on latency",
+             "notes": "VALENCE:negative\nEFFECT_SIZE:0.05"},
+        ]
+        mock_bd.return_value = (0, json.dumps(findings_data))
+
+        fk = FederatedKnowledge(db_path)
+        count = fk.sync_findings("inv-1", "Synapse", tmp_path)
+        assert count == 2  # Only FINDING tasks
+
+    @patch("voronoi.gateway.knowledge._run_bd")
+    def test_sync_findings_resync_counts_only_new_rows(self, mock_bd, tmp_path):
+        db_path = tmp_path / "knowledge.db"
+        findings_data = [
+            {"id": "bd-5", "title": "FINDING: Cache hit rate improved",
+             "notes": "VALENCE:positive\nEFFECT_SIZE:0.82"},
+        ]
+        mock_bd.return_value = (0, json.dumps(findings_data))
+
+        fk = FederatedKnowledge(db_path)
+        assert fk.sync_findings("inv-1", "Synapse", tmp_path) == 1
+        assert fk.sync_findings("inv-1", "Synapse", tmp_path) == 0
+
+    @patch("voronoi.gateway.knowledge._run_bd")
+    def test_search_across_investigations(self, mock_bd, tmp_path):
+        db_path = tmp_path / "knowledge.db"
+        fk = FederatedKnowledge(db_path)
+
+        # Sync findings from two investigations
+        mock_bd.return_value = (0, json.dumps([
+            {"id": "bd-1", "title": "FINDING: Cache improves throughput",
+             "notes": "VALENCE:positive\nEFFECT_SIZE:2.3"},
+        ]))
+        fk.sync_findings("inv-1", "Alpha", tmp_path)
+
+        mock_bd.return_value = (0, json.dumps([
+            {"id": "bd-2", "title": "FINDING: Cache invalidation causes stalls",
+             "notes": "VALENCE:negative\nEFFECT_SIZE:0.9"},
+        ]))
+        fk.sync_findings("inv-2", "Beta", tmp_path)
+
+        results = fk.search("cache")
+        assert len(results) == 2
+        ids = {f.id for f in results}
+        assert "Alpha:bd-1" in ids
+        assert "Beta:bd-2" in ids
+
+    def test_search_empty_db(self, tmp_path):
+        db_path = tmp_path / "knowledge.db"
+        fk = FederatedKnowledge(db_path)
+        results = fk.search("anything")
+        assert results == []
+
+    def test_search_empty_query(self, tmp_path):
+        db_path = tmp_path / "knowledge.db"
+        fk = FederatedKnowledge(db_path)
+        results = fk.search("")
+        assert results == []
+
+    @patch("voronoi.gateway.knowledge._run_bd")
+    def test_format_search_response(self, mock_bd, tmp_path):
+        db_path = tmp_path / "knowledge.db"
+        fk = FederatedKnowledge(db_path)
+
+        mock_bd.return_value = (0, json.dumps([
+            {"id": "bd-1", "title": "FINDING: Protein X binds Y",
+             "notes": "VALENCE:positive\nEFFECT_SIZE:1.5"},
+        ]))
+        fk.sync_findings("inv-1", "Dopamine", tmp_path)
+
+        response = fk.format_search_response("protein")
+        assert "🌐" in response
+        assert "Protein X" in response
+
+    @patch("voronoi.gateway.knowledge._run_bd")
+    def test_format_search_no_results(self, mock_bd, tmp_path):
+        db_path = tmp_path / "knowledge.db"
+        fk = FederatedKnowledge(db_path)
+        response = fk.format_search_response("nonexistent")
+        assert "🌐" in response
+        assert "No cross-investigation" in response

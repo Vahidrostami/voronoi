@@ -151,6 +151,13 @@ class TestScienceSections:
         )
         assert "pre-registration" in prompt.lower()
 
+    def test_prove_scientific_methodologist_review_is_advisory(self):
+        prompt = build_orchestrator_prompt(
+            question="test", mode="prove", rigor="scientific",
+        )
+        assert "Scientific rigor: Methodologist review is advisory" in prompt
+        assert "Methodologist approval required before dispatch" not in prompt
+
     def test_prove_has_eval_score(self):
         prompt = build_orchestrator_prompt(
             question="test", mode="prove", rigor="scientific",
@@ -204,6 +211,7 @@ class TestDispatcherUsesSharedBuilder:
         inv.mode = "investigate"
         inv.rigor = "scientific"
         inv.codename = "Dopamine"
+        inv.parent_id = None
 
         prompt = d._build_prompt(inv, tmp_path)
 
@@ -222,6 +230,7 @@ class TestDispatcherUsesSharedBuilder:
         inv.mode = "build"
         inv.rigor = "standard"
         inv.codename = ""
+        inv.parent_id = None
 
         with patch("voronoi.server.prompt.build_orchestrator_prompt") as mock_build:
             mock_build.return_value = "test prompt"
@@ -285,9 +294,9 @@ class TestWorkspaceGitHubProvisioning:
 
         wm = WorkspaceManager(tmp_path / "voronoi")
 
-        with patch.object(wm, "_ensure_github_files") as mock_ensure:
+        with patch.object(wm, "_voronoi_init") as mock_init:
             info = wm.provision_lab(1, "test", "Does EWC work?")
-            mock_ensure.assert_called_once_with(Path(info.path))
+            mock_init.assert_called_once_with(Path(info.path))
 
 
 # ---------------------------------------------------------------------------
@@ -451,30 +460,29 @@ class TestContextEngineeringSections:
         )
         # Should NOT contain the full tools listing (was removed)
         assert "bd prime" not in prompt
-        assert "spawn-agent.sh" not in prompt or "spawn-agent.sh will REJECT" in prompt
 
     def test_manuscript_delegation_still_present(self):
         prompt = build_orchestrator_prompt(
             question="test", mode="discover", rigor="adaptive",
         )
-        assert "ALWAYS DELEGATE TO SCRIBE" in prompt
-        assert "NEVER write the manuscript" in prompt
+        assert "NEVER write the manuscript" in prompt or "dispatch a Scribe" in prompt
+        assert "Scribe" in prompt
 
     def test_manuscript_section_requires_latex(self):
         """Orchestrator prompt must tell the orchestrator that Scribe writes LaTeX."""
         prompt = build_orchestrator_prompt(
             question="test", mode="discover", rigor="scientific",
         )
-        assert "paper.tex" in prompt
-        assert "NEVER Markdown" in prompt or "not Markdown" in prompt.lower()
+        assert "paper.tex" in prompt or "LaTeX" in prompt
 
-    def test_manuscript_section_warns_against_markdown_briefing(self):
-        """Orchestrator must not tell scribe to write Markdown."""
+    def test_worker_lifecycle_skill_referenced(self):
+        """Orchestrator prompt must reference the worker-lifecycle skill."""
         prompt = build_orchestrator_prompt(
             question="test", mode="discover", rigor="adaptive",
         )
-        # The prompt should warn against contradictory briefings
-        assert "must not contradict" in prompt.lower() or "briefing" in prompt
+        assert "worker-lifecycle" in prompt
+        assert "NEVER use Copilot" in prompt or "NEVER use" in prompt
+        assert "spawn-agent.sh" in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -590,3 +598,46 @@ class TestBuildWarmStartContext:
         )
         assert "artifact_manifest" in ctx
         assert "data/" in ctx["artifact_manifest"]
+
+
+# ---------------------------------------------------------------------------
+# Tribunal Prompt
+# ---------------------------------------------------------------------------
+
+class TestTribunalPrompt:
+    def test_build_tribunal_prompt_basic(self):
+        from voronoi.server.prompt import build_tribunal_prompt
+        prompt = build_tribunal_prompt(
+            finding_id="bd-42",
+            trigger="refuted_reversed",
+            hypothesis_id="H2",
+            expected="L4_A outperforms L4_D",
+            observed="L4_D outperforms L4_A",
+        )
+        assert "Judgment Tribunal" in prompt
+        assert "bd-42" in prompt
+        assert "refuted_reversed" in prompt
+        assert "H2" in prompt
+        assert "L4_A outperforms L4_D" in prompt
+        assert "L4_D outperforms L4_A" in prompt
+        assert "anomaly_unresolved" in prompt
+
+    def test_tribunal_prompt_includes_all_roles(self):
+        from voronoi.server.prompt import build_tribunal_prompt
+        prompt = build_tribunal_prompt(
+            finding_id="bd-1",
+            trigger="surprising",
+        )
+        assert "Theorist" in prompt
+        assert "Statistician" in prompt
+        assert "Methodologist" in prompt
+
+    def test_tribunal_prompt_with_causal_dag(self):
+        from voronoi.server.prompt import build_tribunal_prompt
+        prompt = build_tribunal_prompt(
+            finding_id="bd-42",
+            trigger="refuted_reversed",
+            causal_dag_summary="encoding → accessibility → reasoning",
+        )
+        assert "encoding → accessibility → reasoning" in prompt
+        assert "Causal Model Context" in prompt

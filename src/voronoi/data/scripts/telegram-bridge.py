@@ -113,6 +113,7 @@ def run_bot(config: dict) -> None:
 
     bot_token = config["bot_token"]
     user_allowlist = config.get("user_allowlist", [])
+    ops_users = config.get("ops_users", list(user_allowlist))
     project_dir = config["project_dir"]
 
     if not bot_token:
@@ -133,6 +134,16 @@ def run_bot(config: dict) -> None:
         uid = str(user.id).lower()
         uname = (user.username or "").lower()
         return uid in user_allowlist or uname in user_allowlist
+
+    def _is_ops_allowed(update: Update) -> bool:
+        if not ops_users:
+            return True
+        user = update.effective_user
+        if user is None:
+            return False
+        uid = str(user.id).lower()
+        uname = (user.username or "").lower()
+        return uid in ops_users or uname in ops_users
 
     def _is_group_directed(update: Update) -> bool:
         msg = update.message
@@ -192,7 +203,8 @@ def run_bot(config: dict) -> None:
         chat_id = str(effective_msg.chat_id) if effective_msg else "unknown"
 
         logger.info("CMD /voronoi %s %s (chat=%s)", subcommand, " ".join(sub_args), chat_id)
-        reply_text, reply_file = router.route(subcommand, sub_args, chat_id)
+        ops_allowed = _is_ops_allowed(update)
+        reply_text, reply_file = router.route(subcommand, sub_args, chat_id, ops_allowed=ops_allowed)
         logger.debug("Reply: %s", reply_text[:120])
 
         # Contextual inline buttons for command responses
@@ -518,8 +530,15 @@ def run_bot(config: dict) -> None:
                 logger.error("Progress poll error: %s", e, exc_info=True)
 
     if app.job_queue is not None:
-        app.job_queue.run_repeating(_job_dispatch, interval=10, first=5)
-        app.job_queue.run_repeating(_job_progress, interval=30, first=15)
+        # misfire_grace_time=None means "run the job no matter how late" —
+        # these are idempotent polls, so running late after macOS App Nap
+        # or system throttle is fine.  Without this, APScheduler would drop
+        # jobs that fire more than 1 second past their scheduled time.
+        _job_kw: dict = {"misfire_grace_time": None}
+        app.job_queue.run_repeating(_job_dispatch, interval=10, first=5,
+                                    job_kwargs=_job_kw)
+        app.job_queue.run_repeating(_job_progress, interval=30, first=15,
+                                    job_kwargs=_job_kw)
     else:
         logger.warning("JobQueue not available — install 'python-telegram-bot[job-queue]'")
 
@@ -535,7 +554,12 @@ def run_bot(config: dict) -> None:
 
 def _is_fatal_bridge_error(exc: BaseException) -> bool:
     """Return True when restart loops would just mask a configuration error."""
-    return exc.__class__.__name__ in {"InvalidToken", "Unauthorized"}
+    if exc.__class__.__name__ in {"InvalidToken", "Unauthorized", "Conflict"}:
+        return True
+    # Also catch Conflict via message for subclassed exceptions
+    if "terminated by other getUpdates request" in str(exc):
+        return True
+    return False
 
 
 def run_bot_forever(config: dict, restart_delay: int = 5, max_delay: int = 60) -> None:
@@ -555,6 +579,11 @@ def run_bot_forever(config: dict, restart_delay: int = 5, max_delay: int = 60) -
         except Exception as exc:
             if _is_fatal_bridge_error(exc):
                 logger.error("Fatal Telegram bridge error: %s", exc, exc_info=True)
+                if "terminated by other getUpdates request" in str(exc):
+                    logger.error(
+                        "Another instance is polling this bot token (possibly on another device). "
+                        "Stop the other bridge first, or use a separate bot token per device."
+                    )
                 raise
             logger.error("Telegram bridge crashed: %s", exc, exc_info=True)
             logger.info("Restarting Telegram bridge in %ss", delay)
@@ -600,6 +629,22 @@ def main() -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("telegram").setLevel(logging.WARNING)
     logging.getLogger("apscheduler").setLevel(logging.WARNING)
+
+    # APScheduler logs benign warnings that are expected in our usage:
+    # 1. "Run time of job was missed" — fires after macOS App Nap / system sleep,
+    #    but misfire_grace_time=None ensures the job still runs.
+    # 2. "maximum number of running instances reached" — fires when dispatch_next()
+    #    takes >10s (e.g. during git clone provisioning).  Skipping is correct
+    #    because dispatch_next() is idempotent.
+    # Suppress both so they don't clutter the log.
+    class _APSchedulerNoiseFilter(logging.Filter):
+        _SUPPRESSED = ("Run time of job", "maximum number of running instances")
+        def filter(self, record: logging.LogRecord) -> bool:
+            msg = record.getMessage()
+            return not any(phrase in msg for phrase in self._SUPPRESSED)
+
+    logging.getLogger("apscheduler.executors.default").addFilter(_APSchedulerNoiseFilter())
+    logging.getLogger("apscheduler.scheduler").addFilter(_APSchedulerNoiseFilter())
     config = load_config(args.config)
 
     if not config["bot_token"]:

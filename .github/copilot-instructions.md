@@ -31,6 +31,23 @@ Read `CLAUDE.md` for full architecture rules. The key principles:
 - Agent roles live in `src/voronoi/data/agents/*.agent.md` — prompt builder references, never duplicates
 - Use `list_dir` and `docs/SPEC-INDEX.md` to discover project structure and module mappings — don't memorize them
 
+## Dev Agent Roster
+
+Four specialized agents work ON Voronoi (not inside investigations):
+
+| Agent | Role | When to Use |
+|-------|------|-------------|
+| **Catalyst** | Design critic, brainstorming | "Review this design", "How should we...", UX critique |
+| **Surgeon** | Implementation | "Implement X", "Fix Y", "Add Z", code changes |
+| **Auditor** | Spec-code-test-doc verification | After multi-file changes, before releases, drift checks |
+| **Detective** | Bug hunting, adversarial analysis | "Find bugs in X", security review, pre-release audit |
+
+Handoff chains:
+- Catalyst → Surgeon ("implement this design")
+- Surgeon → Auditor ("verify my changes")
+- Detective → Surgeon ("fix this bug")
+- Auditor → Surgeon ("fix this drift")
+
 ## What NOT to Do
 
 - Don't modify files in `src/voronoi/data/agents/` unless changing investigation agent behavior

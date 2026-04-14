@@ -17,7 +17,7 @@
 | **Statistician** | Review agent that independently recomputes statistics from raw data. |
 | **Critic** | Adversarial review agent. Partially blinded at Scientific+ rigor. |
 | **Synthesizer** | Agent that assembles claim-evidence registry and deliverable. |
-| **Evaluator** | Scores the deliverable using CCSA formula. |
+| **Evaluator** | Scores the deliverable using CCSAN formula. |
 | **Theorist** | Builds causal models and detects paradigm stress. Scientific+ only. |
 | **Methodologist** | Reviews experimental designs and conducts power analysis. Scientific+ only. |
 
@@ -25,11 +25,12 @@
 
 | Term | Definition |
 |------|-----------|
-| **Mode** | The type of workflow: BUILD, INVESTIGATE, EXPLORE, HYBRID, STATUS, RECALL, GUIDE. |
-| **Rigor Level** | The depth of scientific gates: STANDARD, ANALYTICAL, SCIENTIFIC, EXPERIMENTAL. |
+| **Mode** | The type of workflow: DISCOVER, PROVE, STATUS, RECALL, GUIDE, ASK, DELIBERATE. |
+| **Rigor Level** | The depth of scientific gates: ADAPTIVE, SCIENTIFIC, EXPERIMENTAL. |
 | **OODA Loop** | Observe → Orient → Decide → Act. The orchestrator's deliberate outer loop. |
 | **Inner Loop** | Per-agent fast loop: Execute → Verify → Retry. Handles execution errors. |
 | **Outer Loop** | Orchestrator's OODA cycle. Handles strategic decisions. |
+| **Judgment Loop** | Interpretation loop triggered by surprising findings. Theorist + Statistician + Methodologist deliberate on anomalies. |
 | **Verify Loop** | The inner loop's test-lint-artifact check cycle with retry. |
 
 ## Science Framework
@@ -42,11 +43,16 @@
 | **Paradigm Stress** | Findings contradict the working theory — valuable signal that mental model needs revision. |
 | **EVA** | Experimental Validity Audit — catches experiments that run but don't test what they claim. |
 | **DESIGN_INVALID** | EVA flag indicating the experiment's independent variable wasn't actually varied. |
+| **Directional Verification** | Check comparing observed effect direction against pre-registered `expected_direction`. Three states: CONFIRMED, REFUTED_REVERSED, INCONCLUSIVE. |
+| **Refuted Reversed** | Hypothesis status: result is statistically significant but in the *opposite* direction from the prediction. Triggers Judgment Tribunal. |
+| **Tribunal** | Multi-agent deliberation session (Theorist + Statistician + Methodologist) triggered when findings contradict the causal model. Produces verdicts: EXPLAINED, ARTIFACT, ANOMALY_UNRESOLVED, or TRIVIAL. |
+| **Triviality Screening** | Classification of hypotheses/findings as NOVEL (surprising), EXPECTED (confirms prediction), or TRIVIAL (obvious). Feeds into Evaluator's Non-triviality score. |
+| **Continuation Proposal** | Follow-up experiment suggested by tribunal verdicts and claim ledger self-critique, ranked by information gain. Generated at review time. |
 | **Metric Contract** | Structured agreement between orchestrator and worker about success criteria. |
 | **Baseline-First** | Hard gate: every investigation starts with a baseline measurement before any experiments. |
 | **Claim-Evidence** | Traceability registry mapping deliverable claims to specific finding IDs. |
 | **Finding** | A structured experimental result with effect size, CI, N, stat test, and data hash. |
-| **CCSA** | Evaluator scoring formula: Completeness, Coherence, Strength, Actionability. |
+| **CCSAN** | Evaluator scoring formula: Completeness, Coherence, Strength, Actionability, Non-triviality. Supersedes CCSA by adding a fifth dimension assessing whether results are informative vs trivially expected. |
 
 ## Infrastructure
 
@@ -85,7 +91,6 @@
 | **Experiment Ledger** | `.swarm/experiments.tsv` — append-only TSV of all experiment attempts. |
 | **Lab Notebook** | `.swarm/lab-notebook.json` — narrative continuity across OODA cycles. |
 | **Strategic Context** | `.swarm/strategic-context.md` — decision rationale, dead ends, remaining gaps. |
-| **Journal** | `.swarm/journal.md` — investigation journal. |
 | **Verify Log** | `.swarm/verify-log-<id>.jsonl` — per-task iteration history for verify loop. |
 
 ## Signals & Events

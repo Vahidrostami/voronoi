@@ -2,7 +2,7 @@
 
 > Investigation queue, dispatcher, workspace provisioning, sandbox isolation, prompt building, publishing.
 
-**TL;DR**: `queue.py` = SQLite lifecycle (queued→running→complete). `dispatcher.py` polls queue, provisions workspaces, launches tmux+copilot, monitors progress. `prompt.py` = single source of truth for all orchestrator prompts. `workspace.py` provisions with git clone/worktree. `sandbox.py` = optional Docker. All in `src/voronoi/server/`.
+**TL;DR**: `queue.py` = SQLite lifecycle (queued→running→complete). `dispatcher.py` polls queue, provisions workspaces, monitors progress; delegates tmux to `tmux.py`. `snapshot.py` = read-only workspace state capture (shared by dispatcher + gateway). `prompt.py` = single source of truth for all orchestrator prompts. `workspace.py` provisions with git clone/worktree. `sandbox.py` = optional Docker. All in `src/voronoi/server/`.
 
 ## 1. Module Map
 
@@ -11,11 +11,15 @@ src/voronoi/server/
 ├── __init__.py       # Re-exports extract_repo_url
 ├── queue.py          # SQLite investigation queue (lifecycle management)
 ├── dispatcher.py     # Provisions workspaces, launches agents, monitors progress
+├── tmux.py           # TMux session launch, auth check, cleanup
+├── snapshot.py       # WorkspaceSnapshot — read-only .swarm/ state capture
 ├── prompt.py         # Unified orchestrator prompt builder
 ├── workspace.py      # Workspace provisioning (clone, worktree, init)
 ├── sandbox.py        # Docker sandbox isolation
 ├── runner.py         # Server config, queue runner, slug generation
 ├── publisher.py      # GitHub publishing of investigation results
+├── compact.py        # Workspace state compaction
+├── events.py         # Structured event log
 └── repo_url.py       # GitHub URL parsing from free text
 ```
 
@@ -37,8 +41,8 @@ class Investigation:
     repo: str | None     # GitHub repo URL (repo-type only)
     question: str        # The user's question/task
     slug: str            # Filesystem-safe identifier
-    mode: str            # investigate | explore | build
-    rigor: str           # standard | analytical | scientific | experimental
+    mode: str            # discover | prove
+    rigor: str           # adaptive | scientific | experimental
     codename: str        # Brain-themed codename
     workspace_path: str | None
     sandbox_id: str | None
@@ -47,6 +51,7 @@ class Investigation:
     demo_source: str | None  # Demo name if from demo
     lineage_id: int | None   # Root investigation ID for claim ledger scoping
     cycle_number: int        # Iteration round within a lineage (default 1)
+    pi_feedback: str         # PI feedback for continuation rounds (empty for root)
     created_at: float
     started_at: float | None
     completed_at: float | None
@@ -68,7 +73,7 @@ class Investigation:
        │running │──────────────────────┐
        └───┬───┘                       │
            │                           │
-     ┌─────┼─────┼──────┼─────┐   cancel()
+     ┌─────┼─────┼──────┼─────┐   abort() / cancel()
      │     │     │      │     │        │
   complete() fail() pause() review()   │
      │     │     │      │     │        │
@@ -87,7 +92,11 @@ class Investigation:
                         (new inv, same lineage)
 ```
 
-The `review` state is entered when a science investigation (mode=discover/prove) converges successfully. The PI reviews claims, provides feedback, and can continue to a new round (`continue_investigation`) or accept and close (`accept`). Build-mode investigations skip `review` and go directly to `complete`.
+- `abort()` transitions `running → cancelled` (operator-initiated abort). Cancelled investigations are NOT resumable.
+- `cancel()` transitions `queued → cancelled` (pre-launch cancellation).
+- `fail()` accepts both `running` and `paused` investigations.
+- `continue_investigation()` performs INSERT + workspace transfer + parent status update in a single atomic transaction.
+- `requeue()` transitions `running → queued` ONLY when `workspace_path IS NULL` (crash recovery for unprovisioned claims).
 
 ### InvestigationQueue API
 
@@ -101,10 +110,13 @@ class InvestigationQueue:
     def start(self, investigation_id: int, workspace_path: str,
               sandbox_id: str | None = None) -> None: ...
     def complete(self, investigation_id: int, github_url: str | None = None) -> None: ...
-    def fail(self, investigation_id: int, error: str) -> None: ...
-    def cancel(self, investigation_id: int) -> bool: ...
+    def fail(self, investigation_id: int, error: str) -> None: ...      # running|paused → failed
+    def fail_paused(self, investigation_id: int, error: str) -> bool: ... # paused → failed (atomic)
+    def cancel(self, investigation_id: int) -> bool: ...                # queued → cancelled
+    def abort(self, investigation_id: int, error: str = "...") -> bool: ...  # running → cancelled
     def pause(self, investigation_id: int, reason: str) -> None: ...    # running → paused
     def resume(self, investigation_id: int) -> None: ...                # paused|failed → running
+    def requeue(self, investigation_id: int) -> bool: ...               # running → queued (unprovisioned only)
     def review(self, investigation_id: int) -> bool: ...                # running → review
     def accept(self, investigation_id: int) -> bool: ...                # review → complete
     def continue_investigation(self, investigation_id: int,
@@ -139,7 +151,7 @@ CREATE TABLE investigations (
     repo TEXT,
     question TEXT NOT NULL,
     slug TEXT NOT NULL,
-    mode TEXT NOT NULL DEFAULT 'investigate',
+    mode TEXT NOT NULL DEFAULT 'discover',
     rigor TEXT NOT NULL DEFAULT 'scientific',
     codename TEXT NOT NULL DEFAULT '',
     workspace_path TEXT,
@@ -190,6 +202,7 @@ class DispatcherConfig:
     context_advisory_hours: int   # 6 — "prioritize convergence" directive
     context_warning_hours: int    # 10 — "delegate remaining work" + force compact
     context_critical_hours: int   # 14 — force context restart
+    compact_interval_hours: int   # 6 — workspace state compaction interval
     max_context_restarts: int     # 2 — max proactive context refreshes
 ```
 
@@ -211,7 +224,7 @@ Server runtime also reserves `~/.voronoi/tmp` as the shared temp root. `voronoi 
 
 | Rigor | `--effort` | Rationale |
 |-------|-----------|----------|
-| (none / standard) | `medium` | Routine build tasks |
+| (none / unknown) | `medium` | Routine build tasks |
 | `adaptive` | `high` | Science discovery needs deeper reasoning |
 | `scientific` | `high` | Full science protocol |
 | `experimental` | `xhigh` | Maximum depth for novel discovery |
@@ -253,6 +266,9 @@ class RunningInvestigation:
     stall_warned: bool
     context_restarts: int         # Proactive context refreshes (separate from retry_count)
     status_message_id: int | None  # Telegram message ID for edit-in-place
+    pending_events: list[dict]    # Events accumulated while orchestrator is parked
+    orchestrator_parked: bool     # True when orchestrator exited with active workers
+    last_parked_digest_at: float  # Throttle digests to 5min while parked
 ```
 
 ### InvestigationDispatcher API
@@ -276,13 +292,12 @@ class InvestigationDispatcher:
 
 ### Dispatch Lifecycle
 
-1. `dispatch_next()` calls `queue.next_ready(max_concurrent)`
-2. If investigation claimed → provision workspace via `workspace_mgr`
-3. Copy demo files if `demo_source` set
-4. Build orchestrator prompt via `prompt.py`
-5. Verify Copilot auth (`_ensure_copilot_auth()`)
-6. Launch in tmux: `tmux new-session -d -s {session} "cd {workspace} && {agent_command} {flags} --effort {level} --share .swarm/session.md -p prompt.txt ; exit"`, injecting auth/state environment into the tmux session before `send-keys`
-7. Add to `_running` dict
+1. `dispatch_next()` calls `_recover_running()` and `_check_paused_timeouts()` (fast — always completes in <1s)
+2. If a launch is already in progress (`_launching` set non-empty), return immediately
+3. Call `queue.next_ready(max_concurrent)` to claim the next queued investigation
+4. Spawn a **background thread** (`_launch_investigation_safe`) for the potentially slow provisioning + launch — this prevents the 10-second scheduler tick from being blocked by `git clone` (which can take minutes for large repos)
+5. The background thread provisions workspace via `workspace_mgr`, copies demo files, builds prompt, launches in tmux, adds to `self.running`, and clears `_launching` when done
+6. `_recover_running()` skips investigations in `_launching` to avoid interfering with in-progress launches
 
 ### Progress Polling
 
@@ -293,22 +308,73 @@ class InvestigationDispatcher:
    - Skip if not due for update (< progress_interval since last)
    - Refresh eval score from `.swarm/eval-score.json`
    - Check if tmux session still alive
-   - Get events via `_check_progress()`:
+   - Get events via `_check_progress(session_alive)`:
+     - **When session alive**: skips `bd list --json` (agent's MCP server holds exclusive Dolt lock); downstream checks receive `tasks=None` and return empty
+     - **When session dead**: reads tasks normally via `bd list --json`
      - `_diff_tasks()` — compares task snapshot for new/started/completed tasks
-     - `_check_findings()` — detects new FINDING tasks (deduplicates via notified set)
+     - `_check_findings()` — detects new FINDING tasks and SERENDIPITY notes (deduplicates via notified set)
      - `_check_design_invalid()` — detects DESIGN_INVALID flags in open tasks
-     - `_check_sentinel()` — experiment contract validation (see SCIENCE.md §10):
-       - Detects missing contract after 1h at Analytical+ rigor
-       - Triggers on contract change, output production, phase transition, or periodic timer
-       - Runs phase gate validation when orchestrator checkpoint phase changes
-       - Writes `sentinel_violation` directive on failure
-     - `_detect_phase()` — classifies phase from workspace file artifacts
+     - `_check_sentinel()` — experiment contract validation (see SCIENCE.md §10)
+     - `_detect_phase()` — classifies phase from workspace file artifacts; detects rigor escalation
      - `_check_paradigm_stress()` — detects contradictions (Scientific+ only)
+     - `_check_reversed_hypotheses()` — detects hypotheses with `refuted_reversed` status; writes `.swarm/interpretation-request.json` and sends Telegram alert (Judgment Tribunal trigger)
      - `_check_heartbeat_stalls()` — detects agent inactivity via heartbeat files
-     - `_check_event_log()` — reads `.swarm/events.jsonl` for failures and token spend
-   - Send digest via `build_digest()` (single narrative message, not per-event)
+     - `_check_event_log()` — reads `.swarm/events.jsonl` for failures, token spend, serendipity
+   - **If orchestrator is parked**: accumulate events in `pending_events` for the resume prompt. Throttle Telegram digest edits to every 5 minutes (milestones still sent immediately).
+   - **If orchestrator is active**: send digest via `build_digest()` normally.
    - Check for timeout, stall, completion
+   - **If orchestrator is dead and workers active**: check `_needs_orchestrator()` — wake on DESIGN_INVALID or all workers done. Otherwise defer.
    - Handle dead agents: try restart or mark failed
+
+### Orchestrator Parking & Wake
+
+When the orchestrator exits cleanly with `active_workers` in the checkpoint, the dispatcher enters **parked mode** for that investigation:
+
+1. Sets `orchestrator_parked = True`
+2. Accumulates events in `pending_events` (task completions, findings, serendipity, phase changes)
+3. Throttles Telegram digests to every 5 minutes (from 30 seconds)
+4. Each poll cycle, checks `orchestrator_parked` FIRST, then `_has_active_workers()`
+5. On wake: calls `_wake_from_park()` — builds resume prompt with accumulated `pending_events`, relaunches orchestrator, sends `format_wake()` Telegram message
+6. `pending_events` are drained into the resume prompt and cleared
+
+**Critical**: Wake-from-park uses a dedicated `_wake_from_park()` method that does NOT increment `retry_count` or send crash-style messages. This is normal operation, not crash recovery. The poll_progress flow checks `orchestrator_parked` before falling through to the crash-restart `_try_restart()` path.
+
+Wake conditions (`_needs_orchestrator()`):
+- All active workers finished (normal wake — checked via `_has_active_workers()` returning False)
+- DESIGN_INVALID detected in open task (urgent — immediate wake)
+- Workers no longer alive (process died)
+
+Worker liveness (`_has_active_workers()`):
+1. Reads the swarm tmux session name from `.swarm-config.json` (`tmux_session` field, written by `swarm-init.sh`). Falls back to `{orchestrator_session}-swarm` if the config file is missing.
+2. Checks if any workers listed in the checkpoint have a matching tmux window in the swarm session **with an active agent process** — uses `tmux list-panes -F #{pane_current_command}` to verify the pane is running an agent (not a leftover shell like `bash`/`zsh`).
+3. Falls back to `pgrep` for orphaned processes whose cwd is inside the workspace.
+
+**Park timeout safety net**: If the orchestrator remains parked longer than `park_timeout_hours` (default 4h), the dispatcher force-wakes it regardless of worker state. This prevents indefinite stall if liveness detection has a false positive.
+
+Findings and serendipity are accumulated and delivered in the resume prompt — they do NOT trigger immediate wake because they are not time-sensitive. The orchestrator evaluates them with fresh context.
+
+### Tribunal Trigger (Reversed Hypotheses)
+
+During each progress poll, `_check_reversed_hypotheses()` scans `belief-map.json` for hypotheses with `status = "refuted_reversed"` that have no corresponding tribunal verdict in `tribunal-verdicts.json`.
+
+When an unexplained reversal is detected:
+1. Writes `.swarm/interpretation-request.json` with trigger details
+2. Sends a Telegram alert (milestone-type message) notifying the PI
+3. Deduplicates via `notified_reversed_hypotheses` set on `RunningInvestigation`
+
+The orchestrator reads the interpretation request at its next OODA cycle and dispatches a Judgment Tribunal session (Theorist + Statistician + Methodologist). The tribunal writes its verdict to `.swarm/tribunal-verdicts.json`.
+
+Convergence is blocked while any `ANOMALY_UNRESOLVED` tribunal verdict exists (enforced by `check_tribunal_clear()` in `convergence.py`).
+
+### Transition to Review
+
+When a science investigation completes, `_transition_to_review()`:
+1. Syncs findings to the Claim Ledger
+2. Promotes provisional claims to asserted
+3. Generates self-critique objections
+4. Generates continuation proposals from tribunal verdicts + self-critique (via `generate_continuation_proposals()`)
+5. Saves proposals to `.swarm/continuation-proposals.json`
+6. Sends review message including proposals and a link to `/voronoi deliberate`
 
 ### Human Review Gates (Scientific+ Rigor)
 
@@ -322,9 +388,10 @@ At Scientific and Experimental rigor, the orchestrator can pause for human appro
 The dispatcher reads `.swarm/events.jsonl` (written by workers and orchestrator) via `_check_event_log()` for:
 - **Failure counts**: Alerts when multiple tool calls or tests are failing
 - **Token accumulation**: Logs when token spend exceeds 50K since last poll
+- **Serendipity events**: Surfaces unexpected observations as milestone notifications to the human
 - **Stall detection**: Combined with heartbeat checks for comprehensive activity monitoring
 
-See `src/voronoi/server/events.py` for the `SwarmEvent` dataclass and convenience loggers.
+See `src/voronoi/server/events.py` for the `SwarmEvent` dataclass and convenience loggers (`log_serendipity()`, `log_finding()`, etc.).
 
 ### Event-Driven Digests (Two-Tier Delivery)
 
@@ -333,7 +400,7 @@ The dispatcher batches events since last update into a single `build_digest()` c
 | Type | Delivery | Notification? | Triggers |
 |------|----------|:---:|----------|
 | `MSG_TYPE_STATUS` | Edit existing message | No | Task changes, progress |
-| `MSG_TYPE_MILESTONE` | New message | Yes | Findings, design_invalid |
+| `MSG_TYPE_MILESTONE` | New message | Yes | Findings, design_invalid, serendipity, rigor escalation |
 
 The dispatcher tracks `status_message_id` per investigation. Status updates silently edit the last status message. Milestones always send a new message (clearing the tracked ID so the next status creates a fresh one). When `edit_message` callback is not available (e.g., non-Telegram frontends), all messages are sent as new messages.
 
@@ -359,10 +426,12 @@ Phase inferred from workspace artifacts:
 | Signal | Meaning |
 |--------|---------|
 | tmux session dies | Agent finished (or crashed) — try restart if retries remain |
-| `deliverable.md` exists | Standard-rigor completion |
-| `deliverable.md` + `convergence.json` exist | Analytical+ completion (convergence status is **case-insensitive**) |
+| `deliverable.md` exists | Adaptive-rigor (not escalated) completion |
+| `deliverable.md` + `convergence.json` exist | Escalated-adaptive / scientific / experimental completion (convergence status is **case-insensitive**) |
 | DESIGN_INVALID open | **Hard gate** — blocks completion even if deliverable exists |
 | Timeout reached | Forced completion with exhaustion marker |
+
+The completion gate uses the **effective rigor** (`_effective_rigor()`): if an adaptive investigation has escalated (checkpoint rigor ≠ adaptive), the escalated level is used for gate decisions. This prevents adaptive-rigor investigations that escalated to scientific from completing without convergence validation.
 
 The convergence status check (`_convergence_status_ok`) accepts `converged`, `CONVERGED`, or any case variant for all valid statuses (`converged`, `exhausted`, `diminishing_returns`, `negative_result`). It also checks the legacy `converged: true` boolean field.
 
@@ -374,12 +443,14 @@ The dispatcher syncs `criteria_status` from the orchestrator checkpoint into `su
 
 1. **Hard gate**: If any DESIGN_INVALID tasks are open, completion is blocked
 2. Clean up tmux sessions — reads `.swarm-config.json` for the actual session name, enumerates live tmux sessions and kills any whose working directory is under the swarm directory
-3. On success: generate teaser via `ReportGenerator.build_teaser()`, generate PDF via `build_pdf()`, send teaser + document to Telegram
-4. On failure: extract log tail, send failure message via `format_failure()`
-5. Try GitHub publish if `gh` CLI available
-6. Clean up agent worktrees — prune git worktrees, remove worktree directories, remove the `-swarm/` directory
-7. Remove `.swarm/.tmux-env` secrets file from workspace
-8. Clean `~/.voronoi/tmp` if no other investigations are running
+3. **Negative result detection**: If convergence.json status is `negative_result`, send `format_negative_result()` instead of the standard teaser. This presents valid null findings as legitimate science rather than failure.
+4. On success: generate teaser via `ReportGenerator.build_teaser()`, generate PDF via `build_pdf()`, send teaser + document to Telegram
+5. On failure: extract log tail, send failure message via `format_failure()`
+6. **Federated knowledge sync**: Sync findings to `~/.voronoi/knowledge.db` for cross-investigation search
+7. Try GitHub publish if `gh` CLI available
+8. Clean up agent worktrees — prune git worktrees, remove worktree directories, remove the `-swarm/` directory
+9. Remove `.swarm/.tmux-env` secrets file from workspace
+10. Clean `~/.voronoi/tmp` if no other investigations are running
 
 ### Agent Restart
 
@@ -412,6 +483,17 @@ This does NOT count against `max_retries` — it uses a separate `context_restar
 
 The resume prompt for context refreshes is distinct from crash restarts: it explicitly tells the agent the previous session was healthy, nothing failed, and to continue from the checkpoint without re-validating completed work.
 
+### Continuation Dispatch
+
+When a continuation investigation is dequeued (detected by `inv.parent_id is not None` and `inv.workspace_path` existing on disk), the dispatcher skips fresh provisioning and instead:
+1. Reuses the existing workspace directory
+2. Calls `prepare_continuation()` to archive `.swarm/` state, tag the git boundary, clear stale completion/event artifacts from active `.swarm/`, prune worktrees, and write immutability invariants
+3. Refreshes templates via `_voronoi_init()`
+4. Builds a warm-start prompt via `build_warm_start_context()` — injecting claim ledger summary, PI feedback from `inv.pi_feedback`, immutable artifact paths, and artifact manifest
+5. Passes `prior_context` to `build_orchestrator_prompt()` so the orchestrator sees Round N context
+
+If the workspace directory is missing (e.g. user cleaned up), the dispatcher falls back to fresh provisioning with a warning log.
+
 ### Investigation Resume
 
 The dispatcher exposes `resume_investigation(investigation_id)` for resuming `paused` or `failed` investigations. This:
@@ -427,19 +509,20 @@ Paused investigations auto-fail after `pause_timeout_hours` (default 24h).
 
 ### Abort Handling
 
-`_handle_abort()` kills all running investigations:
+`_handle_abort(inv_id)` aborts a specific running investigation (or all if no ID given):
 - Reads `.swarm/abort-signal` file written by `handle_abort()` in router
+- Each signal file aborts only the investigation whose workspace contains it
+- Global signal file (`~/.voronoi/.swarm/abort-signal`) aborts all running investigations
 - Kills tmux sessions
-- Marks investigations as cancelled in queue
-- Clears internal tracking
+- Marks investigations as **cancelled** via `queue.abort()` (`running → cancelled`)
+- Cancelled investigations are NOT resumable (unlike failed ones)
 
 ### Recovery
 
 On dispatcher restart, `_recover_running()` scans for investigations in `running` status:
-- Restores `task_snapshot` from Beads (`bd list --json`) so progress reporting is accurate
-- If tmux session alive → re-adopt for monitoring
-- If tmux dead + deliverable exists → mark complete
-- If tmux dead + no deliverable → try restart OR mark failed
+- If `workspace_path` is NULL (claimed but not yet launched) → **reset to queued** for retry
+- If tmux session alive → re-adopt for monitoring (task snapshot populated by `poll_progress()` on next cycle — `bd list --json` is skipped because the agent's MCP server holds the Dolt exclusive lock)
+- If tmux dead → restores `task_snapshot` from Beads (`bd list --json`), then **re-adopts into `self.running`** so `poll_progress()` handles completion/restart on its next cycle (keeps recovery fast and avoids blocking `dispatch_next()` with heavyweight completion logic like PDF generation, GitHub publish, worktree cleanup)
 
 ---
 
@@ -454,40 +537,49 @@ Single source of truth for all orchestrator prompts. Both CLI and Telegram paths
 ```python
 def build_orchestrator_prompt(
     question: str,
-    mode: str,              # investigate | explore | build
-    rigor: str,             # standard | analytical | scientific | experimental
+    mode: str,              # discover | prove
+    rigor: str,             # adaptive | scientific | experimental
     workspace_path: str = "",
     codename: str = "",
     prompt_path: str = "PROMPT.md",
     output_dir: str = "",
     max_agents: int = 4,
     safe: bool = False,
+    prior_context: dict | None = None,  # warm-start data from prior runs
 ) -> str
 ```
 
 ### Prompt Structure (Section Order Matters)
 
+The prompt is intentionally compact (~190 lines) to preserve context budget for the orchestrator's OODA cycles. Procedural details are in skills (loaded on demand), not inline.
+
 | # | Section | Content |
 |---|---------|---------|
-| 1 | Identity | Role protocol → `.github/agents/swarm-orchestrator.agent.md` (in target workspace) |
-| 2 | Mission | Mode/rigor, workspace, project brief path |
-| 3 | Personality | Excitement, brain metaphors, factual focus |
-| 4 | Science | Mode + rigor-aware sections |
-| 5 | Investigation invariants | Structural constraints |
-| 6 | REVISE task support | Iterative experiment redesign workflow |
-| 7 | Verify loop | Self-healing agents, EVA guidance |
-| 8 | Success criteria | `.swarm/success-criteria.json` format |
-| 9 | Phase gates | Hard gates (no paper while DESIGN_INVALID exists) |
-| 10 | Anti-simulation | Hard gate to detect fake LLM calls |
-| 11 | Workflow steps | Mode-specific OODA/iteration cycles |
-| 12 | Long-running processes | **NEVER block orchestrator** — delegate experiments to workers |
-| 13 | Code changes | **NEVER write >20 lines** — delegate coding to workers |
-| 14 | Manuscript delegation | **ALWAYS delegate to Scribe** — Scribe writes LaTeX (`paper.tex`), NEVER Markdown |
-| 15 | Tools | bd commands, spawn-agent.sh, merge-agent.sh, figures |
-| 16 | Worker prompts | Role file inclusion, artifact contracts |
-| 17 | Rules | Concurrency limits, proofs, never edit worker code |
-| 18 | Rigor rules | Analytical/scientific/experimental enforcement |
-| 19 | Eval score | `.swarm/eval-score.json` output format |
+| 1 | Identity | Role protocol → `.github/agents/swarm-orchestrator.agent.md` |
+| 2 | Worker Dispatch | **MANDATORY** — References `worker-lifecycle` skill, forbids built-in agent tools |
+| 3 | Mission | Mode/rigor, workspace, project brief path |
+| 4 | Personality | Excitement, brain metaphors, factual focus |
+| 5 | Science | Mode + rigor-aware sections (human gates for scientific+) |
+| 6 | Creative Freedom | DISCOVER mode: dynamic roles, serendipity, adaptive rigor escalation |
+| 7 | Investigation invariants | `.swarm/invariants.json` enforcement |
+| 8 | REVISE task support | References `revise-calibration` skill |
+| 9 | OODA Protocol | Compact — references role file, dispatcher directives |
+| 10 | Success criteria | `.swarm/success-criteria.json` format |
+| 11 | Phase gates | Hard gates (no paper while DESIGN_INVALID exists) |
+| 12 | LLM calls & Anti-simulation | References `copilot-cli-usage` skill, hard anti-simulation gate |
+| 13 | Delegation rules | Compact: no inline experiments, no inline code, delegate manuscript to Scribe |
+| 14 | Experiment contract | Compact Sentinel description |
+| 15 | Rules | Concurrency, artifact contracts, convergence gate |
+| 16 | Eval score | `.swarm/eval-score.json` output format |
+| 17 | Warm-Start Brief | (Only for `prior_context != None`) |
+
+### Skills Referenced by the Orchestrator Prompt
+
+| Skill | When read | Purpose |
+|-------|-----------|---------|
+| `worker-lifecycle` | Before dispatching any worker | Complete spawn → monitor → merge → cleanup recipe |
+| `copilot-cli-usage` | When making programmatic LLM calls | Correct Copilot CLI invocation |
+| `revise-calibration` | When creating REVISE tasks | Calibration iteration protocol |
 
 ### Key Design Principle
 
@@ -514,9 +606,21 @@ Skills are referenced as paths (e.g., `.github/skills/deep-research/SKILL.md`) i
 - Compile to `paper.pdf` using the compilation-protocol skill
 - Place paper in the output directory from the project brief
 - Write `.swarm/deliverable.md` as a SHORT summary (convergence signal), not the paper
-- Copy `paper.pdf` to `.swarm/report.pdf` for Telegram delivery
 
 This prevents the orchestrator's LLM-generated briefing from accidentally telling the Scribe to write Markdown.
+
+### Tribunal Prompt Builder
+
+`build_tribunal_prompt()` generates a structured prompt for the Judgment Tribunal — a multi-agent deliberation session (Theorist + Statistician + Methodologist) that evaluates whether a surprising finding makes scientific sense.
+
+Parameters: `finding_id`, `trigger`, `hypothesis_id`, `expected`, `observed`, `causal_dag_summary`, `belief_map_summary`, `workspace_path`.
+
+The prompt instructs each tribunal agent to perform their role:
+- **Theorist**: Generate 2-3 competing explanations with discriminating experiments
+- **Statistician**: Robustness check, sensitivity analysis, direction verification
+- **Methodologist**: Design artifact check, confound analysis
+
+Output: `.swarm/tribunal-verdicts.json` with verdict (`explained | anomaly_unresolved | artifact | trivial`).
 
 ---
 
@@ -583,7 +687,7 @@ class WorkspaceManager:
 2. Initialize git repo
 3. Write `PROMPT.md` with user question
 4. Run `voronoi init`
-5. Initialize Beads
+5. Initialize Beads in **server mode** (`bd init --quiet --server`) so the dispatcher can query tasks concurrently while the agent's MCP server holds the database open
 
 ### Workspace Naming Convention
 
@@ -606,10 +710,10 @@ Docker-based execution isolation per investigation. Optional — falls back to h
 class SandboxConfig:
     enabled: bool           # Whether to attempt Docker isolation
     image: str              # Docker image name
-    cpus: float             # CPU limit
+    cpus: int               # CPU limit
     memory: str             # Memory limit (e.g., "4g")
     timeout_hours: int      # Container timeout
-    network: str            # Network mode (e.g., "none" for isolation)
+    network: bool           # Network enabled (False → "--network none")
     fallback_to_host: bool  # Fall back if Docker unavailable
 ```
 
@@ -677,7 +781,7 @@ class ServerConfig:
     # GitHub settings
     github_lab_org: str                   # "voronoi-lab"
     github_visibility: str                # "private"
-    github_auto_publish: bool             # False
+    github_auto_publish: bool             # True
 
     # Sandbox settings
     sandbox: SandboxConfig
@@ -703,8 +807,8 @@ class ServerConfig:
 ```python
 def make_slug(text: str, max_len: int = 40) -> str
 def create_investigation_from_text(text: str, chat_id: str,
-                                   mode: str = "investigate",
-                                   rigor: str = "scientific") -> Investigation
+                                   mode: str = "discover",
+                                   rigor: str = "adaptive") -> Investigation
 ```
 
 ---

@@ -9,6 +9,7 @@ from voronoi.server.events import (
     append_event,
     log_context_snapshot,
     log_finding,
+    log_serendipity,
     log_test_result,
     log_tool_call,
     log_verify_step,
@@ -106,6 +107,14 @@ class TestConvenienceLoggers:
         assert "claude-opus-4.6" in events[0].detail
         assert "sys=22600" in events[0].detail
         assert "free=109600" in events[0].detail
+
+    def test_log_serendipity(self, tmp_path):
+        log_serendipity(tmp_path, agent="investigator", task_id="bd-7",
+                        description="Cache hit rate correlates with memory pressure")
+        events = read_events(tmp_path)
+        assert len(events) == 1
+        assert events[0].event == "serendipity"
+        assert "Cache hit rate" in events[0].detail
 
 
 class TestReadEvents:
