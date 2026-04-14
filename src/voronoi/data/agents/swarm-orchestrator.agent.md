@@ -42,12 +42,16 @@ scientific investigations through a unified OODA-based workflow.
    - At Standard rigor (build tasks): skip this step entirely
 4. **Initialize Strategic Context** — Create `.swarm/strategic-context.md` with verbatim original abstract, initial interpretation, empty decision/dead-end tables
 5. **Scout** — At Investigate/Explore/Hybrid modes, dispatch Scout for prior knowledge before hypothesis generation
-6. **Cast** — Select agent roles based on mode × rigor (see Role Selection table)
-7. **Dispatch** — Create git worktrees and launch agents via tmux, injecting `STRATEGIC_CONTEXT` into each worker's task notes
-8. **Monitor (OODA)** — Observe state, Orient events, Decide next action, Act on it — every cycle. Update Strategic Context Document each cycle.
-9. **Synthesize** — Accept validated findings into the knowledge store, update belief maps
-10. **Evaluate** — Before declaring convergence, dispatch Evaluator to score deliverable against original abstract
-11. **Converge** — Verify rigor-appropriate convergence criteria are met AND Evaluator score ≥ threshold before closing
+6. **Novelty Gate** — After Scout completes, read `.swarm/novelty-gate.json`. Handle based on `assessment` field:
+   - `redundant` (`status: blocked`): HALT all further dispatch. Notify via Telegram: "Scout found published work that covers this ground: [blocking_paper]. Suggested pivot: [suggested_pivot]." Write `.swarm/human-gate.json` with `gate: novelty` for human decision. Wait for one of: `approved` (proceed with explicit framing as replication/extension), `pivot` (adjust question per scout's suggestion), `abort` (end investigation).
+   - `incremental` (`status: clear`): proceed but inject `framing_constraint` from `novelty-gate.json` into every worker's STRATEGIC_CONTEXT. The deliverable MUST explicitly frame the contribution relative to `closest_paper`. Do NOT overclaim novelty.
+   - `novel` (`status: clear`): proceed normally. Use `gap_statement` from `novelty-gate.json` in strategic context.
+7. **Cast** — Select agent roles based on mode × rigor (see Role Selection table)
+8. **Dispatch** — Create git worktrees and launch agents via tmux, injecting `STRATEGIC_CONTEXT` into each worker's task notes
+9. **Monitor (OODA)** — Observe state, Orient events, Decide next action, Act on it — every cycle. Update Strategic Context Document each cycle.
+10. **Synthesize** — Accept validated findings into the knowledge store, update belief maps
+11. **Evaluate** — Before declaring convergence, dispatch Evaluator to score deliverable against original abstract
+12. **Converge** — Verify rigor-appropriate convergence criteria are met AND Evaluator score ≥ threshold before closing
 
 ## Rigor Classification
 
@@ -448,6 +452,29 @@ The orchestrator maintains `.swarm/strategic-context.md` as a living document:
 - **Injected into workers** — relevant excerpts become each agent's `STRATEGIC_CONTEXT`
 
 See the `strategic-context` skill for the full document format and maintenance protocol.
+
+## Problem Positioning — DO NOT REPEAT KNOWN SCIENCE
+
+After the Scout delivers `.swarm/scout-brief.md`, read the **Problem Positioning**
+section. This is the investigation's anchor in the research landscape.
+
+**All agents MUST:**
+- Frame results as **DELTA from the known frontier** — not standalone claims
+- Never re-derive or re-prove published results — cite them instead
+- The deliverable's introduction MUST position the work using the Scout's
+  field context and gap statement
+- If a result matches a cited paper's finding, acknowledge it as replication,
+  not discovery
+- Include the Scout's "Closest Prior Work" comparison in the paper's Related Work
+- The Scribe MUST use the Problem Positioning section as the skeleton for the
+  introduction and related work — no hallucinated citations
+
+**Inject into every worker's STRATEGIC_CONTEXT:**
+```
+FIELD_CONTEXT: [from scout-brief.md Problem Positioning]
+GAP_STATEMENT: [the specific gap this investigation fills]
+DO_NOT_REPROVE: [list of known results that should be cited, not re-derived]
+```
 
 ## Tools & Systems
 

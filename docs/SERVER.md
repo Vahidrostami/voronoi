@@ -560,6 +560,7 @@ The prompt is intentionally compact (~190 lines) to preserve context budget for 
 | 3 | Mission | Mode/rigor, workspace, project brief path |
 | 4 | Personality | Excitement, brain metaphors, factual focus |
 | 5 | Science | Mode + rigor-aware sections (human gates for scientific+) |
+| 5b | Problem Positioning | **DO NOT REPEAT KNOWN SCIENCE** — references scout brief, novelty gate |
 | 6 | Creative Freedom | DISCOVER mode: dynamic roles, serendipity, adaptive rigor escalation |
 | 7 | Investigation invariants | `.swarm/invariants.json` enforcement |
 | 8 | REVISE task support | References `revise-calibration` skill |

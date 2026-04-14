@@ -33,23 +33,40 @@ def latin1_safe(text: str) -> str:
 
 
 def find_precompiled_pdf(workspace: Path, swarm: Path) -> Path | None:
-    """Find an agent-compiled PDF in the workspace."""
+    """Find an agent-compiled PDF in the workspace.
+
+    Prioritises files named ``paper.pdf``, ``report.pdf``, or
+    ``manuscript.pdf``.  Broad directory globs (``output/*.pdf``)
+    are filtered to exclude figure / chart PDFs that are not the
+    main deliverable.
+    """
     canonical = swarm / "report.pdf"
     if canonical.exists() and canonical.stat().st_size > 1000:
         return canonical
 
-    search_patterns = [
+    # Priority 1: files named paper/report/manuscript in targeted dirs
+    _PAPER_NAMES = {"paper.pdf", "report.pdf", "manuscript.pdf"}
+    targeted_patterns = [
         "output/paper/*.pdf",
-        "output/*.pdf",
         "demos/*/output/paper/*.pdf",
-        "demos/*/output/*.pdf",
         "paper/*.pdf",
     ]
-    for pattern in search_patterns:
+    for pattern in targeted_patterns:
         for pdf in workspace.glob(pattern):
             if pdf.stat().st_size > 1000:
                 return pdf
 
+    # Priority 2: paper-named files in broader directories
+    broad_patterns = [
+        "output/*.pdf",
+        "demos/*/output/*.pdf",
+    ]
+    for pattern in broad_patterns:
+        for pdf in workspace.glob(pattern):
+            if pdf.name in _PAPER_NAMES and pdf.stat().st_size > 1000:
+                return pdf
+
+    # Priority 3: PDF sibling of the main .tex file
     tex_main = find_latex_main(workspace)
     if tex_main:
         pdf_sibling = tex_main.with_suffix(".pdf")

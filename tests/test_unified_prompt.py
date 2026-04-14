@@ -164,6 +164,29 @@ class TestScienceSections:
         )
         assert "eval-score.json" in prompt
 
+    def test_discover_has_positioning_rule(self):
+        prompt = build_orchestrator_prompt(
+            question="test", mode="discover", rigor="adaptive",
+        )
+        assert "DO NOT REPEAT KNOWN SCIENCE" in prompt
+        assert "scout-brief.md" in prompt
+        assert "novelty-gate.json" in prompt
+
+    def test_prove_has_positioning_rule(self):
+        prompt = build_orchestrator_prompt(
+            question="test", mode="prove", rigor="scientific",
+        )
+        assert "DO NOT REPEAT KNOWN SCIENCE" in prompt
+        assert "Problem Positioning" in prompt
+        assert "novelty-gate.json" in prompt
+
+    def test_build_mode_no_positioning_rule(self):
+        prompt = build_orchestrator_prompt(
+            question="test", mode="build", rigor="standard",
+        )
+        assert "DO NOT REPEAT KNOWN SCIENCE" not in prompt
+        assert "novelty-gate.json" not in prompt
+
 
 # ---------------------------------------------------------------------------
 # CLI uses shared builder

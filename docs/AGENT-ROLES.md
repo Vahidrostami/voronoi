@@ -74,17 +74,28 @@ The orchestrator selects roles based on the classified rigor level. Roles CANNOT
 
 **File**: `src/voronoi/data/agents/scout.agent.md`
 
-**Analytical+ activation.** Researches existing knowledge and SOTA before investigation begins.
+**Analytical+ activation.** Researches existing knowledge, SOTA, and research landscape positioning before investigation begins.
+
+**Problem Positioning (Phase 0 — MANDATORY):**
+Before any other research, the Scout:
+1. Extracts the FIELD and sub-problem from the prompt
+2. Runs `/research` queries to find the frontier, closest prior work, and specific gap
+3. Performs deep methodology comparison with the closest published paper
+4. Assesses novelty: NOVEL (proceed) / INCREMENTAL (proceed with framing) / REDUNDANT (halt)
+5. If REDUNDANT: writes `.swarm/novelty-gate.json` and flags `NOVELTY_BLOCKED`
+
+**Cross-Investigation Recall:** Before external search, queries prior Voronoi investigation findings to avoid re-testing confirmed claims.
 
 **Outputs**:
-- Knowledge brief with cited sources
+- Knowledge brief with Problem Positioning section (field context, gap, closest work comparison)
 - SOTA anchoring (what's the current best?)
 - Identification of gaps in existing knowledge
+- Novelty assessment grounded in live `/research` results
 
-**Deep Research**: The scout uses the `deep-research` skill for literature review and prior-art search. This skill leverages Copilot CLI's `/research` command to search GitHub repos + live web sources, providing citation-backed evidence instead of relying on LLM training data. See `.github/skills/deep-research/SKILL.md`.
+**Deep Research**: The scout uses the `deep-research` skill for literature review, prior-art search, and problem positioning queries. This skill leverages Copilot CLI's `/research` command to search GitHub repos + live web sources, providing citation-backed evidence instead of relying on LLM training data. See `.github/skills/deep-research/SKILL.md`.
 
 **Verify Loop**:
-- Knowledge brief written + sources cited
+- Knowledge brief written + Problem Positioning section complete + sources cited + novelty assessed
 - Max iterations: **3**
 - Completion promise: `SCOUT_COMPLETE`
 

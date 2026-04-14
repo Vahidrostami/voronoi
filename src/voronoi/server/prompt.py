@@ -197,6 +197,23 @@ def build_orchestrator_prompt(
                 "- Power analysis MANDATORY for every experiment\n"
             )
 
+    # -- Problem Positioning (science modes) --------------------------------
+    if mode in ("discover", "prove"):
+        sections.append(
+            "\n## Problem Positioning — DO NOT REPEAT KNOWN SCIENCE\n\n"
+            "After the Scout delivers `.swarm/scout-brief.md`, read the "
+            "**Problem Positioning** section. All agents MUST:\n"
+            "- Frame results as DELTA from the known frontier — not standalone claims\n"
+            "- Never re-derive or re-prove published results — cite them\n"
+            "- The deliverable's introduction MUST use the Scout's field context "
+            "and gap statement\n"
+            "- If a result matches a cited paper's finding, acknowledge it as "
+            "replication, not discovery\n\n"
+            "**Novelty gate:** If `.swarm/novelty-gate.json` exists with "
+            '`status: blocked`, HALT. Write `.swarm/human-gate.json` with '
+            '`gate: novelty` and wait for human decision (approved / pivot / abort).\n'
+        )
+
     # -- Creative Freedom (DISCOVER mode) ------------------------------------
     if mode in ("discover",) or (mode not in ("prove",) and rigor == "adaptive"):
         sections.append(

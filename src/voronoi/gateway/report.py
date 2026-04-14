@@ -769,23 +769,41 @@ class ReportGenerator:
     # ------------------------------------------------------------------
 
     def _find_precompiled_pdf(self) -> Path | None:
-        """Find an agent-compiled PDF in the workspace."""
+        """Find an agent-compiled PDF in the workspace.
+
+        Prioritises files named ``paper.pdf``, ``report.pdf``, or
+        ``manuscript.pdf``.  Broad directory globs (``output/*.pdf``)
+        are filtered to exclude figure / chart PDFs that are not the
+        main deliverable.
+        """
         canonical = self.swarm / "report.pdf"
         if canonical.exists() and canonical.stat().st_size > 1000:
             return canonical
 
-        search_patterns = [
+        _PAPER_NAMES = {"paper.pdf", "report.pdf", "manuscript.pdf"}
+
+        # Priority 1: files in targeted paper directories
+        targeted_patterns = [
             "output/paper/*.pdf",
-            "output/*.pdf",
             "demos/*/output/paper/*.pdf",
-            "demos/*/output/*.pdf",
             "paper/*.pdf",
         ]
-        for pattern in search_patterns:
+        for pattern in targeted_patterns:
             for pdf in self.ws.glob(pattern):
                 if pdf.stat().st_size > 1000:
                     return pdf
 
+        # Priority 2: paper-named files in broader directories
+        broad_patterns = [
+            "output/*.pdf",
+            "demos/*/output/*.pdf",
+        ]
+        for pattern in broad_patterns:
+            for pdf in self.ws.glob(pattern):
+                if pdf.name in _PAPER_NAMES and pdf.stat().st_size > 1000:
+                    return pdf
+
+        # Priority 3: PDF sibling of the main .tex file
         tex_main = self._find_latex_main()
         if tex_main:
             pdf_sibling = tex_main.with_suffix(".pdf")
