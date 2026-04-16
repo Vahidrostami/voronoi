@@ -622,6 +622,189 @@ class TestBuildWarmStartContext:
         assert "artifact_manifest" in ctx
         assert "data/" in ctx["artifact_manifest"]
 
+    def test_context_includes_success_criteria_status(self, tmp_path):
+        """Success criteria status should be parsed into round summary."""
+        import json
+        from voronoi.server.prompt import build_warm_start_context
+        from voronoi.science.claims import ClaimLedger, save_ledger
+
+        ledger = ClaimLedger()
+        save_ledger(1, ledger, base_dir=tmp_path)
+
+        ws = tmp_path / "workspace"
+        ws.mkdir()
+        swarm = ws / ".swarm"
+        swarm.mkdir()
+        sc = [
+            {"id": "SC1", "description": "Encoding main effect large", "met": False},
+            {"id": "SC2", "description": "Consistent advantage", "met": True},
+            {"id": "SC3", "description": "Weaker models benefit", "met": False},
+        ]
+        (swarm / "success-criteria.json").write_text(json.dumps(sc))
+
+        ctx = build_warm_start_context(
+            lineage_id=1, cycle_number=2,
+            base_dir=tmp_path, workspace=ws,
+        )
+        assert ctx["success_criteria_status"] == {"met": 1, "total": 3}
+        assert "round_summary" in ctx
+        assert "1/3 met" in ctx["round_summary"]
+        assert "SC1 UNMET" in ctx["round_summary"]
+        assert "SC3 UNMET" in ctx["round_summary"]
+
+    def test_context_includes_archived_checkpoint(self, tmp_path):
+        """Archived checkpoint next_actions appear in round summary."""
+        import json
+        from voronoi.server.prompt import build_warm_start_context
+        from voronoi.science.claims import ClaimLedger, save_ledger
+
+        ledger = ClaimLedger()
+        save_ledger(1, ledger, base_dir=tmp_path)
+
+        ws = tmp_path / "workspace"
+        ws.mkdir()
+        swarm = ws / ".swarm"
+        swarm.mkdir()
+        archive = swarm / "archive" / "run-1"
+        archive.mkdir(parents=True)
+        ckpt = {
+            "active_workers": ["worker-1", "worker-2"],
+            "next_actions": ["Run follow-up experiment on L4", "Dispatch Statistician"],
+        }
+        (archive / "orchestrator-checkpoint.json").write_text(json.dumps(ckpt))
+
+        ctx = build_warm_start_context(
+            lineage_id=1, cycle_number=2,
+            base_dir=tmp_path, workspace=ws,
+        )
+        assert "round_summary" in ctx
+        assert "Run follow-up experiment" in ctx["round_summary"]
+        assert "Active workers at end of round: 2" in ctx["round_summary"]
+
+    def test_context_includes_state_digest(self, tmp_path):
+        """State digest from prior round is included when present."""
+        from voronoi.server.prompt import build_warm_start_context
+        from voronoi.science.claims import ClaimLedger, save_ledger
+
+        ledger = ClaimLedger()
+        save_ledger(1, ledger, base_dir=tmp_path)
+
+        ws = tmp_path / "workspace"
+        ws.mkdir()
+        swarm = ws / ".swarm"
+        swarm.mkdir()
+        (swarm / "state-digest.md").write_text(
+            "## Phase: Experimentation\n"
+            "3 tasks dispatched, 1 complete, 2 in progress."
+        )
+
+        ctx = build_warm_start_context(
+            lineage_id=1, cycle_number=2,
+            base_dir=tmp_path, workspace=ws,
+        )
+        assert "state_digest" in ctx
+        assert "3 tasks dispatched" in ctx["state_digest"]
+
+    def test_context_empty_ledger_still_has_summary(self, tmp_path):
+        """Even with empty claim ledger, round summary is present if workspace has data."""
+        import json
+        from voronoi.server.prompt import build_warm_start_context
+        from voronoi.science.claims import ClaimLedger, save_ledger
+
+        ledger = ClaimLedger()
+        save_ledger(1, ledger, base_dir=tmp_path)
+
+        ws = tmp_path / "workspace"
+        ws.mkdir()
+        swarm = ws / ".swarm"
+        swarm.mkdir()
+        sc = [
+            {"id": "SC1", "description": "Test criterion", "met": False},
+        ]
+        (swarm / "success-criteria.json").write_text(json.dumps(sc))
+
+        ctx = build_warm_start_context(
+            lineage_id=1, cycle_number=2,
+            base_dir=tmp_path, workspace=ws,
+        )
+        # Ledger is empty but round summary exists
+        assert ctx["ledger_summary"] == ""
+        assert "round_summary" in ctx
+        assert "0/1 met" in ctx["round_summary"]
+
+
+class TestContinuationPromptConditionals:
+    """Prompt instructions change for continuation rounds."""
+
+    def test_continuation_skips_scout_dispatch(self):
+        """Continuation should NOT tell orchestrator to dispatch Scout."""
+        prompt = build_orchestrator_prompt(
+            question="test", mode="prove", rigor="scientific",
+            prior_context={"cycle_number": 2},
+        )
+        assert "Dispatch Scout first" not in prompt
+        assert "do NOT re-dispatch" in prompt
+        assert "scout-brief.md" in prompt
+
+    def test_fresh_dispatches_scout(self):
+        """Fresh investigation should dispatch Scout normally."""
+        prompt = build_orchestrator_prompt(
+            question="test", mode="prove", rigor="scientific",
+        )
+        assert "Dispatch Scout first" in prompt
+
+    def test_continuation_preserves_success_criteria(self):
+        """Continuation should read existing SC, not overwrite."""
+        prompt = build_orchestrator_prompt(
+            question="test", mode="discover", rigor="adaptive",
+            prior_context={"cycle_number": 2},
+        )
+        assert "do NOT overwrite" in prompt
+        assert "At investigation start, write" not in prompt
+
+    def test_fresh_creates_success_criteria(self):
+        """Fresh investigation should create SC."""
+        prompt = build_orchestrator_prompt(
+            question="test", mode="discover", rigor="adaptive",
+        )
+        assert "At investigation start, write" in prompt
+
+    def test_continuation_startup_sequence(self):
+        """Continuation should include explicit file-reading sequence."""
+        prompt = build_orchestrator_prompt(
+            question="test", mode="discover", rigor="adaptive",
+            prior_context={"cycle_number": 3},
+        )
+        assert "Continuation startup sequence" in prompt
+        assert "brief-digest.md" in prompt
+        assert "success-criteria.json" in prompt
+        assert "belief-map.json" in prompt
+        assert "experiments.tsv" in prompt
+
+    def test_continuation_round_summary_in_prompt(self):
+        """Round summary from warm-start context appears in prompt."""
+        prompt = build_orchestrator_prompt(
+            question="test", mode="discover", rigor="adaptive",
+            prior_context={
+                "cycle_number": 2,
+                "round_summary": "- Success criteria: 3/12 met\n- Experiment `baseline`: keep",
+            },
+        )
+        assert "Round 1 Summary" in prompt
+        assert "3/12 met" in prompt
+
+    def test_continuation_state_digest_in_prompt(self):
+        """State digest from warm-start context appears in prompt."""
+        prompt = build_orchestrator_prompt(
+            question="test", mode="discover", rigor="adaptive",
+            prior_context={
+                "cycle_number": 2,
+                "state_digest": "## Phase: Experimentation\n2 tasks in progress.",
+            },
+        )
+        assert "State Digest from Round 1" in prompt
+        assert "2 tasks in progress" in prompt
+
 
 # ---------------------------------------------------------------------------
 # Tribunal Prompt

@@ -448,12 +448,35 @@ When `/continue` is triggered:
    b. `.swarm/` state archived to `.swarm/archive/run-<N>/`
   c. Stale run-state files cleared from active `.swarm/` for the fresh orchestrator
     This includes `deliverable.md`, `events.jsonl`, checkpoint, convergence, and eval artifacts so the next round does not inherit a false-complete state or replay old events.
-   d. Belief map, experiments.tsv, success criteria carried forward
+   d. Belief map, experiments.tsv, success criteria, scout-brief.md, brief-digest.md, and state-digest.md carried forward
    e. Worktrees pruned
    f. Locked claims' artifacts written as `file_unchanged` invariants
 3. `_voronoi_init()` refreshes templates (agents, skills, scripts)
-4. `_build_prompt()` calls `build_warm_start_context()` to inject claim ledger, PI feedback, immutable paths, and artifact manifest into the orchestrator prompt
+4. `_build_prompt()` calls `build_warm_start_context()` to inject claim ledger, PI feedback, immutable paths, artifact manifest, round summary, state digest, and success criteria status into the orchestrator prompt
 5. If workspace directory is missing (user cleaned up), falls back to fresh provisioning with a warning
+
+### Warm-Start Context
+
+`build_warm_start_context()` assembles the following from the workspace and global state:
+
+| Field | Source | Purpose |
+|-------|--------|---------|
+| `ledger_summary` | `~/.voronoi/ledgers/<lineage>/` | Claim state across rounds |
+| `pi_feedback` | `queue.pi_feedback` | Verbatim human feedback |
+| `immutable_paths` | Claim Ledger locked claims | Artifact protection |
+| `round_summary` | SC + experiments.tsv + archived checkpoint | What happened in prior round |
+| `state_digest` | `.swarm/state-digest.md` | Compact prior-round state |
+| `success_criteria_status` | `.swarm/success-criteria.json` | SC progress (met/total) |
+| `artifact_manifest` | Workspace data dirs + experiments.tsv | File counts, data inventory |
+
+The round summary ensures the continuation orchestrator has meaningful context even when the Claim Ledger is empty (e.g. the prior round ended before experiments completed).
+
+### Continuation Prompt Adaptations
+
+When `prior_context` is set, the prompt builder adapts instructions:
+- **Scout dispatch**: skipped if `.swarm/scout-brief.md` already exists
+- **Success criteria**: orchestrator reads existing SC instead of creating new ones
+- **Startup sequence**: explicit file-reading order (brief-digest → SC → belief-map → scout-brief → experiments.tsv → state-digest → archive)
 
 ### Runs Are Additive
 

@@ -3066,6 +3066,7 @@ class TestContinuationDispatch:
         (swarm / "deliverable.md").write_text("# Old deliverable\n")
         (swarm / "events.jsonl").write_text('{"event":"finding"}\n')
         (swarm / "convergence.json").write_text('{"status":"converged"}')
+        (swarm / "state-digest.md").write_text("## Phase: Complete\n")
 
         mock_queue = MagicMock()
         mock_queue.get.return_value = SimpleNamespace(
@@ -3089,9 +3090,12 @@ class TestContinuationDispatch:
         archive_dir = swarm / "archive" / "run-1"
         assert (archive_dir / "deliverable.md").exists()
         assert (archive_dir / "events.jsonl").exists()
+        assert (archive_dir / "state-digest.md").exists()
         assert not (swarm / "deliverable.md").exists()
         assert not (swarm / "events.jsonl").exists()
         assert not (swarm / "convergence.json").exists()
+        # state-digest.md should be PRESERVED (not deleted) for continuation
+        assert (swarm / "state-digest.md").exists()
 
     def test_prepare_continuation_prevents_stale_completion(self, dispatcher_setup):
         """A reused workspace must not look complete before the new round starts."""

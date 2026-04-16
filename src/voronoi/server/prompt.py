@@ -63,6 +63,9 @@ def build_orchestrator_prompt(
         - ``cycle_number``: which round this is
         - ``immutable_paths``: artifact paths that must not be modified
         - ``artifact_manifest``: reusable artifacts description
+        - ``round_summary``: structured summary of prior round outcomes
+        - ``state_digest``: compact state digest from prior round
+        - ``success_criteria_status``: dict with ``met`` and ``total`` counts
     """
     _MODE_VERB = {
         "discover": "Discovery",
@@ -151,6 +154,7 @@ def build_orchestrator_prompt(
     # The orchestrator's role file (.github/agents/swarm-orchestrator.agent.md)
     # contains the full OODA workflow, role selection tables, convergence
     # criteria, and review gate definitions.  We only add mode/rigor context.
+    is_continuation = prior_context is not None
     if mode in ("discover", "prove"):
         sections.append(
             "\n## Science Mode Active\n\n"
@@ -159,12 +163,26 @@ def build_orchestrator_prompt(
             "Key reminders:\n"
         )
         if mode == "prove" or rigor in ("scientific", "experimental"):
-            sections.append(
-                "- Dispatch Scout first → wait for `.swarm/scout-brief.md`\n"
-                "- Dispatch Theorist + Methodologist before investigators\n"
-                "- Every investigation task MUST have pre-registration\n"
-                "- Scientific rigor: Methodologist review is advisory; Experimental rigor: approval required before dispatch\n"
-            )
+            if is_continuation:
+                # Continuation: skip Scout/Theorist if they already ran
+                sections.append(
+                    "- If `.swarm/scout-brief.md` already exists, do NOT re-dispatch "
+                    "the Scout — read the existing brief\n"
+                    "- If `.swarm/belief-map.json` already exists, do NOT re-dispatch "
+                    "Theorist — build on the existing belief map\n"
+                    "- Only re-dispatch Methodologist if PI feedback requires design changes\n"
+                    "- Pre-registration still required for NEW experiments\n"
+                    "- Scientific rigor: Methodologist review is advisory; "
+                    "Experimental rigor: approval required before dispatch\n"
+                )
+            else:
+                sections.append(
+                    "- Dispatch Scout first → wait for `.swarm/scout-brief.md`\n"
+                    "- Dispatch Theorist + Methodologist before investigators\n"
+                    "- Every investigation task MUST have pre-registration\n"
+                    "- Scientific rigor: Methodologist review is advisory; "
+                    "Experimental rigor: approval required before dispatch\n"
+                )
             # Human gate instructions for high-rigor investigations
             sections.append(
                 "\n**Human Review Gates (Scientific+ rigor):**\n"
@@ -296,14 +314,25 @@ def build_orchestrator_prompt(
     )
 
     # -- Success criteria ---------------------------------------------------
+    if is_continuation:
+        sections.append(
+            "\n## Success Criteria Tracking\n\n"
+            "**Continuation round:** `.swarm/success-criteria.json` already exists "
+            "from the prior round. Read it — do NOT overwrite it. Update `met` fields "
+            "as new evidence arrives. Only add NEW criteria if the PI's feedback "
+            "introduces new requirements.\n\n"
+        )
+    else:
+        sections.append(
+            "\n## Success Criteria Tracking\n\n"
+            "At investigation start, write `.swarm/success-criteria.json` capturing "
+            "the PROMPT's measurable success criteria.  Format:\n"
+            "```json\n"
+            "[{\"id\": \"SC1\", \"description\": \"L4 outperforms L1 on F1\", \"met\": false},\n"
+            " {\"id\": \"SC2\", \"description\": \"Pipeline compresses >=10x\", \"met\": false}]\n"
+            "```\n\n"
+        )
     sections.append(
-        "\n## Success Criteria Tracking\n\n"
-        "At investigation start, write `.swarm/success-criteria.json` capturing "
-        "the PROMPT's measurable success criteria.  Format:\n"
-        "```json\n"
-        "[{\"id\": \"SC1\", \"description\": \"L4 outperforms L1 on F1\", \"met\": false},\n"
-        " {\"id\": \"SC2\", \"description\": \"Pipeline compresses >=10x\", \"met\": false}]\n"
-        "```\n\n"
         "During each OODA Orient cycle, check whether results satisfy each criterion.\n"
         "Update `met: true` when evidence supports it.  **Convergence is blocked** "
         "while any criterion has `met: false`.\n\n"
@@ -437,6 +466,35 @@ def build_orchestrator_prompt(
             "- Challenged claims are your priority — investigate and resolve them\n"
         )
 
+        # Explicit startup instructions for continuation (BUG-004)
+        sections.append(
+            "\n**Continuation startup sequence** (do this FIRST, before any dispatch):\n"
+            "1. Read `.swarm/brief-digest.md` (if it exists) — compressed project constraints\n"
+            "2. Read `.swarm/success-criteria.json` — current SC status (do NOT overwrite)\n"
+            "3. Read `.swarm/belief-map.json` — current hypotheses and confidence tiers\n"
+            "4. Read `.swarm/scout-brief.md` — field context from prior Scout (do NOT re-scout)\n"
+            "5. Read `.swarm/experiments.tsv` — what experiments ran and their status\n"
+            "6. Read `.swarm/state-digest.md` (if it exists) — compact state from prior round\n"
+            "7. Read `.swarm/archive/run-{N}/` — archived checkpoint and artifacts for reference\n"
+            "Then plan your actions based on what was accomplished vs what remains.\n"
+        )
+
+        # Round summary from prior checkpoint/SC/experiments (BUG-001, BUG-005)
+        round_summary = prior_context.get("round_summary", "")
+        if round_summary:
+            sections.append(
+                f"\n## Round {cycle - 1} Summary — What Was Accomplished\n\n"
+                + round_summary + "\n"
+            )
+
+        # State digest from prior round (BUG-001)
+        state_digest = prior_context.get("state_digest", "")
+        if state_digest:
+            sections.append(
+                f"\n## State Digest from Round {cycle - 1}\n\n"
+                + state_digest + "\n"
+            )
+
         ledger_summary = prior_context.get("ledger_summary", "")
         if ledger_summary:
             sections.append(
@@ -486,8 +544,13 @@ def build_warm_start_context(
 ) -> dict:
     """Build the prior_context dict for build_orchestrator_prompt.
 
-    Reads the Claim Ledger and workspace artifacts to produce a structured
-    context dict that the prompt builder can inject into continuation prompts.
+    Reads the Claim Ledger, success criteria, experiments, archived
+    checkpoint, and workspace artifacts to produce a structured context dict
+    that the prompt builder can inject into continuation prompts.
+
+    The round summary ensures the continuation orchestrator has meaningful
+    context even when the Claim Ledger is empty (e.g. the prior round ended
+    before experiments completed).
     """
     from voronoi.science.claims import load_ledger
 
@@ -500,24 +563,93 @@ def build_warm_start_context(
         "immutable_paths": ledger.get_immutable_paths(),
     }
 
-    # Build artifact manifest from workspace if available
+    # Build artifact manifest and round summary from workspace
     if workspace and workspace.exists():
         manifest_lines: list[str] = []
+        summary_lines: list[str] = []
         swarm = workspace / ".swarm"
 
-        # Check for prior experiments
+        # -- Success criteria status from prior round ---
+        sc_path = swarm / "success-criteria.json"
+        if sc_path.exists():
+            try:
+                import json
+                sc_data = json.loads(sc_path.read_text())
+                if isinstance(sc_data, list) and sc_data:
+                    met = sum(1 for s in sc_data if s.get("met"))
+                    total = len(sc_data)
+                    summary_lines.append(f"- Success criteria: {met}/{total} met")
+                    unmet = [s for s in sc_data if not s.get("met")]
+                    for s in unmet[:5]:
+                        sid = s.get("id", "?")
+                        desc = s.get("description", "")[:80]
+                        summary_lines.append(f"  - {sid} UNMET: {desc}")
+                    context["success_criteria_status"] = {
+                        "met": met, "total": total,
+                    }
+            except (OSError, json.JSONDecodeError, TypeError):
+                pass
+
+        # -- Experiment details from experiments.tsv ---
         experiments = swarm / "experiments.tsv"
         if experiments.exists():
             try:
                 lines = experiments.read_text().strip().splitlines()
-                keep_count = sum(1 for l in lines[1:] if "\tkeep\t" in l)
-                manifest_lines.append(
-                    f"- Experiments: {len(lines) - 1} total, {keep_count} kept results"
-                )
+                if len(lines) > 1:
+                    keep_count = sum(1 for l in lines[1:] if "\tkeep\t" in l)
+                    manifest_lines.append(
+                        f"- Experiments: {len(lines) - 1} total, {keep_count} kept results"
+                    )
+                    # Parse experiment names/descriptions for summary
+                    for row in lines[1:6]:  # first 5 experiments
+                        cols = row.split("\t")
+                        if len(cols) >= 2:
+                            exp_name = cols[0][:60]
+                            exp_status = cols[2] if len(cols) > 2 else "unknown"
+                            summary_lines.append(
+                                f"- Experiment `{exp_name}`: {exp_status}"
+                            )
             except OSError:
                 pass
 
-        # Check for existing data directories
+        # -- Archived checkpoint for strategy context ---
+        prior_round = cycle_number - 1
+        archive = swarm / "archive" / f"run-{prior_round}"
+        if archive.is_dir():
+            ckpt_path = archive / "orchestrator-checkpoint.json"
+            if ckpt_path.exists():
+                try:
+                    import json
+                    ckpt = json.loads(ckpt_path.read_text())
+                    # Extract strategy summary from checkpoint
+                    next_actions = ckpt.get("next_actions", [])
+                    if next_actions:
+                        summary_lines.append("- Planned next actions (from prior checkpoint):")
+                        for action in next_actions[:5]:
+                            if isinstance(action, str):
+                                summary_lines.append(f"  - {action[:100]}")
+                    active = ckpt.get("active_workers", [])
+                    if active:
+                        summary_lines.append(
+                            f"- Active workers at end of round: {len(active)}"
+                        )
+                except (OSError, json.JSONDecodeError, TypeError):
+                    pass
+
+        # -- State digest from prior round ---
+        digest_path = swarm / "state-digest.md"
+        if digest_path.exists():
+            try:
+                digest_text = digest_path.read_text().strip()
+                if digest_text:
+                    # Truncate to ~500 chars to fit in prompt
+                    if len(digest_text) > 500:
+                        digest_text = digest_text[:500] + "…"
+                    context["state_digest"] = digest_text
+            except OSError:
+                pass
+
+        # -- Check for existing data directories ---
         for data_dir in ("data", "data/raw", "data/synthetic", "output"):
             dp = workspace / data_dir
             if dp.is_dir():
@@ -529,6 +661,8 @@ def build_warm_start_context(
 
         if manifest_lines:
             context["artifact_manifest"] = "\n".join(manifest_lines)
+        if summary_lines:
+            context["round_summary"] = "\n".join(summary_lines)
 
     return context
 
