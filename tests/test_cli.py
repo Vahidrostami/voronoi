@@ -154,3 +154,53 @@ def test_upgrade_preserves_user_files():
         mcp_config = json.loads(mcp_path.read_text())
         assert mcp_config["mcpServers"]["voronoi"]["command"] == sys.executable
         assert mcp_config["mcpServers"]["voronoi"]["args"] == ["-m", "voronoi.mcp"]
+
+
+# --------------------------------------------------------------------------
+# INV-44: CLI demo path writes a Run Manifest after the orchestrator exits
+# --------------------------------------------------------------------------
+
+class TestWriteDemoManifest:
+    def test_writes_manifest_when_swarm_exists(self, tmp_path):
+        """``_write_demo_manifest`` produces ``.swarm/run-manifest.json``."""
+        from voronoi.cli import _write_demo_manifest
+
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "convergence.json").write_text(json.dumps({
+            "converged": True,
+            "status": "converged",
+            "reason": "demo",
+        }))
+
+        result = _write_demo_manifest(tmp_path, question="Test demo question")
+
+        manifest_path = tmp_path / ".swarm" / "run-manifest.json"
+        assert manifest_path == result
+        assert manifest_path.exists()
+        data = json.loads(manifest_path.read_text())
+        assert data["schema_version"] == "1.0"
+        assert data["question"] == "Test demo question"
+        assert data["converged"] is True
+
+    def test_skips_silently_when_no_swarm_dir(self, tmp_path):
+        """No ``.swarm/`` (e.g. ``--dry-run`` or aborted launch) → no-op."""
+        from voronoi.cli import _write_demo_manifest
+
+        result = _write_demo_manifest(tmp_path)
+        assert result is None
+        assert not (tmp_path / ".swarm" / "run-manifest.json").exists()
+
+    def test_partial_swarm_state_still_writes_manifest(self, tmp_path):
+        """Missing source files → factory produces partial-but-valid manifest."""
+        from voronoi.cli import _write_demo_manifest
+
+        # Only .swarm/ exists, no convergence/eval/etc — manifest should still
+        # be written (per MANIFEST.md: derived artifact, partial sources OK).
+        (tmp_path / ".swarm").mkdir()
+
+        result = _write_demo_manifest(tmp_path, question="Q?")
+        assert result is not None
+        assert result.exists()
+        data = json.loads(result.read_text())
+        assert data["question"] == "Q?"

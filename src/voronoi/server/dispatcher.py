@@ -2215,6 +2215,14 @@ class InvestigationDispatcher:
         else:
             self.queue.complete(run.investigation_id)
 
+        # Write the structured Run Manifest — canonical machine-readable record
+        # of the run's claims, experiments, artifacts, and provenance.  Written
+        # AFTER the status transition so the manifest captures the finalized
+        # ledger state (promoted claims, self-critique objections, continuation
+        # proposals).  See ``_sweep_missing_manifests`` for crash recovery of
+        # the small write-after-transition race window (INV-44).
+        self._write_run_manifest(run)
+
         # Send appropriate completion message
         from voronoi.gateway.report import ReportGenerator
         rg = ReportGenerator(run.workspace_path, mode=run.mode,
@@ -3359,6 +3367,42 @@ class InvestigationDispatcher:
 
         if new_claims:
             save_ledger(inv.lineage_id, ledger, base_dir=self.config.base_dir)
+
+    def _write_run_manifest(self, run: RunningInvestigation) -> None:
+        """Assemble and persist ``.swarm/run-manifest.json`` for a completed run.
+
+        Best-effort, non-fatal: manifest-writing must never block the
+        completion pipeline.  The manifest is a derived artifact — if any
+        source ``.swarm/`` file is missing the factory produces a partial
+        but valid manifest rather than raising.
+        """
+        try:
+            from voronoi.science.manifest import (
+                build_manifest_from_workspace,
+                save_manifest,
+            )
+            inv = self.queue.get(run.investigation_id)
+            ledger = None
+            if inv is not None and inv.lineage_id is not None:
+                try:
+                    from voronoi.science.claims import load_ledger
+                    ledger = load_ledger(
+                        inv.lineage_id, base_dir=self.config.base_dir,
+                    )
+                except Exception as e:  # pragma: no cover - defensive
+                    logger.debug("Ledger load for manifest failed: %s", e)
+                    ledger = None
+
+            manifest = build_manifest_from_workspace(
+                run.workspace_path,
+                investigation=inv,
+                ledger=ledger,
+                rigor=self._effective_rigor(run),
+            )
+            path = save_manifest(run.workspace_path, manifest)
+            logger.info("Wrote run manifest for %s: %s", run.label, path)
+        except Exception as e:
+            logger.warning("Failed to write run manifest for %s: %s", run.label, e)
 
     def _transition_to_review(self, run: RunningInvestigation) -> None:
         """Transition a completed science investigation to review status.

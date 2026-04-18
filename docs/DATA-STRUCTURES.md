@@ -763,6 +763,45 @@ Written by the Scout after Problem Positioning (Phase 0). Records the novelty as
 
 Scout's knowledge brief including Problem Positioning section (field context, current frontier with citations, gap statement, closest prior work deep comparison, novelty assessment), known results, prior approaches, suggested hypotheses, and SOTA methodology.
 
+### `.swarm/run-manifest.json`
+
+Canonical, machine-readable summary of a completed run. **Derived** from other `.swarm/` files plus the Claim Ledger; written by the dispatcher at completion. Schema version `"1.0"`. See [MANIFEST.md](MANIFEST.md) for the full field-by-field reference.
+
+```json
+{
+  "schema_version": "1.0",
+  "question": "Can encoding enable discovery?",
+  "answer": "Encoding enables discovery of cross-lever effects (d=1.47).",
+  "mode": "discover", "rigor": "analytical",
+  "status": "converged", "converged": true, "reason": "All hypotheses resolved",
+  "primary_claims": [{
+    "id": "C1", "statement": "...", "status": "asserted",
+    "effect_size": "d=1.47", "confidence_interval": "[1.10, 1.84]",
+    "direction": "confirmed", "supporting_findings": ["bd-5"],
+    "supporting_artifacts": ["data/encoding.parquet"]
+  }],
+  "hypotheses":         [{"id": "H1", "statement": "...", "observed_direction": "confirmed", "confidence": "strong"}],
+  "experiments":        [{"id": "bd-5", "method": "...", "effect_size": "1.47", "ci": "[1.10, 1.84]", "n": "120"}],
+  "artifacts":          [{"path": "paper.pdf", "kind": "paper", "sha256": "...", "bytes": 142337}],
+  "caveats":            ["Single-site study"],
+  "reviewer_defense":   [{"objection": "...", "response": "..."}],
+  "pending_objections": [],
+  "continuation_proposals": [],
+  "evaluator": {"score": 0.84, "rounds": 1, "dimensions": {"completeness": {"score": 0.85, "note": "..."}}, "remediations": []},
+  "provenance": {"investigation_id": 42, "lineage_id": 42, "cycle_number": 1, "codename": "Dopamine", "git_commit": "..."},
+  "cost":       {"wall_clock_seconds": 7200.0, "total_tokens": 0, "total_usd": 0.0},
+  "generated_at": "2026-04-18T10:22:13+00:00"
+}
+```
+
+**Key fields**:
+- `status` (str): `converged | exhausted | diminishing_returns | negative_result | failed | partial | unknown` — mirrors `.swarm/convergence.json`.
+- `primary_claims[].status`: `provisional | asserted | locked | replicated | challenged | retired` — same lifecycle as `Claim` in the Claim Ledger.
+- `primary_claims[].direction`: `confirmed | refuted_reversed | inconclusive | not_tested` — INV-43 directional verification.
+- `artifacts[].kind`: `paper | code | data | figure | model | submission | other`.
+
+Validated by `validate_manifest(m, rigor)` against rigor-tiered requirements (standard < adaptive < analytical < scientific < experimental).
+
 ---
 
 ## 8. Configuration Files

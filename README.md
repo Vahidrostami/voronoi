@@ -187,8 +187,10 @@ voronoi demo run emergent-ecosystem --safe
 
 | Demo | What it does |
 |------|-------------|
+| **computational-triage** | Evidence encoding as a scaling axis for multi-agent LLM reasoning |
 | **coupled-decisions** | 5 coupled levers, planted ground truth in 100K transactions |
 | **emergent-ecosystem** | 4 species on a 100×100 grid, each agent builds one in isolation |
+| **epistemic-trajectories** | Phase transitions in LLM multi-source reasoning across capability tiers |
 | **forgetting-cure** | 4 anti-forgetting strategies, head-to-head MNIST benchmark |
 
 ---

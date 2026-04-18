@@ -938,3 +938,45 @@ The evaluator formula gains a fifth dimension **N (Non-triviality)**:
 $$\text{OVERALL} = 0.25C + 0.20C_o + 0.20S + 0.15A + 0.20N$$
 
 Non-triviality below 0.4 triggers an improvement round.
+
+---
+
+## 19. Run Manifest — Structured Deliverable
+
+### Purpose
+
+The **Run Manifest** (`.swarm/run-manifest.json`) is a consolidated, machine-readable summary of a completed run: question, answer, primary claims, hypotheses, experiments, artifacts, caveats, provenance. It is **derived** from existing `.swarm/` state — it does not replace `claim-evidence.json`, `eval-score.json`, or the Claim Ledger; it collates them so that scientists, reviewers, and external graders can read one file instead of six.
+
+### Module
+
+`src/voronoi/science/manifest.py`. Schema version `"1.0"`.
+
+### When It Is Written
+
+`InvestigationDispatcher._write_run_manifest()` is called unconditionally at the end of `_handle_completion` — for science and build modes, for converged/exhausted/negative results. Failure to write the manifest is logged but never blocks completion (the manifest is additive, not a gate).
+
+### Source-of-Truth Map
+
+| Manifest field | Source |
+|---|---|
+| `question`, `mode`, `rigor`, `provenance` | `Investigation` row in queue |
+| `status`, `converged`, `reason` | `.swarm/convergence.json` |
+| `evaluator` | `.swarm/eval-score.json` |
+| `hypotheses` | `.swarm/belief-map.json` |
+| `primary_claims` | Claim Ledger (preferred) → `.swarm/claim-evidence.json` (fallback) |
+| `experiments` | Beads `FINDING` tasks |
+| `pending_objections` | `ClaimLedger.objections` (pending/investigating/surfaced) |
+| `artifacts` | Filesystem scan + finding `DATA_FILE` notes |
+| `caveats` | Derived: convergence blockers + `ROBUST=no` + non-APPROVED stat review |
+| `answer` | Derived: strongest-status claim (`replicated > locked > asserted > provisional`) |
+
+### Rigor-Tiered Validation
+
+`validate_manifest(manifest, rigor)` returns `ValidationResult(valid, missing, warnings)`. Tiers are strictly additive: `standard < adaptive < analytical < scientific < experimental`.
+
+See [MANIFEST.md](MANIFEST.md) for the full schema, rigor table, sub-structure definitions, and public API reference.
+
+### Relationship to §5 Convergence
+
+Convergence is still the authoritative *signal* (written to `.swarm/convergence.json` and gated by `convergence-gate.sh`). The manifest is written **after** completion is decided; it does not participate in the convergence gate. The manifest's `status` and `converged` fields mirror `convergence.json`.
+
