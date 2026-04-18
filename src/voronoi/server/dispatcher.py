@@ -3513,11 +3513,13 @@ class InvestigationDispatcher:
                     pass
 
         # 3. Clean .swarm/ for fresh orchestrator (keep reusable files)
+        # Keep: belief-map.json, experiments.tsv, success-criteria.json,
+        #       scout-brief.md, brief-digest.md, state-digest.md.
         files_to_remove = [
             "deliverable.md", "events.jsonl", "orchestrator-checkpoint.json",
             "checkpoint.json",
             "convergence.json", "eval-score.json", "dispatcher-directive.json",
-            "human-gate.json", "state-digest.md",
+            "human-gate.json",
         ]
         for fname in files_to_remove:
             p = swarm / fname
@@ -3527,7 +3529,8 @@ class InvestigationDispatcher:
                 except OSError:
                     pass
 
-        # Keep: belief-map.json, experiments.tsv, success-criteria.json.
+        # Keep: belief-map.json, experiments.tsv, success-criteria.json,
+        #       scout-brief.md, brief-digest.md, state-digest.md.
         # Archived state remains available under .swarm/archive/run-N/.
 
         # 4. Prune git worktrees

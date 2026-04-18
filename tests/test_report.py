@@ -788,3 +788,84 @@ class TestDemoOutputCopy:
 
         assert path is not None
         assert not list(ws.glob("demos/*/output/paper/*"))
+
+
+# ---------------------------------------------------------------------------
+# Pre-compiled PDF priority tests (figure vs paper)
+# ---------------------------------------------------------------------------
+
+class TestPrecompiledPdfPriority:
+    def test_figure_pdf_in_output_not_returned(self, tmp_path):
+        """A figure PDF in output/ should NOT be picked up as the report."""
+        ws = tmp_path / "workspace"
+        swarm = ws / ".swarm"
+        swarm.mkdir(parents=True)
+        output = ws / "output"
+        output.mkdir()
+        # A figure PDF — not the paper
+        (output / "ablation_chart.pdf").write_bytes(b"x" * 2000)
+
+        rg = ReportGenerator(ws)
+        result = rg._find_precompiled_pdf()
+
+        assert result is None  # Should not grab the figure
+
+    def test_paper_pdf_in_output_returned(self, tmp_path):
+        """paper.pdf in output/ should be found."""
+        ws = tmp_path / "workspace"
+        swarm = ws / ".swarm"
+        swarm.mkdir(parents=True)
+        output = ws / "output"
+        output.mkdir()
+        paper = output / "paper.pdf"
+        paper.write_bytes(b"x" * 2000)
+
+        rg = ReportGenerator(ws)
+        result = rg._find_precompiled_pdf()
+
+        assert result == paper
+
+    def test_paper_pdf_preferred_over_figure(self, tmp_path):
+        """When output/ has both figure and paper PDFs, paper wins."""
+        ws = tmp_path / "workspace"
+        swarm = ws / ".swarm"
+        swarm.mkdir(parents=True)
+        output = ws / "output"
+        output.mkdir()
+        (output / "figure1.pdf").write_bytes(b"x" * 2000)
+        paper = output / "paper.pdf"
+        paper.write_bytes(b"x" * 2000)
+
+        rg = ReportGenerator(ws)
+        result = rg._find_precompiled_pdf()
+
+        assert result == paper
+
+    def test_output_paper_dir_any_name_returned(self, tmp_path):
+        """Any PDF in output/paper/ is returned (targeted directory)."""
+        ws = tmp_path / "workspace"
+        swarm = ws / ".swarm"
+        swarm.mkdir(parents=True)
+        paper_dir = ws / "output" / "paper"
+        paper_dir.mkdir(parents=True)
+        pdf = paper_dir / "final_v2.pdf"
+        pdf.write_bytes(b"x" * 2000)
+
+        rg = ReportGenerator(ws)
+        result = rg._find_precompiled_pdf()
+
+        assert result == pdf
+
+    def test_demo_output_figure_not_returned(self, tmp_path):
+        """Figure PDF in demos/*/output/ should NOT be returned."""
+        ws = tmp_path / "workspace"
+        swarm = ws / ".swarm"
+        swarm.mkdir(parents=True)
+        demo_output = ws / "demos" / "my-demo" / "output"
+        demo_output.mkdir(parents=True)
+        (demo_output / "complexity_heatmap.pdf").write_bytes(b"x" * 2000)
+
+        rg = ReportGenerator(ws)
+        result = rg._find_precompiled_pdf()
+
+        assert result is None

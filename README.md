@@ -92,7 +92,7 @@ graph LR
 
 1. **You ask** — Telegram or CLI, natural language
 2. **Classifier** picks the mode: **DISCOVER** (open question, adaptive rigor) or **PROVE** (specific hypothesis, full science gates)
-3. **Scout** researches existing knowledge, generates hypotheses
+3. **Scout** researches existing knowledge, positions the problem in the current research landscape, assesses novelty
 4. **Agents run in parallel** — each in its own git worktree + tmux session
 5. **Self-healing verify loop** — each agent iterates against its own errors (test failures, lint, crashes) before escalating. Builders retry up to 5 times; investigators retry each experiment variant up to 3 times.
 6. **Metric contracts** — orchestrator declares what success looks like (metric shape + baseline). Workers fill in the concrete metric at pre-registration. Results are directly comparable across agents.

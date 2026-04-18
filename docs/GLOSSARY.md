@@ -11,7 +11,7 @@
 | **Orchestrator** | The central agent running the OODA loop. Lives in the main workspace, dispatches workers, monitors convergence. |
 | **Worker** | Any agent running in a git worktree. Includes Builder, Investigator, Scout, etc. |
 | **Builder** | Worker agent that implements code. Verify: tests + lint + PRODUCES. |
-| **Scout** | Worker that researches prior knowledge and SOTA before investigation. |
+| **Scout** | Worker that researches prior knowledge, positions the problem in the research landscape, and assesses novelty before investigation. |
 | **Investigator** | Worker that runs pre-registered experiments with raw data and EVA. |
 | **Explorer** | Worker that evaluates options with comparison matrices. |
 | **Statistician** | Review agent that independently recomputes statistics from raw data. |
@@ -100,12 +100,15 @@
 | **VERIFY_EXHAUSTED** | Worker used all retry attempts without passing verification. |
 | **BUILD_COMPLETE** | Builder's completion promise — tests pass, lint clean, PRODUCES verified. |
 | **EXPERIMENT_COMPLETE** | Investigator's completion promise — passed EVA, data committed. |
-| **SCOUT_COMPLETE** | Scout's completion promise — brief written, sources cited. |
+| **SCOUT_COMPLETE** | Scout's completion promise — brief written, problem positioning complete, sources cited, novelty assessed. |
 | **REVIEW_COMPLETE** | Critic's completion promise — all checklist items evaluated. |
 | **SYNTHESIS_COMPLETE** | Synthesizer's completion promise — registry complete, no orphans. |
 | **PARADIGM_STRESS** | Active contradictions between findings and working theory. |
 | **DIMINISHING_RETURNS** | Last 2 improvement rounds improved < 5% each — deliver as-is. |
 | **SERENDIPITY:HIGH** | Unexpected discovery flagged for attention. |
+| **NOVELTY_BLOCKED** | Scout signal when novelty assessment is REDUNDANT — investigation cannot proceed without human approval. |
+| **Problem Positioning** | Scout's Phase 0: field context, frontier search, gap statement, closest-work deep comparison, novelty assessment. |
+| **Novelty Gate** | Orchestrator checkpoint after Scout: NOVEL (proceed), INCREMENTAL (proceed with framing), REDUNDANT (halt for human decision). |
 | **PRE_REG_DEVIATION** | Deviation from pre-registered design — must be documented. |
 | **STRATEGIC_MISALIGNMENT** | Task assumptions no longer hold. |
 

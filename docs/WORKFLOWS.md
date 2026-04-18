@@ -51,15 +51,16 @@ Phase 3: Test (scientific-level rigor)
 2. **Enqueue** — Investigation queued with mode=discover
 3. **Dispatch** — Workspace provisioned, orchestrator launched
 4. **Free Exploration** — Orchestrator reads question, dispatches Scout + any relevant initial agents in parallel. No rigid sequence.
-5. **Hypothesis Formation** — As agents report back, orchestrator forms belief map. SERENDIPITY events can redirect exploration.
-6. **Plan Review** — At Analytical+ rigor, before dispatching structured investigation work, the orchestrator submits its task decomposition for review. Critic reviews the plan (at Scientific+: Critic + Theorist; at Experimental: + Methodologist). Reviewer writes verdict to `.swarm/plan-review.json`. Orchestrator revises if verdict is REVISE or RESTRUCTURE, then proceeds. One round only.
-7. **Rigor Escalation** — When hypotheses are testable, orchestrator engages Methodologist + Statistician. Pre-registration kicks in.
-8. **Parallel Investigation** — Multiple agents pursue different hypotheses simultaneously
-9. **Inner Loop** — Each agent: execute → verify → retry (self-healing)
-10. **OODA Outer Loop** — Orchestrator observes findings, updates belief map, decides next actions
-11. **Review Gates** — Statistician + Critic review findings (activated when rigor escalated)
-12. **Synthesis** — Synthesizer assembles deliverable
-13. **Evaluation** — Evaluator scores output
+5. **Problem Positioning & Novelty Gate** — After Scout completes, orchestrator reads `.swarm/scout-brief.md` Problem Positioning and `.swarm/novelty-gate.json`. Based on assessment: REDUNDANT → halt and request human decision via `.swarm/human-gate.json` (approve/pivot/abort). INCREMENTAL → proceed but inject `framing_constraint` into workers' strategic context. NOVEL → proceed normally using `gap_statement`.
+6. **Hypothesis Formation** — As agents report back, orchestrator forms belief map. Results are framed as DELTA from the known frontier (cited in the scout brief). SERENDIPITY events can redirect exploration.
+7. **Plan Review** — At Analytical+ rigor, before dispatching structured investigation work, the orchestrator submits its task decomposition for review. Critic reviews the plan (at Scientific+: Critic + Theorist; at Experimental: + Methodologist). Reviewer writes verdict to `.swarm/plan-review.json`. Orchestrator revises if verdict is REVISE or RESTRUCTURE, then proceeds. One round only.
+8. **Rigor Escalation** — When hypotheses are testable, orchestrator engages Methodologist + Statistician. Pre-registration kicks in.
+9. **Parallel Investigation** — Multiple agents pursue different hypotheses simultaneously
+10. **Inner Loop** — Each agent: execute → verify → retry (self-healing)
+11. **OODA Outer Loop** — Orchestrator observes findings, updates belief map, decides next actions
+12. **Review Gates** — Statistician + Critic review findings (activated when rigor escalated)
+13. **Synthesis** — Synthesizer assembles deliverable
+14. **Evaluation** — Evaluator scores output
 
 ### Convergence
 All active hypotheses resolved OR orchestrator judges exploration complete + eval score ≥ 0.75.
@@ -89,15 +90,16 @@ All 12 roles from the start.
 ### Steps
 
 1. **Classify** — `PROVE` + `SCIENTIFIC` (or `EXPERIMENTAL` if replication signals detected)
-2. **Scout Phase** — Prior knowledge, SOTA anchoring, gap identification
-3. **Theory Phase** — Theorist proposes causal models and competing theories
-4. **Hypothesis Generation** — Orchestrator initializes belief map with hypotheses
-5. **Plan Review** — Orchestrator submits task decomposition for review before any experiments run. At Scientific rigor: Critic + Theorist review. At Experimental: Critic + Theorist + Methodologist. Reviewer(s) dispatched with `TYPE:plan-review` in task notes. Verdict written to `.swarm/plan-review.json`. Orchestrator revises plan if verdict is REVISE or RESTRUCTURE. One round only — no iterative loops.
-6. **Baseline** — First subtask is ALWAYS a baseline measurement (hard gate)
-7. **Pre-Registration** — Each investigator pre-registers: hypothesis, method, controls, stat test, sample size, power analysis, sensitivity plan
-8. **Methodologist Review** — Mandatory — approves or revises experimental design
-9. **Dispatch Investigators** — Parallel experiments in worktrees
-10. **Inner Loop** — Each investigator:
+2. **Scout Phase** — Prior knowledge, SOTA anchoring, gap identification, problem positioning with deep methodology comparison of closest prior work
+3. **Novelty Gate** — Orchestrator reads `.swarm/novelty-gate.json`. REDUNDANT → halt for human decision. INCREMENTAL → proceed with `framing_constraint` injected into workers. NOVEL → proceed with `gap_statement`.
+4. **Theory Phase** — Theorist proposes causal models and competing theories
+5. **Hypothesis Generation** — Orchestrator initializes belief map with hypotheses
+6. **Plan Review** — Orchestrator submits task decomposition for review before any experiments run. At Scientific rigor: Critic + Theorist review. At Experimental: Critic + Theorist + Methodologist. Reviewer(s) dispatched with `TYPE:plan-review` in task notes. Verdict written to `.swarm/plan-review.json`. Orchestrator revises plan if verdict is REVISE or RESTRUCTURE. One round only — no iterative loops.
+7. **Baseline** — First subtask is ALWAYS a baseline measurement (hard gate)
+8. **Pre-Registration** — Each investigator pre-registers: hypothesis, method, controls, stat test, sample size, power analysis, sensitivity plan
+9. **Methodologist Review** — Mandatory — approves or revises experimental design
+10. **Dispatch Investigators** — Parallel experiments in worktrees
+11. **Inner Loop** — Each investigator:
    - Execute experiment
    - Verify: runs without crash, metric extracted
    - Self-verification: test loop (up to 3 retries), produces check, metric consistency
@@ -106,12 +108,12 @@ All 12 roles from the start.
    - Commit raw data with SHA-256
    - Sensitivity analysis (2+ parameter variations)
    - Create FINDING in Beads
-11. **OODA Loop** — Orchestrator reads findings, updates belief map, checks convergence
-12. **Statistician Review** — Independent recomputation, interpretation metadata
-13. **Critic Review** — Partially blinded adversarial review
-14. **Synthesis** — Claim-evidence registry → deliverable (report or manuscript)
-15. **Evaluation** — CCSAN scoring with structured feedback
-16. **Convergence** — All hypotheses resolved, no paradigm stress, eval ≥ 0.75
+12. **OODA Loop** — Orchestrator reads findings, updates belief map, checks convergence
+13. **Statistician Review** — Independent recomputation, interpretation metadata
+14. **Critic Review** — Partially blinded adversarial review
+15. **Synthesis** — Claim-evidence registry → deliverable (report or manuscript)
+16. **Evaluation** — CCSAN scoring with structured feedback
+17. **Convergence** — All hypotheses resolved, no paradigm stress, eval ≥ 0.75
 
 ### Human Review Gates (PROVE mode)
 
@@ -119,6 +121,7 @@ At key decision points, the investigation pauses for review:
 
 | Gate | When | What the Human Sees |
 |------|------|--------------------|  
+| **Novelty** | After Scout completes, if assessment is REDUNDANT | Blocking paper, overlap summary, suggested pivot |
 | **Plan review** | After orchestrator decomposes into tasks, before baseline | Task decomposition, dependency graph, scope assessment, reviewer verdict |
 | **Pre-registration** | After pre-reg complete, before running experiments | Hypothesis, method, N, design summary |
 | **Convergence** | After findings collected, before finalizing deliverable | Findings summary, eval score, convergence status |
@@ -445,12 +448,35 @@ When `/continue` is triggered:
    b. `.swarm/` state archived to `.swarm/archive/run-<N>/`
   c. Stale run-state files cleared from active `.swarm/` for the fresh orchestrator
     This includes `deliverable.md`, `events.jsonl`, checkpoint, convergence, and eval artifacts so the next round does not inherit a false-complete state or replay old events.
-   d. Belief map, experiments.tsv, success criteria carried forward
+   d. Belief map, experiments.tsv, success criteria, scout-brief.md, brief-digest.md, and state-digest.md carried forward
    e. Worktrees pruned
    f. Locked claims' artifacts written as `file_unchanged` invariants
 3. `_voronoi_init()` refreshes templates (agents, skills, scripts)
-4. `_build_prompt()` calls `build_warm_start_context()` to inject claim ledger, PI feedback, immutable paths, and artifact manifest into the orchestrator prompt
+4. `_build_prompt()` calls `build_warm_start_context()` to inject claim ledger, PI feedback, immutable paths, artifact manifest, round summary, state digest, and success criteria status into the orchestrator prompt
 5. If workspace directory is missing (user cleaned up), falls back to fresh provisioning with a warning
+
+### Warm-Start Context
+
+`build_warm_start_context()` assembles the following from the workspace and global state:
+
+| Field | Source | Purpose |
+|-------|--------|---------|
+| `ledger_summary` | `~/.voronoi/ledgers/<lineage>/` | Claim state across rounds |
+| `pi_feedback` | `queue.pi_feedback` | Verbatim human feedback |
+| `immutable_paths` | Claim Ledger locked claims | Artifact protection |
+| `round_summary` | SC + experiments.tsv + archived checkpoint | What happened in prior round |
+| `state_digest` | `.swarm/state-digest.md` | Compact prior-round state |
+| `success_criteria_status` | `.swarm/success-criteria.json` | SC progress (met/total) |
+| `artifact_manifest` | Workspace data dirs + experiments.tsv | File counts, data inventory |
+
+The round summary ensures the continuation orchestrator has meaningful context even when the Claim Ledger is empty (e.g. the prior round ended before experiments completed).
+
+### Continuation Prompt Adaptations
+
+When `prior_context` is set, the prompt builder adapts instructions:
+- **Scout dispatch**: skipped if `.swarm/scout-brief.md` already exists
+- **Success criteria**: orchestrator reads existing SC instead of creating new ones
+- **Startup sequence**: explicit file-reading order (brief-digest → SC → belief-map → scout-brief → experiments.tsv → state-digest → archive)
 
 ### Runs Are Additive
 

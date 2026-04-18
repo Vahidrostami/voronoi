@@ -237,7 +237,7 @@ flowchart LR
 
 | Mode | User gives | Rigor | How it works |
 |------|-----------|-------|--------------|
-| **DISCOVER** | An open question — "go figure this out" | Adaptive — starts analytical, escalates to scientific when hypotheses crystallize | Free exploration. Scout first, form hypotheses, pursue multiple paths in parallel. Agents explore creatively. Orchestrator casts roles dynamically based on what it finds. |
+| **DISCOVER** | An open question — "go figure this out" | Adaptive — starts analytical, escalates to scientific when hypotheses crystallize | Free exploration. Scout first (problem positioning + novelty gate), form hypotheses, pursue multiple paths in parallel. Agents explore creatively. Orchestrator casts roles dynamically based on what it finds. |
 | **PROVE** | A specific hypothesis or detailed PROMPT.md | Scientific/Experimental — full gates from the start | Structured hypothesis testing. Pre-registration, controlled experiments, statistical validation, replication for high-impact findings. |
 | **STATUS** | (meta) | — | Query swarm state |
 | **RECALL** | (meta) | — | Search knowledge store |
@@ -246,7 +246,7 @@ flowchart LR
 ### Why two modes?
 
 - **BUILD, INVESTIGATE, EXPLORE, HYBRID were artificial distinctions.** When someone says "figure out why X is slow," they want discovery — whether that involves building test harnesses, exploring alternatives, or investigating causally. The orchestrator decides the approach, not the classifier.
-- **Adaptive rigor in DISCOVER mirrors real science.** You don't pre-register before you even know what you're looking at. Start with Scout + exploration; when real hypotheses emerge, engage Methodologist + Statistician.
+- **Adaptive rigor in DISCOVER mirrors real science.** You don't pre-register before you even know what you're looking at. Start with Scout + exploration (problem positioning, novelty assessment); when real hypotheses emerge, engage Methodologist + Statistician.
 - **PROVE is for when the user has already done the discovery mentally.** Detailed PROMPT.md files (like coupled-decisions) skip exploration and go straight to rigorous testing.
 
 ### Creative Freedom Protocol (DISCOVER mode)
@@ -268,7 +268,7 @@ All 12 roles are available in both DISCOVER and PROVE modes. The difference is *
 | Role | File | DISCOVER | PROVE | Key responsibility |
 |------|------|----------|-------|-------------------|
 | Builder 🔨 | `worker-agent.agent.md` | On demand | On demand | Implements code in isolated worktree |
-| Scout 🔍 | `scout.agent.md` | Always first | Always first | Prior knowledge research, SOTA anchoring |
+| Scout 🔍 | `scout.agent.md` | Always first | Always first | Problem positioning, prior knowledge, SOTA anchoring, novelty assessment |
 | Investigator 🔬 | `investigator.agent.md` | When hypotheses emerge | From start | Pre-registered experiments, raw data + SHA-256 |
 | Explorer 🧭 | `explorer.agent.md` | When comparing options | When comparing options | Option evaluation with comparison matrices |
 | Statistician 📊 | `statistician.agent.md` | When rigor escalates | From start | CI, effect sizes, data integrity, p-hacking flags |
@@ -567,7 +567,7 @@ flowchart LR
 |------|-------------|-------------------|----------------|
 | **Builder** | Tests pass + lint clean + PRODUCES exist | `BUILD_COMPLETE` | 5 |
 | **Investigator** | Experiment runs without crash + metric extracted + **EVA passed** + raw data committed | `EXPERIMENT_COMPLETE` | 3 per variant |
-| **Scout** | Knowledge brief written + sources cited | `SCOUT_COMPLETE` | 3 |
+| **Scout** | Knowledge brief written + Problem Positioning complete + sources cited + novelty assessed | `SCOUT_COMPLETE` | 3 |
 | **Critic** | All 5 checklist items evaluated | `REVIEW_COMPLETE` | 2 |
 | **Synthesizer** | Claim-evidence registry complete + no orphan findings | `SYNTHESIS_COMPLETE` | 3 |
 

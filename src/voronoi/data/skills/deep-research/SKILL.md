@@ -39,10 +39,36 @@ citation-backed results with source URLs.
 1. **Formulate specific queries** — not "machine learning" but
    "continual learning methods that prevent catastrophic forgetting
    in transformer models"
-2. **Run /research** for each major topic area (max 3 queries per task)
+2. **Run /research** for each major topic area
 3. **Extract citations** — record source URLs in strategic-context.md
 4. **Cross-reference** with Semantic Scholar for academic depth (if available)
 5. **Record all sources** in the knowledge brief with inline citations
+
+## Problem Positioning Queries
+
+When doing positioning research for the Scout, craft queries that find
+the **FRONTIER**, not the textbook:
+
+**BAD:** "transformer attention mechanisms"
+**GOOD:** "2025 2026 advances in structured context encoding for LLMs"
+
+**BAD:** "multi-agent systems"
+**GOOD:** "multi-agent coordination for scientific discovery latest results"
+
+**BAD:** "optimization"
+**GOOD:** "high-dimensional coupled decision optimization with heterogeneous constraints recent papers"
+
+**Query design rules:**
+- Include year markers (2025, 2026) to bias toward recent work
+- Include "state of the art" or "latest results" to avoid survey papers
+- For the closest-work query, include the specific technique or contribution
+- For methodology comparison, include "methodology" or "approach" plus the specific technique
+- Do NOT search for textbook-level concepts — search for what CHANGED recently
+
+**Three mandatory positioning queries (Scout Phase 0):**
+1. **Frontier:** "[field] latest results 2025 2026 state of the art"
+2. **Sub-problem:** "[specific technique/approach] recent advances methodology comparison"
+3. **Closest work:** "[one-sentence investigation description] published results"
 
 ## Rules
 
@@ -50,7 +76,7 @@ citation-backed results with source URLs.
 - If /research returns no relevant results, state "no prior art found" explicitly
 - Each claim in the knowledge brief must trace to a /research citation or a
   Semantic Scholar paper
-- Budget: /research uses premium requests — limit to 3 queries per task
+- Run as many /research queries as needed to ground claims properly
 
 ## When NOT to Use
 

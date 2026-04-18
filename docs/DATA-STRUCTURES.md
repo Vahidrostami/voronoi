@@ -2,7 +2,7 @@
 
 > All dataclasses, enums, database schemas, file formats, and JSON schemas used across the project.
 
-**TL;DR**: Key types: `ClassifiedIntent` (intent.py), `Investigation` (queue.py), `PreRegistration`/`Hypothesis`/`ConvergenceResult` (science/gates.py, science/convergence.py), `DispatcherConfig`/`RunningInvestigation` (dispatcher.py). Two SQLite DBs: `queue.db` (investigations) + `memory.db` (chat). `.swarm/` files: belief-map.json, eval-score.json, convergence.json, experiments.tsv, verify-log-*.jsonl.
+**TL;DR**: Key types: `ClassifiedIntent` (intent.py), `Investigation` (queue.py), `PreRegistration`/`Hypothesis`/`ConvergenceResult` (science/gates.py, science/convergence.py), `DispatcherConfig`/`RunningInvestigation` (dispatcher.py). Two SQLite DBs: `queue.db` (investigations) + `memory.db` (chat). `.swarm/` files: belief-map.json, eval-score.json, convergence.json, experiments.tsv, verify-log-*.jsonl, novelty-gate.json, scout-brief.md.
 
 ## 1. Enums
 
@@ -709,6 +709,59 @@ Human approval gate for Scientific+ rigor investigations.
 
 Status values: `pending` → `notified` (dispatcher sent Telegram) → `approved` | `revision_requested`.
 When `revision_requested`, includes a `feedback` field with human-written feedback.
+
+Gate types: `pre-registration`, `convergence`, `novelty`.
+
+The `novelty` gate is written by the orchestrator when the Scout's novelty assessment is REDUNDANT:
+```json
+{
+  "gate": "novelty",
+  "status": "pending",
+  "summary": "Scout found published work covering this ground.",
+  "blocking_paper": "[title, URL]",
+  "suggested_pivot": "[how to differentiate]"
+}
+```
+Human response options: `approved` (proceed as replication/extension), `pivot` (adjust question), `abort` (end investigation).
+
+### `.swarm/novelty-gate.json`
+
+Written by the Scout after Problem Positioning (Phase 0). Records the novelty assessment for all three states.
+
+**NOVEL:**
+```json
+{
+  "status": "clear", "assessment": "novel",
+  "gap_statement": "No published work maps structural complexity × model capability × encoding format",
+  "closest_paper": "Smith et al. 2025, Structured Prompting for LLMs",
+  "differentiation": "We use deterministic evaluation over known causal DAGs"
+}
+```
+
+**INCREMENTAL:**
+```json
+{
+  "status": "clear", "assessment": "incremental",
+  "closest_paper": "Smith et al. 2025",
+  "overlap": "Same encoding technique",
+  "differentiation": "Different evaluation methodology",
+  "framing_constraint": "Frame as extension of Smith et al., not independent discovery"
+}
+```
+
+**REDUNDANT:**
+```json
+{
+  "status": "blocked", "assessment": "redundant",
+  "blocking_paper": "Smith et al. 2025",
+  "overlap": "Same methodology and comparable results",
+  "suggested_pivot": "Test on different model families"
+}
+```
+
+### `.swarm/scout-brief.md`
+
+Scout's knowledge brief including Problem Positioning section (field context, current frontier with citations, gap statement, closest prior work deep comparison, novelty assessment), known results, prior approaches, suggested hypotheses, and SOTA methodology.
 
 ---
 
