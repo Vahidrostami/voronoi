@@ -883,3 +883,43 @@ class TestTribunalPrompt:
         )
         assert "encoding → accessibility → reasoning" in prompt
         assert "Causal Model Context" in prompt
+
+
+class TestBuildRedTeamPrompt:
+    """Red Team prompt must be cold-context: no investigation history leaks in."""
+
+    def test_instructs_cold_context(self):
+        from voronoi.server.prompt import build_red_team_prompt
+        prompt = build_red_team_prompt(
+            workspace_path="/tmp/ws",
+            codename="Vermillion",
+            rigor="scientific",
+        )
+        # Identity and workspace
+        assert "Red Team" in prompt
+        assert "Vermillion" in prompt
+        assert "/tmp/ws" in prompt
+        # Cold-context discipline
+        assert "cold" in prompt.lower()
+        # Points at the ONLY three allowed inputs
+        assert "deliverable.md" in prompt
+        assert "claim-ledger.json" in prompt
+        assert "output/" in prompt
+        # And tells the reviewer what to write
+        assert "red-team-verdict.json" in prompt
+        assert "fatal_flaw" in prompt
+
+    def test_forbids_reading_investigation_history(self):
+        from voronoi.server.prompt import build_red_team_prompt
+        prompt = build_red_team_prompt(workspace_path="/tmp/ws")
+        # Must explicitly tell the reviewer not to read these
+        assert "brief-digest" in prompt or "checkpoint" in prompt
+
+    def test_no_task_snapshot_or_belief_map_injected(self):
+        """The cold prompt must not interpolate investigation state."""
+        from voronoi.server.prompt import build_red_team_prompt
+        prompt = build_red_team_prompt(workspace_path="/tmp/ws")
+        # Signals from warm-start context that should NOT appear
+        assert "Current tasks" not in prompt
+        assert "Belief map" not in prompt
+        assert "OODA cycle" not in prompt

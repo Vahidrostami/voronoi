@@ -30,7 +30,7 @@ def build_orchestrator_prompt(
     codename: str = "",
     prompt_path: str = "PROMPT.md",
     output_dir: str = "",
-    max_agents: int = 4,
+    max_agents: int = 6,
     safe: bool = False,
     prior_context: dict | None = None,
 ) -> str:
@@ -124,7 +124,20 @@ def build_orchestrator_prompt(
     sections.append(
         f"**Mode:** {mode}\n"
         f"**Rigor:** {rigor}\n"
-        f"**Max concurrent agents:** {max_agents}\n"
+        f"**Max parallel hypothesis-tranches:** {max_agents}\n"
+    )
+    sections.append(
+        "\n### Hypothesis-Tranche Parallelism\n\n"
+        "Think in **tranches**, not in workers. A *tranche* is one hypothesis arm "
+        "(a lead hypothesis + its controls + its sensitivity variants) dispatched "
+        "as a coherent unit. A tranche may internally fan out to several worker "
+        "agents (e.g. one runner per variant), but scientifically it counts as "
+        "ONE arm of comparison.\n\n"
+        f"You may run up to **{max_agents} tranches in parallel**. Prefer running "
+        "hypotheses simultaneously on the same held-out data and same seeds — "
+        "serialization destroys comparability across arms. When a tranche finishes, "
+        "use its slot for a new tranche rather than for a new variant of an "
+        "already-finished arm.\n"
     )
     sections.append(f"\n**Project brief:** Read `{prompt_path}` completely — every line matters.\n")
     if output_dir:
@@ -436,7 +449,7 @@ def build_orchestrator_prompt(
         "- No overlapping file scopes between agents\n"
         "- Diagnose failures (check git log, tmux output) before retrying\n"
         "- Push all completed work to remote when done\n"
-        f"- Max concurrent agents: {max_agents}\n"
+        f"- Max parallel hypothesis-tranches: {max_agents}\n"
     )
     if safe:
         sections.append(
@@ -754,6 +767,75 @@ SKILL_MAP: dict[str, list[str]] = {
         ".github/skills/compilation-protocol/SKILL.md",
     ],
 }
+
+
+def build_red_team_prompt(
+    *,
+    workspace_path: str,
+    codename: str = "",
+    rigor: str = "scientific",
+) -> str:
+    """Build a COLD-CONTEXT prompt for the Red Team adversarial reviewer.
+
+    The Red Team is invoked once at the end of a Scientific+ investigation.
+    It must review the deliverable on its own merits, without having read
+    the investigation history, worker logs, orchestrator checkpoint, or
+    any agent chatter.  Therefore this prompt deliberately omits the
+    brief digest, belief map, OODA state, and task snapshots that the
+    orchestrator and worker prompts include.
+
+    The only inputs the Red Team receives beyond this prompt are:
+      - `.swarm/deliverable.md` (the final claims)
+      - `.swarm/claim-ledger.json` (asserted/locked claims with provenance)
+      - `output/**` (raw artifacts referenced by the deliverable)
+
+    Output: a single JSON verdict at `.swarm/red-team-verdict.json` that
+    gates convergence (see INV-47 and `science/convergence.py`).
+    """
+    label = codename or "Red Team"
+    sections: list[str] = [
+        "# Red Team Review — Cold Context\n\n",
+        (
+            "You are the **Red Team**, an independent adversarial reviewer. "
+            "You have NOT read the investigation history, worker logs, "
+            "orchestrator checkpoint, or agent discussions. This is "
+            "deliberate: judge the deliverable the way a skeptical peer "
+            "reviewer would judge a paper — on its own merits.\n\n"
+        ),
+        f"**Reviewer codename:** {label}\n",
+        f"**Workspace:** {workspace_path}\n",
+        f"**Rigor:** {rigor}\n\n",
+        "## Read ONLY These Files\n\n"
+        f"1. `{workspace_path}/.swarm/deliverable.md`\n"
+        f"2. `{workspace_path}/.swarm/claim-ledger.json`\n"
+        f"3. `{workspace_path}/output/**` (artifacts cited by the deliverable)\n\n"
+        "Do NOT read `.swarm/brief-digest.md`, `.swarm/checkpoint*.json`, "
+        "worker logs, or Beads task history. If the deliverable does not "
+        "stand on its own, that is itself a finding.\n\n"
+        "## Role File\n\n"
+        "Read `.github/agents/red-team.agent.md` for the full checklist "
+        "(EVIDENCE, PROVENANCE, ALTERNATIVES, CONFOUNDS, REPLICATION, "
+        "FABRICATION, STATISTICS, SCOPE).\n\n"
+        "## Output\n\n"
+        f"Write exactly one JSON file: `{workspace_path}/.swarm/red-team-verdict.json`\n\n"
+        "```json\n"
+        "{\n"
+        '  "verdict": "pass" | "pass_with_caveats" | "fatal_flaw",\n'
+        '  "reviewed_claims": ["..."],\n'
+        '  "findings": [\n'
+        '    {"claim_id": "...", "severity": "info|minor|major|fatal",\n'
+        '     "check": "EVIDENCE|PROVENANCE|ALTERNATIVES|CONFOUNDS|REPLICATION|FABRICATION|STATISTICS|SCOPE",\n'
+        '     "comment": "..."}\n'
+        "  ],\n"
+        '  "reason": "one-line summary",\n'
+        '  "reviewed_at": "<ISO-8601>"\n'
+        "}\n"
+        "```\n\n"
+        "A `fatal_flaw` verdict BLOCKS convergence. Err on the side of "
+        "calling out weaknesses: a minor finding costs the PI a few "
+        "minutes; a missed fatal flaw costs the PI a paper.\n",
+    ]
+    return "".join(sections)
 
 
 def build_tribunal_prompt(

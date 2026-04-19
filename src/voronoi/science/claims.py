@@ -291,6 +291,10 @@ class ClaimLedger:
         """Get all challenged claims."""
         return [c for c in self.claims if c.status == STATUS_CHALLENGED]
 
+    def get_retired(self) -> list[Claim]:
+        """Get all retired claims (superseded/refuted)."""
+        return [c for c in self.claims if c.status == STATUS_RETIRED]
+
     def get_pending_objections(self) -> list[Objection]:
         """Get all unresolved objections."""
         return [o for o in self.objections
@@ -612,3 +616,82 @@ def resolve_lineage_id(investigation_id: int, get_fn) -> int:
             return current_id
         current_id = inv.parent_id
     return current_id
+
+
+# ---------------------------------------------------------------------------
+# Cross-lineage iteration (dead-ends query + observability)
+# ---------------------------------------------------------------------------
+
+def iter_all_ledgers(base_dir: Path | None = None):
+    """Yield ``(lineage_id, ClaimLedger)`` for every ledger on disk.
+
+    Used by the dead-ends query and cross-lineage knowledge recall.  Lineages
+    whose ledger file is missing or corrupt are skipped silently.
+    """
+    base = base_dir or (Path.home() / ".voronoi")
+    ledgers_dir = base / "ledgers"
+    if not ledgers_dir.is_dir():
+        return
+    for child in sorted(ledgers_dir.iterdir()):
+        if not child.is_dir():
+            continue
+        try:
+            lineage_id = int(child.name)
+        except ValueError:
+            continue
+        ledger = load_ledger(lineage_id, base_dir=base)
+        if ledger.claims or ledger.objections:
+            yield lineage_id, ledger
+
+
+# ---------------------------------------------------------------------------
+# Snapshot / diff helpers (progress-digest claim-delta surfacing)
+# ---------------------------------------------------------------------------
+
+def ledger_state_map(ledger: ClaimLedger) -> dict[str, str]:
+    """Return ``{claim_id: status}`` for cheap diffing across polls."""
+    return {c.id: c.status for c in ledger.claims}
+
+
+def diff_ledger_states(
+    old: dict[str, str],
+    new: dict[str, str],
+    ledger: ClaimLedger | None = None,
+) -> list[dict]:
+    """Return a list of claim-delta events for use in progress digests.
+
+    Each delta is a dict with keys: ``kind`` (``new`` | ``transition``),
+    ``claim_id``, ``from_status`` (or None for ``new``), ``to_status``,
+    ``statement`` (if ``ledger`` provided — first 80 chars for display).
+    Retirements are emitted so the digest can mark dead ends.
+    """
+    deltas: list[dict] = []
+    claim_lookup: dict[str, Claim] = (
+        {c.id: c for c in ledger.claims} if ledger is not None else {}
+    )
+    for claim_id, new_status in new.items():
+        old_status = old.get(claim_id)
+        if old_status is None:
+            deltas.append({
+                "kind": "new",
+                "claim_id": claim_id,
+                "from_status": None,
+                "to_status": new_status,
+                "statement": _statement_preview(claim_lookup.get(claim_id)),
+            })
+        elif old_status != new_status:
+            deltas.append({
+                "kind": "transition",
+                "claim_id": claim_id,
+                "from_status": old_status,
+                "to_status": new_status,
+                "statement": _statement_preview(claim_lookup.get(claim_id)),
+            })
+    return deltas
+
+
+def _statement_preview(claim: Claim | None, max_len: int = 80) -> str:
+    if claim is None:
+        return ""
+    stmt = claim.statement or ""
+    return stmt if len(stmt) <= max_len else stmt[: max_len - 1] + "…"

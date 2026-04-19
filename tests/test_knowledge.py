@@ -377,3 +377,51 @@ class TestFederatedKnowledge:
         response = fk.format_search_response("nonexistent")
         assert "🌐" in response
         assert "No cross-investigation" in response
+
+
+# ---------------------------------------------------------------------------
+# Dead-ends / negative findings (F1 — Negative-results corpus)
+# ---------------------------------------------------------------------------
+
+class TestSearchDeadEnds:
+    @patch("voronoi.gateway.knowledge._run_bd")
+    def test_returns_only_negative_findings(self, mock_bd, tmp_path):
+        db_path = tmp_path / "knowledge.db"
+        fk = FederatedKnowledge(db_path)
+
+        mock_bd.return_value = (0, json.dumps([
+            {"id": "bd-1", "title": "FINDING: Cache improves throughput",
+             "notes": "VALENCE:positive\nEFFECT_SIZE:2.3"},
+            {"id": "bd-2", "title": "FINDING: Dropout beyond 0.5 hurts accuracy",
+             "notes": "VALENCE:negative\nEFFECT_SIZE:-0.4"},
+            {"id": "bd-3", "title": "FINDING: No effect of batch size",
+             "notes": "VALENCE:negative\nEFFECT_SIZE:0.02"},
+        ]))
+        fk.sync_findings("inv-1", "Alpha", tmp_path)
+
+        results = fk.search_dead_ends(query="", max_results=10)
+        valences = {f.valence for f in results}
+        assert valences == {"negative"}
+        assert len(results) == 2
+
+    @patch("voronoi.gateway.knowledge._run_bd")
+    def test_filters_by_query(self, mock_bd, tmp_path):
+        db_path = tmp_path / "knowledge.db"
+        fk = FederatedKnowledge(db_path)
+
+        mock_bd.return_value = (0, json.dumps([
+            {"id": "bd-1", "title": "FINDING: Dropout hurts accuracy",
+             "notes": "VALENCE:negative"},
+            {"id": "bd-2", "title": "FINDING: Batch size irrelevant",
+             "notes": "VALENCE:negative"},
+        ]))
+        fk.sync_findings("inv-1", "Alpha", tmp_path)
+
+        results = fk.search_dead_ends(query="dropout", max_results=10)
+        assert len(results) == 1
+        assert "Dropout" in results[0].title
+
+    def test_empty_db_returns_empty(self, tmp_path):
+        db_path = tmp_path / "knowledge.db"
+        fk = FederatedKnowledge(db_path)
+        assert fk.search_dead_ends(query="") == []

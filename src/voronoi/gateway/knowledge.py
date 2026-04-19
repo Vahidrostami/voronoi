@@ -460,3 +460,76 @@ class FederatedKnowledge:
             lines.append("")
 
         return "\n".join(lines)
+
+    def search_dead_ends(self, query: str = "", max_results: int = 10) -> list[Finding]:
+        """Return negative-valence findings across all investigations.
+
+        Used by the dead-ends query to surface refuted hypotheses and
+        approaches that did not work.  An empty ``query`` returns the most
+        recent negatives overall; a non-empty query filters by BM25/LIKE on
+        title+notes exactly as ``search``.
+        """
+        if not self.db_path.exists():
+            return []
+
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            query = query.strip()
+            if query:
+                words = [w.replace('"', '') for w in query.split() if w.replace('"', '')]
+                escaped = " ".join(f'"{w}"' for w in words)
+                if not escaped:
+                    return []
+                if self._fts_enabled:
+                    try:
+                        cursor = conn.execute(
+                            "SELECT f.id, f.title, f.notes, f.investigation, f.codename,"
+                            "       f.effect_size, f.valence, f.confidence, f.robust"
+                            "  FROM findings_fts"
+                            "  JOIN findings f ON findings_fts.rowid = f.rowid"
+                            "  WHERE findings_fts MATCH ? AND f.valence = 'negative'"
+                            "  ORDER BY bm25(findings_fts)"
+                            "  LIMIT ?",
+                            (escaped, max_results),
+                        )
+                    except sqlite3.OperationalError:
+                        return []
+                else:
+                    like_query = f"%{' '.join(words).lower()}%"
+                    cursor = conn.execute(
+                        "SELECT id, title, notes, investigation, codename,"
+                        "       effect_size, valence, confidence, robust"
+                        "  FROM findings"
+                        "  WHERE valence = 'negative' AND lower(title || ' ' || notes) LIKE ?"
+                        "  ORDER BY synced_at DESC"
+                        "  LIMIT ?",
+                        (like_query, max_results),
+                    )
+            else:
+                cursor = conn.execute(
+                    "SELECT id, title, notes, investigation, codename,"
+                    "       effect_size, valence, confidence, robust"
+                    "  FROM findings"
+                    "  WHERE valence = 'negative'"
+                    "  ORDER BY synced_at DESC"
+                    "  LIMIT ?",
+                    (max_results,),
+                )
+
+            results: list[Finding] = []
+            for row in cursor:
+                f = Finding(
+                    id=f"{row[4]}:{row[0]}" if row[4] else row[0],
+                    title=row[1],
+                    status="closed",
+                    priority=1,
+                    notes=row[2].split("\n") if row[2] else [],
+                    effect_size=row[5] or None,
+                    valence=row[6] or None,
+                    confidence=row[7] or None,
+                    robust=row[8] or None,
+                )
+                results.append(f)
+            return results
+        finally:
+            conn.close()

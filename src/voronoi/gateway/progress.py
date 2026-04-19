@@ -569,9 +569,18 @@ def build_digest(
     design_invalids = [e for e in events_since_last if e.get("type") == "design_invalid"]
     serendipities = [e for e in events_since_last if e.get("type") == "serendipity"]
     rigor_changes = [e for e in events_since_last if e.get("type") == "rigor_escalation"]
+    claim_deltas = [e for e in events_since_last if e.get("type") == "claim_delta"]
 
-    # Determine if this update contains a milestone worth a new notification
-    has_milestone = bool(findings or design_invalids or serendipities or rigor_changes)
+    # Milestones worth a notification: findings, design invalids, serendipity,
+    # rigor escalation, OR a claim locked/replicated/challenged (paper-level move).
+    significant_claim_delta = any(
+        d.get("to_status") in ("locked", "replicated", "challenged", "retired")
+        for d in claim_deltas
+    )
+    has_milestone = bool(
+        findings or design_invalids or serendipities or rigor_changes
+        or significant_claim_delta
+    )
 
     lines: list[str] = []
     is_early = phase in ("starting", "scouting", "planning")
@@ -622,6 +631,9 @@ def build_digest(
             raw = r.get("msg", "")
             desc = raw.replace("📐 *Rigor escalated*", "").split("\n")[0].strip()
             milestones.append(f"📐 Rigor escalated{desc}")
+    if claim_deltas:
+        for d in claim_deltas:
+            milestones.append(_format_claim_delta(d))
     if new_tasks and not completed and not findings:
         milestones.append(f"Planned {len(new_tasks)} new tasks")
 
@@ -784,6 +796,33 @@ def _compact_finding_line(msg: str, max_len: int = 100) -> str:
     return text
 
 
+def _format_claim_delta(event: dict) -> str:
+    """Render a claim_delta event as a single milestone line.
+
+    Examples:
+      ✎ New claim C7 (provisional): EWC outperforms replay on TinyCIFAR
+      🔒 Claim C3 asserted → locked: EWC outperforms replay
+      ⚡ Claim C12 challenged: Dropout 0.5 hurts accuracy
+      ✗ Claim C5 retired: First-run baseline
+    """
+    claim_id = event.get("claim_id", "?")
+    to_status = event.get("to_status", "")
+    statement = event.get("statement", "") or ""
+    suffix = f": {statement}" if statement else ""
+    if event.get("kind") == "new":
+        return f"✎ New claim {claim_id} ({to_status}){suffix}"
+    from_status = event.get("from_status", "")
+    icon = {
+        "locked": "🔒",
+        "replicated": "🔒🔒",
+        "challenged": "⚡",
+        "retired": "✗",
+        "asserted": "✎",
+        "provisional": "✎",
+    }.get(to_status, "✎")
+    return f"{icon} Claim {claim_id} {from_status} → {to_status}{suffix}"
+
+
 def _experiment_summary(workspace: Path) -> str:
     """Read experiments.tsv and return a one-line summary."""
     rows = _read_all_experiment_rows(workspace)
@@ -919,6 +958,26 @@ def format_failure(codename: str, reason: str, elapsed_sec: float,
 def format_alert(codename: str, message: str) -> str:
     """Format an alert — something needs attention."""
     return f"⚠️ *{codename}* — heads up:\n{message}"
+
+
+def format_learning_stalled(codename: str, elapsed_min: float) -> str:
+    """Format a LEARNING_STALLED alert.
+
+    Fires when the swarm has run for a substantial window without a new
+    finding or a claim-status transition — i.e. tokens are burning without
+    new evidence accumulating.  The PI should consider pivoting, adding
+    compute, summoning a Red Team review, or ending with current confidence.
+    """
+    minutes = int(round(elapsed_min))
+    return (
+        f"🪫 *{codename}* — learning stalled for ~{minutes} min.\n"
+        "No new findings or claim transitions in that window.\n\n"
+        "Options:\n"
+        "• `/voronoi pivot <new angle>` — redirect the investigation\n"
+        "• `/voronoi ask <question>` — interrogate the agents\n"
+        "• `/voronoi deliberate` — reason about what's next\n"
+        "• `/voronoi complete <id>` — ship with current confidence"
+    )
 
 
 def format_restart(codename: str, attempt: int, max_retries: int,

@@ -313,6 +313,40 @@ class ConvergenceResult:
     blockers: list[str] = field(default_factory=list)
 
 
+# -- Red Team verdict gate (INV-47) -----------------------------------------
+
+
+_RED_TEAM_VERDICT_FILE = "red-team-verdict.json"
+_RED_TEAM_PASS_VERDICTS = {"pass", "pass_with_caveats"}
+_RED_TEAM_FAIL_VERDICT = "fatal_flaw"
+
+
+def _check_red_team_verdict(workspace: Path) -> list[str]:
+    """Return blockers if the Red Team verdict is missing or fatal.
+
+    Scientific+ rigor requires an independent adversarial reviewer to have
+    inspected the deliverable and written `.swarm/red-team-verdict.json`
+    with a `verdict` field in {pass, pass_with_caveats, fatal_flaw}.
+    Missing file, unparseable JSON, or fatal_flaw verdict all block
+    convergence — the orchestrator must dispatch the red-team agent (or
+    address the flagged flaw) before retrying.
+    """
+    path = workspace / ".swarm" / _RED_TEAM_VERDICT_FILE
+    if not path.exists():
+        return ["Red Team review missing — dispatch the red-team agent"]
+    try:
+        data = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return ["Red Team verdict file is unreadable — re-run the red-team agent"]
+    verdict = (data.get("verdict") or "").strip().lower()
+    if verdict == _RED_TEAM_FAIL_VERDICT:
+        reason = data.get("reason", "fatal flaw identified")
+        return [f"Red Team blocked convergence: {reason}"]
+    if verdict not in _RED_TEAM_PASS_VERDICTS:
+        return [f"Red Team verdict is invalid: {verdict or '(missing)'}"]
+    return []
+
+
 def check_convergence(workspace: Path, rigor: str,
                       eval_score: float = 0.0,
                       improvement_rounds: int = 0) -> ConvergenceResult:
@@ -404,6 +438,13 @@ def check_convergence(workspace: Path, rigor: str,
         fragile = _helpers._find_undocumented_fragile(workspace, tasks)
         if fragile:
             blockers.append(f"{len(fragile)} fragile findings without conditions documented")
+
+        # Red Team gate (INV-47): scientific+ rigor requires an independent
+        # adversarial review verdict in .swarm/red-team-verdict.json before
+        # convergence is permitted.  A fatal_flaw verdict blocks; pass or
+        # pass_with_caveats allows the normal downstream gates to decide.
+        rt_blockers = _check_red_team_verdict(workspace)
+        blockers.extend(rt_blockers)
 
     if rigor == "experimental":
         unreplicated = _helpers._find_unreplicated_high_impact(workspace, tasks)

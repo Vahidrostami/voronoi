@@ -64,6 +64,19 @@ from voronoi.science import (
 from voronoi.science.consistency import _fetch_tasks
 
 
+def _write_red_team_pass(workspace: Path, verdict: str = "pass") -> None:
+    """Scientific+ convergence now requires .swarm/red-team-verdict.json (INV-47)."""
+    swarm = workspace / ".swarm"
+    swarm.mkdir(exist_ok=True)
+    (swarm / "red-team-verdict.json").write_text(json.dumps({
+        "verdict": verdict,
+        "reviewed_claims": [],
+        "findings": [],
+        "reason": "test fixture",
+        "reviewed_at": "2026-01-01T00:00:00Z",
+    }))
+
+
 # ---------------------------------------------------------------------------
 # _fetch_tasks filtering
 # ---------------------------------------------------------------------------
@@ -1700,6 +1713,7 @@ class TestConvergenceScientificCriteriaOverride:
             {"id": "SC2", "description": "Pipeline 10x", "met": True},
         ])
         self._stub_helpers(monkeypatch)
+        _write_red_team_pass(tmp_path)
         # Provide a resolved belief map
         from voronoi.science import BeliefMap, Hypothesis, save_belief_map
         bm = BeliefMap(hypotheses=[
@@ -2135,6 +2149,7 @@ class TestNegativeResultConvergence:
                  "posterior": 0.2, "status": "refuted"},
             ],
         }))
+        _write_red_team_pass(tmp_path)
         # Valid negative: deliver + eval score + contradiction + improvement done
         result = check_convergence(tmp_path, "scientific", eval_score=0.60,
                                     improvement_rounds=1)
@@ -2642,3 +2657,84 @@ class TestSentinelEmptyResolve:
         )
         result = validate_experiment_contract(tmp_path, contract=contract, trigger="test")
         assert result.passed is True
+
+
+# ---------------------------------------------------------------------------
+# Red Team Gate (INV-47) — Scientific+ requires .swarm/red-team-verdict.json
+# ---------------------------------------------------------------------------
+
+class TestRedTeamConvergenceGate:
+    """Scientific+ convergence must be gated by an independent Red Team verdict."""
+
+    def _stub_clear_other_blockers(self, monkeypatch):
+        monkeypatch.setattr("voronoi.science.consistency._fetch_tasks", lambda ws: [])
+        monkeypatch.setattr("voronoi.science.consistency._find_theories",
+                            lambda ws, tasks: [{"status": "refuted"}])
+        monkeypatch.setattr("voronoi.science.consistency._find_tested_predictions",
+                            lambda ws, tasks: [{"id": "pred-1"}])
+
+    def _setup_converging_workspace(self, tmp_path, monkeypatch):
+        (tmp_path / ".swarm").mkdir()
+        save_success_criteria(tmp_path, [
+            {"id": "SC1", "description": "x", "met": True},
+        ])
+        from voronoi.science import BeliefMap, Hypothesis, save_belief_map
+        save_belief_map(tmp_path, BeliefMap(hypotheses=[
+            Hypothesis(id="H1", name="h", prior=0.5, posterior=0.9, status="confirmed"),
+        ]))
+        self._stub_clear_other_blockers(monkeypatch)
+
+    def test_scientific_blocks_without_verdict(self, tmp_path, monkeypatch):
+        self._setup_converging_workspace(tmp_path, monkeypatch)
+        result = check_convergence(tmp_path, "scientific", eval_score=0.80)
+        assert result.converged is False
+        assert any("red team" in b.lower() and "missing" in b.lower()
+                   for b in result.blockers)
+
+    def test_scientific_blocks_on_fatal_flaw(self, tmp_path, monkeypatch):
+        self._setup_converging_workspace(tmp_path, monkeypatch)
+        (tmp_path / ".swarm" / "red-team-verdict.json").write_text(json.dumps({
+            "verdict": "fatal_flaw",
+            "reason": "primary claim lacks replication",
+            "findings": [], "reviewed_claims": [],
+            "reviewed_at": "2026-01-01T00:00:00Z",
+        }))
+        result = check_convergence(tmp_path, "scientific", eval_score=0.80)
+        assert result.converged is False
+        assert any("red team blocked" in b.lower() for b in result.blockers)
+        assert any("lacks replication" in b.lower() for b in result.blockers)
+
+    def test_scientific_passes_with_pass_verdict(self, tmp_path, monkeypatch):
+        self._setup_converging_workspace(tmp_path, monkeypatch)
+        _write_red_team_pass(tmp_path, verdict="pass")
+        result = check_convergence(tmp_path, "scientific", eval_score=0.80)
+        assert result.converged is True
+
+    def test_pass_with_caveats_is_not_a_blocker(self, tmp_path, monkeypatch):
+        self._setup_converging_workspace(tmp_path, monkeypatch)
+        _write_red_team_pass(tmp_path, verdict="pass_with_caveats")
+        result = check_convergence(tmp_path, "scientific", eval_score=0.80)
+        rt_blockers = [b for b in result.blockers if "red team" in b.lower()]
+        assert rt_blockers == []
+
+    def test_invalid_verdict_blocks(self, tmp_path, monkeypatch):
+        self._setup_converging_workspace(tmp_path, monkeypatch)
+        (tmp_path / ".swarm" / "red-team-verdict.json").write_text(json.dumps({
+            "verdict": "looks_fine",  # not a valid verdict
+        }))
+        result = check_convergence(tmp_path, "scientific", eval_score=0.80)
+        assert any("invalid" in b.lower() for b in result.blockers)
+
+    def test_unreadable_verdict_blocks(self, tmp_path, monkeypatch):
+        self._setup_converging_workspace(tmp_path, monkeypatch)
+        (tmp_path / ".swarm" / "red-team-verdict.json").write_text("{not json")
+        result = check_convergence(tmp_path, "scientific", eval_score=0.80)
+        assert any("unreadable" in b.lower() for b in result.blockers)
+
+    def test_adaptive_rigor_skips_gate(self, tmp_path):
+        """Adaptive rigor does NOT require Red Team review (cost / speed)."""
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "deliverable.md").write_text("# Done")
+        result = check_convergence(tmp_path, "adaptive", eval_score=0.80)
+        rt_blockers = [b for b in result.blockers if "red team" in b.lower()]
+        assert rt_blockers == []

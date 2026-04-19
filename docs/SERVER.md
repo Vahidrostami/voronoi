@@ -190,7 +190,7 @@ The dispatcher is the server's main loop. It polls the queue, provisions workspa
 class DispatcherConfig:
     base_dir: Path           # ~/.voronoi (default)
     max_concurrent: int      # 2 — max simultaneous investigations
-    max_agents: int          # 4 — max agents per investigation
+    max_agents: int          # 6 — max parallel hypothesis-tranches per investigation (see INV-46)
     agent_command: str       # "copilot" (default)
     agent_flags: str         # "--allow-all" (default)
     orchestrator_model: str  # "" — use default
@@ -199,6 +199,7 @@ class DispatcherConfig:
     timeout_hours: int       # 48 — max investigation runtime
     max_retries: int         # 2 — retry failed launches
     stall_minutes: int       # 45 — minutes without progress before warning
+    learning_stall_minutes: int   # 20 — minutes without new findings/claim transitions before LEARNING_STALLED alert
     pause_timeout_hours: int # 24 — auto-fail paused investigations after this
     context_advisory_hours: int   # 6 — "prioritize convergence" directive
     context_warning_hours: int    # 10 — "delegate remaining work" + force compact
@@ -206,6 +207,13 @@ class DispatcherConfig:
     compact_interval_hours: int   # 6 — workspace state compaction interval
     max_context_restarts: int     # 2 — max proactive context refreshes
 ```
+
+### Progress Event Synthesis
+
+Beyond the worker-emitted event stream, the dispatcher synthesizes two classes of events on every poll:
+
+1. **Claim deltas** (`_synthesize_claim_deltas`) — diffs the persistent claim ledger at `~/.voronoi/ledgers/<lineage_id>/claim-ledger.json` against the last-seen state stored on `RunningInvestigation.last_ledger_map`. Emits synthetic `{"type": "claim_delta", "kind": "new"|"transition", "claim_id", "from_status", "to_status", "statement"}` events. The first call after dispatcher start seeds the baseline without emitting events (`_ledger_baseline_seeded`), so restarts do not re-announce the full ledger. Consumed by `build_digest` — see GATEWAY.md §8.
+2. **Learning-stall alert** (`_update_learning_activity`) — resets `RunningInvestigation.last_learning_activity_at` on any `finding` event or any `claim_delta` with `kind="transition"`. New-provisional claims alone do NOT count as learning. When `now - last_learning_activity_at > learning_stall_minutes * 60`, fires `format_learning_stalled(...)` exactly once per investigation (guarded by `notified_learning_stalled`) and keeps quiet during pre-task phases (`starting`, `scouting`, `planning` with empty `task_snapshot`).
 
 ### Copilot CLI Flags
 

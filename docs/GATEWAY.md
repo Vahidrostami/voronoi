@@ -128,6 +128,7 @@ Central dispatch point for all user actions. Every Telegram command and programm
 | `handle_belief(project_dir) -> str` | Current belief map |
 | `handle_finding(project_dir, finding_id) -> str` | Single finding detail |
 | `handle_claims(project_dir, identifier) -> str` | Current claim ledger state |
+| `handle_dead_ends(project_dir, query) -> str` | Cross-lineage retired/challenged claims + negative findings (see §-dead-ends) |
 | `handle_results(project_dir) -> str` | Recent investigation results |
 | `handle_ops(project_dir, sub, *, ops_allowed) -> str` | Ops diagnostics (see §13) |
 
@@ -337,6 +338,7 @@ class FederatedKnowledge:
     def __init__(self, db_path: Path | None = None): ...
     def sync_findings(self, investigation_id: str, codename: str, workspace: Path) -> int: ...
     def search(self, query: str, max_results: int = 10) -> list[Finding]: ...
+    def search_dead_ends(self, query: str = "", max_results: int = 10) -> list[Finding]: ...
     def format_search_response(self, query: str, max_results: int = 5) -> str: ...
 ```
 
@@ -344,6 +346,15 @@ class FederatedKnowledge:
 - Detecting redundant work across investigations
 - Surfacing prior findings when starting new investigations
 - Building a cumulative knowledge base that grows with each completed study
+
+### Dead-Ends Query (`/voronoi dead-ends`)
+
+`handle_dead_ends(project_dir, query="")` is the institutional memory of what did NOT work. It fuses two sources:
+
+1. **Retired/challenged claims** across all lineages via `iter_all_ledgers(base_dir)` and `ClaimLedger.get_retired()` — claims that were once asserted or locked and later removed or pushed back.
+2. **Negative findings** from the federated index via `FederatedKnowledge.search_dead_ends(query)` — findings whose `valence` column is `"negative"`.
+
+An empty query returns the most recent negatives (no FTS match required). The intent classifier maps `/voronoi dead-ends`, `/voronoi deadends`, and `/voronoi dead_ends` to `WorkflowMode.RECALL` so the handler runs in read-only mode. This view exists so PIs can see "what hypothesis arms are already cold" before dispatching a new run against an already-explored dead end.
 
 ---
 
@@ -506,6 +517,7 @@ def format_complete(codename: str, mode: str, total_tasks: int, closed_tasks: in
 def format_failure(codename: str, reason: str, elapsed_sec: float, closed: int,
                    total: int, log_tail: str, retry_count: int, max_retries: int) -> str
 def format_alert(codename: str, message: str) -> str
+def format_learning_stalled(codename: str, elapsed_min: float) -> str
 def format_restart(codename: str, attempt: int, max_retries: int, log_tail: str) -> str
 def format_wake(codename: str, n_events: int = 0) -> str
 def format_pause(codename: str, reason: str, elapsed_sec: float,
@@ -521,6 +533,24 @@ def estimate_remaining(elapsed_sec: float, done: int, total: int) -> str
 def phase_description(mode: str, phase: str, codename: str = "") -> str  # VOICE-rotated or static
 def phase_position(phase: str) -> tuple[int, int]     # Journey position (step, total)
 ```
+
+### Claim-Delta Milestones
+
+`build_digest` accepts synthetic `{"type": "claim_delta", ...}` events (emitted by the dispatcher — see SERVER.md §3). Each delta renders as a milestone line with an icon keyed to the target status:
+
+| Status transition | Icon | Meaning |
+|---|:-:|---|
+| `locked` | 🔒 | Claim now immutable evidence |
+| `replicated` | 🔒🔒 | Locked claim confirmed on fresh data |
+| `challenged` | ⚡ | PI or red-team pushed back |
+| `retired` | ✗ | Claim removed from the ledger |
+| `asserted` / `provisional` (new) | ✎ | Fresh hypothesis entered the ledger |
+
+Transitions into `locked`, `replicated`, `challenged`, or `retired` escalate the whole digest to `MSG_TYPE_MILESTONE`, guaranteeing a notification.
+
+### LEARNING_STALLED Alert
+
+`format_learning_stalled(codename, elapsed_min)` produces a stand-alone notification sent when the dispatcher detects that no new findings and no claim-status transitions have arrived for `DispatcherConfig.learning_stall_minutes` (default 20). The message lists the PI's options: `pivot`, `ask`, `deliberate`, or `complete`. New-provisional claims alone do NOT reset the stall timer — a claim that never becomes asserted/locked is not learning. See SERVER.md §3 for the detection loop.
 
 ---
 

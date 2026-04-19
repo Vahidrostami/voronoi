@@ -282,6 +282,62 @@ class TestBuildDigest:
         assert "📐" in msg
         assert msg_type == MSG_TYPE_MILESTONE
 
+    def test_digest_with_claim_delta_new(self, tmp_path):
+        msg, msg_type = build_digest(
+            codename="Synapse",
+            mode="discover",
+            phase="investigating",
+            elapsed_sec=3600,
+            task_snapshot={"t1": {"status": "closed", "notes": ""}},
+            workspace=tmp_path,
+            events_since_last=[
+                {"type": "claim_delta", "kind": "new", "claim_id": "C7",
+                 "from_status": None, "to_status": "provisional",
+                 "statement": "EWC beats replay on CIFAR"},
+            ],
+        )
+        assert "C7" in msg
+        assert "New claim" in msg
+        # Provisional new claim is not a milestone
+        assert msg_type == MSG_TYPE_STATUS
+
+    def test_digest_with_claim_locked_is_milestone(self, tmp_path):
+        msg, msg_type = build_digest(
+            codename="Synapse",
+            mode="prove",
+            phase="reviewing",
+            elapsed_sec=7200,
+            task_snapshot={"t1": {"status": "closed", "notes": ""}},
+            workspace=tmp_path,
+            events_since_last=[
+                {"type": "claim_delta", "kind": "transition", "claim_id": "C3",
+                 "from_status": "asserted", "to_status": "locked",
+                 "statement": "EWC beats replay"},
+            ],
+        )
+        assert "C3" in msg
+        assert "🔒" in msg
+        assert "locked" in msg
+        assert msg_type == MSG_TYPE_MILESTONE
+
+    def test_digest_with_claim_retired(self, tmp_path):
+        msg, msg_type = build_digest(
+            codename="Synapse",
+            mode="prove",
+            phase="reviewing",
+            elapsed_sec=7200,
+            task_snapshot={"t1": {"status": "closed", "notes": ""}},
+            workspace=tmp_path,
+            events_since_last=[
+                {"type": "claim_delta", "kind": "transition", "claim_id": "C9",
+                 "from_status": "challenged", "to_status": "retired",
+                 "statement": "Dropout 0.5 hurts"},
+            ],
+        )
+        assert "C9" in msg
+        assert "✗" in msg
+        assert msg_type == MSG_TYPE_MILESTONE
+
 
 class TestBuildDigestWhatsup:
     def test_nothing_running(self):

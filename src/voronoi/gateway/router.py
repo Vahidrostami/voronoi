@@ -35,6 +35,7 @@ from voronoi.gateway.handlers_query import (  # noqa: F401
     handle_belief,
     handle_finding,
     handle_claims,
+    handle_dead_ends,
     handle_ask,
     handle_deliberate,
     handle_ops,
@@ -71,6 +72,7 @@ __all__ = [
     "handle_complete",
     "handle_complete_investigation",
     "handle_review_investigation", "handle_continue_investigation", "handle_claims",
+    "handle_dead_ends",
     "handle_abort", "handle_pivot", "handle_guide",
     "handle_discover", "handle_prove", "handle_paper",
     "handle_recall", "handle_belief", "handle_finding", "handle_ops",
@@ -297,6 +299,8 @@ class CommandRouter:
             elif sub == "claims":
                 arg = args[0] if args else ""
                 return handle_claims(self.project_dir, arg), None
+            elif sub in ("dead-ends", "deadends", "dead_ends"):
+                return handle_dead_ends(self.project_dir, " ".join(args)), None
             elif sub == "ask" and args:
                 return handle_ask(self.project_dir, " ".join(args)), None
             elif sub == "deliberate":

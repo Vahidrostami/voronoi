@@ -576,6 +576,12 @@ class TestCoupledDecisionsCrashFix:
         prompt_file = swarm / "orchestrator-prompt.txt"
         prompt_file.write_text("Test orchestrator prompt for coupled-decisions demo")
 
+        # Red Team pass verdict — scientific+ convergence gate (INV-47)
+        (swarm / "red-team-verdict.json").write_text(json.dumps({
+            "verdict": "pass", "reviewed_claims": [], "findings": [],
+            "reason": "fixture", "reviewed_at": "2026-01-01T00:00:00Z",
+        }))
+
         return swarm
 
     def test_convergence_check_allows_completion_with_criteria_met(self, tmp_path):
@@ -608,6 +614,12 @@ class TestCoupledDecisionsCrashFix:
             {"id": f"SC{i}", "description": f"Criterion {i}", "met": True}
             for i in range(1, 15)
         ])
+
+        # Red Team verdict required at scientific rigor (INV-47)
+        (swarm / "red-team-verdict.json").write_text(json.dumps({
+            "verdict": "pass", "reviewed_claims": [], "findings": [],
+            "reason": "fixture", "reviewed_at": "2026-01-01T00:00:00Z",
+        }))
 
         # Stub out task-based helpers to clear blockers
         monkeypatch.setattr("voronoi.science.consistency._fetch_tasks", lambda ws: [])

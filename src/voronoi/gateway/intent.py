@@ -63,6 +63,7 @@ _COMMAND_PATTERNS: list[tuple[re.Pattern, WorkflowMode, Optional[RigorLevel]]] =
     (re.compile(r"^/voronoi\s+tasks", re.I), WorkflowMode.STATUS, None),
     (re.compile(r"^/voronoi\s+ready", re.I), WorkflowMode.STATUS, None),
     (re.compile(r"^/voronoi\s+recall\b", re.I), WorkflowMode.RECALL, None),
+    (re.compile(r"^/voronoi\s+dead-ends\b", re.I), WorkflowMode.RECALL, None),
     (re.compile(r"^/voronoi\s+discover\b", re.I), WorkflowMode.DISCOVER, RigorLevel.ADAPTIVE),
     (re.compile(r"^/voronoi\s+prove\b", re.I), WorkflowMode.PROVE, RigorLevel.SCIENTIFIC),
     (re.compile(r"^/voronoi\s+guide\b", re.I), WorkflowMode.GUIDE, None),

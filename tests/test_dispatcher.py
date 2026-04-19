@@ -5083,3 +5083,173 @@ class TestBug003PollingWatchdog:
         # Counter reset so we don't re-fire every poll
         assert run.polling_strike_count == 0
         assert any("caught polling" in m.lower() for m in msgs)
+
+
+class TestClaimDeltaSynthesis:
+    """F5 — Claim-delta events synthesized into progress digests."""
+
+    def _mk_run(self, tmp_path):
+        return RunningInvestigation(
+            investigation_id=42,
+            workspace_path=tmp_path,
+            tmux_session="voronoi-inv-42",
+            question="q",
+            mode="discover",
+        )
+
+    def test_first_poll_seeds_baseline_without_events(self, dispatcher_setup):
+        from voronoi.science.claims import (
+            ClaimLedger, PROVENANCE_RUN_EVIDENCE, save_ledger,
+        )
+        d, _, _, base = dispatcher_setup
+        ledger = ClaimLedger()
+        ledger.add_claim("A", PROVENANCE_RUN_EVIDENCE)
+        save_ledger(42, ledger, base_dir=base)
+
+        run = self._mk_run(base)
+        fake_inv = SimpleNamespace(lineage_id=42)
+        with patch.object(d.queue, "get", return_value=fake_inv):
+            events = d._synthesize_claim_deltas(run)
+        assert events == []
+        assert run._ledger_baseline_seeded is True
+        assert run.last_ledger_map == {"C1": "provisional"}
+
+    def test_detects_new_claim(self, dispatcher_setup):
+        from voronoi.science.claims import (
+            ClaimLedger, PROVENANCE_RUN_EVIDENCE, save_ledger,
+        )
+        d, _, _, base = dispatcher_setup
+
+        # First poll: baseline with 1 claim
+        ledger = ClaimLedger()
+        ledger.add_claim("A", PROVENANCE_RUN_EVIDENCE)
+        save_ledger(42, ledger, base_dir=base)
+        run = self._mk_run(base)
+        fake_inv = SimpleNamespace(lineage_id=42)
+        with patch.object(d.queue, "get", return_value=fake_inv):
+            d._synthesize_claim_deltas(run)
+
+            # Second poll: add a new claim
+            ledger.add_claim("B", PROVENANCE_RUN_EVIDENCE)
+            save_ledger(42, ledger, base_dir=base)
+            events = d._synthesize_claim_deltas(run)
+
+        assert len(events) == 1
+        assert events[0]["type"] == "claim_delta"
+        assert events[0]["kind"] == "new"
+        assert events[0]["claim_id"] == "C2"
+        assert events[0]["to_status"] == "provisional"
+
+    def test_detects_status_transition(self, dispatcher_setup):
+        from voronoi.science.claims import (
+            ClaimLedger, PROVENANCE_RUN_EVIDENCE, save_ledger,
+        )
+        d, _, _, base = dispatcher_setup
+
+        ledger = ClaimLedger()
+        ledger.add_claim("A", PROVENANCE_RUN_EVIDENCE)
+        save_ledger(42, ledger, base_dir=base)
+        run = self._mk_run(base)
+        fake_inv = SimpleNamespace(lineage_id=42)
+        with patch.object(d.queue, "get", return_value=fake_inv):
+            d._synthesize_claim_deltas(run)
+
+            ledger.assert_claim("C1")
+            ledger.lock_claim("C1")
+            save_ledger(42, ledger, base_dir=base)
+            events = d._synthesize_claim_deltas(run)
+
+        assert len(events) == 1
+        e = events[0]
+        assert e["kind"] == "transition"
+        assert e["from_status"] == "provisional"
+        assert e["to_status"] == "locked"
+
+    def test_missing_ledger_returns_no_events(self, dispatcher_setup):
+        d, _, _, base = dispatcher_setup
+        run = self._mk_run(base)
+        fake_inv = SimpleNamespace(lineage_id=99)  # no ledger exists
+        with patch.object(d.queue, "get", return_value=fake_inv):
+            events = d._synthesize_claim_deltas(run)
+        # Empty ledger seeds baseline with empty map — still no events
+        assert events == []
+
+
+class TestLearningStalled:
+    """F2 — LEARNING_STALLED alert when no findings/claims for N minutes."""
+
+    def _mk_active_run(self, tmp_path):
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="voronoi-inv-1",
+            question="q",
+            mode="discover",
+            phase="investigating",
+        )
+        run.task_snapshot = {"bd-1": {"status": "in_progress", "title": "x"}}
+        return run
+
+    def test_finding_resets_activity(self, dispatcher_setup):
+        d, msgs, _, base = dispatcher_setup
+        run = self._mk_active_run(base)
+        run.last_learning_activity_at = time.time() - 3600  # very stale
+        d._update_learning_activity(run, [{"type": "finding", "msg": "x"}])
+        assert not run.notified_learning_stalled
+        assert not msgs
+
+    def test_claim_transition_resets_activity(self, dispatcher_setup):
+        d, msgs, _, base = dispatcher_setup
+        run = self._mk_active_run(base)
+        run.last_learning_activity_at = time.time() - 3600
+        d._update_learning_activity(run, [
+            {"type": "claim_delta", "kind": "transition",
+             "from_status": "asserted", "to_status": "locked"},
+        ])
+        assert not run.notified_learning_stalled
+        assert not msgs
+
+    def test_new_claim_alone_does_not_reset(self, dispatcher_setup):
+        d, msgs, _, base = dispatcher_setup
+        run = self._mk_active_run(base)
+        stale_ts = time.time() - (d.config.learning_stall_minutes * 60 + 300)
+        run.last_learning_activity_at = stale_ts
+        d._update_learning_activity(run, [
+            {"type": "claim_delta", "kind": "new",
+             "from_status": None, "to_status": "provisional"},
+        ])
+        assert run.notified_learning_stalled is True
+        assert any("learning stalled" in m.lower() for m in msgs)
+
+    def test_fires_once_after_stall_window(self, dispatcher_setup):
+        d, msgs, _, base = dispatcher_setup
+        run = self._mk_active_run(base)
+        run.last_learning_activity_at = (
+            time.time() - (d.config.learning_stall_minutes * 60 + 120)
+        )
+        d._update_learning_activity(run, [])
+        d._update_learning_activity(run, [])  # second call: should NOT re-fire
+        stalled_msgs = [m for m in msgs if "learning stalled" in m.lower()]
+        assert len(stalled_msgs) == 1
+
+    def test_does_not_fire_before_window(self, dispatcher_setup):
+        d, msgs, _, base = dispatcher_setup
+        run = self._mk_active_run(base)
+        run.last_learning_activity_at = time.time() - 60  # 1 min ago
+        d._update_learning_activity(run, [])
+        assert not run.notified_learning_stalled
+        assert not any("learning stalled" in m.lower() for m in msgs)
+
+    def test_skips_initial_phases_with_no_tasks(self, dispatcher_setup):
+        d, msgs, _, base = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1, workspace_path=base,
+            tmux_session="s", question="q", mode="discover",
+            phase="starting",
+        )
+        run.last_learning_activity_at = (
+            time.time() - (d.config.learning_stall_minutes * 60 + 120)
+        )
+        d._update_learning_activity(run, [])
+        assert not run.notified_learning_stalled
+

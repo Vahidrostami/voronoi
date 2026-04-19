@@ -70,7 +70,7 @@ class TestServerConfig:
     def test_defaults(self, tmp_path):
         config = ServerConfig(base_dir=str(tmp_path / "voronoi"))
         assert config.max_concurrent == 2
-        assert config.max_agents_per_investigation == 4
+        assert config.max_agents_per_investigation == 6
         assert config.sandbox.enabled is True
 
     def test_save_and_load(self, tmp_path):

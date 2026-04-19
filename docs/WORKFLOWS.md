@@ -55,12 +55,17 @@ Phase 3: Test (scientific-level rigor)
 6. **Hypothesis Formation** — As agents report back, orchestrator forms belief map. Results are framed as DELTA from the known frontier (cited in the scout brief). SERENDIPITY events can redirect exploration.
 7. **Plan Review** — At Analytical+ rigor, before dispatching structured investigation work, the orchestrator submits its task decomposition for review. Critic reviews the plan (at Scientific+: Critic + Theorist; at Experimental: + Methodologist). Reviewer writes verdict to `.swarm/plan-review.json`. Orchestrator revises if verdict is REVISE or RESTRUCTURE, then proceeds. One round only.
 8. **Rigor Escalation** — When hypotheses are testable, orchestrator engages Methodologist + Statistician. Pre-registration kicks in.
-9. **Parallel Investigation** — Multiple agents pursue different hypotheses simultaneously
+9. **Parallel Investigation** — Multiple agents pursue different hypotheses simultaneously in **hypothesis tranches** (see *Hypothesis-Tranche Parallelism* below)
 10. **Inner Loop** — Each agent: execute → verify → retry (self-healing)
 11. **OODA Outer Loop** — Orchestrator observes findings, updates belief map, decides next actions
 12. **Review Gates** — Statistician + Critic review findings (activated when rigor escalated)
 13. **Synthesis** — Synthesizer assembles deliverable
 14. **Evaluation** — Evaluator scores output
+15. **Red Team Review (Scientific+ only)** — Before convergence, a cold-context Red Team reviewer reads only the deliverable + claim ledger + raw artifacts and writes `.swarm/red-team-verdict.json`. A `fatal_flaw` verdict blocks convergence until addressed. See INV-47.
+
+### Hypothesis-Tranche Parallelism
+
+The dispatcher's unit of parallelism is a **hypothesis tranche** — ONE hypothesis arm plus its controls and sensitivity variants — not an individual worker (INV-46). The orchestrator may run up to `DispatcherConfig.max_agents` tranches in parallel (default 6). A tranche internally fans out to multiple workers (e.g. one runner per variant) but scientifically counts as one arm of comparison. When a tranche completes, its slot is filled by a NEW tranche rather than by additional variants of an already-resolved arm. Prefer running competing hypotheses simultaneously on the same held-out data and seeds — serialization destroys cross-arm comparability.
 
 ### Convergence
 All active hypotheses resolved OR orchestrator judges exploration complete + eval score ≥ 0.75.

@@ -31,6 +31,7 @@ from voronoi.gateway.progress import (
     format_launch, format_complete, format_failure, format_alert,
     format_negative_result, format_restart, format_wake, format_pause,
     format_duration, phase_description,
+    format_learning_stalled,
     build_digest,
 )
 from voronoi.server.tmux import (
@@ -59,7 +60,7 @@ class DispatcherConfig:
     """Configuration for the dispatcher."""
     base_dir: Path = field(default_factory=lambda: Path.home() / ".voronoi")
     max_concurrent: int = 2
-    max_agents: int = 4
+    max_agents: int = 6
     agent_command: str = "copilot"
     agent_flags: str = "--allow-all"
     orchestrator_model: str = ""  # e.g. "claude-opus-4.6", "" = CLI default
@@ -75,6 +76,7 @@ class DispatcherConfig:
     compact_interval_hours: int = 6    # workspace state compaction interval
     max_context_restarts: int = 2      # max proactive context refreshes
     park_timeout_hours: int = 4        # force-wake parked orchestrator after this
+    learning_stall_minutes: int = 20   # alert if no new findings/claims for this long
 
 
 @dataclass
@@ -116,6 +118,10 @@ class RunningInvestigation:
     _sentinel_missing_contract_warned: bool = False  # Track sentinel missing-contract warning
     notified_reversed_hypotheses: set = field(default_factory=set)  # Track which reversed hypotheses have been alerted
     last_convergence_attempt_at: float = 0  # Throttle _try_convergence_check() calls
+    last_ledger_map: dict[str, str] = field(default_factory=dict)  # claim_id → status for delta detection
+    _ledger_baseline_seeded: bool = False  # First poll seeds baseline without emitting deltas
+    last_learning_activity_at: float = 0  # Last time a new finding/claim transition was observed
+    notified_learning_stalled: bool = False  # Fire LEARNING_STALLED at most once per run
 
     @property
     def label(self) -> str:
@@ -2050,7 +2056,97 @@ class InvestigationDispatcher:
             logger.debug("Event log check failed: %s", e)
         return events
 
+    def _synthesize_claim_deltas(self, run: RunningInvestigation) -> list[dict]:
+        """Detect Claim Ledger changes since the last poll.
+
+        Returns a list of synthetic events with ``type='claim_delta'`` describing
+        new claims and status transitions.  The first invocation seeds
+        ``run.last_ledger_map`` without emitting any events so existing claims
+        are not re-surfaced after a dispatcher restart.
+        """
+        try:
+            from voronoi.science.claims import (
+                diff_ledger_states, ledger_state_map, load_ledger,
+            )
+        except Exception:
+            return []
+        try:
+            inv = self.queue.get(run.investigation_id)
+        except Exception:
+            inv = None
+        lineage_id = (inv.lineage_id if inv and inv.lineage_id is not None
+                      else run.investigation_id)
+        try:
+            ledger = load_ledger(lineage_id, base_dir=self.config.base_dir)
+        except Exception:
+            return []
+
+        current_map = ledger_state_map(ledger)
+        if not run._ledger_baseline_seeded:
+            run.last_ledger_map = current_map
+            run._ledger_baseline_seeded = True
+            return []
+
+        deltas = diff_ledger_states(run.last_ledger_map, current_map, ledger=ledger)
+        run.last_ledger_map = current_map
+
+        events: list[dict] = []
+        for d in deltas:
+            events.append({
+                "type": "claim_delta",
+                "kind": d["kind"],
+                "claim_id": d["claim_id"],
+                "from_status": d.get("from_status"),
+                "to_status": d["to_status"],
+                "statement": d.get("statement", ""),
+            })
+        return events
+
+    def _update_learning_activity(
+        self, run: RunningInvestigation, events: list[dict],
+    ) -> None:
+        """Track learning progress and fire LEARNING_STALLED once when idle.
+
+        A new finding or a claim status transition resets the activity timer.
+        New-provisional claims alone do not reset it (a claim that never
+        becomes asserted/locked is not learning).  If the quiet window
+        exceeds ``config.learning_stall_minutes``, send the alert once.
+        """
+        now = time.time()
+        if run.last_learning_activity_at == 0:
+            run.last_learning_activity_at = now
+
+        has_finding = any(e.get("type") == "finding" for e in events)
+        has_claim_transition = any(
+            e.get("type") == "claim_delta" and e.get("kind") == "transition"
+            for e in events
+        )
+        if has_finding or has_claim_transition:
+            run.last_learning_activity_at = now
+            run.notified_learning_stalled = False
+            return
+
+        if run.notified_learning_stalled:
+            return
+        stall_seconds = self.config.learning_stall_minutes * 60
+        if now - run.last_learning_activity_at < stall_seconds:
+            return
+        # Do not cry stall before the orchestrator has produced anything at all
+        if run.phase in ("starting", "scouting", "planning") and not run.task_snapshot:
+            return
+        run.notified_learning_stalled = True
+        elapsed_min = (now - run.last_learning_activity_at) / 60
+        self.send_message(format_learning_stalled(run.label, elapsed_min))
+
     def _send_progress_batch(self, run: RunningInvestigation, events: list[dict]) -> None:
+        # Synthesize claim-delta events from the persistent claim ledger
+        claim_events = self._synthesize_claim_deltas(run)
+        if claim_events:
+            events = list(events) + claim_events
+
+        # Track learning activity for LEARNING_STALLED detection
+        self._update_learning_activity(run, events)
+
         run.last_digest_events = events  # store for detail retrieval
         msg, msg_type = build_digest(
             codename=run.label,

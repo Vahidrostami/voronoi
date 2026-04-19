@@ -36,6 +36,7 @@ from voronoi.gateway.router import (
     handle_review_investigation,
     handle_continue_investigation,
     handle_claims,
+    handle_dead_ends,
     handle_ask,
     handle_deliberate,
     handle_ops,
@@ -524,6 +525,48 @@ class TestKnowledgeHandlers:
         mock_bd.return_value = (1, "not found")
         result = handle_finding(str(tmp_path), "bd-999")
         assert "not found" in result
+
+    def test_handle_dead_ends_empty(self, tmp_path):
+        """With no ledgers and an empty knowledge DB, returns a friendly message."""
+        from voronoi.gateway.knowledge import FederatedKnowledge
+        mock_q = MagicMock()
+        mock_q.db_path = tmp_path / "queue.db"
+        # No ledgers directory exists under tmp_path → iter_all_ledgers yields nothing
+        empty_fk = FederatedKnowledge(tmp_path / "knowledge.db")
+        with patch("voronoi.gateway.handlers_query._get_queue", return_value=mock_q), \
+             patch("voronoi.gateway.handlers_query._get_federated_knowledge",
+                   return_value=empty_fk):
+            result = handle_dead_ends(str(tmp_path), "")
+        assert "dead ends" in result.lower()
+        assert "No dead ends" in result
+
+    def test_handle_dead_ends_lists_retired_claims(self, tmp_path):
+        """Retired claims from any lineage surface in the dead-ends listing."""
+        from voronoi.science.claims import (
+            ClaimLedger, PROVENANCE_RUN_EVIDENCE, save_ledger,
+        )
+        from voronoi.gateway.knowledge import FederatedKnowledge
+
+        ledger = ClaimLedger()
+        ledger.add_claim("Dropout 0.5 hurts accuracy", PROVENANCE_RUN_EVIDENCE)
+        ledger.retire_claim("C1")
+        save_ledger(7, ledger, base_dir=tmp_path)
+
+        mock_q = MagicMock()
+        mock_q.db_path = tmp_path / "queue.db"
+        fake_inv = MagicMock()
+        fake_inv.codename = "Mimir"
+        mock_q.get.return_value = fake_inv
+
+        empty_fk = FederatedKnowledge(tmp_path / "knowledge.db")
+        with patch("voronoi.gateway.handlers_query._get_queue", return_value=mock_q), \
+             patch("voronoi.gateway.handlers_query._get_federated_knowledge",
+                   return_value=empty_fk):
+            result = handle_dead_ends(str(tmp_path), "")
+
+        assert "Mimir" in result
+        assert "Dropout" in result
+        assert "retired" in result.lower()
 
 
 # ---------------------------------------------------------------------------

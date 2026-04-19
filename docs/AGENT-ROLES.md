@@ -2,7 +2,7 @@
 
 > 12 core roles + 4 paper-track roles, activation rules, verify loops, role interactions.
 
-**TL;DR**: 12 core roles: Orchestrator (always), Builder+Critic (Standard+), Scout+Investigator+Explorer+Statistician+Synthesizer+Evaluator (Analytical+), Theorist+Methodologist (Scientific+), Scribe (LaTeX compilation). Plus **4 paper-track roles** (Outliner, Lit-Synthesizer, Figure-Critic, Refiner) activated only when producing a submission-ready manuscript via `/voronoi paper <codename>`. Each worker has a verify loop (test→retry→escalate). Roles defined in `src/voronoi/data/agents/*.agent.md`, never in Python.
+**TL;DR**: 12 core roles: Orchestrator (always), Builder+Critic (Standard+), Scout+Investigator+Explorer+Statistician+Synthesizer+Evaluator (Analytical+), Theorist+Methodologist (Scientific+), Scribe (LaTeX compilation). Plus **4 paper-track roles** (Outliner, Lit-Synthesizer, Figure-Critic, Refiner) activated only when producing a submission-ready manuscript via `/voronoi paper <codename>`. Plus **Red Team** (cold-context adversarial reviewer invoked before Scientific+ convergence — INV-47). Each worker has a verify loop (test→retry→escalate). Roles defined in `src/voronoi/data/agents/*.agent.md`, never in Python.
 
 ## 1. Role Registry
 
@@ -24,6 +24,7 @@
 | 14 | Lit-Synthesizer | `lit-synthesizer.agent.md` | Paper-track | Fills every citation slot with a Semantic Scholar-verified entry (Levenshtein ≥0.70) |
 | 15 | Figure-Critic | `figure-critic.agent.md` | Paper-track | Text-only rubric over plotting script + `.meta.json` sidecar — no VLM needed |
 | 16 | Refiner | `refiner.agent.md` | Paper-track + Scientific+ | Simulated peer review with safety halt rules; max 3 rounds |
+| 17 | Red Team | `red-team.agent.md` | Scientific+ (pre-convergence) | Cold-context adversarial review; reads only deliverable + claim ledger + artifacts; writes `.swarm/red-team-verdict.json` (INV-47) |
 
 ## 2. Activation Rules
 

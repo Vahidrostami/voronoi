@@ -698,6 +698,90 @@ def _find_investigation(q, identifier: str):
     return None
 
 
+def handle_dead_ends(project_dir: str, query: str = "") -> str:
+    """Show refuted/retired claims and negative findings across all lineages.
+
+    Negative results are first-class scientific artifacts — this handler
+    surfaces them so a lineage can learn from failure instead of repeating it.
+    Sources:
+      - Retired and challenged claims across ALL claim ledgers (cross-lineage)
+      - Negative-valence findings from the federated knowledge index
+    """
+    from voronoi.gateway.knowledge import _escape_md
+    from voronoi.science.claims import iter_all_ledgers
+
+    q_text = (query or "").strip()
+    q_lower = q_text.lower()
+
+    # 1) Cross-ledger retired/challenged claims
+    claim_lines: list[str] = []
+    total_retired = 0
+    total_challenged = 0
+    q = _get_queue(project_dir)
+    for lineage_id, ledger in iter_all_ledgers(base_dir=q.db_path.parent):
+        retired = ledger.get_retired()
+        challenged = ledger.get_challenged()
+        if q_lower:
+            retired = [c for c in retired if q_lower in c.statement.lower()]
+            challenged = [c for c in challenged if q_lower in c.statement.lower()]
+        if not retired and not challenged:
+            continue
+
+        lineage_inv = q.get(lineage_id)
+        label = (lineage_inv.codename if lineage_inv and lineage_inv.codename
+                 else f"#{lineage_id}")
+        header = f"*{_escape_md(label)}*"
+        claim_lines.append(header)
+        for c in retired:
+            total_retired += 1
+            claim_lines.append(
+                f"  ✗ {c.id}: {_escape_md(c.statement)} [retired]"
+            )
+        for c in challenged:
+            total_challenged += 1
+            concerns = "; ".join(
+                o.concern for o in c.challenges
+                if o.status in ("pending", "investigating", "surfaced")
+            )
+            concern_suffix = f" — {_escape_md(concerns[:120])}" if concerns else ""
+            claim_lines.append(
+                f"  ⚡ {c.id}: {_escape_md(c.statement)} [challenged]{concern_suffix}"
+            )
+        claim_lines.append("")
+
+    # 2) Negative findings across the federated index
+    finding_lines: list[str] = []
+    try:
+        fk = _get_federated_knowledge()
+        negatives = fk.search_dead_ends(q_text, max_results=10)
+    except Exception:
+        negatives = []
+    for finding in negatives:
+        finding_lines.append(f"• {finding.format_telegram()}")
+
+    if not claim_lines and not finding_lines:
+        scope = f" matching _{_escape_md(q_text)}_" if q_text else ""
+        return (
+            f"🪦 *No dead ends recorded{scope}.*\n\n"
+            "Either no investigation has retired a claim yet, or nothing matches "
+            "your query.  Dead ends accumulate as investigations refute hypotheses."
+        )
+
+    sections: list[str] = []
+    header_scope = f" matching _{_escape_md(q_text)}_" if q_text else ""
+    sections.append(
+        f"🪦 *Dead ends{header_scope}* — "
+        f"{total_retired} retired, {total_challenged} challenged claim(s)"
+    )
+    if claim_lines:
+        sections.append("\n".join(claim_lines).rstrip())
+    if finding_lines:
+        sections.append(
+            f"\n*Negative findings* ({len(finding_lines)}):\n" + "\n".join(finding_lines)
+        )
+    return "\n\n".join(s for s in sections if s)
+
+
 # ---------------------------------------------------------------------------
 # ASK handler — mid-investigation Q&A (LLM-powered)
 # ---------------------------------------------------------------------------

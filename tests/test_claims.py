@@ -20,7 +20,10 @@ from voronoi.science.claims import (
     ClaimArtifact,
     ClaimLedger,
     Objection,
+    diff_ledger_states,
     generate_self_critique,
+    iter_all_ledgers,
+    ledger_state_map,
     load_ledger,
     resolve_lineage_id,
     save_ledger,
@@ -527,3 +530,85 @@ class TestForwardCompatibility:
         ledger = load_ledger(1, base_dir=tmp_path)
         assert len(ledger.claims[0].artifacts) == 1
         assert ledger.claims[0].artifacts[0].path == "x.csv"
+
+
+# ---------------------------------------------------------------------------
+# Cross-lineage iteration (F1 — dead-ends query plumbing)
+# ---------------------------------------------------------------------------
+
+class TestIterAllLedgers:
+    def test_empty_base_dir(self, tmp_path):
+        assert list(iter_all_ledgers(base_dir=tmp_path)) == []
+
+    def test_skips_non_numeric_dirs(self, tmp_path):
+        (tmp_path / "ledgers" / "not-a-number").mkdir(parents=True)
+        assert list(iter_all_ledgers(base_dir=tmp_path)) == []
+
+    def test_yields_populated_ledgers_only(self, tmp_path):
+        # Lineage 1 has a claim, lineage 2 is empty (no file written)
+        ledger1 = ClaimLedger()
+        ledger1.add_claim("A holds", PROVENANCE_RUN_EVIDENCE)
+        save_ledger(1, ledger1, base_dir=tmp_path)
+        # Lineage 2: empty ledger saved to disk should be skipped
+        save_ledger(2, ClaimLedger(), base_dir=tmp_path)
+
+        results = list(iter_all_ledgers(base_dir=tmp_path))
+        assert len(results) == 1
+        assert results[0][0] == 1
+        assert results[0][1].claims[0].statement == "A holds"
+
+
+class TestGetRetired:
+    def test_returns_only_retired(self):
+        ledger = ClaimLedger()
+        ledger.add_claim("keep", PROVENANCE_RUN_EVIDENCE)
+        ledger.add_claim("drop", PROVENANCE_RUN_EVIDENCE)
+        ledger.retire_claim("C2")
+        retired = ledger.get_retired()
+        assert len(retired) == 1
+        assert retired[0].id == "C2"
+
+
+# ---------------------------------------------------------------------------
+# Claim-delta helpers (F5 — progress digest plumbing)
+# ---------------------------------------------------------------------------
+
+class TestLedgerDiff:
+    def test_new_claim_delta(self):
+        old: dict[str, str] = {}
+        ledger = ClaimLedger()
+        ledger.add_claim("X", PROVENANCE_RUN_EVIDENCE)
+        new = ledger_state_map(ledger)
+        deltas = diff_ledger_states(old, new, ledger=ledger)
+        assert len(deltas) == 1
+        assert deltas[0]["kind"] == "new"
+        assert deltas[0]["claim_id"] == "C1"
+        assert deltas[0]["to_status"] == STATUS_PROVISIONAL
+        assert deltas[0]["from_status"] is None
+        assert deltas[0]["statement"] == "X"
+
+    def test_transition_delta(self):
+        ledger = ClaimLedger()
+        ledger.add_claim("Y", PROVENANCE_RUN_EVIDENCE)
+        old = ledger_state_map(ledger)
+        ledger.assert_claim("C1")
+        ledger.lock_claim("C1")
+        new = ledger_state_map(ledger)
+        deltas = diff_ledger_states(old, new, ledger=ledger)
+        assert len(deltas) == 1
+        assert deltas[0]["kind"] == "transition"
+        assert deltas[0]["from_status"] == STATUS_PROVISIONAL
+        assert deltas[0]["to_status"] == STATUS_LOCKED
+
+    def test_no_delta_when_identical(self):
+        ledger = ClaimLedger()
+        ledger.add_claim("same", PROVENANCE_RUN_EVIDENCE)
+        snap = ledger_state_map(ledger)
+        assert diff_ledger_states(snap, snap, ledger=ledger) == []
+
+    def test_preview_truncates_long_statements(self):
+        ledger = ClaimLedger()
+        ledger.add_claim("Z" * 200, PROVENANCE_RUN_EVIDENCE)
+        deltas = diff_ledger_states({}, ledger_state_map(ledger), ledger=ledger)
+        assert len(deltas[0]["statement"]) <= 80
+        assert deltas[0]["statement"].endswith("…")

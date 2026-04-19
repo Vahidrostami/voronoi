@@ -38,6 +38,11 @@ class TestExplicitCommands:
         assert r.mode == WorkflowMode.RECALL
         assert r.confidence == 1.0
 
+    def test_dead_ends_command(self):
+        r = classify("/voronoi dead-ends dropout")
+        assert r.mode == WorkflowMode.RECALL
+        assert r.confidence == 1.0
+
     def test_status_command(self):
         r = classify("/voronoi status")
         assert r.mode == WorkflowMode.STATUS

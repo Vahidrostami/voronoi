@@ -39,7 +39,7 @@ class ServerConfig:
 
         # Defaults
         self.max_concurrent = 2
-        self.max_agents_per_investigation = 4
+        self.max_agents_per_investigation = 6
         self.agent_command = "copilot"
         self.agent_flags = "--allow-all"
         self.orchestrator_model = ""  # e.g. "claude-opus-4.6"
