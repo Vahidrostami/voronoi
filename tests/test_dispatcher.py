@@ -2667,6 +2667,52 @@ class TestSyncCriteriaFromCheckpoint:
         result = json.loads((swarm / "success-criteria.json").read_text())
         assert result[0]["met"] is False  # unchanged
 
+    def test_sync_ignores_non_bool_truthy_values(self, dispatcher_setup):
+        """Regression: anti-fabrication — strings like "pending" must not
+        promote a criterion to met. Only the literal boolean True counts.
+
+        Before the fix, ``bool(cs[cid])`` treated any non-empty string as
+        met, so orchestrator notes such as ``"SC5": "pending full data"``
+        silently flipped the canonical criteria file to ``met: True`` —
+        which then triggered convergence without any data to back it up
+        (see SCIENCE.md §10).
+        """
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="prove",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "orchestrator-checkpoint.json").write_text(json.dumps({
+            "criteria_status": {
+                "SC1": "pending full data",
+                "SC2": "met",            # string, not bool
+                "SC3": 1,                 # int, not bool
+                "SC4": {"note": "done"},  # dict
+                "SC5": True,              # only this one is valid
+            }
+        }))
+        (swarm / "success-criteria.json").write_text(json.dumps([
+            {"id": "SC1", "description": "First", "met": False},
+            {"id": "SC2", "description": "Second", "met": False},
+            {"id": "SC3", "description": "Third", "met": False},
+            {"id": "SC4", "description": "Fourth", "met": False},
+            {"id": "SC5", "description": "Fifth", "met": False},
+        ]))
+
+        d._sync_criteria_from_checkpoint(run)
+
+        result = json.loads((swarm / "success-criteria.json").read_text())
+        assert result[0]["met"] is False  # "pending full data" — must not promote
+        assert result[1]["met"] is False  # "met" string — must not promote
+        assert result[2]["met"] is False  # 1 — must not promote
+        assert result[3]["met"] is False  # dict — must not promote
+        assert result[4]["met"] is True   # True — only valid promotion
+
 
 class TestStateDigestCriteriaXref:
     """Tests for state digest cross-referencing checkpoint with criteria."""

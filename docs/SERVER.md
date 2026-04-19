@@ -439,6 +439,8 @@ The convergence status check (`_convergence_status_ok`) accepts `converged`, `CO
 
 The dispatcher syncs `criteria_status` from the orchestrator checkpoint into `success-criteria.json` on each poll cycle via `_sync_criteria_from_checkpoint()`. This sync is promotion-only: checkpoint entries can mark a criterion as met, but they do not clear a criterion that is already marked met in the canonical file. That prevents stale or partial checkpoints from regressing canonical criteria state when the orchestrator updates its checkpoint but does not write back the full criteria file. The state digest generator also cross-references both sources, preferring whichever has more "met" values.
 
+**Strict boolean semantics**: Only the literal boolean `True` in `checkpoint.criteria_status[cid]` promotes a criterion to `met: True`. Any other value — truthy strings such as `"pending full data"`, numbers, dicts — is ignored and logged as a schema-violation warning. Without this discipline, free-form orchestrator notes silently flipped criteria to met and triggered false-positive convergence (see SCIENCE.md §10 anti-fabrication).
+
 ### Completion Handling
 
 1. **Hard gate**: If any DESIGN_INVALID tasks are open, completion is blocked

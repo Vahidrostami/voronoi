@@ -846,8 +846,16 @@ class InvestigationDispatcher:
         mapping criterion IDs to booleans) but may never write those updates
         back to the canonical ``success-criteria.json`` (a list of dicts with
         ``met`` fields). This method only promotes criteria to met when the
-        checkpoint indicates progress; it never clears a met criterion from the
-        canonical file because the checkpoint may be stale or partial.
+        checkpoint explicitly records ``True`` for that criterion; it never
+        clears a met criterion from the canonical file because the checkpoint
+        may be stale or partial.
+
+        Only the literal boolean ``True`` promotes a criterion. Any other
+        value — including truthy strings such as ``"pending"``, numbers, or
+        dicts — is ignored and logged as a warning, since those indicate the
+        orchestrator wrote a non-schema value into ``criteria_status``. This
+        prevents anti-fabrication violations where free-form status text was
+        silently promoted to ``met: True`` (see SCIENCE.md §10).
 
         Called each poll cycle after ``_refresh_eval_score()``.
         """
@@ -873,9 +881,26 @@ class InvestigationDispatcher:
             if not isinstance(item, dict):
                 continue
             cid = item.get("id", "")
-            if cid in cs and bool(cs[cid]) and not bool(item.get("met")):
-                item["met"] = True
-                changed = True
+            if cid not in cs:
+                continue
+            raw = cs[cid]
+            # Strict: only the literal boolean True promotes.
+            if raw is True:
+                if not bool(item.get("met")):
+                    item["met"] = True
+                    changed = True
+            elif raw is False or raw is None:
+                # Explicit not-met — ignore (promotion-only sync).
+                continue
+            else:
+                # Non-bool value: reject and warn. Orchestrator wrote a
+                # free-form status (e.g., "pending full data") that is not
+                # part of the criteria_status schema.
+                logger.warning(
+                    "Ignoring non-boolean criteria_status[%s]=%r for #%d "
+                    "(expected True/False; schema violation)",
+                    cid, raw, run.investigation_id,
+                )
 
         if changed:
             try:

@@ -569,6 +569,12 @@ When a target file exists but the declared field path resolves to no values, the
 
 This prevents silent false-passes when the contract's field paths don't match the actual output structure.
 
+### Unknown-Schema Handling
+
+`load_experiment_contract` accepts only dicts with at least one recognized top-level key (`experiment_id`, `independent_variable`, `conditions`, `manipulation_checks`, `required_outputs`, `degeneracy_checks`, `phase_gates`). A JSON object that omits all of these (e.g., a nested-by-study shape like `{"studies": {"study1": {...}}}`) is rejected with a warning log and returns `None`.
+
+When `validate_experiment_contract` then detects the on-disk file still exists, it produces a critical-failure audit (`CONTRACT_SCHEMA: experiment-contract.json unparseable or unknown shape`) rather than silently returning `passed=True` with zero checks. This closes a false-positive path where an orchestrator's off-schema contract produced consecutive passing audits while running no validation at all.
+
 ### Escalation Path
 
 When the sentinel finds a critical failure:

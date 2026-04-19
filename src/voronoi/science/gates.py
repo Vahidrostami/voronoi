@@ -525,8 +525,27 @@ class SentinelAuditResult:
         return "; ".join(self.critical_failures)
 
 
+_CONTRACT_RECOGNIZED_KEYS = frozenset({
+    "experiment_id",
+    "independent_variable",
+    "conditions",
+    "manipulation_checks",
+    "required_outputs",
+    "degeneracy_checks",
+    "phase_gates",
+})
+
+
 def load_experiment_contract(workspace: Path) -> ExperimentContract | None:
-    """Load experiment contract from ``.swarm/experiment-contract.json``."""
+    """Load experiment contract from ``.swarm/experiment-contract.json``.
+
+    Returns ``None`` if the file is missing, malformed, or has an unknown
+    top-level schema (none of the recognized keys present). The unknown-schema
+    case is logged as a warning so the dispatcher's sentinel can report it as
+    a critical failure rather than silently treating the contract as empty —
+    which would otherwise produce a false-positive "pass" audit (see
+    SCIENCE.md §10, "Unknown-Schema Handling").
+    """
     path = workspace / ".swarm" / "experiment-contract.json"
     if not path.exists():
         return None
@@ -536,6 +555,18 @@ def load_experiment_contract(workspace: Path) -> ExperimentContract | None:
         logger.warning("Failed to load experiment contract: %s", exc)
         return None
     if not isinstance(data, dict):
+        logger.warning(
+            "Experiment contract at %s is not a JSON object (got %s); ignoring",
+            path, type(data).__name__,
+        )
+        return None
+    if not (set(data.keys()) & _CONTRACT_RECOGNIZED_KEYS):
+        logger.warning(
+            "Experiment contract at %s has unknown schema "
+            "(no recognized top-level keys). Keys present: %s. "
+            "Expected any of: %s. Treating as invalid contract.",
+            path, sorted(data.keys()), sorted(_CONTRACT_RECOGNIZED_KEYS),
+        )
         return None
     return ExperimentContract(
         experiment_id=data.get("experiment_id", ""),
@@ -594,9 +625,38 @@ def validate_experiment_contract(
     from datetime import datetime, timezone  # noqa: F811 — local to avoid top-level cycle
 
     now = datetime.now(timezone.utc).isoformat()
+    contract_file = workspace / ".swarm" / "experiment-contract.json"
     if contract is None:
         contract = load_experiment_contract(workspace)
     if contract is None:
+        # Distinguish "no contract file" (legitimately nothing to validate)
+        # from "contract file exists but was rejected" (schema error — must
+        # fail loud so the sentinel does not silently pass with zero checks).
+        if contract_file.exists():
+            failure = SentinelCheckResult(
+                check_name="contract_schema",
+                passed=False,
+                message=(
+                    "experiment-contract.json exists but has an unknown or "
+                    "invalid schema (see dispatcher log for details). The "
+                    "sentinel cannot validate this experiment until the "
+                    "contract is rewritten in the documented shape."
+                ),
+            )
+            audit = SentinelAuditResult(
+                passed=False, trigger=trigger, timestamp=now,
+                checks=[failure],
+                critical_failures=[
+                    "CONTRACT_SCHEMA: experiment-contract.json unparseable or unknown shape"
+                ],
+            )
+            audit_path = workspace / ".swarm" / "sentinel-audit.json"
+            audit_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                audit_path.write_text(json.dumps(asdict(audit), indent=2))
+            except OSError:
+                pass
+            return audit
         return SentinelAuditResult(passed=True, trigger=trigger, timestamp=now,
                                    checks=[], critical_failures=[])
 
