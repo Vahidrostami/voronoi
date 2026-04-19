@@ -348,9 +348,13 @@ Wake conditions (`_needs_orchestrator()`):
 Worker liveness (`_has_active_workers()`):
 1. Reads the swarm tmux session name from `.swarm-config.json` (`tmux_session` field, written by `swarm-init.sh`). Falls back to `{orchestrator_session}-swarm` if the config file is missing.
 2. Checks if any workers listed in the checkpoint have a matching tmux window in the swarm session **with an active agent process** — uses `tmux list-panes -F #{pane_current_command}` to verify the pane is running an agent (not a leftover shell like `bash`/`zsh`).
-3. Falls back to `pgrep` for orphaned processes whose cwd is inside the workspace.
+3. Falls back to `pgrep` for orphaned processes associated with this workspace. Association is confirmed either by argv substring (common when the workspace path is passed as a CLI arg) **or** by inspecting each candidate PID's working directory via `lsof -a -p <pid> -d cwd -Fn` (agents launched with `tmux new-window -c <workspace>` get the workspace as CWD, not argv — the argv-only check would otherwise miss them).
 
 **Park timeout safety net**: If the orchestrator remains parked longer than `park_timeout_hours` (default 4h), the dispatcher checks worker liveness before force-waking. If workers are still alive, the park is extended (the timeout resets) — this prevents premature wake during long-running experiments. If workers are dead, the dispatcher force-wakes normally. This avoids the pathological case where a force-woken orchestrator enters a `sleep && poll` loop waiting for a healthy worker to finish.
+
+The timeout is measured from `park_entered_at` (set once when the orchestrator first parks and on explicit extensions), **not** from `last_parked_digest_at` (which is a Telegram-digest throttle that resets every 5 minutes). Using the digest timestamp would defeat the safety net for any investigation generating events more often than every 5 minutes.
+
+**Polling watchdog**: On every progress poll for a live, non-parked orchestrator, the dispatcher samples `tmux display-message -p '#{pane_current_command}'` on the orchestrator's pane via `_check_orchestrator_polling()`. The orchestrator protocol requires checkpoint-and-exit between OODA cycles, so a pane running `sleep` has violated the protocol (e.g., because of stale prompt text telling it to poll a human gate). After `POLLING_STRIKE_THRESHOLD` consecutive strikes (default 3 ≈ 60–90s), the dispatcher kills the session and calls `_force_context_restart()`, which uses the dedicated `context_restarts` counter (not `retry_count`) and writes a fresh resume prompt so the reborn session does not inherit the polling directive.
 
 Findings and serendipity are accumulated and delivered in the resume prompt — they do NOT trigger immediate wake because they are not time-sensitive. The orchestrator evaluates them with fresh context.
 
@@ -379,10 +383,14 @@ When a science investigation completes, `_transition_to_review()`:
 
 ### Human Review Gates (Scientific+ Rigor)
 
-At Scientific and Experimental rigor, the orchestrator can pause for human approval by writing `.swarm/human-gate.json` with `status: "pending"`. The dispatcher detects this via `check_human_gates()`, **kills the tmux session** to truly pause execution, and sends a Telegram message with `/approve <id>` or `/revise <id> <feedback>` options. On approval, the dispatcher **restarts the agent** with a resume prompt. A gate-pending dead session is NEVER routed through crash-retry logic. Methods:
+At Scientific and Experimental rigor, the orchestrator can pause for human approval by writing `.swarm/human-gate.json` with `status: "pending"`. The orchestrator prompt instructs it to **park and exit** at the gate — write the gate file, write a checkpoint with `active_workers: []` and `phase: "awaiting-human-gate"`, and terminate. It must NOT poll the gate file in-session; a polling orchestrator violates the checkpoint-and-exit invariant and burns its context window while the dispatcher waits for it to die.
+
+The dispatcher detects the pending gate via `check_human_gates()`, **kills the tmux session** if still alive to truly pause execution (INV-32), and sends a Telegram message with `/approve <id>` or `/revise <id> <feedback>` options. On approval, the dispatcher **restarts the agent** with a resume prompt on a fresh session. A gate-pending dead session is NEVER routed through crash-retry logic. Methods:
 
 - `approve_human_gate(investigation_id, feedback)` — approves the gate and restarts the agent
 - `revise_human_gate(investigation_id, feedback)` — requests revision with feedback and restarts the agent
+
+If an older orchestrator binary is still running with a pre-park-and-exit prompt, the polling watchdog described above will catch it and force a context refresh with the current prompt.
 
 ### Structured Event Log
 

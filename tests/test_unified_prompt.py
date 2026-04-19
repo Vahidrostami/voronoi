@@ -158,6 +158,29 @@ class TestScienceSections:
         assert "Scientific rigor: Methodologist review is advisory" in prompt
         assert "Methodologist approval required before dispatch" not in prompt
 
+    def test_scientific_human_gate_is_park_not_poll(self):
+        """BUG-001 regression: the human-gate instruction must tell the
+        orchestrator to write the gate, park, and EXIT — never to poll
+        the gate file in-session."""
+        prompt = build_orchestrator_prompt(
+            question="test", mode="prove", rigor="scientific",
+        )
+        # Must describe the park-and-exit protocol
+        assert "PARK, DO NOT POLL" in prompt
+        assert "awaiting-human-gate" in prompt
+        assert "EXIT" in prompt
+        # Must NOT include the old poll-every-30s directive
+        assert "poll `.swarm/human-gate.json`" not in prompt
+        assert "every 30s" not in prompt
+        assert "Same polling protocol" not in prompt
+
+    def test_experimental_human_gate_is_park_not_poll(self):
+        prompt = build_orchestrator_prompt(
+            question="test", mode="prove", rigor="experimental",
+        )
+        assert "PARK, DO NOT POLL" in prompt
+        assert "poll `.swarm/human-gate.json`" not in prompt
+
     def test_prove_has_eval_score(self):
         prompt = build_orchestrator_prompt(
             question="test", mode="prove", rigor="scientific",

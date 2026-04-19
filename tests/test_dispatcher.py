@@ -2962,10 +2962,48 @@ class TestOrphanedWorkerDetection:
             returncode=0,
             stdout="99999 copilot --allow-all -p @/some/other/workspace/.swarm/prompt.txt\n",
         )
+        # argv didn't match; CWD fallback (lsof) also finds a CWD outside
+        # this workspace — so no orphan should be reported.
+        lsof_other_cwd = MagicMock(returncode=0, stdout="p99999\nn/some/other/workspace\n")
 
         with patch("voronoi.server.dispatcher.subprocess.run",
-                    side_effect=[tmux_no_session, pgrep_pids, ps_other_workspace]):
+                    side_effect=[tmux_no_session, pgrep_pids,
+                                 ps_other_workspace, lsof_other_cwd]):
             assert d._has_active_workers(run) is False
+
+    def test_orphan_detected_by_cwd(self, dispatcher_setup):
+        """BUG-004: worker with workspace as CWD (not in argv) is an orphan.
+
+        Agents launched via ``tmux new-window -c <workspace>`` get the
+        workspace as CWD only; argv does not contain the path. The
+        fallback must fall through to an lsof-based CWD check.
+        """
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "orchestrator-checkpoint.json").write_text(json.dumps({
+            "active_workers": ["worker-1"]
+        }))
+
+        tmux_no_session = MagicMock(returncode=1)
+        pgrep_pids = MagicMock(returncode=0, stdout="12345\n")
+        # argv has no workspace path reference
+        ps_bare = MagicMock(returncode=0, stdout="12345 copilot --allow-all\n")
+        # lsof reports CWD inside the workspace
+        lsof_inside = MagicMock(returncode=0,
+                                stdout=f"p12345\nn{tmp_path}\n")
+
+        with patch("voronoi.server.dispatcher.subprocess.run",
+                    side_effect=[tmux_no_session, pgrep_pids,
+                                 ps_bare, lsof_inside]):
+            assert d._has_active_workers(run) is True
 
 
 class TestCompletionTaskFallback:
@@ -3436,6 +3474,10 @@ class TestOrchestratorParking:
         assert run.pending_events == []
         assert run.orchestrator_parked is False
         assert run.last_parked_digest_at == 0
+        # BUG-002: separate timestamp for park-timeout vs Telegram throttle
+        assert run.park_entered_at == 0
+        # BUG-003: watchdog strike counter defaults to 0
+        assert run.polling_strike_count == 0
 
     def test_accumulate_parked_events(self, dispatcher_setup):
         """Events should be accumulated when orchestrator is parked."""
@@ -3695,7 +3737,7 @@ class TestOrchestratorParking:
         )
         run.orchestrator_parked = True
         # Parked 5 hours ago (exceeds 4h limit)
-        run.last_parked_digest_at = time.time() - 5 * 3600
+        run.park_entered_at = time.time() - 5 * 3600
         d.running[1] = run
 
         # Workers dead → force-wake should fire
@@ -3729,8 +3771,9 @@ class TestOrchestratorParking:
             mode="discover",
         )
         run.orchestrator_parked = True
-        old_digest_at = time.time() - 5 * 3600
-        run.last_parked_digest_at = old_digest_at
+        old_park_at = time.time() - 5 * 3600
+        run.park_entered_at = old_park_at
+        run.last_parked_digest_at = old_park_at
         d.running[1] = run
 
         with patch.object(d, "_check_abort_signal"), \
@@ -3749,8 +3792,8 @@ class TestOrchestratorParking:
         # Should NOT wake — workers still alive
         mock_wake.assert_not_called()
         assert run.orchestrator_parked is True
-        # last_parked_digest_at should have been reset (extended)
-        assert run.last_parked_digest_at > old_digest_at
+        # park_entered_at should have been reset (extended)
+        assert run.park_entered_at > old_park_at
 
     def test_park_timeout_not_triggered_when_within_limit(self, dispatcher_setup):
         """Parked orchestrator should NOT be force-woken before timeout."""
@@ -3765,7 +3808,7 @@ class TestOrchestratorParking:
         )
         run.orchestrator_parked = True
         # Parked 1 hour ago (within 4h limit)
-        run.last_parked_digest_at = time.time() - 1 * 3600
+        run.park_entered_at = time.time() - 1 * 3600
         d.running[1] = run
 
         with patch.object(d, "_check_abort_signal"), \
@@ -4863,3 +4906,180 @@ class TestBug012ResumePromptEffectiveRigor:
 
         # Must reference "scientific" rigor, not "adaptive"
         assert "convergence-gate.sh . scientific" in content
+
+
+class TestBug002ParkTimeoutField:
+    """Regression: park-timeout must use park_entered_at, not the
+    Telegram-throttle timestamp last_parked_digest_at (BUG-002)."""
+
+    def test_park_timeout_uses_park_entered_at_not_digest(self, dispatcher_setup):
+        """An investigation parked for >park_timeout_hours should force-wake
+        even when frequent events have been rewriting last_parked_digest_at."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        d.config.park_timeout_hours = 4
+        mock_queue = MagicMock()
+        d._queue = mock_queue
+
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "orchestrator-prompt.txt").write_text("orig prompt")
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="q",
+            mode="discover",
+        )
+        now = time.time()
+        run.orchestrator_parked = True
+        # Parked 5h ago, but a Telegram digest just fired a minute ago.
+        run.park_entered_at = now - 5 * 3600
+        run.last_parked_digest_at = now - 60
+        run.retry_count = 0
+        d.running[1] = run
+
+        with patch.object(d, "_check_abort_signal"), \
+             patch.object(d, "check_human_gates"), \
+             patch.object(d, "_refresh_eval_score"), \
+             patch.object(d, "_sync_criteria_from_checkpoint"), \
+             patch.object(d, "_check_progress", return_value=[]), \
+             patch.object(d, "_check_event_log", return_value=[]), \
+             patch.object(d, "_has_active_workers", return_value=False), \
+             patch.object(d, "_wake_from_park", return_value=True) as wake, \
+             patch("voronoi.server.dispatcher.subprocess.run",
+                   return_value=MagicMock(returncode=1)):  # session dead
+            d.poll_progress()
+
+        wake.assert_called_once()
+
+    def test_park_does_not_timeout_when_digests_fire_frequently(self, dispatcher_setup):
+        """Pre-BUG-002 behavior would have kept parked_hours ~0 forever if
+        digests reset the timestamp every 5 minutes. Confirm that separating
+        the fields means a recently-entered park (short park_entered_at)
+        does NOT force-wake even when last_parked_digest_at is stale."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        d.config.park_timeout_hours = 4
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="q",
+            mode="discover",
+        )
+        now = time.time()
+        run.orchestrator_parked = True
+        run.park_entered_at = now - 300          # 5 min parked
+        run.last_parked_digest_at = now - 7200   # stale (2h old)
+        d.running[1] = run
+        mock_queue = MagicMock()
+        d._queue = mock_queue
+
+        with patch.object(d, "_check_abort_signal"), \
+             patch.object(d, "check_human_gates"), \
+             patch.object(d, "_refresh_eval_score"), \
+             patch.object(d, "_sync_criteria_from_checkpoint"), \
+             patch.object(d, "_check_progress", return_value=[]), \
+             patch.object(d, "_check_event_log", return_value=[]), \
+             patch.object(d, "_has_active_workers", return_value=True), \
+             patch.object(d, "_needs_orchestrator", return_value=False), \
+             patch.object(d, "_wake_from_park") as wake, \
+             patch("voronoi.server.dispatcher.subprocess.run",
+                   return_value=MagicMock(returncode=1)):  # session dead
+            d.poll_progress()
+
+        wake.assert_not_called()
+
+    def test_wake_from_park_clears_park_entered_at(self, dispatcher_setup):
+        """Wake must reset park_entered_at and polling_strike_count so the
+        next park starts from a clean slate."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="q",
+            mode="discover",
+        )
+        run.orchestrator_parked = True
+        run.park_entered_at = time.time() - 3600
+        run.polling_strike_count = 2
+
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "orchestrator-prompt.txt").write_text("orig prompt")
+
+        with patch.object(d, "_launch_in_tmux"):
+            assert d._wake_from_park(run) is True
+
+        assert run.orchestrator_parked is False
+        assert run.park_entered_at == 0
+        assert run.polling_strike_count == 0
+
+
+class TestBug003PollingWatchdog:
+    """Regression: dispatcher must detect orchestrators stuck in sleep/poll
+    loops inside the agent session and force a context refresh (BUG-003)."""
+
+    def test_pane_sleep_increments_strike(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="voronoi-inv-1",
+            question="q",
+            mode="discover",
+        )
+        with patch.object(d, "_orchestrator_pane_command", return_value="sleep"):
+            d._check_orchestrator_polling(run)
+        assert run.polling_strike_count == 1
+
+    def test_pane_non_sleep_resets_strike(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="voronoi-inv-1",
+            question="q",
+            mode="discover",
+        )
+        run.polling_strike_count = 2
+        with patch.object(d, "_orchestrator_pane_command",
+                          return_value="node"):
+            d._check_orchestrator_polling(run)
+        assert run.polling_strike_count == 0
+
+    def test_pane_none_preserves_strike(self, dispatcher_setup):
+        """A tmux error/timeout must not reset strikes (no signal != ok)."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="voronoi-inv-1",
+            question="q",
+            mode="discover",
+        )
+        run.polling_strike_count = 2
+        with patch.object(d, "_orchestrator_pane_command", return_value=None):
+            d._check_orchestrator_polling(run)
+        assert run.polling_strike_count == 2
+
+    def test_threshold_triggers_context_restart(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="voronoi-inv-1",
+            question="q",
+            mode="discover",
+        )
+        run.polling_strike_count = d.POLLING_STRIKE_THRESHOLD - 1
+        with patch.object(d, "_orchestrator_pane_command", return_value="sleep"), \
+             patch.object(d, "_force_context_restart",
+                          return_value=True) as force:
+            d._check_orchestrator_polling(run)
+        force.assert_called_once_with(run)
+        # Counter reset so we don't re-fire every poll
+        assert run.polling_strike_count == 0
+        assert any("caught polling" in m.lower() for m in msgs)

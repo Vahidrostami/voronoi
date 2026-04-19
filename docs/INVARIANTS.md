@@ -153,6 +153,8 @@ Auth tokens (GH_TOKEN, GITHUB_TOKEN, COPILOT_GITHUB_TOKEN) MUST NOT appear in tm
 ### INV-32: Human Gate Pause Enforcement
 When a human gate is pending (`.swarm/human-gate.json` with `status: "pending"`), the dispatcher MUST kill the tmux session to halt the agent. A gate-pending dead session MUST NOT be routed through crash-retry logic. The agent resumes only after the gate is approved or revised.
 
+The orchestrator prompt MUST instruct the agent to **park and exit** at the gate — write the gate file, write a checkpoint with `active_workers: []` and `phase: "awaiting-human-gate"`, and terminate. The orchestrator MUST NOT sleep, poll, or re-read the gate file in-session; doing so violates the checkpoint-and-exit lifecycle and burns context. The dispatcher-side polling watchdog MAY force-restart orchestrators observed running `sleep` in their pane.
+
 ### INV-33: Belief Map Schema
 `.swarm/belief-map.json` MUST store `hypotheses` as a JSON array of objects (not an object map keyed by ID). Both the Python loader (`load_belief_map`) and the shell convergence gate MUST validate the schema on load and migrate non-conforming data.
 

@@ -265,7 +265,7 @@ At Scientific and Experimental rigor, the investigation pauses for human approva
 | Pre-registration | After pre-reg, before experiments | Write `.swarm/human-gate.json` with `status: "pending"` |
 | Convergence | Before finalizing deliverable | Same file, new gate entry |
 
-The dispatcher detects pending gates and sends a Telegram message. The human replies `/approve <id>` or `/revise <id> <feedback>`. The orchestrator polls the gate file and resumes when approved or revises when feedback is given.
+The dispatcher detects pending gates and sends a Telegram message. The human replies `/approve <id>` or `/revise <id> <feedback>`. The orchestrator **parks and exits** at the gate (writes the gate file, writes a checkpoint with `active_workers: []` and `phase: "awaiting-human-gate"`, terminates); it must not sleep or poll the gate file in-session. The dispatcher kills any still-alive session, and on approval/revision restarts the agent with a resume prompt that reads the updated gate status.
 
 This prevents the system from spending hours on a flawed methodology that a human would catch in minutes.
 

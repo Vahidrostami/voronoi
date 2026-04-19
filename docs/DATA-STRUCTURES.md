@@ -233,7 +233,18 @@ class RunningInvestigation:
     notified_design_invalid: set
     last_event_ts: float          # For event log polling
     status_message_id: int | None # Telegram message ID for edit-in-place
+    orchestrator_parked: bool     # True when orchestrator exited with workers still running
+    park_entered_at: float        # When the current park began (for park_timeout_hours)
+    last_parked_digest_at: float  # Telegram digest throttle while parked (5-min window)
+    polling_strike_count: int     # Consecutive polls where orchestrator pane was sleeping
 ```
+
+> `park_entered_at` and `last_parked_digest_at` intentionally track distinct
+> timelines: the former is the single "when we parked" timestamp used by the
+> `park_timeout_hours` safety net, the latter is a Telegram-digest throttle
+> that resets every 5 minutes while parked events arrive. Conflating them
+> defeats the safety net for investigations that generate frequent events
+> (see `tests/test_dispatcher.py::TestBug002ParkTimeoutField`).
 
 ### WorkspaceInfo (`server/workspace.py`)
 

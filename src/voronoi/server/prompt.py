@@ -183,25 +183,38 @@ def build_orchestrator_prompt(
                     "- Scientific rigor: Methodologist review is advisory; "
                     "Experimental rigor: approval required before dispatch\n"
                 )
-            # Human gate instructions for high-rigor investigations
+            # Human gate instructions for high-rigor investigations.
+            # The orchestrator MUST NOT poll — it writes the gate, writes a
+            # park checkpoint, and EXITS.  The dispatcher detects the gate
+            # via check_human_gates(), kills the session if still alive,
+            # and resumes the orchestrator after /approve or /revise.
             sections.append(
-                "\n**Human Review Gates (Scientific+ rigor):**\n"
+                "\n**Human Review Gates (Scientific+ rigor) — PARK, DO NOT POLL:**\n"
                 "At two key decision points, pause for human approval by writing "
-                "`.swarm/human-gate.json`:\n\n"
+                "`.swarm/human-gate.json`, then park and EXIT. The dispatcher wakes "
+                "you after the human approves or requests revision.\n\n"
+                "**Protocol (both gates):**\n"
+                "1. Write `.swarm/human-gate.json` with `status: \"pending\"`.\n"
+                "2. Write `.swarm/orchestrator-checkpoint.json` with "
+                "`active_workers: []`, `phase: \"awaiting-human-gate\"`, and a "
+                "`next_actions` list describing what to do once approved.\n"
+                "3. EXIT cleanly. Do NOT sleep, poll, `cat`, or re-read the gate "
+                "file. Your process must terminate — otherwise the dispatcher "
+                "cannot route the approval back to a fresh session.\n"
+                "4. On wake, read the gate file: if `status == \"approved\"` proceed; "
+                "if `status == \"revision_requested\"` read `feedback` and adjust.\n\n"
                 "**Gate 1: After pre-registration** (before running experiments):\n"
                 "```json\n"
                 '{\"gate\": \"pre-registration\", \"status\": \"pending\",\n'
                 ' \"summary\": \"Hypothesis: [X]. Method: [Y]. N=[Z]. Ready to run experiments.\"}\n'
-                "```\n"
-                "Then poll `.swarm/human-gate.json` every 30s until `status` changes to "
-                "`approved` or `revision_requested`.  If revision is requested, read `feedback` "
-                "field and adjust the pre-registration accordingly.\n\n"
+                "```\n\n"
                 "**Gate 2: Before convergence** (before finalizing deliverable):\n"
                 "```json\n"
                 '{\"gate\": \"convergence\", \"status\": \"pending\",\n'
                 ' \"summary\": \"[summary of findings]. Score: [X]. Ready to converge.\"}\n'
                 "```\n"
-                "Same polling protocol.  Do NOT write deliverable.md until approved.\n"
+                "Do NOT write deliverable.md until the gate is approved on a "
+                "subsequent session.\n"
             )
         if rigor in ("adaptive", "scientific", "experimental") or mode == "prove":
             sections.append(

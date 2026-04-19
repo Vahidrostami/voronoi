@@ -109,7 +109,9 @@ class RunningInvestigation:
     last_rigor: str = ""  # Track rigor escalation in DISCOVER mode
     pending_events: list[dict] = field(default_factory=list)  # Events accumulated while orchestrator is parked
     orchestrator_parked: bool = False  # True when orchestrator exited intentionally with active workers
+    park_entered_at: float = 0  # When the current park began (for park_timeout_hours safety net)
     last_parked_digest_at: float = 0  # Last Telegram digest while parked (throttle to 5min)
+    polling_strike_count: int = 0  # Consecutive polls where orchestrator pane was sleeping (BUG-003 watchdog)
     _criteria_alerts: set = field(default_factory=set)  # Track which criteria-progress alerts have fired
     _sentinel_missing_contract_warned: bool = False  # Track sentinel missing-contract warning
     notified_reversed_hypotheses: set = field(default_factory=set)  # Track which reversed hypotheses have been alerted
@@ -671,6 +673,13 @@ class InvestigationDispatcher:
             if session_alive:
                 self._maybe_compact_workspace(run)
 
+            # Idle-pane polling watchdog (BUG-003): orchestrators must
+            # checkpoint-and-exit between OODA cycles, never sleep/poll
+            # inside the agent session.  Catch violators before they
+            # burn their context window.
+            if session_alive and not run.orchestrator_parked:
+                self._check_orchestrator_polling(run)
+
             if not session_alive or self._is_complete(run) or timed_out:
                 if timed_out and not self._is_complete(run):
                     reason = f"timeout ({effective_timeout}h)"
@@ -703,15 +712,18 @@ class InvestigationDispatcher:
                     # If checkpoint has active_workers and any are still alive,
                     # defer restart until workers finish or an urgent event arrives.
                     if run.orchestrator_parked:
-                        # Already parked — check if workers are still running
-                        parked_hours = (now - run.last_parked_digest_at) / 3600 if run.last_parked_digest_at else 0
+                        # Already parked — check if workers are still running.
+                        # Use park_entered_at (not last_parked_digest_at, which
+                        # is the Telegram throttle timestamp and would reset
+                        # every time an event triggered a digest).
+                        parked_hours = (now - run.park_entered_at) / 3600 if run.park_entered_at else 0
                         if parked_hours >= self.config.park_timeout_hours:
                             # Safety net: only force-wake if workers are
                             # actually dead.  If workers are still alive,
                             # extend the timeout (exponential backoff) so
                             # long-running experiments aren't interrupted.
                             if self._has_active_workers(run):
-                                run.last_parked_digest_at = now
+                                run.park_entered_at = now
                                 logger.info(
                                     "Investigation #%d park timeout "
                                     "(%.1fh) but workers alive — "
@@ -742,6 +754,7 @@ class InvestigationDispatcher:
                     elif self._has_active_workers(run):
                         # First time seeing park
                         run.orchestrator_parked = True
+                        run.park_entered_at = now
                         run.last_parked_digest_at = now
                         logger.info("Investigation #%d orchestrator parked — "
                                     "workers still running",
@@ -1325,6 +1338,72 @@ class InvestigationDispatcher:
                 logger.info("Compacted workspace state for %s", run.label)
         except Exception as e:
             logger.debug("Workspace compaction failed for %s: %s", run.label, e)
+
+    # Number of consecutive polls where the orchestrator pane was observed
+    # running `sleep` before we classify the session as a polling violator.
+    # Default poll cadence is 30s, so 3 strikes ≈ 60–90s of confirmed idle.
+    POLLING_STRIKE_THRESHOLD = 3
+
+    def _orchestrator_pane_command(self, run: RunningInvestigation) -> str | None:
+        """Return the current foreground command in the orchestrator's pane.
+
+        Uses ``tmux display-message`` to read ``#{pane_current_command}``
+        for the session's active pane.  Returns ``None`` on error (timeout,
+        tmux missing, session gone) — callers must treat ``None`` as "no
+        signal", not "not polling".
+        """
+        try:
+            result = subprocess.run(
+                ["tmux", "display-message", "-p", "-t", run.tmux_session,
+                 "#{pane_current_command}"],
+                capture_output=True, text=True, timeout=5,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            return None
+        if result.returncode != 0:
+            return None
+        cmd = result.stdout.strip()
+        return cmd or None
+
+    def _check_orchestrator_polling(self, run: RunningInvestigation) -> None:
+        """Detect and recover from orchestrators stuck in a sleep/poll loop.
+
+        The orchestrator protocol requires write-checkpoint-and-exit between
+        OODA cycles.  An orchestrator running ``sleep`` inside its pane has
+        violated that protocol (e.g., old prompt telling it to poll a human
+        gate).  After ``POLLING_STRIKE_THRESHOLD`` consecutive confirmed
+        strikes, kill the session and force a context-refresh restart so
+        the new session starts with the current prompt and a fresh window.
+        """
+        cmd = self._orchestrator_pane_command(run)
+        if cmd is None:
+            return  # no signal — don't change strike state
+        if cmd.lower() == "sleep":
+            run.polling_strike_count += 1
+            logger.debug("Orchestrator polling strike %d/%d for %s",
+                         run.polling_strike_count,
+                         self.POLLING_STRIKE_THRESHOLD, run.label)
+            if run.polling_strike_count >= self.POLLING_STRIKE_THRESHOLD:
+                logger.warning("Investigation #%d caught polling "
+                               "(%d consecutive sleep observations) — "
+                               "killing session for context refresh",
+                               run.investigation_id,
+                               run.polling_strike_count)
+                self.send_message(
+                    f"⚠️ *{run.label}* — orchestrator caught polling "
+                    f"(`sleep` loop detected). Forcing a context refresh."
+                )
+                run.polling_strike_count = 0
+                # Context-refresh restart uses its own counter and writes
+                # a fresh resume prompt, so the reborn session does not
+                # inherit the polling directive from the old transcript.
+                self._force_context_restart(run)
+            return
+        # Any non-sleep command resets the counter — orchestrator is working.
+        if run.polling_strike_count:
+            logger.debug("Orchestrator polling strikes cleared for %s (cmd=%s)",
+                         run.label, cmd)
+        run.polling_strike_count = 0
 
     def _check_progress(self, run: RunningInvestigation, *,
                          session_alive: bool = False) -> list[dict]:
@@ -2514,9 +2593,13 @@ class InvestigationDispatcher:
             except (subprocess.TimeoutExpired, OSError):
                 continue
 
-        # Fallback: check for orphaned copilot processes whose cwd is
-        # inside this workspace (workers that outlived their tmux window).
-        # Use `pgrep -f` (not `-fa`) — macOS BSD pgrep lacks the `-a` flag.
+        # Fallback: check for orphaned copilot processes associated with
+        # this workspace (workers that outlived their tmux window).  We
+        # first grep argv for the workspace path, then fall back to
+        # inspecting each PID's CWD via ``lsof`` — many agent CLIs
+        # (copilot, claude, gemini) get the workspace as CWD, not argv,
+        # so the argv-only check silently misses them (BUG-004).
+        # ``pgrep -f`` (not ``-fa``) — macOS BSD pgrep lacks the ``-a`` flag.
         ws_str = str(run.workspace_path)
         try:
             result = subprocess.run(
@@ -2524,8 +2607,6 @@ class InvestigationDispatcher:
                 capture_output=True, text=True, timeout=10,
             )
             if result.returncode == 0:
-                # pgrep -f returns only PIDs; read each process's full
-                # command line via ps to check workspace association.
                 pids = [p.strip() for p in result.stdout.strip().splitlines()
                         if p.strip()]
                 if pids:
@@ -2534,17 +2615,69 @@ class InvestigationDispatcher:
                         capture_output=True, text=True, timeout=10,
                     )
                     if ps_result.returncode == 0:
+                        candidate_pids: list[str] = []
                         for line in ps_result.stdout.strip().splitlines():
-                            if ws_str in line:
-                                logger.debug("Orphaned worker process for %s: %s",
+                            parts = line.strip().split(None, 1)
+                            if not parts:
+                                continue
+                            pid_str = parts[0]
+                            cmdline = parts[1] if len(parts) > 1 else ""
+                            if ws_str in cmdline:
+                                logger.debug("Orphaned worker process "
+                                             "(argv match) for %s: %s",
                                              run.label, line[:120])
                                 return True
+                            candidate_pids.append(pid_str)
+                        # argv didn't match — check CWD for each candidate.
+                        if candidate_pids and self._any_pid_cwd_in_workspace(
+                                candidate_pids, run.workspace_path):
+                            return True
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             pass
 
         # No live workers found — workers finished, proceed with restart
         logger.info("All active_workers done for %s, proceeding with restart",
                     run.label)
+        return False
+
+    def _any_pid_cwd_in_workspace(self, pids: list[str],
+                                   workspace_path: Path) -> bool:
+        """Return True if any PID's current working directory is inside
+        ``workspace_path`` (or a subdirectory, e.g. a worktree).
+
+        Uses ``lsof -a -p <pid> -d cwd -Fn`` which works on macOS and Linux
+        and emits ``n<path>`` lines for the CWD entry.  Missing ``lsof`` or
+        any per-PID failure is treated as "no match" — callers should
+        already have covered the common case via argv substring matching.
+        """
+        if not pids:
+            return False
+        ws_resolved = workspace_path.resolve()
+        for pid in pids:
+            try:
+                result = subprocess.run(
+                    ["lsof", "-a", "-p", pid, "-d", "cwd", "-Fn"],
+                    capture_output=True, text=True, timeout=5,
+                )
+            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                return False  # lsof unavailable — bail out of the fallback
+            if result.returncode != 0:
+                continue
+            for line in result.stdout.splitlines():
+                if not line.startswith("n"):
+                    continue
+                cwd_str = line[1:].strip()
+                if not cwd_str:
+                    continue
+                try:
+                    cwd = Path(cwd_str).resolve()
+                except OSError:
+                    continue
+                if cwd == ws_resolved or ws_resolved in cwd.parents:
+                    logger.debug("Orphaned worker process (cwd match) "
+                                 "pid=%s cwd=%s workspace=%s",
+                                 pid, cwd, ws_resolved)
+                    return True
         return False
 
     def _looks_like_auth_failure(self, log_tail: str) -> bool:
@@ -2676,6 +2809,8 @@ class InvestigationDispatcher:
         Returns True if the orchestrator was successfully relaunched.
         """
         run.orchestrator_parked = False
+        run.park_entered_at = 0
+        run.polling_strike_count = 0
 
         # Ensure original orchestrator prompt exists
         prompt_file = run.workspace_path / ".swarm" / "orchestrator-prompt.txt"
@@ -2883,6 +3018,7 @@ class InvestigationDispatcher:
         # idle-poll for worker completion.
         if self._has_active_workers(run):
             run.orchestrator_parked = True
+            run.park_entered_at = time.time()
             run.last_parked_digest_at = time.time()
             self.running[inv.id] = run
             self.send_message(
