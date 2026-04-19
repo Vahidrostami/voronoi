@@ -846,8 +846,16 @@ class InvestigationDispatcher:
         mapping criterion IDs to booleans) but may never write those updates
         back to the canonical ``success-criteria.json`` (a list of dicts with
         ``met`` fields). This method only promotes criteria to met when the
-        checkpoint indicates progress; it never clears a met criterion from the
-        canonical file because the checkpoint may be stale or partial.
+        checkpoint explicitly records ``True`` for that criterion; it never
+        clears a met criterion from the canonical file because the checkpoint
+        may be stale or partial.
+
+        Only the literal boolean ``True`` promotes a criterion. Any other
+        value — including truthy strings such as ``"pending"``, numbers, or
+        dicts — is ignored and logged as a warning, since those indicate the
+        orchestrator wrote a non-schema value into ``criteria_status``. This
+        prevents anti-fabrication violations where free-form status text was
+        silently promoted to ``met: True`` (see SCIENCE.md §10).
 
         Called each poll cycle after ``_refresh_eval_score()``.
         """
@@ -873,9 +881,26 @@ class InvestigationDispatcher:
             if not isinstance(item, dict):
                 continue
             cid = item.get("id", "")
-            if cid in cs and bool(cs[cid]) and not bool(item.get("met")):
-                item["met"] = True
-                changed = True
+            if cid not in cs:
+                continue
+            raw = cs[cid]
+            # Strict: only the literal boolean True promotes.
+            if raw is True:
+                if not bool(item.get("met")):
+                    item["met"] = True
+                    changed = True
+            elif raw is False or raw is None:
+                # Explicit not-met — ignore (promotion-only sync).
+                continue
+            else:
+                # Non-bool value: reject and warn. Orchestrator wrote a
+                # free-form status (e.g., "pending full data") that is not
+                # part of the criteria_status schema.
+                logger.warning(
+                    "Ignoring non-boolean criteria_status[%s]=%r for #%d "
+                    "(expected True/False; schema violation)",
+                    cid, raw, run.investigation_id,
+                )
 
         if changed:
             try:
@@ -2215,6 +2240,14 @@ class InvestigationDispatcher:
         else:
             self.queue.complete(run.investigation_id)
 
+        # Write the structured Run Manifest — canonical machine-readable record
+        # of the run's claims, experiments, artifacts, and provenance.  Written
+        # AFTER the status transition so the manifest captures the finalized
+        # ledger state (promoted claims, self-critique objections, continuation
+        # proposals).  See ``_sweep_missing_manifests`` for crash recovery of
+        # the small write-after-transition race window (INV-44).
+        self._write_run_manifest(run)
+
         # Send appropriate completion message
         from voronoi.gateway.report import ReportGenerator
         rg = ReportGenerator(run.workspace_path, mode=run.mode,
@@ -3359,6 +3392,42 @@ class InvestigationDispatcher:
 
         if new_claims:
             save_ledger(inv.lineage_id, ledger, base_dir=self.config.base_dir)
+
+    def _write_run_manifest(self, run: RunningInvestigation) -> None:
+        """Assemble and persist ``.swarm/run-manifest.json`` for a completed run.
+
+        Best-effort, non-fatal: manifest-writing must never block the
+        completion pipeline.  The manifest is a derived artifact — if any
+        source ``.swarm/`` file is missing the factory produces a partial
+        but valid manifest rather than raising.
+        """
+        try:
+            from voronoi.science.manifest import (
+                build_manifest_from_workspace,
+                save_manifest,
+            )
+            inv = self.queue.get(run.investigation_id)
+            ledger = None
+            if inv is not None and inv.lineage_id is not None:
+                try:
+                    from voronoi.science.claims import load_ledger
+                    ledger = load_ledger(
+                        inv.lineage_id, base_dir=self.config.base_dir,
+                    )
+                except Exception as e:  # pragma: no cover - defensive
+                    logger.debug("Ledger load for manifest failed: %s", e)
+                    ledger = None
+
+            manifest = build_manifest_from_workspace(
+                run.workspace_path,
+                investigation=inv,
+                ledger=ledger,
+                rigor=self._effective_rigor(run),
+            )
+            path = save_manifest(run.workspace_path, manifest)
+            logger.info("Wrote run manifest for %s: %s", run.label, path)
+        except Exception as e:
+            logger.warning("Failed to write run manifest for %s: %s", run.label, e)
 
     def _transition_to_review(self, run: RunningInvestigation) -> None:
         """Transition a completed science investigation to review status.

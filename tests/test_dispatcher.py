@@ -406,6 +406,89 @@ class TestProgressMonitoring:
         for doc in docs:
             assert doc[0] == "12345", f"Expected chat_id '12345', got '{doc[0]}'"
 
+    def test_handle_completion_writes_run_manifest(self, dispatcher_setup):
+        """INV-44: every completion must produce .swarm/run-manifest.json.
+
+        Without this integration test, a regression in
+        ``build_manifest_from_workspace`` (e.g. a schema change in any source
+        ``.swarm/`` file) would silently disable manifests in production
+        because ``_write_run_manifest`` swallows all exceptions.
+        """
+        d, msgs, docs, tmp_path = dispatcher_setup
+        mock_queue = MagicMock()
+        d._queue = mock_queue
+
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "deliverable.md").write_text("# Done")
+        (swarm / "convergence.json").write_text(json.dumps({
+            "converged": True,
+            "status": "converged",
+            "reason": "test",
+        }))
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="Test question",
+            mode="discover",
+        )
+        run.task_snapshot = {"bd-1": {"status": "closed", "title": "Done"}}
+
+        # Use SimpleNamespace (not MagicMock) so manifest serialization gets
+        # concrete values rather than Mock proxies.
+        mock_inv = SimpleNamespace(
+            id=1, lineage_id=None, cycle_number=1, parent_id=None,
+            codename="", mode="discover", rigor="adaptive",
+            question="Test question", started_at=None, completed_at=None,
+        )
+        mock_queue.get.return_value = mock_inv
+
+        with patch("voronoi.server.dispatcher.subprocess.run"):
+            d._handle_completion(run)
+
+        manifest_path = tmp_path / ".swarm" / "run-manifest.json"
+        assert manifest_path.exists(), "INV-44: run-manifest.json must exist after completion"
+        data = json.loads(manifest_path.read_text())
+        assert data.get("schema_version") == "1.0"
+        assert data.get("converged") is True
+        assert data.get("status") == "converged"
+
+    def test_handle_completion_writes_run_manifest_for_build_mode(self, dispatcher_setup):
+        """INV-44: build-mode completions also write a manifest."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        mock_queue = MagicMock()
+        d._queue = mock_queue
+
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "deliverable.md").write_text("# Built")
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="Build a thing",
+            mode="build",
+        )
+        run.task_snapshot = {"bd-1": {"status": "closed", "title": "Done"}}
+
+        mock_inv = SimpleNamespace(
+            id=1, lineage_id=None, cycle_number=1, parent_id=None,
+            codename="", mode="build", rigor="standard",
+            question="Build a thing", started_at=None, completed_at=None,
+        )
+        mock_queue.get.return_value = mock_inv
+
+        with patch("voronoi.server.dispatcher.subprocess.run"):
+            d._handle_completion(run)
+
+        manifest_path = tmp_path / ".swarm" / "run-manifest.json"
+        assert manifest_path.exists(), "INV-44: build-mode must also write a manifest"
+        # Build mode goes through queue.complete, not queue.review
+        mock_queue.complete.assert_called_once_with(1)
+
     def test_poll_progress_includes_event_log_alerts(self, dispatcher_setup):
         d, msgs, docs, tmp_path = dispatcher_setup
         run = RunningInvestigation(
@@ -2583,6 +2666,52 @@ class TestSyncCriteriaFromCheckpoint:
 
         result = json.loads((swarm / "success-criteria.json").read_text())
         assert result[0]["met"] is False  # unchanged
+
+    def test_sync_ignores_non_bool_truthy_values(self, dispatcher_setup):
+        """Regression: anti-fabrication — strings like "pending" must not
+        promote a criterion to met. Only the literal boolean True counts.
+
+        Before the fix, ``bool(cs[cid])`` treated any non-empty string as
+        met, so orchestrator notes such as ``"SC5": "pending full data"``
+        silently flipped the canonical criteria file to ``met: True`` —
+        which then triggered convergence without any data to back it up
+        (see SCIENCE.md §10).
+        """
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="prove",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "orchestrator-checkpoint.json").write_text(json.dumps({
+            "criteria_status": {
+                "SC1": "pending full data",
+                "SC2": "met",            # string, not bool
+                "SC3": 1,                 # int, not bool
+                "SC4": {"note": "done"},  # dict
+                "SC5": True,              # only this one is valid
+            }
+        }))
+        (swarm / "success-criteria.json").write_text(json.dumps([
+            {"id": "SC1", "description": "First", "met": False},
+            {"id": "SC2", "description": "Second", "met": False},
+            {"id": "SC3", "description": "Third", "met": False},
+            {"id": "SC4", "description": "Fourth", "met": False},
+            {"id": "SC5", "description": "Fifth", "met": False},
+        ]))
+
+        d._sync_criteria_from_checkpoint(run)
+
+        result = json.loads((swarm / "success-criteria.json").read_text())
+        assert result[0]["met"] is False  # "pending full data" — must not promote
+        assert result[1]["met"] is False  # "met" string — must not promote
+        assert result[2]["met"] is False  # 1 — must not promote
+        assert result[3]["met"] is False  # dict — must not promote
+        assert result[4]["met"] is True   # True — only valid promotion
 
 
 class TestStateDigestCriteriaXref:

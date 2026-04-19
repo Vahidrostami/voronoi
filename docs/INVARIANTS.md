@@ -2,7 +2,7 @@
 
 > Rules that MUST never be violated. Reference during code review, debugging, and development.
 
-...nvariants. Key ones: prompt.py is sole prompt builder (INV-01). Roles only in .github/ files (INV-02). Orchestrator never enters worktrees (INV-03). Atomic queue claiming (INV-06). Rigor only escalates (INV-08). Baseline-first (INV-09). EVA before finding (INV-12). No simulation bypass (INV-16). Push before session end (INV-25). Plan review before dispatch at Analytical+ (INV-35b). Experiment contract before workers (INV-39). Sentinel audit cannot be bypassed (INV-40). Missing contract warning (INV-41). Tribunal clear before convergence (INV-42). Directional verification on findings (INV-43).
+...nvariants. Key ones: prompt.py is sole prompt builder (INV-01). Roles only in .github/ files (INV-02). Orchestrator never enters worktrees (INV-03). Atomic queue claiming (INV-06). Rigor only escalates (INV-08). Baseline-first (INV-09). EVA before finding (INV-12). No simulation bypass (INV-16). Push before session end (INV-25). Plan review before dispatch at Analytical+ (INV-35b). Experiment contract before workers (INV-39). Sentinel audit cannot be bypassed (INV-40). Missing contract warning (INV-41). Tribunal clear before convergence (INV-42). Directional verification on findings (INV-43). Every completion writes a run manifest (INV-44).
 
 ## 1. Architectural Invariants
 
@@ -31,6 +31,7 @@ Agents MUST NOT use custom IPC, shared memory, sockets, or any other communicati
 ### INV-07: Investigation State Machine
 Investigations MUST follow the state machine defined in SERVER.md §2:
 - `queued → running` (via `next_ready()`, atomic)
+- `queued → cancelled` (via `cancel()`, pre-launch cancellation)
 - `running → {complete | failed | paused | review | cancelled}`
 - `running → queued` (via `requeue()`, recovery only — unprovisioned claims with no workspace_path)
 - `paused | failed → running` (via `resume()`)
@@ -195,3 +196,16 @@ At Analytical+ rigor, convergence is BLOCKED while any tribunal verdict has stat
 
 ### INV-43: Directional Verification on Findings
 At Analytical+ rigor, every hypothesis with a significant finding MUST be classified as `confirmed`, `refuted_reversed`, or `inconclusive` based on comparison of observed effect direction vs pre-registered `expected_direction`. A significant result in the opposite direction is `refuted_reversed`, NOT `confirmed`. Convergence is blocked while any `refuted_reversed` hypothesis has no tribunal explanation. Enforced by `has_reversed_hypotheses()` in `convergence.py`.
+
+---
+
+## 12. Deliverable Invariants
+
+### INV-44: Every Completion Writes a Run Manifest
+Every investigation that reaches `_handle_completion` (success, negative result, exhaustion, build-mode completion) MUST produce `.swarm/run-manifest.json`. The CLI demo path (`voronoi demo run …`) MUST also write a manifest after the orchestrator subprocess exits. This is the canonical machine-readable record of the run's claims, experiments, artifacts, and provenance.
+
+The manifest is a **derived** artifact — it never contradicts its sources (`.swarm/convergence.json`, `.swarm/eval-score.json`, `.swarm/belief-map.json`, `.swarm/claim-evidence.json`, Claim Ledger). Manifest-writing is best-effort and MUST NOT block the completion pipeline; failure is logged but not raised.
+
+The manifest is written **after** the status transition so it captures finalized ledger state (promoted claims, self-critique, continuation proposals). The narrow race window between `queue.complete()` / `queue.review()` and `_write_run_manifest()` — where a process crash could leave a completed investigation with no manifest — is accepted risk; the manifest is a derived artifact and can be regenerated on demand from `.swarm/` state via `build_manifest_from_workspace()`.
+
+Enforced by `InvestigationDispatcher._write_run_manifest()` (server path) and by `cmd_demo()` post-subprocess (CLI demo path). Schema at `docs/MANIFEST.md`.

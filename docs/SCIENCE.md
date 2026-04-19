@@ -569,6 +569,12 @@ When a target file exists but the declared field path resolves to no values, the
 
 This prevents silent false-passes when the contract's field paths don't match the actual output structure.
 
+### Unknown-Schema Handling
+
+`load_experiment_contract` accepts only dicts with at least one recognized top-level key (`experiment_id`, `independent_variable`, `conditions`, `manipulation_checks`, `required_outputs`, `degeneracy_checks`, `phase_gates`). A JSON object that omits all of these (e.g., a nested-by-study shape like `{"studies": {"study1": {...}}}`) is rejected with a warning log and returns `None`.
+
+When `validate_experiment_contract` then detects the on-disk file still exists, it produces a critical-failure audit (`CONTRACT_SCHEMA: experiment-contract.json unparseable or unknown shape`) rather than silently returning `passed=True` with zero checks. This closes a false-positive path where an orchestrator's off-schema contract produced consecutive passing audits while running no validation at all.
+
 ### Escalation Path
 
 When the sentinel finds a critical failure:
@@ -938,3 +944,45 @@ The evaluator formula gains a fifth dimension **N (Non-triviality)**:
 $$\text{OVERALL} = 0.25C + 0.20C_o + 0.20S + 0.15A + 0.20N$$
 
 Non-triviality below 0.4 triggers an improvement round.
+
+---
+
+## 19. Run Manifest — Structured Deliverable
+
+### Purpose
+
+The **Run Manifest** (`.swarm/run-manifest.json`) is a consolidated, machine-readable summary of a completed run: question, answer, primary claims, hypotheses, experiments, artifacts, caveats, provenance. It is **derived** from existing `.swarm/` state — it does not replace `claim-evidence.json`, `eval-score.json`, or the Claim Ledger; it collates them so that scientists, reviewers, and external graders can read one file instead of six.
+
+### Module
+
+`src/voronoi/science/manifest.py`. Schema version `"1.0"`.
+
+### When It Is Written
+
+`InvestigationDispatcher._write_run_manifest()` is called unconditionally at the end of `_handle_completion` — for science and build modes, for converged/exhausted/negative results. Failure to write the manifest is logged but never blocks completion (the manifest is additive, not a gate).
+
+### Source-of-Truth Map
+
+| Manifest field | Source |
+|---|---|
+| `question`, `mode`, `rigor`, `provenance` | `Investigation` row in queue |
+| `status`, `converged`, `reason` | `.swarm/convergence.json` |
+| `evaluator` | `.swarm/eval-score.json` |
+| `hypotheses` | `.swarm/belief-map.json` |
+| `primary_claims` | Claim Ledger (preferred) → `.swarm/claim-evidence.json` (fallback) |
+| `experiments` | Beads `FINDING` tasks |
+| `pending_objections` | `ClaimLedger.objections` (pending/investigating/surfaced) |
+| `artifacts` | Filesystem scan + finding `DATA_FILE` notes |
+| `caveats` | Derived: convergence blockers + `ROBUST=no` + non-APPROVED stat review |
+| `answer` | Derived: strongest-status claim (`replicated > locked > asserted > provisional`) |
+
+### Rigor-Tiered Validation
+
+`validate_manifest(manifest, rigor)` returns `ValidationResult(valid, missing, warnings)`. Tiers are strictly additive: `standard < adaptive < analytical < scientific < experimental`.
+
+See [MANIFEST.md](MANIFEST.md) for the full schema, rigor table, sub-structure definitions, and public API reference.
+
+### Relationship to §5 Convergence
+
+Convergence is still the authoritative *signal* (written to `.swarm/convergence.json` and gated by `convergence-gate.sh`). The manifest is written **after** completion is decided; it does not participate in the convergence gate. The manifest's `status` and `converged` fields mirror `convergence.json`.
+

@@ -127,6 +127,40 @@ def _build_orchestrator_prompt(
     )
 
 
+def _write_demo_manifest(workspace: Path, *, question: str = "") -> Path | None:
+    """Build and persist ``.swarm/run-manifest.json`` for a CLI demo run.
+
+    Mirrors ``InvestigationDispatcher._write_run_manifest`` for the CLI path,
+    which never goes through the dispatcher.  Best-effort and non-fatal
+    (INV-44): the manifest is additive — if any source ``.swarm/`` file is
+    missing the factory produces a partial but valid manifest rather than
+    raising.  Returns the manifest path on success, ``None`` on any failure
+    (logged to stderr).
+    """
+    try:
+        from voronoi.science.manifest import (
+            build_manifest_from_workspace,
+            save_manifest,
+        )
+    except Exception as e:  # pragma: no cover - defensive
+        print(f"  ⚠ Run manifest skipped (import failed): {e}", file=sys.stderr)
+        return None
+
+    # No .swarm/ → orchestrator never wrote anything; skip silently to keep
+    # --dry-run and aborted-before-launch flows quiet.
+    if not (workspace / ".swarm").is_dir():
+        return None
+
+    try:
+        manifest = build_manifest_from_workspace(workspace, question=question)
+        path = save_manifest(workspace, manifest)
+        print(f"  ✓ Run manifest: {path.relative_to(workspace)}")
+        return path
+    except Exception as e:
+        print(f"  ⚠ Run manifest skipped: {e}", file=sys.stderr)
+        return None
+
+
 def cmd_init(args: argparse.Namespace) -> None:
     """Scaffold voronoi into the current directory."""
     target = Path.cwd()
@@ -401,6 +435,15 @@ def cmd_demo(args: argparse.Namespace) -> None:
             print(f"  Agent work preserved in tmux: tmux attach -t {project_name}-swarm")
             print(f"  Re-run: voronoi demo run {name}")
 
+        # INV-44: Write the structured Run Manifest from any ``.swarm/`` state
+        # the orchestrator produced.  Best-effort, non-fatal — the manifest is
+        # an additive artifact; failure must never break the demo workflow.
+        # Runs after both clean exit and KeyboardInterrupt so partial runs
+        # still get a manifest of whatever was completed.
+        prompt_file = target / prompt_path
+        question = prompt_file.read_text() if prompt_file.exists() else ""
+        _write_demo_manifest(target, question=question)
+
     elif args.demo_action == "clean":
         name = args.name
         demo_dir = target / "demos" / name
@@ -450,6 +493,9 @@ def cmd_clean(args: argparse.Namespace) -> None:
         ".github/agents",
         ".github/prompts",
         ".github/skills",
+        ".github/instructions",
+        ".github/hooks",
+        ".github/mcp-config.json",
     ]
 
     # Also clean the worktree directory

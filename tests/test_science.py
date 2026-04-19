@@ -2324,6 +2324,29 @@ class TestExperimentContract:
         (swarm / "experiment-contract.json").write_text("not json{{{")
         assert load_experiment_contract(tmp_path) is None
 
+    def test_load_returns_none_on_unknown_schema(self, tmp_path):
+        """Regression: a contract with zero recognized top-level keys must
+        NOT be silently treated as an empty ExperimentContract — otherwise
+        the sentinel runs zero checks and reports ``passed=True`` with no
+        actual validation (see SCIENCE.md §10)."""
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        # Nested-by-study shape with no recognized top-level keys.
+        (swarm / "experiment-contract.json").write_text(json.dumps({
+            "investigation": "inv-10",
+            "studies": {
+                "study1": {"checks": [{"check_type": "hash_distinct"}]},
+                "study2": {"checks": [{"check_type": "value_range"}]},
+            },
+        }))
+        assert load_experiment_contract(tmp_path) is None
+
+    def test_load_returns_none_on_non_object(self, tmp_path):
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "experiment-contract.json").write_text("[1, 2, 3]")
+        assert load_experiment_contract(tmp_path) is None
+
 
 class TestSentinelValidation:
     """Tests for validate_experiment_contract."""
@@ -2332,6 +2355,27 @@ class TestSentinelValidation:
         result = validate_experiment_contract(tmp_path)
         assert result.passed is True
         assert len(result.checks) == 0
+
+    def test_unknown_schema_on_disk_fails_loud(self, tmp_path):
+        """When ``experiment-contract.json`` exists but has an unknown
+        schema, the sentinel must fail loud rather than silently returning
+        ``passed=True`` with zero checks.
+
+        Regression for the inv-10-computational-triage case where a
+        nested-by-study contract produced four consecutive passing audits
+        with zero actual validation."""
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "experiment-contract.json").write_text(json.dumps({
+            "investigation": "inv-10",
+            "studies": {"study1": {"checks": []}},
+        }))
+        result = validate_experiment_contract(tmp_path, trigger="test")
+        assert result.passed is False
+        assert any("CONTRACT_SCHEMA" in f for f in result.critical_failures)
+        # Persisted to disk for the orchestrator to read.
+        audit = json.loads((swarm / "sentinel-audit.json").read_text())
+        assert audit["passed"] is False
 
     def test_required_output_missing_fails(self, tmp_path):
         contract = ExperimentContract(

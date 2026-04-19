@@ -13,7 +13,8 @@
 | Free-text classification, greetings | [GATEWAY.md](GATEWAY.md) | §3 (Router — Free-Text Pipeline) |
 | Conversation memory, chat context | [GATEWAY.md](GATEWAY.md) | §5 (Memory) |
 | Knowledge recall, past findings | [GATEWAY.md](GATEWAY.md) | §6 (Knowledge) |
-| Progress digests, track assessment | [GATEWAY.md](GATEWAY.md) | §8 (Progress) |\n| Mid-investigation Q&A, `/voronoi ask` | [GATEWAY.md](GATEWAY.md) | §8b (Ask Handler) |
+| Progress digests, track assessment | [GATEWAY.md](GATEWAY.md) | §8 (Progress) |
+| Mid-investigation Q&A, `/voronoi ask` | [GATEWAY.md](GATEWAY.md) | §8b (Ask Handler) |
 | Report/manuscript/PDF generation | [GATEWAY.md](GATEWAY.md) | §9 (Report) |
 | Telegram bridge, inline buttons, groups | [GATEWAY.md](GATEWAY.md) | §12 (Telegram Bridge) |
 | Ops diagnostics via Telegram | [GATEWAY.md](GATEWAY.md) | §13 (Ops Commands) |
@@ -43,7 +44,7 @@
 | Targeted Beads queries | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §5 |
 | Code-assembled worker prompts | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §6 |
 | Per-agent context budget | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §3 |
-| System rules, code review | [INVARIANTS.md](INVARIANTS.md) | All (41 invariants) |
+| System rules, code review | [INVARIANTS.md](INVARIANTS.md) | All (47 invariants) |
 | Worker self-verification protocol | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §8 |
 | Token budget tracking | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §9 |
 | Structured event log | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §10 |
@@ -52,6 +53,9 @@
 | Directional verification, triviality | [SCIENCE.md](SCIENCE.md) | §18 (Interpretation) |
 | Judgment Tribunal, tribunal verdicts | [SCIENCE.md](SCIENCE.md) | §18 (Interpretation) |
 | Continuation proposals | [SCIENCE.md](SCIENCE.md) | §18 (Interpretation) |
+| Run Manifest, structured deliverable | [MANIFEST.md](MANIFEST.md) | — |
+| Run Manifest source-of-truth map, validation | [SCIENCE.md](SCIENCE.md) | §19 (Run Manifest) |
+| `.swarm/run-manifest.json` format | [DATA-STRUCTURES.md](DATA-STRUCTURES.md) | §7 |
 | Deliberation mode | [GATEWAY.md](GATEWAY.md) | §14 (Deliberation) |
 | Iterative science, review/continue | [WORKFLOWS.md](WORKFLOWS.md) | §9 (Multi-Run Iteration) |
 | Structured evaluator feedback | [SCIENCE.md](SCIENCE.md) | §5 (Convergence) |
@@ -112,6 +116,7 @@
 | `src/voronoi/science/fabrication.py` | SCIENCE.md | §11 | `test_science.py` |
 | `src/voronoi/science/consistency.py` | SCIENCE.md | — | `test_science.py` |
 | `src/voronoi/science/interpretation.py` | SCIENCE.md | §18 | `test_interpretation.py` |
+| `src/voronoi/science/manifest.py` | SCIENCE.md / MANIFEST.md | §19 / all | `test_manifest.py` |
 | `src/voronoi/mcp/server.py` | ARCHITECTURE.md | §8 | `test_mcp.py` |
 | `src/voronoi/mcp/tools_beads.py` | ARCHITECTURE.md | §8 | `test_mcp.py` |
 | `src/voronoi/mcp/tools_swarm.py` | ARCHITECTURE.md | §8 | `test_mcp.py` |

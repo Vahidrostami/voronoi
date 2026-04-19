@@ -111,6 +111,27 @@ from voronoi.science.claims import (
     save_ledger,
 )
 
+# --- Manifest (structured deliverable) ---
+from voronoi.science.manifest import (
+    MANIFEST_FILENAME,
+    RIGOR_TIERS as MANIFEST_RIGOR_TIERS,
+    SCHEMA_VERSION as MANIFEST_SCHEMA_VERSION,
+    CostReport,
+    EvaluatorSummary,
+    ExperimentRecord,
+    HypothesisOutcome,
+    ManifestArtifact,
+    PrimaryClaim,
+    ProvenanceInfo,
+    ReviewerObjection,
+    RunManifest,
+    ValidationResult as ManifestValidationResult,
+    build_manifest_from_workspace,
+    load_manifest,
+    save_manifest,
+    validate as validate_manifest,
+)
+
 # --- Interpretation (directional verification, triviality, tribunal) ---
 from voronoi.science.interpretation import (
     ContinuationProposal,
@@ -174,6 +195,13 @@ __all__ = [
     "Claim", "ClaimArtifact", "ClaimLedger", "Objection",
     "load_ledger", "save_ledger", "resolve_lineage_id",
     "generate_self_critique",
+    # Manifest (structured deliverable)
+    "MANIFEST_FILENAME", "MANIFEST_SCHEMA_VERSION", "MANIFEST_RIGOR_TIERS",
+    "RunManifest", "ManifestArtifact", "PrimaryClaim", "HypothesisOutcome",
+    "ExperimentRecord", "ProvenanceInfo", "CostReport", "EvaluatorSummary",
+    "ReviewerObjection", "ManifestValidationResult",
+    "build_manifest_from_workspace", "save_manifest", "load_manifest",
+    "validate_manifest",
     # Interpretation (directional verification, triviality, tribunal)
     "DirectionMatch", "DirectionResult", "classify_direction",
     "TrivialityClass", "TrivialityResult", "screen_triviality",

@@ -49,6 +49,8 @@ Scaffolds Voronoi framework into the current directory. Makes a project agent-re
 ├── agents/           # 12 role definitions
 ├── prompts/          # 6 invocable prompts
 ├── skills/           # Domain knowledge packages
+├── instructions/     # Per-path instruction files
+├── hooks/            # Copilot CLI hooks (made executable)
 └── mcp-config.json   # Per-workspace MCP sidecar config
 
 scripts/              # Infrastructure scripts (made executable)
@@ -59,7 +61,7 @@ AGENTS.md             # Compatibility alias
 
 ### Behavior
 
-1. Creates `.github/` subdirs (`agents/`, `prompts/`, `skills/`) with framework files
+1. Creates `.github/` subdirs (`agents/`, `prompts/`, `skills/`, `instructions/`, `hooks/`) with framework files
 2. Writes `.github/mcp-config.json` pointing at the same Python interpreter that ran `voronoi init`
 3. Copies `scripts/` directory (all `.sh` files made executable)
 4. Copies `CLAUDE.md` and `AGENTS.md` (skips if already exist — user-owned)
@@ -99,8 +101,10 @@ Updates framework files while preserving user edits.
 
 | Name | Description | Mode | Rigor |
 |------|-------------|------|-------|
+| `computational-triage` | Evidence encoding as a scaling axis for multi-agent LLM reasoning | PROVE | SCIENTIFIC |
 | `coupled-decisions` | 5 coupled levers, planted ground truth in 100K transactions | DISCOVER | SCIENTIFIC |
 | `emergent-ecosystem` | 4 species on 100×100 grid, each agent builds one | DISCOVER | ADAPTIVE |
+| `epistemic-trajectories` | Phase transitions in LLM multi-source reasoning across capability tiers | PROVE | SCIENTIFIC |
 | `forgetting-cure` | 4 anti-forgetting strategies, head-to-head MNIST benchmark | DISCOVER | SCIENTIFIC |
 
 ### `voronoi demo list`
