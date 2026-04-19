@@ -124,6 +124,47 @@ BASE = 0.25 × COMPLETENESS + 0.20 × COHERENCE + 0.20 × STRENGTH + 0.15 × ACT
 OVERALL = clamp(BASE + SIMPLICITY_MODIFIER, 0.0, 1.0)
 ```
 
+### Step 3b: Dual Rubric Mode (paper-track only)
+
+When `.swarm/manuscript/outline.json` exists, the deliverable is a
+manuscript. Run CCSAN (above) **AND** the manuscript-quality rubric
+below in parallel. Report both scores honestly — neither rubric does
+double duty.
+
+#### Manuscript Quality Rubric (6-axis, 0.0–1.0 each)
+
+1. **Clarity** — Can an AI researcher outside the sub-field understand
+   the contribution in 5 minutes from the abstract + intro?
+2. **Citation integrity** — Does `.swarm/manuscript/coverage-audit.json`
+   report `passes: true` (≥0.90 integration, zero orphans)?
+3. **Figure quality** — Fraction of figures with Figure-Critic verdict
+   `accept`, from `.swarm/manuscript/figure-ledger.json`.
+4. **Claim–evidence traceability** — Same audit as CCSAN STRENGTH but
+   scored specifically on the manuscript: every `\textbf{...}` stat and
+   every explicit claim in the Results section must trace to
+   `claim-evidence.json`.
+5. **Literature positioning** — Related Work has ≥ N slots filled (where
+   N is in `outline.json`), each slot cites a verified paper, and the
+   section actually contrasts vs cites passively.
+6. **Reviewer-defence posture** — Limitations, negative-result, and
+   threats-to-validity sections are present and substantive (≥100 words
+   each when present in `outline.json`).
+
+```
+MS_QUALITY = avg(clarity, citation_integrity, figure_quality,
+                 traceability, literature_positioning, reviewer_defence)
+```
+
+Record both:
+
+```bash
+bd update <eval-id> --notes "DUAL_EVAL: CCSAN=0.X | MS_QUALITY=0.X | AXES: clarity=0.X cit=0.X fig=0.X trace=0.X lit=0.X def=0.X"
+```
+
+Write `.swarm/evaluator-verdict.json` including both `ccsan` and
+`manuscript_quality` objects so downstream Telegram/report layers can
+show both. **Paper-track PASS requires BOTH scores ≥ 0.75.**
+
 ### Step 4: Record Evaluation
 
 ```bash

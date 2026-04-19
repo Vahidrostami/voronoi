@@ -1,8 +1,8 @@
 # Agent Roles Specification
 
-> 12 agent roles, activation rules, verify loops, role interactions.
+> 12 core roles + 4 paper-track roles, activation rules, verify loops, role interactions.
 
-**TL;DR**: 12 roles: Orchestrator (always), Builder+Critic (Standard+), Scout+Investigator+Explorer+Statistician+Synthesizer+Evaluator (Analytical+), Theorist+Methodologist (Scientific+), Scribe (LaTeX compilation). Each worker has a verify loop (test→retry→escalate). Roles defined in `src/voronoi/data/agents/*.agent.md`, never in Python.
+**TL;DR**: 12 core roles: Orchestrator (always), Builder+Critic (Standard+), Scout+Investigator+Explorer+Statistician+Synthesizer+Evaluator (Analytical+), Theorist+Methodologist (Scientific+), Scribe (LaTeX compilation). Plus **4 paper-track roles** (Outliner, Lit-Synthesizer, Figure-Critic, Refiner) activated only when producing a submission-ready manuscript via `/voronoi paper <codename>`. Each worker has a verify loop (test→retry→escalate). Roles defined in `src/voronoi/data/agents/*.agent.md`, never in Python.
 
 ## 1. Role Registry
 
@@ -16,10 +16,14 @@
 | 6 | Statistician | `statistician.agent.md` | Analytical+ | CI, effect sizes, data integrity, p-hacking flags, direction verification |
 | 7 | Critic | `critic.agent.md` | Standard+ | Adversarial review; partially blinded at Scientific+ |
 | 8 | Synthesizer | `synthesizer.agent.md` | Analytical+ | Consistency checks, claim-evidence registry, deliverable |
-| 9 | Evaluator | `evaluator.agent.md` | Analytical+ | Scores deliverable: CCSAN formula (includes Non-triviality) |
+| 9 | Evaluator | `evaluator.agent.md` | Analytical+ | Scores deliverable: CCSAN formula (+ MS_QUALITY rubric on paper-track) |
 | 10 | Theorist | `theorist.agent.md` | Scientific+ | Causal models, competing theories, paradigm stress, triviality screening, explanation audit |
 | 11 | Methodologist | `methodologist.agent.md` | Scientific+ | Experimental design review, power analysis |
-| 12 | Scribe | `scribe.agent.md` | Analytical+ | LaTeX paper compilation |
+| 12 | Scribe | `scribe.agent.md` | Analytical+ | LaTeX paper compilation; enforces citation-coverage gate on paper-track |
+| 13 | Outliner | `outliner.agent.md` | Paper-track | Produces `.swarm/manuscript/outline.json` (sections, figures, citation slots) |
+| 14 | Lit-Synthesizer | `lit-synthesizer.agent.md` | Paper-track | Fills every citation slot with a Semantic Scholar-verified entry (Levenshtein ≥0.70) |
+| 15 | Figure-Critic | `figure-critic.agent.md` | Paper-track | Text-only rubric over plotting script + `.meta.json` sidecar — no VLM needed |
+| 16 | Refiner | `refiner.agent.md` | Paper-track + Scientific+ | Simulated peer review with safety halt rules; max 3 rounds |
 
 ## 2. Activation Rules
 
@@ -28,9 +32,15 @@ Standard      → Builder, Critic, Worker
 Analytical    → + Scout, Investigator, Explorer, Statistician, Synthesizer, Evaluator
 Scientific    → + Theorist, Methodologist
 Experimental  → (all roles active + replication)
+
+Paper-track (orthogonal — activated by `/voronoi paper <codename>`)
+              → + Outliner, Lit-Synthesizer, Figure-Critic  (always)
+              → + Refiner                                   (Scientific+ only)
 ```
 
 The orchestrator selects roles based on the classified rigor level. Roles CANNOT be added after investigation start — only skipped.
+
+**Paper-track is orthogonal to rigor.** It is activated when the enqueued investigation's question begins with `[PAPER-TRACK]` (produced by `handle_paper()` in `handlers_workflow.py`). Paper-track presupposes a completed parent investigation whose `.swarm/deliverable.md` + `.swarm/claim-evidence.json` are the inputs. The Refiner only joins at Scientific+ because its simulated peer-review loop requires the full science-gate audit trail to enforce its halt rules safely.
 
 ## 3. Role Details
 
@@ -255,6 +265,79 @@ Generated automatically at review time by `generate_continuation_proposals()` fr
 3. Single-evidence claims needing replication (information_gain=0.5)
 
 Ranked by information gain. Shown to PI during `/voronoi review` and `/voronoi deliberate`.
+
+---
+
+### 3.14 Outliner (Paper-track)
+
+**File**: `src/voronoi/data/agents/outliner.agent.md`
+
+**Paper-track activation.** First agent in the manuscript pipeline. Runs ONCE after the investigation converges and the user runs `/voronoi paper <codename>`.
+
+**Responsibilities**:
+- Decompose the original question + synthesizer's deliverable into a target abstract
+- Assign section structure (Abstract / Intro / Related Work / Methods / Results / Discussion / Conclusion)
+- Plan figures and tables from ROBUST findings in `.swarm/claim-evidence.json`
+- Declare citation slots (`claim`, `kind`, `needs_n`) — the contract Lit-Synthesizer must fill
+
+**Output**: `.swarm/manuscript/outline.json`
+
+**Verify Loop**:
+- `outline.json` validates as JSON; every `supports_claim` references a real claim-evidence entry
+- Max iterations: **2**
+- Completion promise: `OUTLINE_COMPLETE`
+
+### 3.15 Lit-Synthesizer (Paper-track)
+
+**File**: `src/voronoi/data/agents/lit-synthesizer.agent.md`
+
+**Paper-track activation.** Distinct from the Scout: Scout grounds the *investigation*; Lit-Synthesizer grounds the *manuscript*. Runs after the Outliner, parallel with Figure-Critic.
+
+**Responsibilities**:
+- For every `citation_slot` in `outline.json`, generate queries and run Copilot CLI `/research`
+- Verify each candidate via `literature.py` Semantic Scholar (free, unauthenticated) gated by `citation_coverage.fuzzy_match_title()` (Levenshtein ≥0.70)
+- Write `.swarm/manuscript/citation-ledger.json` + `references.bib`
+- Never fabricate: slots without verifiable candidates stay `"status": "unfilled"`
+
+**Verify Loop**:
+- ≥90% of citation slots filled with `verified: true` entries
+- Every `bibtex_key` in the ledger appears in `references.bib`
+- Max iterations: **3**
+- Completion promise: `LIT_SYNTHESIS_COMPLETE`
+
+### 3.16 Figure-Critic (Paper-track)
+
+**File**: `src/voronoi/data/agents/figure-critic.agent.md`
+
+**Paper-track activation.** Text-only figure quality rubric (no VLM needed — works with Copilot CLI alone). Reads the plotting script + mandatory `<fig>.meta.json` sidecar emitted by the producing agent.
+
+**Rubric** (8 checks, per-figure): axes labeled, units present, caption self-contained, baseline shown, uncertainty shown, scale defensible, effect-size/N annotated, colour-blind-safe palette.
+
+**Output**: `.swarm/manuscript/figure-ledger.json` with per-figure verdict ∈ {`accept`, `revise`, `reject`} and `required_fixes` list.
+
+**Verify Loop**:
+- Every figure in `outline.json` has a ledger entry
+- Max iterations: **2**
+- Completion promise: `FIGURE_CRITIC_COMPLETE`
+
+### 3.17 Refiner (Paper-track + Scientific+)
+
+**File**: `src/voronoi/data/agents/refiner.agent.md`
+
+**Paper-track activation, Scientific+ only.** Runs LAST, after Scribe emits `paper.tex` and citation-coverage passes.
+
+**Responsibilities**:
+- Simulate an adversarial peer review
+- For each proposed fix, screen against 5 safety halt rules (citation integrity, number integrity, claim consistency, evaluator-gaming, scope creep) before applying
+- Re-run citation-coverage gate after each round; revert the round if coverage regresses
+- Max **3 rounds total**
+
+**Output**: `.swarm/manuscript/review-rounds/${N}.json` per round
+
+**Verify Loop**:
+- Paper still compiles, coverage audit still passes, every claim-evidence claim still appears
+- Max iterations: **2 per round**
+- Completion promise: `REFINEMENT_COMPLETE`
 
 ---
 

@@ -284,10 +284,19 @@ def update_belief_map(
             hypothesis.name = name
         if posterior is not None:
             hypothesis.posterior = posterior
+            # Re-infer confidence from updated posterior when not explicitly set
+            if not confidence:
+                from voronoi.science.convergence import _infer_confidence_from_posterior
+                hypothesis.confidence = _infer_confidence_from_posterior(posterior)
         if status:
             hypothesis.status = status
         if validated_evidence is not None:
-            hypothesis.evidence = validated_evidence
+            # Append new evidence IDs, preserving existing ones (INV-15)
+            seen = set(hypothesis.evidence)
+            for eid in validated_evidence:
+                if eid not in seen:
+                    hypothesis.evidence.append(eid)
+                    seen.add(eid)
         if confidence:
             hypothesis.confidence = confidence
         if rationale:

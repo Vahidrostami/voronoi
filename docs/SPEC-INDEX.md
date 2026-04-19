@@ -61,6 +61,10 @@
 | Structured evaluator feedback | [SCIENCE.md](SCIENCE.md) | §5 (Convergence) |
 | Hybrid BM25+keyword search | [GATEWAY.md](GATEWAY.md) | §6 (Knowledge) |
 | Term definitions | [GLOSSARY.md](GLOSSARY.md) | — |
+| Paper-track manuscript production (Outliner, Lit-Synth, Figure-Critic, Refiner) | [AGENT-ROLES.md](AGENT-ROLES.md) | §2 (Paper-track) |
+| Citation-coverage gate (≥0.90 integration, zero orphans) | [SCIENCE.md](SCIENCE.md) | §20 (Citation Coverage) |
+| `/voronoi paper <codename>` manuscript command | [GATEWAY.md](GATEWAY.md) | §3 (Router) |
+| `.swarm/manuscript/` state contract | [DATA-STRUCTURES.md](DATA-STRUCTURES.md) | §7 |
 
 ## How to Use Specs
 
@@ -117,6 +121,7 @@
 | `src/voronoi/science/consistency.py` | SCIENCE.md | — | `test_science.py` |
 | `src/voronoi/science/interpretation.py` | SCIENCE.md | §18 | `test_interpretation.py` |
 | `src/voronoi/science/manifest.py` | SCIENCE.md / MANIFEST.md | §19 / all | `test_manifest.py` |
+| `src/voronoi/science/citation_coverage.py` | SCIENCE.md | §20 | `test_citation_coverage.py` |
 | `src/voronoi/mcp/server.py` | ARCHITECTURE.md | §8 | `test_mcp.py` |
 | `src/voronoi/mcp/tools_beads.py` | ARCHITECTURE.md | §8 | `test_mcp.py` |
 | `src/voronoi/mcp/tools_swarm.py` | ARCHITECTURE.md | §8 | `test_mcp.py` |

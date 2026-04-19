@@ -381,7 +381,7 @@ The server communicates over stdio (no network, no ports). It reads `VORONOI_WOR
 
 - Beads MCP tools MUST upsert only the fields they own and preserve unrelated task notes.
 - State-file MCP tools MUST read/write the same schemas used by the core convergence and dispatcher code paths.
-- `voronoi_update_belief_map` MUST emit the canonical list-based hypothesis schema from INV-33.
+- `voronoi_update_belief_map` MUST emit the canonical list-based hypothesis schema from INV-33, append new evidence IDs to the existing list (with deduplication, never replace), and re-infer the confidence tier when `posterior` is updated without an explicit `confidence`.
 
 ### Invariant Enforcement
 

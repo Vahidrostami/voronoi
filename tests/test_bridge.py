@@ -305,6 +305,133 @@ class TestScienceHandlers:
 
 
 # ---------------------------------------------------------------------------
+# Paper-track handler (handle_paper)
+# ---------------------------------------------------------------------------
+
+class TestPaperHandler:
+    def test_empty_codename_returns_usage(self, tmp_path):
+        from voronoi.gateway.router import handle_paper
+        result = handle_paper(str(tmp_path), "", "chat1")
+        assert "Usage" in result
+        assert "/voronoi paper" in result
+
+    @patch("voronoi.gateway.handlers_workflow.InvestigationQueue", autospec=True)
+    def test_unknown_codename_returns_not_found(self, mock_queue_cls, tmp_path):
+        from voronoi.gateway.router import handle_paper
+        mock_q = MagicMock()
+        mock_q.find_by_codename.return_value = []
+        mock_queue_cls.return_value = mock_q
+
+        result = handle_paper(str(tmp_path), "Unicorn", "chat1")
+        assert "No completed investigation" in result
+        assert "Unicorn" in result
+
+    @patch("voronoi.gateway.handlers_workflow.InvestigationQueue", autospec=True)
+    @patch("voronoi.gateway.handlers_workflow.make_slug", return_value="paper-dopamine")
+    def test_enqueues_paper_track_for_completed_investigation(
+        self, mock_slug, mock_queue_cls, tmp_path,
+    ):
+        from voronoi.gateway.router import handle_paper
+        from voronoi.server.queue import Investigation
+
+        parent = Investigation(
+            id=42, chat_id="chat1", status="complete",
+            question="Why is X slow?", slug="why-x", codename="Dopamine",
+            mode="discover", rigor="adaptive",
+        )
+        mock_q = MagicMock()
+        mock_q.find_by_codename.return_value = [parent]
+        mock_q.get_queued.return_value = []
+        mock_q.get_running.return_value = []
+        mock_q.get_paused.return_value = []
+        mock_q.get_recent.return_value = []
+        mock_q.enqueue.return_value = 43
+        stored = Investigation(
+            id=43, chat_id="chat1", codename="Serotonin", question="",
+            parent_id=42,
+        )
+        mock_q.get.return_value = stored
+        mock_queue_cls.return_value = mock_q
+
+        result = handle_paper(str(tmp_path), "dopamine", "chat1")
+        assert "paper-track is live" in result
+        assert "Dopamine" in result  # parent codename mentioned
+
+        # Verify the enqueued Investigation has the right shape.
+        assert mock_q.enqueue.call_count == 1
+        enqueued = mock_q.enqueue.call_args.args[0]
+        assert enqueued.mode == "prove"
+        assert enqueued.rigor == "scientific"
+        assert enqueued.parent_id == 42
+        assert enqueued.question.startswith("[PAPER-TRACK]")
+        assert "Dopamine" in enqueued.question
+
+    @patch("voronoi.gateway.handlers_workflow.InvestigationQueue", autospec=True)
+    def test_rejects_paper_for_running_investigation(self, mock_queue_cls, tmp_path):
+        from voronoi.gateway.router import handle_paper
+        from voronoi.server.queue import Investigation
+
+        mock_q = MagicMock()
+        mock_q.find_by_codename.return_value = []  # no complete match
+        mock_queue_cls.return_value = mock_q
+
+        result = handle_paper(str(tmp_path), "Dopamine", "chat1")
+        assert "No completed investigation" in result
+
+    @patch("voronoi.gateway.handlers_workflow.InvestigationQueue", autospec=True)
+    def test_duplicate_paper_track_is_blocked(self, mock_queue_cls, tmp_path):
+        from voronoi.gateway.router import handle_paper
+        from voronoi.server.queue import Investigation
+
+        parent = Investigation(
+            id=42, chat_id="c", status="complete", question="q", slug="s",
+            codename="Dopamine",
+        )
+        existing_paper = Investigation(
+            id=43, chat_id="c", status="running", question="[PAPER-TRACK] ...",
+            slug="paper-dopamine", codename="Serotonin", parent_id=42,
+        )
+        mock_q = MagicMock()
+        mock_q.find_by_codename.return_value = [parent]
+        mock_q.get_queued.return_value = []
+        mock_q.get_running.return_value = [existing_paper]
+        mock_q.get_paused.return_value = []
+        mock_q.get_recent.return_value = []
+        mock_queue_cls.return_value = mock_q
+
+        result = handle_paper(str(tmp_path), "Dopamine", "chat1")
+        assert "already" in result
+        assert "Serotonin" in result
+
+    @patch("voronoi.gateway.handlers_workflow.InvestigationQueue", autospec=True)
+    def test_failed_paper_track_warns_user(self, mock_queue_cls, tmp_path):
+        from voronoi.gateway.router import handle_paper
+        from voronoi.server.queue import Investigation
+
+        parent = Investigation(
+            id=42, chat_id="c", status="complete", question="q", slug="s",
+            codename="Dopamine",
+        )
+        failed_paper = Investigation(
+            id=43, chat_id="c", status="failed", question="[PAPER-TRACK] ...",
+            slug="paper-dopamine", codename="Serotonin", parent_id=42,
+        )
+        mock_q = MagicMock()
+        mock_q.find_by_codename.side_effect = lambda cn, **kw: (
+            [parent] if kw.get("statuses") == ("complete", "review") else [failed_paper]
+        )
+        mock_q.get_queued.return_value = []
+        mock_q.get_running.return_value = []
+        mock_q.get_paused.return_value = []
+        mock_q.get_recent.return_value = [failed_paper]
+        mock_queue_cls.return_value = mock_q
+
+        result = handle_paper(str(tmp_path), "Dopamine", "chat1")
+        assert "failed" in result.lower()
+        assert "Serotonin" in result
+
+
+# ---------------------------------------------------------------------------
 # Knowledge handlers
 # ---------------------------------------------------------------------------
 
@@ -1173,3 +1300,78 @@ class TestDeliberate:
             "chat1", is_private=True,
         )
         assert isinstance(text, str)
+
+
+# ---------------------------------------------------------------------------
+# Callback handler security & robustness (BUG-001 through BUG-004)
+# ---------------------------------------------------------------------------
+
+class TestCallbackHandlerSecurity:
+    """Tests for inline button callback handler fixes."""
+
+    def test_handle_callback_enforces_allowlist(self):
+        """BUG-001: handle_callback must check _is_allowed before routing."""
+        bridge = _load_bridge_module()
+        source = __import__("inspect").getsource(bridge.run_bot)
+        # The handle_callback function is defined inside run_bot, so we
+        # verify that the source of run_bot contains the auth guard.
+        assert "_is_allowed" in source
+        # Must appear inside handle_callback, not just in other handlers.
+        # Find the handle_callback block and check it contains the guard.
+        cb_start = source.index("async def handle_callback")
+        # Next function definition after handle_callback
+        next_func = source.find("async def ", cb_start + 30)
+        if next_func == -1:
+            next_func = source.find("def ", cb_start + 30)
+        cb_block = source[cb_start:next_func] if next_func != -1 else source[cb_start:]
+        assert "_is_allowed" in cb_block, (
+            "handle_callback must call _is_allowed to enforce INV-28"
+        )
+
+    def test_handle_callback_guards_none_message(self):
+        """BUG-002: handle_callback must not crash when query.message is None."""
+        bridge = _load_bridge_module()
+        source = __import__("inspect").getsource(bridge.run_bot)
+        cb_start = source.index("async def handle_callback")
+        next_func = source.find("async def ", cb_start + 30)
+        if next_func == -1:
+            next_func = source.find("def ", cb_start + 30)
+        cb_block = source[cb_start:next_func] if next_func != -1 else source[cb_start:]
+        # Must guard against None message before calling reply_text
+        assert "query.message is None" in cb_block, (
+            "handle_callback must guard against query.message being None"
+        )
+
+    def test_send_returns_none_on_failure(self):
+        """BUG-003: _send must return None on failure, not a stale message_id."""
+        bridge = _load_bridge_module()
+        source = __import__("inspect").getsource(bridge.run_bot)
+        # Find the _send function and verify its except block returns None
+        send_start = source.index("def _send(text: str)")
+        send_end = source.find("\n            def ", send_start + 10)
+        send_block = source[send_start:send_end] if send_end != -1 else source[send_start:send_start + 500]
+        assert "return None" in send_block
+        # The except block for schedule failure must return None, not _last_sent_msg_id
+        except_idx = send_block.find("except Exception:")
+        if except_idx != -1:
+            # Extract only up to the next return statement after the except
+            after_except = send_block[except_idx:]
+            return_idx = after_except.find("return ")
+            if return_idx != -1:
+                return_line = after_except[return_idx:after_except.find("\n", return_idx)]
+                assert return_line.strip() == "return None", (
+                    f"_send except block must 'return None', got: {return_line.strip()!r}"
+                )
+
+    def test_handle_callback_saves_chat_id(self):
+        """BUG-004: handle_callback must call save_chat_id."""
+        bridge = _load_bridge_module()
+        source = __import__("inspect").getsource(bridge.run_bot)
+        cb_start = source.index("async def handle_callback")
+        next_func = source.find("async def ", cb_start + 30)
+        if next_func == -1:
+            next_func = source.find("def ", cb_start + 30)
+        cb_block = source[cb_start:next_func] if next_func != -1 else source[cb_start:]
+        assert "save_chat_id" in cb_block, (
+            "handle_callback must persist chat_id for outbound notifications"
+        )

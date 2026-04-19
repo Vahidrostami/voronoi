@@ -123,28 +123,20 @@ def handle_howsitgoing(project_dir: str) -> str:
             lines.append("\n" + experiments)
 
         # Belief map snippet
-        for name in ("belief-map.md", "belief-map.json"):
-            p = ws / ".swarm" / name
-            if p.exists():
-                content = p.read_text().strip()
-                if name.endswith(".json"):
-                    try:
-                        data = json.loads(content)
-                        if isinstance(data, dict):
-                            hyps = data.get("hypotheses", [])
-                            if isinstance(hyps, dict):
-                                hyps = list(hyps.values())
-                            if isinstance(hyps, list) and hyps:
-                                lines.append("\nHypotheses:")
-                                for h in hyps[:5]:
-                                    if isinstance(h, dict):
-                                        status = h.get('status', '?')
-                                        lines.append(f"  {h.get('name', '?')}: P={h.get('prior', '?')} [{status}]")
-                    except (json.JSONDecodeError, ValueError, TypeError):
-                        pass
-                else:
-                    lines.append(f"\n{content[:300]}")
-                break
+        belief_md = ws / ".swarm" / "belief-map.md"
+        if belief_md.exists():
+            lines.append(f"\n{belief_md.read_text().strip()[:300]}")
+        else:
+            try:
+                from voronoi.science.convergence import load_belief_map
+                bm = load_belief_map(ws)
+                if bm.hypotheses:
+                    lines.append("\nHypotheses:")
+                    for h in bm.hypotheses[:5]:
+                        conf = h.confidence.upper() if h.confidence else f"P={h.prior}"
+                        lines.append(f"  {h.display_name}: {conf} [{h.status}]")
+            except Exception:
+                pass
 
         # Track assessment
         task_snapshot: dict = {}

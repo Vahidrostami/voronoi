@@ -638,6 +638,36 @@ class InvestigationQueue:
                 ).fetchall()
             return [self._row_to_investigation(r) for r in rows]
 
+    def find_by_codename(self, codename: str,
+                         statuses: tuple[str, ...] | None = None) -> list[Investigation]:
+        """Find investigations by case-insensitive codename.
+
+        Parameters
+        ----------
+        codename : str
+            Codename to search (case-insensitive).
+        statuses : tuple[str, ...] | None
+            If given, only return investigations with one of these statuses.
+            If ``None``, return all matching investigations.
+        """
+        with self._connect() as conn:
+            if statuses:
+                placeholders = ",".join("?" for _ in statuses)
+                rows = conn.execute(
+                    f"SELECT * FROM investigations "
+                    f"WHERE LOWER(codename)=LOWER(?) AND status IN ({placeholders}) "
+                    f"ORDER BY created_at DESC",
+                    (codename, *statuses),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM investigations "
+                    "WHERE LOWER(codename)=LOWER(?) "
+                    "ORDER BY created_at DESC",
+                    (codename,),
+                ).fetchall()
+            return [self._row_to_investigation(r) for r in rows]
+
     def get_paused(self) -> list[Investigation]:
         """Get all paused investigations."""
         with self._connect() as conn:

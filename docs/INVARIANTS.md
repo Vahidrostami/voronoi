@@ -2,7 +2,7 @@
 
 > Rules that MUST never be violated. Reference during code review, debugging, and development.
 
-...nvariants. Key ones: prompt.py is sole prompt builder (INV-01). Roles only in .github/ files (INV-02). Orchestrator never enters worktrees (INV-03). Atomic queue claiming (INV-06). Rigor only escalates (INV-08). Baseline-first (INV-09). EVA before finding (INV-12). No simulation bypass (INV-16). Push before session end (INV-25). Plan review before dispatch at Analytical+ (INV-35b). Experiment contract before workers (INV-39). Sentinel audit cannot be bypassed (INV-40). Missing contract warning (INV-41). Tribunal clear before convergence (INV-42). Directional verification on findings (INV-43). Every completion writes a run manifest (INV-44).
+...nvariants. Key ones: prompt.py is sole prompt builder (INV-01). Roles only in .github/ files (INV-02). Orchestrator never enters worktrees (INV-03). Atomic queue claiming (INV-06). Rigor only escalates (INV-08). Baseline-first (INV-09). EVA before finding (INV-12). No simulation bypass (INV-16). Push before session end (INV-25). Plan review before dispatch at Analytical+ (INV-35b). Experiment contract before workers (INV-39). Sentinel audit cannot be bypassed (INV-40). Missing contract warning (INV-41). Tribunal clear before convergence (INV-42). Directional verification on findings (INV-43). Every completion writes a run manifest (INV-44). Paper-track citation integrity (INV-45).
 
 ## 1. Architectural Invariants
 
@@ -209,3 +209,6 @@ The manifest is a **derived** artifact — it never contradicts its sources (`.s
 The manifest is written **after** the status transition so it captures finalized ledger state (promoted claims, self-critique, continuation proposals). The narrow race window between `queue.complete()` / `queue.review()` and `_write_run_manifest()` — where a process crash could leave a completed investigation with no manifest — is accepted risk; the manifest is a derived artifact and can be regenerated on demand from `.swarm/` state via `build_manifest_from_workspace()`.
 
 Enforced by `InvestigationDispatcher._write_run_manifest()` (server path) and by `cmd_demo()` post-subprocess (CLI demo path). Schema at `docs/MANIFEST.md`.
+
+### INV-45: Paper-Track Citation Integrity
+Every `\cite{...}` key in a paper-track manuscript's `paper.tex` MUST resolve to an entry in `.swarm/manuscript/citation-ledger.json` with `verified: true`. AND at least 90% of verified ledger entries must be `\cite`d somewhere in `paper.tex` (the citation-integration rate must be ≥ `DEFAULT_COVERAGE_TARGET = 0.90`). Orphan `\cite` keys are treated as hallucinated references — zero tolerance, regardless of integration rate. Enforced by `voronoi.science.citation_coverage.check_coverage()` at Scribe verify-loop step 6 and after every Refiner review round. A failing gate reverts the latest Refiner round. Applies only when `.swarm/manuscript/citation-ledger.json` exists (i.e., paper-track was activated via `/voronoi paper`).

@@ -424,6 +424,76 @@ class TestUpdateBeliefMap:
             with pytest.raises(ValidationError, match="must be 0.0"):
                 update_belief_map(hypothesis_id="H1", posterior=1.5)
 
+    def test_evidence_appended_not_replaced(self, tmp_path):
+        """BUG-001 regression: updating evidence should append, not replace."""
+        from voronoi.mcp.tools_swarm import update_belief_map
+
+        with patch.dict(os.environ, {"VORONOI_WORKSPACE": str(tmp_path)}), \
+             patch("voronoi.mcp.tools_swarm.run_bd_json", return_value=(0, {"id": "bd-1"})):
+            update_belief_map(
+                hypothesis_id="H1", name="Test",
+                posterior=0.6, evidence_ids=["bd-1"],
+            )
+
+        with patch.dict(os.environ, {"VORONOI_WORKSPACE": str(tmp_path)}), \
+             patch("voronoi.mcp.tools_swarm.run_bd_json", return_value=(0, {"id": "bd-5"})):
+            update_belief_map(
+                hypothesis_id="H1", evidence_ids=["bd-5"],
+            )
+
+        bm = json.loads((tmp_path / ".swarm" / "belief-map.json").read_text())
+        h1 = next(h for h in bm["hypotheses"] if h["id"] == "H1")
+        assert "bd-1" in h1["evidence"], "original evidence should be preserved"
+        assert "bd-5" in h1["evidence"], "new evidence should be appended"
+
+    def test_evidence_no_duplicates(self, tmp_path):
+        """Appending the same evidence ID should not create duplicates."""
+        from voronoi.mcp.tools_swarm import update_belief_map
+
+        with patch.dict(os.environ, {"VORONOI_WORKSPACE": str(tmp_path)}), \
+             patch("voronoi.mcp.tools_swarm.run_bd_json", return_value=(0, {"id": "bd-1"})):
+            update_belief_map(
+                hypothesis_id="H1", name="Test",
+                posterior=0.6, evidence_ids=["bd-1"],
+            )
+            update_belief_map(
+                hypothesis_id="H1", evidence_ids=["bd-1"],
+            )
+
+        bm = json.loads((tmp_path / ".swarm" / "belief-map.json").read_text())
+        h1 = next(h for h in bm["hypotheses"] if h["id"] == "H1")
+        assert h1["evidence"].count("bd-1") == 1
+
+    def test_confidence_reinferred_on_posterior_update(self, tmp_path):
+        """BUG-005 regression: updating posterior should re-infer confidence."""
+        from voronoi.mcp.tools_swarm import update_belief_map
+
+        with patch.dict(os.environ, {"VORONOI_WORKSPACE": str(tmp_path)}):
+            update_belief_map(hypothesis_id="H1", name="Test", posterior=0.5)
+
+        bm = json.loads((tmp_path / ".swarm" / "belief-map.json").read_text())
+        h1 = next(h for h in bm["hypotheses"] if h["id"] == "H1")
+        assert h1["confidence"] == "unknown"  # P=0.5 → max uncertainty
+
+        with patch.dict(os.environ, {"VORONOI_WORKSPACE": str(tmp_path)}):
+            update_belief_map(hypothesis_id="H1", posterior=0.95)
+
+        bm = json.loads((tmp_path / ".swarm" / "belief-map.json").read_text())
+        h1 = next(h for h in bm["hypotheses"] if h["id"] == "H1")
+        assert h1["confidence"] == "strong"  # P=0.95 → near resolved
+
+    def test_explicit_confidence_overrides_inference(self, tmp_path):
+        """Explicit confidence should override posterior-based inference."""
+        from voronoi.mcp.tools_swarm import update_belief_map
+
+        with patch.dict(os.environ, {"VORONOI_WORKSPACE": str(tmp_path)}):
+            update_belief_map(hypothesis_id="H1", name="Test", posterior=0.5)
+            update_belief_map(hypothesis_id="H1", posterior=0.95, confidence="hunch")
+
+        bm = json.loads((tmp_path / ".swarm" / "belief-map.json").read_text())
+        h1 = next(h for h in bm["hypotheses"] if h["id"] == "H1")
+        assert h1["confidence"] == "hunch"  # explicit wins over inferred
+
 
 class TestUpdateSuccessCriteria:
     def test_create_criterion(self, tmp_path):

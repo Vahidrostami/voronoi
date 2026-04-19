@@ -173,6 +173,37 @@ class TestQueries:
         results = queue.find_by_repo("acme/api")
         assert len(results) == 2
 
+    def test_find_by_codename(self, queue):
+        id1 = queue.enqueue(Investigation(chat_id="c1", question="Q1", slug="q1"))
+        inv1 = queue.get(id1)
+        codename = inv1.codename
+
+        results = queue.find_by_codename(codename)
+        assert len(results) == 1
+        assert results[0].id == id1
+
+    def test_find_by_codename_case_insensitive(self, queue):
+        id1 = queue.enqueue(Investigation(chat_id="c1", question="Q1", slug="q1"))
+        inv1 = queue.get(id1)
+        codename = inv1.codename
+
+        results = queue.find_by_codename(codename.upper())
+        assert len(results) == 1
+        assert results[0].id == id1
+
+    def test_find_by_codename_with_status_filter(self, queue):
+        id1 = queue.enqueue(Investigation(chat_id="c1", question="Q1", slug="q1"))
+        inv1 = queue.get(id1)
+        codename = inv1.codename
+
+        # Should find when status matches
+        results = queue.find_by_codename(codename, statuses=("queued",))
+        assert len(results) == 1
+
+        # Should not find when status doesn't match
+        results = queue.find_by_codename(codename, statuses=("complete",))
+        assert len(results) == 0
+
     def test_format_status_empty(self, queue):
         status = queue.format_status()
         assert "No active" in status

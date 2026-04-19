@@ -39,6 +39,9 @@ Rigor is determined by mode: DISCOVER uses adaptive rigor (starts analytical, es
 | Adversarial review loop | — | YES | YES | YES |
 | Plan review | YES (Critic) | YES (Critic + Theorist) | YES (Critic + Theorist) | YES (Critic + Theorist + Methodologist) |
 | Replication | — | — | — | YES |
+| Citation-coverage (paper-track only) | — | — | YES (Scribe + Refiner) | YES (Scribe + Refiner) |
+
+Paper-track gates (Outliner, Lit-Synthesizer, Figure-Critic, Refiner) are orthogonal to rigor — see §20.
 
 ## 3. Pre-Registration
 
@@ -124,7 +127,7 @@ class Hypothesis:
     name: str
     prior: float           # Initial probability [0, 1] (legacy, kept for compat)
     posterior: float        # Updated probability [0, 1] (legacy, kept for compat)
-    status: str            # untested | testing | confirmed | refuted | merged
+    status: str            # untested | testing | confirmed | refuted | refuted_reversed | inconclusive | merged
     evidence: list[str]    # Finding IDs supporting/refuting
     testability: float     # How easily tested [0, 1]
     impact: float          # How important if true [0, 1]
@@ -144,7 +147,7 @@ class BeliefMap:
     def update_hypothesis(self, id: str, posterior: float, status: str) -> None: ...
     def get_priority_order(self) -> list[Hypothesis]: ...  # Sorted by information_gain DESC
     def all_resolved(self) -> bool: ...                     # All confirmed or rejected
-    def summary(self) -> str: ...                           # Human-readable summary
+    def summary(self) -> dict: ...                           # {total, by_status, cycle}
 ```
 
 ### File Location
@@ -986,3 +989,70 @@ See [MANIFEST.md](MANIFEST.md) for the full schema, rigor table, sub-structure d
 
 Convergence is still the authoritative *signal* (written to `.swarm/convergence.json` and gated by `convergence-gate.sh`). The manifest is written **after** completion is decided; it does not participate in the convergence gate. The manifest's `status` and `converged` fields mirror `convergence.json`.
 
+
+## 20. Citation Coverage — Paper-Track Manuscript Gate
+
+Paper-track manuscripts (triggered by `/voronoi paper <codename>`) have a zero-tolerance citation-integrity gate that runs as the Scribe's verify-loop step 6 and again after every Refiner round.
+
+### Purpose
+
+Every reference in the compiled `paper.tex` must be **verifiable** against Semantic Scholar, and every verified candidate must be **integrated** (actually `\cite`d) in the body. This single gate catches the two biggest failure modes of LLM-written papers: hallucinated citations, and "we searched and found relevant work, but never actually cited it."
+
+The gate enforces a ≥90% integration threshold and Levenshtein ≥70 fuzzy match policy.
+
+### Module
+
+`src/voronoi/science/citation_coverage.py` — standard library only (uses `difflib.SequenceMatcher` for Levenshtein-like fuzzy matching, no new runtime dependency).
+
+### Public API
+
+```python
+DEFAULT_TITLE_THRESHOLD = 0.70      # Levenshtein-like similarity (0..1)
+DEFAULT_COVERAGE_TARGET = 0.90      # Integration rate required to pass
+
+@dataclass
+class CoverageResult:
+    integration_rate: float            # integrated / verified
+    verified_count: int
+    integrated_count: int
+    unintegrated_keys: list[str]       # verified but not \cite'd
+    orphan_cites: list[str]            # \cite'd but not verified (hallucinations)
+    target: float
+    @property
+    def passes(self) -> bool           # rate >= target AND orphan_cites == []
+
+def fuzzy_match_title(a: str, b: str, threshold: float = 0.70) -> bool
+def extract_cite_keys(tex: str) -> set[str]   # strips comments + verbatim first
+def check_coverage(ledger_path, paper_tex_path, *, target=0.90) -> CoverageResult
+def write_coverage_audit(result, out_path) -> Path
+```
+
+### Comment & Verbatim Stripping
+
+`extract_cite_keys()` strips LaTeX comment lines (unescaped `%` to end-of-line) and the content of `verbatim`, `lstlisting`, and `minted` environments before extracting `\cite` keys. This prevents commented-out or example citations from producing false orphan reports.
+
+### Gate Semantics
+
+The gate **fails** if either:
+1. `integration_rate < 0.90` (more than 10% of verified candidates never cited), or
+2. `orphan_cites` is non-empty (any `\cite{key}` without a matching ledger entry with `verified: true`).
+
+Orphan cites are treated as hallucinations — zero tolerance, regardless of integration rate.
+
+### Inputs
+
+- `.swarm/manuscript/citation-ledger.json` — produced by the **Lit-Synthesizer** agent. Entries must carry `{bibtex_key, verified, title, paper_id, ...}`.
+- `paper.tex` at workspace root — produced by **Scribe**.
+
+### Output
+
+- `.swarm/manuscript/coverage-audit.json` — persisted by `write_coverage_audit()` after every gate run. Read by the dual-rubric Evaluator to score the "citation integrity" axis of MS_QUALITY.
+
+### Where Invoked
+
+- **Scribe verify loop (step 6)** — first gate run; fails the compile iteration if coverage is below target or orphans exist.
+- **Refiner — after every review round** — coverage is re-checked; if it regressed below target, the Refiner reverts the round (`git checkout paper.tex paper.pdf`).
+
+### Related Invariant
+
+See [INVARIANTS.md](INVARIANTS.md) — "Every `\cite{...}` in a compiled paper-track manuscript must resolve to a verified entry in `citation-ledger.json`."

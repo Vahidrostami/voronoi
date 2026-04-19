@@ -443,3 +443,87 @@ class TestLineageResolution:
         store = {3: FakeInv(3, parent_id=99)}
         # parent 99 not found → stop at 99
         assert resolve_lineage_id(3, store.get) == 99
+
+
+# ---------------------------------------------------------------------------
+# Forward-compatibility: extra keys in serialized data
+# ---------------------------------------------------------------------------
+
+class TestForwardCompatibility:
+    def test_load_ledger_with_extra_claim_keys(self, tmp_path):
+        """A ledger saved by a newer version may have extra fields on claims."""
+        data = {
+            "claims": [{
+                "id": "C1",
+                "statement": "test",
+                "provenance": "run_evidence",
+                "status": "provisional",
+                "supporting_findings": [],
+                "source_cycle": 1,
+                "artifacts": [],
+                "challenges": [],
+                "first_asserted": "2025-01-01T00:00:00+00:00",
+                "last_updated": "2025-01-01T00:00:00+00:00",
+                "future_field": "from_newer_version",
+            }],
+            "objections": [],
+            "_next_claim_id": 2,
+            "_next_objection_id": 1,
+        }
+        path = tmp_path / "ledgers" / "1" / "claim-ledger.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps(data))
+        ledger = load_ledger(1, base_dir=tmp_path)
+        assert len(ledger.claims) == 1
+        assert ledger.claims[0].id == "C1"
+
+    def test_load_ledger_with_extra_objection_keys(self, tmp_path):
+        """Extra fields on objections are silently dropped."""
+        data = {
+            "claims": [],
+            "objections": [{
+                "id": "O1",
+                "target_claim": "C1",
+                "concern": "N too small",
+                "objection_type": "power",
+                "raised_by": "PI",
+                "status": "pending",
+                "timestamp": "2025-01-01T00:00:00+00:00",
+                "new_field": 42,
+            }],
+            "_next_claim_id": 1,
+            "_next_objection_id": 2,
+        }
+        path = tmp_path / "ledgers" / "1" / "claim-ledger.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps(data))
+        ledger = load_ledger(1, base_dir=tmp_path)
+        assert len(ledger.objections) == 1
+        assert ledger.objections[0].id == "O1"
+
+    def test_load_ledger_with_extra_artifact_keys(self, tmp_path):
+        """Extra fields on artifacts are silently dropped."""
+        data = {
+            "claims": [{
+                "id": "C1",
+                "statement": "test",
+                "provenance": "run_evidence",
+                "status": "provisional",
+                "supporting_findings": [],
+                "source_cycle": 1,
+                "artifacts": [{"path": "x.csv", "artifact_type": "data",
+                               "future_tag": "v2"}],
+                "challenges": [],
+                "first_asserted": "2025-01-01T00:00:00+00:00",
+                "last_updated": "2025-01-01T00:00:00+00:00",
+            }],
+            "objections": [],
+            "_next_claim_id": 2,
+            "_next_objection_id": 1,
+        }
+        path = tmp_path / "ledgers" / "1" / "claim-ledger.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps(data))
+        ledger = load_ledger(1, base_dir=tmp_path)
+        assert len(ledger.claims[0].artifacts) == 1
+        assert ledger.claims[0].artifacts[0].path == "x.csv"

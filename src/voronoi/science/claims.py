@@ -503,19 +503,38 @@ def _claim_to_dict(claim: Claim) -> dict:
     return d
 
 
+def _known_fields(cls: type) -> set[str]:
+    """Return the set of field names for a dataclass (for forward-compat filtering)."""
+    from dataclasses import fields as _fields
+    return {f.name for f in _fields(cls)}
+
+
+def _filter_keys(d: dict, cls: type) -> dict:
+    """Return *d* with only the keys that *cls* accepts."""
+    allowed = _known_fields(cls)
+    return {k: v for k, v in d.items() if k in allowed}
+
+
 def _dict_to_claim(d: dict) -> Claim:
-    """Reconstruct a Claim from a dict."""
-    # Reconstruct nested dataclasses
-    d["artifacts"] = [ClaimArtifact(**a) if isinstance(a, dict) else a
+    """Reconstruct a Claim from a dict.
+
+    Unknown keys (from future schema versions) are silently dropped so that
+    older code can still load newer ledger files without crashing.
+    """
+    # Reconstruct nested dataclasses (filter unknown keys there too)
+    d["artifacts"] = [ClaimArtifact(**_filter_keys(a, ClaimArtifact)) if isinstance(a, dict) else a
                       for a in d.get("artifacts", [])]
-    d["challenges"] = [Objection(**o) if isinstance(o, dict) else o
+    d["challenges"] = [Objection(**_filter_keys(o, Objection)) if isinstance(o, dict) else o
                        for o in d.get("challenges", [])]
-    return Claim(**d)
+    return Claim(**_filter_keys(d, Claim))
 
 
 def _dict_to_objection(d: dict) -> Objection:
-    """Reconstruct an Objection from a dict."""
-    return Objection(**d)
+    """Reconstruct an Objection from a dict.
+
+    Unknown keys are silently dropped for forward-compatibility.
+    """
+    return Objection(**_filter_keys(d, Objection))
 
 
 def _ledger_to_dict(ledger: ClaimLedger) -> dict:

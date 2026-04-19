@@ -44,6 +44,17 @@ Before declaring success, verify:
 3. All `\ref{}` and `\cite{}` references resolve (no `??` in output).
 4. Every inline statistic matches its source data file.
 5. `references.bib` exists and all `\cite{}` keys are present.
+6. **Citation-coverage gate (paper-track)** — when
+   `.swarm/manuscript/citation-ledger.json` exists, run:
+   ```bash
+   python -c "from voronoi.science.citation_coverage import check_coverage, write_coverage_audit; \
+              r = check_coverage('.swarm/manuscript/citation-ledger.json', 'paper.tex'); \
+              write_coverage_audit(r, '.swarm/manuscript/coverage-audit.json'); \
+              print(r); assert r.passes, r"
+   ```
+   Required ≥ 0.90 integration rate AND zero orphan `\cite` keys (hallucinated
+   references). If it fails, fix the prose — add the missing `\cite{}`s or
+   remove the hallucinated ones — and recompile.
 
 Max verify iterations: 5.
 

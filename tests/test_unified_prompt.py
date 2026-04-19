@@ -345,9 +345,22 @@ class TestRoleMapping:
             "exploration", "review_stats", "review_critic",
             "review_method", "theory", "synthesis", "evaluation",
             "scribe", "paper", "compilation",
+            # Paper-track roles
+            "outline", "lit_synthesis", "figure_critic", "refine",
         ]
         for t in expected_types:
             assert t in ROLE_MAP, f"Missing task type {t} in ROLE_MAP"
+
+    def test_paper_track_role_files_exist(self):
+        """Every paper-track ROLE_MAP entry must point at a real .agent.md file."""
+        from voronoi.server.prompt import ROLE_MAP
+        from voronoi.cli import find_data_dir
+        agents_dir = find_data_dir() / "agents"
+        for task_type in ("outline", "lit_synthesis", "figure_critic", "refine"):
+            fname = ROLE_MAP[task_type]
+            assert (agents_dir / fname).is_file(), (
+                f"paper-track role file missing: {agents_dir / fname}"
+            )
 
 
 # ---------------------------------------------------------------------------

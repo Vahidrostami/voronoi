@@ -164,6 +164,18 @@ These handlers interact with the Claim Ledger (`~/.voronoi/ledgers/<lineage_id>/
 | `handle_discover(project_dir, question, chat_id) -> str` | DISCOVER | ADAPTIVE |
 | `handle_prove(project_dir, hypothesis, chat_id) -> str` | PROVE | SCIENTIFIC |
 | `handle_demo(project_dir, demo_name, chat_id, dry_run, safe) -> str` | (from demo) | (from demo) |
+| `handle_paper(project_dir, codename, chat_id) -> str` | PROVE + paper-track | SCIENTIFIC |
+
+#### Paper-track (`handle_paper`)
+
+Invoked via `/voronoi paper <codename>`. Looks up a **completed** (`status ∈ {complete, review}`) investigation by case-insensitive codename and enqueues a sub-investigation with:
+
+- `mode = "prove"`, `rigor = "scientific"`
+- `parent_id` = parent investigation id
+- `lineage_id` = parent's `lineage_id` or `parent.id`
+- `question` = `"[PAPER-TRACK] Produce a submission-ready LaTeX manuscript ..."` (see `handlers_workflow._PAPER_QUESTION_TEMPLATE`). The dispatcher and orchestrator detect the `[PAPER-TRACK]` prefix and activate the paper-track role sequence: **Outliner → (Lit-Synthesizer ∥ Figure-Critic) → Scribe → Refiner**. See [AGENT-ROLES.md](AGENT-ROLES.md) §2.
+
+Duplicate paper-track runs for the same parent are blocked with a user-visible warning. This includes `queued`, `running`, and `paused` states. Failed paper-track runs produce an informational warning with resume instructions. Codename lookup uses a direct SQL query (`find_by_codename`) so it is not limited to recent investigations.
 
 ### Internal Helpers
 

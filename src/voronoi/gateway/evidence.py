@@ -208,18 +208,17 @@ def render_limitations(findings: list[dict], workspace: Path) -> str | None:
         )
 
     # Read belief map for inconclusive hypotheses
-    belief_path = workspace / ".swarm" / "belief-map.json"
-    if belief_path.exists():
-        try:
-            bm_data = json.loads(belief_path.read_text())
-            for h in bm_data.get("hypotheses", []):
-                if h.get("status") == "inconclusive":
-                    limitations.append(
-                        f"- **Inconclusive hypothesis:** {h.get('name', '?')} "
-                        f"(insufficient evidence to confirm or refute)"
-                    )
-        except (json.JSONDecodeError, ValueError):
-            pass
+    try:
+        from voronoi.science.convergence import load_belief_map
+        bm = load_belief_map(workspace)
+        for h in bm.hypotheses:
+            if h.status == "inconclusive":
+                limitations.append(
+                    f"- **Inconclusive hypothesis:** {h.display_name} "
+                    f"(insufficient evidence to confirm or refute)"
+                )
+    except Exception:
+        pass
 
     return "\n".join(limitations) if limitations else None
 

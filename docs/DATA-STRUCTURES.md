@@ -570,6 +570,117 @@ CREATE TABLE conversation_state (
 
 ## 7. File Formats
 
+### `.swarm/manuscript/` — Paper-track state (INV-04, manuscript sub-tree)
+
+All manuscript production artefacts live under `.swarm/manuscript/` so they
+survive `/compact` and investigation resume alongside the rest of `.swarm/`.
+Written by the paper-track agents (Outliner, Lit-Synthesizer, Figure-Critic,
+Scribe, Refiner) and consumed by the citation-coverage gate and dual-rubric
+Evaluator.
+
+```
+.swarm/manuscript/
+  outline.json            # Outliner          — sections, figures, citation slots
+  citation-ledger.json    # Lit-Synthesizer   — verified refs + integration status
+  figure-ledger.json      # Figure-Critic     — per-figure rubric verdicts
+  coverage-audit.json     # citation_coverage — auto-written by Scribe + Refiner
+  review-rounds/
+    1.json                # Refiner round 1
+    2.json                # Refiner round 2
+    3.json                # Refiner round 3 (max)
+  paper.tex               # Scribe            — manuscript source
+  paper.pdf               # Scribe            — compiled artefact
+```
+
+#### `outline.json` (Outliner)
+
+```json
+{
+  "codename": "Dopamine",
+  "target_abstract": "We study ...",
+  "venue": {"name": "NeurIPS 2026", "page_limit": 9, "format": "neurips_2024.tex"},
+  "sections": [
+    {
+      "id": "intro",
+      "title": "Introduction",
+      "target_words": 600,
+      "paragraphs": [
+        {
+          "id": "intro-p1",
+          "claim": "Motivation: X is unsolved",
+          "citation_slots": [
+            {"id": "C1", "claim": "prior work on X",
+             "kind": "motivation", "needs_n": 2}
+          ]
+        }
+      ]
+    }
+  ],
+  "figures": [
+    {"id": "fig1", "caption_draft": "...", "supports_claim": "H1",
+     "source": "figures/fig1.pdf", "needs_generation": false}
+  ],
+  "tables": [],
+  "citation_slots_total": 12
+}
+```
+
+#### `citation-ledger.json` (Lit-Synthesizer)
+
+```json
+{
+  "entries": [
+    {
+      "bibtex_key": "smith2024xyz",
+      "slot_id": "C1",
+      "paper_id": "S2:abc123",
+      "title": "...",
+      "authors": ["Smith, J."],
+      "year": 2024,
+      "url": "https://...",
+      "verified": true,
+      "match_score": 0.87,
+      "integration_status": "pending"
+    }
+  ],
+  "unfilled_slots": ["C7"],
+  "coverage_target": 0.90
+}
+```
+
+#### `figure-ledger.json` (Figure-Critic)
+
+Per-figure verdicts from the 8-check rubric. See [AGENT-ROLES.md](AGENT-ROLES.md)
+§3.16 for the rubric. `verdict ∈ {"accept", "revise", "reject"}`.
+
+#### `coverage-audit.json` (from `voronoi.science.citation_coverage.CoverageResult`)
+
+```json
+{
+  "integration_rate": 0.94,
+  "verified_count": 17,
+  "integrated_count": 16,
+  "unintegrated_keys": ["doe2022abc"],
+  "orphan_cites": [],
+  "target": 0.9,
+  "passes": true
+}
+```
+
+#### `review-rounds/${N}.json` (Refiner)
+
+Simulated peer review report per round with per-issue `applied` / `halt_reason`
+fields — see [AGENT-ROLES.md](AGENT-ROLES.md) §3.17.
+
+#### Figure `.meta.json` sidecar (MANDATORY on paper-track)
+
+Every figure file must have a sibling `<fig>.meta.json` emitted by the
+plotting script, containing: `figure_id`, `path`, `supports_claim`,
+`axes.{xlabel,ylabel,xscale,yscale}`, `n_series`, `has_errorbars`,
+`caption_draft`, `data_file`, `data_sha256`, `n_samples`, `palette`. Missing
+fields auto-fail the Figure-Critic. See
+`src/voronoi/data/skills/figure-generation/SKILL.md` Phase 4b.
+
 ### `.swarm/belief-map.json`
 
 ```json

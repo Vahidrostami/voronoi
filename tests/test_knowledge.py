@@ -201,19 +201,45 @@ class TestKnowledgeStoreFiles:
         swarm = tmp_path / ".swarm"
         swarm.mkdir()
         data = {"hypotheses": [
-            {"name": "H1", "prior": 0.7, "status": "confirmed"},
-            {"name": "H2", "prior": 0.3, "status": "refuted"},
+            {"name": "H1", "prior": 0.7, "status": "confirmed", "confidence": "strong"},
+            {"name": "H2", "prior": 0.3, "status": "refuted", "confidence": "supported"},
         ]}
         (swarm / "belief-map.json").write_text(json.dumps(data))
         ks = KnowledgeStore(tmp_path)
         belief = ks.get_belief_map()
         assert "H1" in belief
-        assert "0.7" in belief
+        assert "STRONG" in belief
         assert "confirmed" in belief
 
     def test_get_belief_map_missing(self, tmp_path):
         ks = KnowledgeStore(tmp_path)
         assert ks.get_belief_map() is None
+
+    def test_get_belief_map_dict_keyed(self, tmp_path):
+        """BUG-002/003 regression: dict-keyed hypotheses should not crash."""
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        data = {"hypotheses": {
+            "H1": {"name": "Encoding helps", "prior": 0.6, "status": "confirmed"},
+            "H2": {"name": "No effect", "prior": 0.4, "status": "refuted"},
+        }}
+        (swarm / "belief-map.json").write_text(json.dumps(data))
+        ks = KnowledgeStore(tmp_path)
+        belief = ks.get_belief_map()
+        assert belief is not None
+        assert "Encoding helps" in belief
+        assert "No effect" in belief
+
+    def test_get_belief_map_dict_keyed_string_values(self, tmp_path):
+        """BUG-003 regression: string-valued dict hypotheses should not crash."""
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        data = {"hypotheses": {"H1": "Encoding helps", "H2": "No effect"}}
+        (swarm / "belief-map.json").write_text(json.dumps(data))
+        ks = KnowledgeStore(tmp_path)
+        belief = ks.get_belief_map()
+        assert belief is not None
+        assert "Encoding helps" in belief
 
     def test_get_strategic_context(self, tmp_path):
         swarm = tmp_path / ".swarm"

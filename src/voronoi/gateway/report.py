@@ -142,77 +142,18 @@ class ReportGenerator:
     @staticmethod
     def _render_findings_table(findings: list[dict], placeholder: str = "\u2014") -> list[str]:
         return render_findings_table(findings, placeholder)
-        return rows
 
     @staticmethod
     def _render_findings_interpreted(findings: list[dict]) -> list[str]:
-        """Render findings with interpretation and practical significance."""
-        lines: list[str] = []
-        for i, f in enumerate(findings, 1):
-            title = _clean_finding_title(f["title"])
-            valence = f.get("valence", "unknown")
-            effect = f.get("effect_size", "")
-            ci = f.get("ci_95", "")
-            p_val = f.get("p", "")
-            n = f.get("n", "")
-            practical = f.get("practical_significance", "")
-            strength = f.get("strength_label", "")
-            interp = f.get("interpretation", "")
-            supports = f.get("supports_hypothesis", "")
-
-            lines.append(f"### Finding {i}: {title}\n")
-
-            # Statistical summary
-            stat_parts = []
-            if effect:
-                stat_parts.append(f"**Effect size:** d={effect}")
-                if practical and practical != "unknown":
-                    stat_parts.append(f"({practical} practical effect)")
-            if ci:
-                stat_parts.append(f"**CI 95%:** {ci}")
-            if p_val:
-                stat_parts.append(f"**p:** {p_val}")
-            if n:
-                stat_parts.append(f"**N:** {n}")
-            if stat_parts:
-                lines.append(" | ".join(stat_parts) + "\n")
-
-            # Verdict and strength
-            lines.append(f"**Verdict:** {valence}")
-            if strength and strength not in ("unknown", "unreviewed"):
-                lines.append(f" | **Evidence strength:** {strength}")
-            lines.append("\n")
-
-            # Interpretation
-            if interp:
-                lines.append(f"**Interpretation:** {interp}\n")
-
-            # Hypothesis link
-            if supports:
-                lines.append(f"**Supports hypothesis:** {supports}\n")
-
-            lines.append("")
-        return lines
+        return render_findings_interpreted(findings)
 
     @staticmethod
     def _pick_headline(findings: list[dict]) -> dict:
-        """Pick the finding with the largest numeric effect size."""
-        best, best_val = None, -1.0
-        for f in findings:
-            es = f.get("effect_size", "")
-            try:
-                val = abs(float(es))
-                if val > best_val:
-                    best, best_val = f, val
-            except (ValueError, TypeError):
-                continue
-        if not findings:
-            return {}
-        return best if best is not None else findings[0]
+        return pick_headline(findings)
 
     @staticmethod
     def _valence_emoji(valence: str) -> str:
-        return {"positive": "\u2705", "negative": "\u274c"}.get(valence.lower(), "\u2753")
+        return valence_emoji(valence)
 
     # ------------------------------------------------------------------
     # Belief map rendering
@@ -328,38 +269,7 @@ class ReportGenerator:
 
     def _render_evidence_chain(self) -> str | None:
         """Render claim-evidence traceability from .swarm/claim-evidence.json."""
-        from voronoi.science import load_claim_evidence
-        reg = load_claim_evidence(self.ws)
-        if not reg.claims:
-            return None
-
-        lines = []
-        for c in reg.claims:
-            strength_badge = {"robust": "\u2705", "provisional": "\u26a0\ufe0f",
-                              "weak": "\u274c", "unsupported": "\u2b55"}.get(
-                c.strength, "\u2753")
-            lines.append(f"### {strength_badge} {c.claim_text}\n")
-            lines.append(f"**Evidence strength:** {c.strength}")
-            if c.finding_ids:
-                lines.append(f" | **Supported by:** {', '.join(c.finding_ids)}")
-            if c.hypothesis_ids:
-                lines.append(f" | **Tests:** {', '.join(c.hypothesis_ids)}")
-            lines.append("\n")
-            if c.interpretation:
-                lines.append(f"{c.interpretation}\n")
-            lines.append("")
-
-        # Audit warnings
-        if reg.unsupported_claims:
-            lines.append("\n**\u26a0\ufe0f Unsupported claims:** "
-                         f"{', '.join(reg.unsupported_claims)}\n")
-        if reg.orphan_findings:
-            lines.append("**\u2139\ufe0f Findings not cited in claims:** "
-                         f"{', '.join(reg.orphan_findings)}\n")
-
-        lines.append(f"\n**Evidence coverage:** {reg.coverage_score:.0%} of claims "
-                     f"have supporting evidence\n")
-        return "\n".join(lines)
+        return render_evidence_chain(self.ws)
 
     # ------------------------------------------------------------------
     # Auto-generated Limitations section
@@ -367,64 +277,7 @@ class ReportGenerator:
 
     def _render_limitations(self, findings: list[dict]) -> str | None:
         """Auto-generate limitations from fragile, contested, wide-CI findings."""
-        limitations: list[str] = []
-
-        # Fragile findings
-        fragile = [f for f in findings
-                   if f.get("robust", "").lower() == "no"]
-        for f in fragile:
-            title = _clean_finding_title(f["title"])
-            conditions = f.get("conditions", "conditions not documented")
-            limitations.append(
-                f"- **Fragile result:** {title} "
-                f"(not robust under sensitivity analysis; {conditions})"
-            )
-
-        # Wide confidence intervals
-        for f in findings:
-            ci_q = f.get("ci_quality", "")
-            if ci_q in ("wide", "very wide"):
-                title = _clean_finding_title(f["title"])
-                limitations.append(
-                    f"- **Imprecise estimate:** {title} "
-                    f"(CI quality: {ci_q} — interpret with caution)"
-                )
-
-        # Unreviewed findings
-        unreviewed = [f for f in findings
-                      if f.get("strength_label") in ("unreviewed", None)
-                      and not f.get("stat_review")]
-        if unreviewed:
-            titles = [_clean_finding_title(f["title"]) for f in unreviewed[:3]]
-            limitations.append(
-                f"- **Unreviewed evidence:** {len(unreviewed)} finding(s) "
-                f"not yet reviewed by Statistician ({', '.join(titles)})"
-            )
-
-        # Rejected findings
-        rejected = [f for f in findings
-                    if f.get("strength_label") == "rejected"]
-        for f in rejected:
-            title = _clean_finding_title(f["title"])
-            limitations.append(
-                f"- **Rejected by review:** {title} (failed statistical review)"
-            )
-
-        # Check for inconclusive hypotheses in belief map
-        belief_json = self._read_file(".swarm", "belief-map.json")
-        if belief_json:
-            try:
-                bm_data = json.loads(belief_json)
-                for h in bm_data.get("hypotheses", []):
-                    if h.get("status") == "inconclusive":
-                        limitations.append(
-                            f"- **Inconclusive hypothesis:** {h.get('name', '?')} "
-                            f"(insufficient evidence to confirm or refute)"
-                        )
-            except (json.JSONDecodeError, ValueError):
-                pass
-
-        return "\n".join(limitations) if limitations else None
+        return render_limitations(findings, self.ws)
 
     # ------------------------------------------------------------------
     # Cross-finding comparison
@@ -432,48 +285,7 @@ class ReportGenerator:
 
     @staticmethod
     def _render_cross_finding_comparison(findings: list[dict]) -> str | None:
-        """Rank findings by effect size and narrate relative magnitudes."""
-        scored: list[tuple[float, dict]] = []
-        for f in findings:
-            es = f.get("effect_size", "")
-            try:
-                val = abs(float(es))
-                scored.append((val, f))
-            except (ValueError, TypeError):
-                continue
-
-        if len(scored) < 2:
-            return None
-
-        scored.sort(key=lambda x: x[0], reverse=True)
-        lines = []
-        top = scored[0]
-        top_title = _clean_finding_title(top[1]["title"])
-        lines.append(f"The strongest effect observed was **{top_title}** "
-                     f"(d={top[1].get('effect_size', '?')}"
-                     f"{', ' + top[1].get('practical_significance', '') if top[1].get('practical_significance') else ''}).")
-
-        if len(scored) >= 2:
-            bot = scored[-1]
-            bot_title = _clean_finding_title(bot[1]["title"])
-            if top[0] > 0 and bot[0] > 0:
-                ratio = top[0] / bot[0]
-                lines.append(
-                    f"This is {ratio:.1f}x larger than the weakest effect, "
-                    f"**{bot_title}** (d={bot[1].get('effect_size', '?')}).")
-
-        # Note any findings with opposing valence
-        positive = [f for _, f in scored if f.get("valence", "").lower() == "positive"]
-        negative = [f for _, f in scored if f.get("valence", "").lower() == "negative"]
-        if positive and negative:
-            pos_titles = [_clean_finding_title(f["title"]) for f in positive[:2]]
-            neg_titles = [_clean_finding_title(f["title"]) for f in negative[:2]]
-            lines.append(
-                f"\nNotably, results were mixed: {', '.join(pos_titles)} showed "
-                f"positive effects while {', '.join(neg_titles)} showed negative effects."
-            )
-
-        return "\n".join(lines)
+        return render_cross_finding_comparison(findings)
 
     # ------------------------------------------------------------------
     # Negative results section
@@ -481,29 +293,7 @@ class ReportGenerator:
 
     @staticmethod
     def _render_negative_results(findings: list[dict]) -> str | None:
-        """Render a dedicated section for negative/inconclusive findings."""
-        negative = [f for f in findings
-                    if f.get("valence", "").lower() in ("negative", "inconclusive")]
-        if not negative:
-            return None
-
-        lines = ["The following hypotheses were tested and did not produce "
-                 "the expected positive result. These negative results are "
-                 "scientifically valuable as they narrow the solution space "
-                 "and prevent future wasted effort.\n"]
-        for f in negative:
-            title = _clean_finding_title(f["title"])
-            effect = f.get("effect_size", "")
-            p_val = f.get("p", "")
-            valence = f.get("valence", "")
-            stat_parts = []
-            if effect:
-                stat_parts.append(f"d={effect}")
-            if p_val:
-                stat_parts.append(f"p={p_val}")
-            stat_str = f" ({', '.join(stat_parts)})" if stat_parts else ""
-            lines.append(f"- **{title}**{stat_str} \u2014 {valence}")
-        return "\n".join(lines)
+        return render_negative_results(findings)
 
     # ------------------------------------------------------------------
     # Human-readable stat description for Telegram
@@ -511,38 +301,7 @@ class ReportGenerator:
 
     @staticmethod
     def _humanize_stats(finding: dict) -> str:
-        """Translate raw stats into a human-friendly description."""
-        parts: list[str] = []
-        p_val = finding.get("p", "")
-        effect = finding.get("effect_size", "")
-        try:
-            p_float = float(p_val)
-            if p_float < 0.001:
-                parts.append("very strong evidence")
-            elif p_float < 0.01:
-                parts.append("strong evidence")
-            elif p_float < 0.05:
-                parts.append("significant")
-            else:
-                parts.append("weak evidence")
-            parts.append(f"p={p_val}")
-        except (ValueError, TypeError):
-            pass
-        if effect:
-            try:
-                d = abs(float(effect))
-                if d >= 0.8:
-                    size = "large effect"
-                elif d >= 0.5:
-                    size = "medium effect"
-                elif d >= 0.2:
-                    size = "small effect"
-                else:
-                    size = "negligible effect"
-                parts.append(size)
-            except (ValueError, TypeError):
-                pass
-        return ", ".join(parts)
+        return humanize_stats(finding)
 
     # ------------------------------------------------------------------
     # Teaser (Telegram message)

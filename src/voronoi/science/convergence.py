@@ -377,7 +377,7 @@ def check_convergence(workspace: Path, rigor: str,
     if design_invalid:
         blockers.append(f"{len(design_invalid)} DESIGN_INVALID experiment(s) — fix before converging")
     blockers.extend(_check_success_criteria(workspace))
-    blockers.extend(_check_hypothesis_alignment(workspace))
+    blockers.extend(_check_hypothesis_alignment(workspace, tasks))
     conflicts = _helpers._find_consistency_conflicts(workspace, tasks)
     if conflicts:
         blockers.append(f"{len(conflicts)} unresolved consistency conflicts")
@@ -487,9 +487,10 @@ def _check_success_criteria(workspace: Path) -> list[str]:
             for c in data if isinstance(c, dict) and not c.get("met", False)]
 
 
-def _check_hypothesis_alignment(workspace: Path) -> list[str]:
+def _check_hypothesis_alignment(workspace: Path, tasks: list[dict] | None = None) -> list[str]:
     blockers: list[str] = []
-    tasks = _helpers._fetch_tasks(workspace)
+    if tasks is None:
+        tasks = _helpers._fetch_tasks(workspace)
     if tasks:
         for t in tasks:
             notes = t.get("notes", "")

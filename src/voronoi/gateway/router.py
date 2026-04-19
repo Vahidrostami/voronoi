@@ -57,6 +57,7 @@ from voronoi.gateway.handlers_workflow import (  # noqa: F401
     handle_discover,
     handle_prove,
     handle_demo,
+    handle_paper,
 )
 
 logger = logging.getLogger("voronoi.router")
@@ -71,7 +72,7 @@ __all__ = [
     "handle_complete_investigation",
     "handle_review_investigation", "handle_continue_investigation", "handle_claims",
     "handle_abort", "handle_pivot", "handle_guide",
-    "handle_discover", "handle_prove",
+    "handle_discover", "handle_prove", "handle_paper",
     "handle_recall", "handle_belief", "handle_finding", "handle_ops",
     "handle_results", "handle_demo", "handle_details",
     "handle_ask", "handle_deliberate",
@@ -144,7 +145,8 @@ _HELP_MESSAGE = (
     "`/voronoi progress` — metrics + criteria\n\n"
     "*Investigate*\n"
     "`/voronoi discover <question>`\n"
-    "`/voronoi prove <hypothesis>`\n\n"
+    "`/voronoi prove <hypothesis>`\n"
+    "`/voronoi paper <codename>` — write a manuscript for a completed investigation\n\n"
     "*Knowledge*\n"
     "`/voronoi belief` · `finding <id>` · `recall <query>`\n"
     "`/voronoi ask <question>` — ask about a running investigation\n\n"
@@ -242,6 +244,12 @@ class CommandRouter:
                     txt = self._list_demos()
                 else:
                     txt = "Usage: `/voronoi demo list` or `/voronoi demo run <name>`"
+                return txt, None
+            elif sub == "paper" and args:
+                txt = handle_paper(self.project_dir, args[0], chat_id)
+                return txt, None
+            elif sub == "paper":
+                txt = handle_paper(self.project_dir, "", chat_id)
                 return txt, None
             elif sub == "recall" and args:
                 return handle_recall(self.project_dir, " ".join(args)), None

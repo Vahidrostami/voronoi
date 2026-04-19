@@ -689,6 +689,11 @@ ROLE_MAP: dict[str, str] = {
     "scribe": "scribe.agent.md",
     "paper": "worker-agent.agent.md",
     "compilation": "worker-agent.agent.md",
+    # Paper-track roles (manuscript production pipeline)
+    "outline": "outliner.agent.md",
+    "lit_synthesis": "lit-synthesizer.agent.md",
+    "figure_critic": "figure-critic.agent.md",
+    "refine": "refiner.agent.md",
 }
 
 # Skills to reference by task type
@@ -721,6 +726,19 @@ SKILL_MAP: dict[str, list[str]] = {
     "exploration": [
         ".github/skills/deep-research/SKILL.md",
         ".github/skills/context-management/SKILL.md",
+    ],
+    # Paper-track skills
+    "outline": [
+        ".github/skills/context-management/SKILL.md",
+    ],
+    "lit_synthesis": [
+        ".github/skills/deep-research/SKILL.md",
+    ],
+    "figure_critic": [
+        ".github/skills/figure-generation/SKILL.md",
+    ],
+    "refine": [
+        ".github/skills/compilation-protocol/SKILL.md",
     ],
 }
 

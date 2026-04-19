@@ -115,6 +115,46 @@ done
 bd update <task-id> --notes "FIGURES_VERIFIED: all N/N present"
 ```
 
+### Phase 4b: Emit `.meta.json` sidecar (MANDATORY on paper-track)
+
+Every figure on the paper-track MUST have a sibling `<fig>.meta.json`
+describing what's on the plot. This is the contract the **Figure-Critic**
+agent reads to run its text-only publication-quality rubric (no VLM needed).
+
+Emit it **from the plotting script** — do not hand-edit:
+
+```python
+import json, hashlib, pathlib
+# ... after fig.savefig('figures/ablation.pdf', ...) ...
+meta = {
+    "figure_id": "fig-ablation",
+    "path": "figures/ablation.pdf",
+    "supports_claim": "H1",            # ID from .swarm/claim-evidence.json
+    "axes": {
+        "xlabel": ax.get_xlabel(),
+        "ylabel": ax.get_ylabel(),
+        "xscale": ax.get_xscale(),
+        "yscale": ax.get_yscale(),
+    },
+    "n_series": len(ax.get_lines()) or len(ax.patches),
+    "has_errorbars": any(c.get_label().startswith("_child") for c in ax.containers)
+                    if hasattr(ax, "containers") else False,
+    "caption_draft": "Ablation over condition C. N=120 per arm. "
+                     "Error bars = 95% CI bootstrap. d=0.42 (medium).",
+    "data_file": "output/results.json",
+    "data_sha256": hashlib.sha256(
+        pathlib.Path("output/results.json").read_bytes()
+    ).hexdigest(),
+    "n_samples": 120,
+    "palette": "viridis",              # colour-blind-safe
+}
+pathlib.Path("figures/ablation.pdf.meta.json").write_text(json.dumps(meta, indent=2))
+```
+
+Required fields: `figure_id`, `path`, `supports_claim`, `axes.xlabel`,
+`axes.ylabel`, `caption_draft`, `data_file`, `data_sha256`, `n_samples`,
+`palette`. Missing fields cause the Figure-Critic to auto-fail the figure.
+
 ### Phase 5: Run figure-lint (if available)
 
 ```bash

@@ -216,26 +216,22 @@ class KnowledgeStore:
         belief_file = Path(self.project_dir) / ".swarm" / "belief-map.md"
         if belief_file.exists():
             return belief_file.read_text().strip()
-        # Also check JSON variant
-        belief_json = Path(self.project_dir) / ".swarm" / "belief-map.json"
-        if belief_json.exists():
-            try:
-                data = json.loads(belief_json.read_text())
-                lines = ["*Belief Map*\n"]
-                for h in data.get("hypotheses", []):
-                    name = h.get("name") or h.get("id") or "?"
-                    confidence = h.get("confidence", "")
-                    status = h.get("status", "untested")
-                    label = confidence.upper() if confidence else f"P={h.get('prior', '?')}"
-                    entry = f"• {name}: {label} [{status}]"
-                    rationale = h.get("rationale", "")
-                    if rationale:
-                        entry += f"\n  {rationale}"
-                    lines.append(entry)
-                return "\n".join(lines)
-            except (json.JSONDecodeError, ValueError):
-                return belief_json.read_text().strip()
-        return None
+        # Use the canonical loader which handles schema migration
+        try:
+            from voronoi.science.convergence import load_belief_map
+            bm = load_belief_map(Path(self.project_dir))
+            if not bm.hypotheses:
+                return None
+            lines = ["*Belief Map*\n"]
+            for h in bm.hypotheses:
+                label = h.confidence.upper() if h.confidence else f"P={h.prior}"
+                entry = f"• {h.display_name}: {label} [{h.status}]"
+                if h.rationale:
+                    entry += f"\n  {h.rationale}"
+                lines.append(entry)
+            return "\n".join(lines)
+        except Exception:
+            return None
 
     def get_strategic_context(self) -> Optional[str]:
         """Read the strategic context document."""

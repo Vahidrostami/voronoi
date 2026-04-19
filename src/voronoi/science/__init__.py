@@ -47,6 +47,17 @@ from voronoi.science.consistency import (
     save_success_criteria,
 )
 
+# --- Citation coverage (manuscript paper-track) ---
+from voronoi.science.citation_coverage import (
+    CoverageResult,
+    DEFAULT_COVERAGE_TARGET,
+    DEFAULT_TITLE_THRESHOLD,
+    check_coverage,
+    extract_cite_keys,
+    fuzzy_match_title,
+    write_coverage_audit,
+)
+
 # --- Fabrication ---
 from voronoi.science.fabrication import (
     AntiFabricationResult,

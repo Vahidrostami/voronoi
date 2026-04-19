@@ -294,12 +294,25 @@ def run_bot(config: dict) -> None:
         query = update.callback_query
         if query is None:
             return
+
+        # BUG-001 fix: enforce user allowlist on callback queries (INV-28)
+        if not _is_allowed(update):
+            try:
+                await query.answer("You are not authorized to use this bot.", show_alert=True)
+            except Exception:
+                pass
+            return
+
         try:
             await query.answer()
         except Exception:
             pass  # query expired — still process the button action
         data = query.data or ""
         chat_id = str(query.message.chat_id) if query.message else "unknown"
+
+        # BUG-004 fix: persist chat_id for outbound dispatcher notifications
+        if query.message and query.message.chat_id:
+            save_chat_id(project_dir, query.message.chat_id)
 
         # Route button presses through the same command router
         if data == "status":
@@ -323,6 +336,11 @@ def run_bot(config: dict) -> None:
             reply_text = "_Send a message and I'll record it as guidance for the agents._"
         else:
             reply_text = f"Unknown action: {data}"
+
+        # BUG-002 fix: guard against query.message being None (stale callbacks)
+        if query.message is None:
+            logger.debug("Callback query has no message — cannot reply (data=%s)", data)
+            return
 
         try:
             await query.message.reply_text(reply_text, parse_mode="Markdown")
@@ -390,7 +408,7 @@ def run_bot(config: dict) -> None:
                     )
                 except Exception:
                     logger.debug("Failed to schedule message send", exc_info=True)
-                    return _last_sent_msg_id.get("value")
+                    return None
                 _last_sent_msg_id["value"] = msg_id
                 return msg_id
 
