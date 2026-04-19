@@ -3673,10 +3673,9 @@ class TestOrchestratorParking:
         assert 1 in d.running
 
     def test_park_timeout_force_wakes(self, dispatcher_setup):
-        """Parked orchestrator should be force-woken after park_timeout_hours.
-
-        Safety net for BUG-002: even if _has_active_workers falsely returns
-        True (e.g. dead shell windows), the timeout guarantees recovery.
+        """Parked orchestrator should be force-woken after park_timeout_hours
+        ONLY if workers are no longer alive.  If workers are still running,
+        the park is extended instead (BUG-005 fix).
         """
         d, msgs, docs, tmp_path = dispatcher_setup
         mock_queue = MagicMock()
@@ -3699,13 +3698,14 @@ class TestOrchestratorParking:
         run.last_parked_digest_at = time.time() - 5 * 3600
         d.running[1] = run
 
+        # Workers dead → force-wake should fire
         with patch.object(d, "_check_abort_signal"), \
              patch.object(d, "check_human_gates"), \
              patch.object(d, "_refresh_eval_score"), \
              patch.object(d, "_sync_criteria_from_checkpoint"), \
              patch.object(d, "_check_progress", return_value=[]), \
              patch.object(d, "_check_event_log", return_value=[]), \
-             patch.object(d, "_has_active_workers", return_value=True), \
+             patch.object(d, "_has_active_workers", return_value=False), \
              patch.object(d, "_wake_from_park", return_value=True) as mock_wake, \
              patch("voronoi.server.dispatcher.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=1)  # session dead
@@ -3713,6 +3713,44 @@ class TestOrchestratorParking:
 
         mock_wake.assert_called_once_with(run)
         assert 1 in d.running
+
+    def test_park_timeout_extends_when_workers_alive(self, dispatcher_setup):
+        """When park timeout fires but workers are still alive, the park
+        should be extended — NOT force-woken (BUG-005 fix).
+        """
+        d, msgs, docs, tmp_path = dispatcher_setup
+        d.config.park_timeout_hours = 4
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test question",
+            mode="discover",
+        )
+        run.orchestrator_parked = True
+        old_digest_at = time.time() - 5 * 3600
+        run.last_parked_digest_at = old_digest_at
+        d.running[1] = run
+
+        with patch.object(d, "_check_abort_signal"), \
+             patch.object(d, "check_human_gates"), \
+             patch.object(d, "_refresh_eval_score"), \
+             patch.object(d, "_sync_criteria_from_checkpoint"), \
+             patch.object(d, "_check_progress", return_value=[]), \
+             patch.object(d, "_check_event_log", return_value=[]), \
+             patch.object(d, "_has_active_workers", return_value=True), \
+             patch.object(d, "_needs_orchestrator", return_value=False), \
+             patch.object(d, "_wake_from_park") as mock_wake, \
+             patch("voronoi.server.dispatcher.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1)
+            d.poll_progress()
+
+        # Should NOT wake — workers still alive
+        mock_wake.assert_not_called()
+        assert run.orchestrator_parked is True
+        # last_parked_digest_at should have been reset (extended)
+        assert run.last_parked_digest_at > old_digest_at
 
     def test_park_timeout_not_triggered_when_within_limit(self, dispatcher_setup):
         """Parked orchestrator should NOT be force-woken before timeout."""
@@ -3748,7 +3786,157 @@ class TestOrchestratorParking:
         mock_restart.assert_not_called()
 
 
-class TestPromptBuilderLifecycle:
+# ---------------------------------------------------------------------------
+# BUG-002/BUG-008: Resume prompt must contain anti-polling guidance
+# ---------------------------------------------------------------------------
+
+class TestResumePromptAntiPolling:
+    """Resume prompt must forbid sleep/polling and use 'Check' not 'Poll'."""
+
+    def test_resume_prompt_forbids_sleep_polling(self, dispatcher_setup):
+        """Resume prompt should contain anti-polling guidance."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test question",
+            mode="discover",
+        )
+        run.retry_count = 1
+
+        prompt_file = tmp_path / ".swarm" / "orchestrator-prompt.txt"
+        prompt_file.parent.mkdir(parents=True, exist_ok=True)
+        prompt_file.write_text("Original prompt")
+
+        resume_file = d._build_resume_prompt(run)
+        content = resume_file.read_text()
+
+        assert "Sleep, poll, or use `ps aux" in content
+        assert "sleep 600" in content
+        assert "active_workers" in content
+        assert "EXIT immediately" in content
+
+    def test_resume_prompt_uses_check_not_poll_for_directive(self, dispatcher_setup):
+        """Resume prompt should say 'Check' not 'Poll' for directive file."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test question",
+            mode="discover",
+        )
+        run.retry_count = 1
+
+        prompt_file = tmp_path / ".swarm" / "orchestrator-prompt.txt"
+        prompt_file.parent.mkdir(parents=True, exist_ok=True)
+        prompt_file.write_text("Original prompt")
+
+        resume_file = d._build_resume_prompt(run)
+        content = resume_file.read_text()
+
+        assert "Check `.swarm/dispatcher-directive.json`" in content
+        assert "Poll `.swarm/dispatcher-directive.json`" not in content
+
+    def test_context_refresh_prompt_also_forbids_polling(self, dispatcher_setup):
+        """Context refresh resume prompt should also contain anti-polling."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test question",
+            mode="discover",
+        )
+        run.context_restarts = 1
+        run.retry_count = 0
+
+        prompt_file = tmp_path / ".swarm" / "orchestrator-prompt.txt"
+        prompt_file.parent.mkdir(parents=True, exist_ok=True)
+        prompt_file.write_text("Original prompt")
+
+        resume_file = d._build_resume_prompt(run)
+        content = resume_file.read_text()
+
+        assert "Sleep, poll, or use `ps aux" in content
+        assert "Check `.swarm/dispatcher-directive.json`" in content
+
+
+# ---------------------------------------------------------------------------
+# BUG-003: resume_investigation should park when workers still running
+# ---------------------------------------------------------------------------
+
+class TestResumeInvestigationParkAware:
+    """resume_investigation() must enter park mode if workers are still alive."""
+
+    def test_resume_parks_when_workers_alive(self, dispatcher_setup):
+        """Resume with active workers should enter park mode, not launch."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        mock_queue = MagicMock()
+        d._queue = mock_queue
+
+        inv = MagicMock()
+        inv.id = 1
+        inv.status = "paused"
+        inv.workspace_path = str(tmp_path)
+        inv.question = "test question"
+        inv.mode = "discover"
+        inv.codename = "Cortex"
+        inv.chat_id = "123"
+        inv.rigor = "adaptive"
+        mock_queue.get.return_value = inv
+        mock_queue.resume.return_value = True
+
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True, exist_ok=True)
+        (swarm / "orchestrator-prompt.txt").write_text("original prompt")
+
+        with patch.object(d, "_has_active_workers", return_value=True), \
+             patch.object(d, "_restore_task_snapshot"), \
+             patch.object(d, "_launch_in_tmux") as mock_launch:
+            result = d.resume_investigation(1)
+
+        # Should NOT have launched
+        mock_launch.assert_not_called()
+        # Should be tracked as parked
+        assert 1 in d.running
+        assert d.running[1].orchestrator_parked is True
+        assert "monitor mode" in result
+        assert any("monitor mode" in m for m in msgs)
+
+    def test_resume_launches_when_no_workers(self, dispatcher_setup):
+        """Resume without active workers should launch normally."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        mock_queue = MagicMock()
+        d._queue = mock_queue
+
+        inv = MagicMock()
+        inv.id = 1
+        inv.status = "failed"
+        inv.workspace_path = str(tmp_path)
+        inv.question = "test question"
+        inv.mode = "discover"
+        inv.codename = "Cortex"
+        inv.chat_id = "123"
+        inv.rigor = "adaptive"
+        mock_queue.get.return_value = inv
+        mock_queue.resume.return_value = True
+
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True, exist_ok=True)
+        (swarm / "orchestrator-prompt.txt").write_text("original prompt")
+
+        with patch.object(d, "_has_active_workers", return_value=False), \
+             patch.object(d, "_restore_task_snapshot"), \
+             patch.object(d, "_launch_in_tmux"):
+            result = d.resume_investigation(1)
+
+        # Should have launched normally
+        assert 1 in d.running
+        assert d.running[1].orchestrator_parked is False
+        assert "resumed" in result
+        assert "monitor" not in result
     """Tests for the updated prompt.py lifecycle framing."""
 
     def test_prompt_includes_lifecycle_contract(self):

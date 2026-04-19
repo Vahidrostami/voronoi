@@ -706,7 +706,19 @@ class InvestigationDispatcher:
                         # Already parked — check if workers are still running
                         parked_hours = (now - run.last_parked_digest_at) / 3600 if run.last_parked_digest_at else 0
                         if parked_hours >= self.config.park_timeout_hours:
-                            # Safety net: force-wake after timeout regardless of worker state
+                            # Safety net: only force-wake if workers are
+                            # actually dead.  If workers are still alive,
+                            # extend the timeout (exponential backoff) so
+                            # long-running experiments aren't interrupted.
+                            if self._has_active_workers(run):
+                                run.last_parked_digest_at = now
+                                logger.info(
+                                    "Investigation #%d park timeout "
+                                    "(%.1fh) but workers alive — "
+                                    "extending park",
+                                    inv_id, parked_hours,
+                                )
+                                continue  # don't add to completed_ids
                             logger.warning("Investigation #%d force-waking — "
                                            "parked for %.1fh (limit %dh)",
                                            inv_id, parked_hours,
@@ -2821,6 +2833,11 @@ class InvestigationDispatcher:
         """Resume a paused or failed investigation.
 
         Validates workspace, rebuilds resume prompt, relaunches agent.
+        If workers are still running in the workspace, enters park mode
+        instead of launching a new orchestrator session — preventing the
+        common failure where a resumed orchestrator idle-polls while
+        waiting for active workers.
+
         Returns a status message for the user.
         """
         inv = self.queue.get(investigation_id)
@@ -2859,6 +2876,26 @@ class InvestigationDispatcher:
         # Restore task snapshot for accurate progress
         self._restore_task_snapshot(run)
 
+        label = inv.codename or f"#{inv.id}"
+
+        # Park-aware resume: if workers are still running, enter park
+        # mode instead of launching a new orchestrator that would just
+        # idle-poll for worker completion.
+        if self._has_active_workers(run):
+            run.orchestrator_parked = True
+            run.last_parked_digest_at = time.time()
+            self.running[inv.id] = run
+            self.send_message(
+                f"▶️ *{label}* resumed in monitor mode — "
+                f"workers still running, will wake when they finish."
+            )
+            logger.info("Investigation #%d (%s) resumed in park mode — "
+                        "workers still running", inv.id, label)
+            return (
+                f"▶️ *{label}* resumed in monitor mode — "
+                f"workers still running."
+            )
+
         # Build resume prompt and launch
         resume_file = self._build_resume_prompt(run)
         try:
@@ -2871,7 +2908,6 @@ class InvestigationDispatcher:
             return f"❌ Failed to launch #{investigation_id}: {e}"
 
         self.running[inv.id] = run
-        label = inv.codename or f"#{inv.id}"
         self.send_message(f"▶️ *{label}* resumed — agent relaunched.")
         logger.info("Investigation #%d (%s) resumed", inv.id, label)
         return f"▶️ *{label}* resumed."
@@ -2937,6 +2973,26 @@ class InvestigationDispatcher:
         )
 
         lines.append("## Critical Rules for This Restart\n")
+
+        # Shared guidance injected into every resume prompt variant
+        _common_rules = (
+            "- Check `.swarm/dispatcher-directive.json` each OODA cycle.\n"
+            "- ALWAYS delegate manuscript writing to a Scribe worker.\n"
+            "- Use `bd query` for targeted task lookups, never `bd list --json`.\n"
+            "- Dispatch workers via `./scripts/spawn-agent.sh`.\n"
+            "- Merge completed work via `./scripts/merge-agent.sh`.\n"
+            "- Before convergence, run: `./scripts/convergence-gate.sh . " + effective_rigor + "`\n\n"
+            "**Do NOT:**\n"
+            "- Sleep, poll, or use `ps aux | grep` to monitor workers\n"
+            "- Launch experiments via `nohup` or background subprocesses\n"
+            "- Run long-running scripts inline — delegate to workers\n"
+            "- Run `sleep 600 && find .llm_cache | wc -l` loops — "
+            "they waste your entire context window for zero value\n\n"
+            "**If workers are still running**, write your checkpoint with "
+            "`active_workers` and EXIT immediately. The dispatcher will wake "
+            "you when they finish.\n"
+        )
+
         if run.context_restarts > 0 and run.retry_count == 0:
             lines.append(
                 "**CONTEXT REFRESH** — your previous session was healthy but ran out "
@@ -2945,12 +3001,7 @@ class InvestigationDispatcher:
                 "- Do NOT re-read files already summarized in the checkpoint/digest.\n"
                 "- Pick up EXACTLY where you left off from the checkpoint below.\n"
                 "- Read `.swarm/brief-digest.md` for compressed project state.\n"
-                "- Poll `.swarm/dispatcher-directive.json` each OODA cycle.\n"
-                "- ALWAYS delegate manuscript writing to a Scribe worker.\n"
-                "- Use `bd query` for targeted task lookups, never `bd list --json`.\n"
-                "- Dispatch workers via `./scripts/spawn-agent.sh`.\n"
-                "- Merge completed work via `./scripts/merge-agent.sh`.\n"
-                "- Before convergence, run: `./scripts/convergence-gate.sh . " + effective_rigor + "`\n"
+                + _common_rules
             )
         else:
             lines.append(
@@ -2958,12 +3009,7 @@ class InvestigationDispatcher:
                 "- Do NOT re-run experiments that already produced results.\n"
                 "- Read `.swarm/brief-digest.md` instead of re-reading full PROMPT.md.\n"
                 "- Work from the checkpoint and state digest below.\n"
-                "- Poll `.swarm/dispatcher-directive.json` each OODA cycle.\n"
-                "- ALWAYS delegate manuscript writing to a Scribe worker.\n"
-                "- Use `bd query` for targeted task lookups, never `bd list --json`.\n"
-                "- Dispatch workers via `./scripts/spawn-agent.sh`.\n"
-                "- Merge completed work via `./scripts/merge-agent.sh`.\n"
-                "- Before convergence, run: `./scripts/convergence-gate.sh . " + effective_rigor + "`\n"
+                + _common_rules
             )
 
         # Human gate status

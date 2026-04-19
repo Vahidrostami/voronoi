@@ -350,7 +350,7 @@ Worker liveness (`_has_active_workers()`):
 2. Checks if any workers listed in the checkpoint have a matching tmux window in the swarm session **with an active agent process** — uses `tmux list-panes -F #{pane_current_command}` to verify the pane is running an agent (not a leftover shell like `bash`/`zsh`).
 3. Falls back to `pgrep` for orphaned processes whose cwd is inside the workspace.
 
-**Park timeout safety net**: If the orchestrator remains parked longer than `park_timeout_hours` (default 4h), the dispatcher force-wakes it regardless of worker state. This prevents indefinite stall if liveness detection has a false positive.
+**Park timeout safety net**: If the orchestrator remains parked longer than `park_timeout_hours` (default 4h), the dispatcher checks worker liveness before force-waking. If workers are still alive, the park is extended (the timeout resets) — this prevents premature wake during long-running experiments. If workers are dead, the dispatcher force-wakes normally. This avoids the pathological case where a force-woken orchestrator enters a `sleep && poll` loop waiting for a healthy worker to finish.
 
 Findings and serendipity are accumulated and delivered in the resume prompt — they do NOT trigger immediate wake because they are not time-sensitive. The orchestrator evaluates them with fresh context.
 
@@ -504,9 +504,14 @@ The dispatcher exposes `resume_investigation(investigation_id)` for resuming `pa
 2. Validates the workspace still exists with an orchestrator prompt
 3. Transitions the queue status back to `running` via `queue.resume()`
 4. Resets `retry_count` to 0
-5. Builds a fresh resume prompt via `_build_resume_prompt()`
-6. Launches in tmux
-7. Adds back to `self.running` for monitoring
+5. **Park-aware check**: calls `_has_active_workers()` on the workspace
+   - If workers are still running → enters **park mode** (`orchestrator_parked = True`) without launching a new orchestrator. The dispatcher monitors and wakes the orchestrator when workers finish. Returns "resumed in monitor mode."
+   - If no workers running → proceeds to step 6
+6. Builds a fresh resume prompt via `_build_resume_prompt()`
+7. Launches in tmux
+8. Adds back to `self.running` for monitoring
+
+The resume prompt includes anti-polling guidance identical to the cold orchestrator prompt: explicit prohibition of `sleep`, `ps aux | grep`, and inline long-running scripts. The orchestrator is instructed to write a checkpoint with `active_workers` and EXIT if it discovers workers are still running.
 
 Paused investigations auto-fail after `pause_timeout_hours` (default 24h).
 
