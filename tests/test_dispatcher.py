@@ -5253,3 +5253,184 @@ class TestLearningStalled:
         d._update_learning_activity(run, [])
         assert not run.notified_learning_stalled
 
+
+# ---------------------------------------------------------------------------
+# BUG-001: _looks_like_clean_agent_exit must detect current CLI format
+# ---------------------------------------------------------------------------
+
+class TestCleanAgentExitDetection:
+    """Tests for _looks_like_clean_agent_exit with legacy and current CLI output."""
+
+    def test_legacy_cli_format(self, dispatcher_setup):
+        """Legacy Copilot CLI output (pre-2026) should be detected as clean."""
+        d, msgs, docs, _ = dispatcher_setup
+        log_tail = (
+            "Total usage est: 3 Premium requests\n"
+            "Total session time: 5m 43s\n"
+            "Breakdown by AI model:\n"
+            "logout\n"
+        )
+        assert d._looks_like_clean_agent_exit(log_tail) is True
+
+    def test_current_cli_format(self, dispatcher_setup):
+        """Current Copilot CLI output (2026+) should be detected as clean."""
+        d, msgs, docs, _ = dispatcher_setup
+        log_tail = (
+            "Changes   +2 -2\n"
+            "Requests  3 Premium (4m 44s)\n"
+            "Tokens    ↑ 1.3m • ↓ 9.1k • 1.2m (cached)\n"
+            "Session exported to: /tmp/session.md\n"
+            "logout\n"
+        )
+        assert d._looks_like_clean_agent_exit(log_tail) is True
+
+    def test_current_cli_without_logout(self, dispatcher_setup):
+        """Current CLI output without 'logout' should still match (>= 2 markers)."""
+        d, msgs, docs, _ = dispatcher_setup
+        log_tail = (
+            "Requests  3 Premium (4m 44s)\n"
+            "Tokens    ↑ 1.3m • ↓ 9.1k\n"
+            "Session exported to: /tmp/session.md\n"
+        )
+        assert d._looks_like_clean_agent_exit(log_tail) is True
+
+    def test_crash_output_not_detected_as_clean(self, dispatcher_setup):
+        """Random crash output should NOT be detected as clean exit."""
+        d, msgs, docs, _ = dispatcher_setup
+        log_tail = "Error: connection reset by peer\nSegfault\n"
+        assert d._looks_like_clean_agent_exit(log_tail) is False
+
+    def test_empty_log_not_clean(self, dispatcher_setup):
+        d, msgs, docs, _ = dispatcher_setup
+        assert d._looks_like_clean_agent_exit("") is False
+
+
+# ---------------------------------------------------------------------------
+# BUG-002: _is_complete bypasses cooldown when session_dead=True
+# ---------------------------------------------------------------------------
+
+class TestIsCompleteSessionDead:
+    """When the agent session is dead, _is_complete must bypass the
+    convergence check cooldown so the final state is properly classified."""
+
+    def test_cooldown_bypassed_when_session_dead(self, dispatcher_setup):
+        """session_dead=True should force convergence check even within cooldown."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+            rigor="scientific",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "deliverable.md").write_text("# Results\n")
+
+        # Set last_convergence_attempt_at to NOW (inside cooldown window)
+        run.last_convergence_attempt_at = time.time()
+
+        # Mock _try_convergence_check to write convergence.json
+        def write_convergence(r):
+            (swarm / "convergence.json").write_text(json.dumps({
+                "status": "converged", "converged": True,
+            }))
+
+        with patch.object(d, "_try_convergence_check", side_effect=write_convergence):
+            # Without session_dead: cooldown blocks, returns False
+            assert d._is_complete(run) is False
+
+            # Reset last attempt to now (re-arm cooldown)
+            run.last_convergence_attempt_at = time.time()
+
+            # With session_dead: bypass cooldown, returns True
+            assert d._is_complete(run, session_dead=True) is True
+
+    def test_cooldown_respected_when_session_alive(self, dispatcher_setup):
+        """Default (session_dead=False) should still respect cooldown."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="prove",
+            rigor="experimental",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "deliverable.md").write_text("# Results\n")
+        run.last_convergence_attempt_at = time.time()
+
+        with patch.object(d, "_try_convergence_check") as mock_try:
+            d._is_complete(run)
+            mock_try.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# BUG-003: task count fallback reads .beads/ JSONL when bd CLI unavailable
+# ---------------------------------------------------------------------------
+
+class TestTaskCountFallback:
+    """_handle_completion should read .beads/ JSONL as fallback when task_snapshot
+    is empty and bd CLI is unavailable."""
+
+    def test_beads_jsonl_fallback(self, dispatcher_setup):
+        """When task_snapshot and bd CLI both fail, read .beads/*.jsonl directly."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        mock_queue = MagicMock()
+        d._queue = mock_queue
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        # task_snapshot intentionally empty
+        run.task_snapshot = {}
+
+        # Create .beads/ with JSONL tasks
+        beads_dir = tmp_path / ".beads"
+        beads_dir.mkdir()
+        tasks_jsonl = "\n".join([
+            json.dumps({"id": "t-1", "status": "closed", "title": "Baseline"}),
+            json.dumps({"id": "t-2", "status": "closed", "title": "Experiment"}),
+            json.dumps({"id": "t-3", "status": "in_progress", "title": "Write-up"}),
+        ])
+        (beads_dir / "tasks.jsonl").write_text(tasks_jsonl)
+
+        # Make bd CLI fail
+        with patch("voronoi.server.dispatcher.subprocess.run",
+                   side_effect=FileNotFoundError("bd")):
+            d._handle_completion(run, failed=True,
+                                 failure_reason="Agent exited unexpectedly")
+
+        # The failure message should show real counts, not 0/0
+        assert len(msgs) >= 1
+        assert "2/3" in msgs[0]  # 2 closed out of 3 total
+
+    def test_zero_task_count_when_no_fallbacks(self, dispatcher_setup):
+        """When all fallbacks fail, still report 0/0 (graceful degradation)."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        mock_queue = MagicMock()
+        d._queue = mock_queue
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        run.task_snapshot = {}
+
+        with patch("voronoi.server.dispatcher.subprocess.run",
+                   side_effect=FileNotFoundError("bd")):
+            d._handle_completion(run, failed=True,
+                                 failure_reason="Agent exited unexpectedly")
+
+        assert "0/0" in msgs[0]
+

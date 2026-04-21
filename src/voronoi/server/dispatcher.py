@@ -701,7 +701,7 @@ class InvestigationDispatcher:
                     self._write_timeout_convergence(run)
                     self._handle_completion(run, failed=True,
                                             failure_reason="Timed out")
-                elif not session_alive and not self._is_complete(run):
+                elif not session_alive and not self._is_complete(run, session_dead=True):
                     # Check if a human gate is pending — do NOT crash-retry
                     if self._has_pending_human_gate(run):
                         logger.info("Investigation #%d paused at human gate",
@@ -2237,7 +2237,8 @@ class InvestigationDispatcher:
             return run.last_rigor
         return run.rigor
 
-    def _is_complete(self, run: RunningInvestigation) -> bool:
+    def _is_complete(self, run: RunningInvestigation, *,
+                     session_dead: bool = False) -> bool:
         # HARD GATE: never complete while DESIGN_INVALID tasks are open
         if self._has_open_design_invalid(run):
             return False
@@ -2263,8 +2264,11 @@ class InvestigationDispatcher:
             # agent already exited normally).
             # Throttle to avoid running the convergence gate script every
             # poll cycle (30s) when the gate consistently fails.
+            # When session_dead=True, bypass the cooldown — no more artifacts
+            # will be produced, so we must check now or never.
             now = time.time()
-            if now - run.last_convergence_attempt_at >= 300:  # 5-minute cooldown
+            cooldown_ok = (now - run.last_convergence_attempt_at >= 300)
+            if cooldown_ok or session_dead:
                 run.last_convergence_attempt_at = now
                 self._try_convergence_check(run)
             if conv.exists():
@@ -2368,6 +2372,27 @@ class InvestigationDispatcher:
             except (subprocess.TimeoutExpired, json.JSONDecodeError,
                     FileNotFoundError, OSError):
                 pass
+
+        # Second fallback: read .beads/ JSONL directly when bd CLI unavailable
+        if total_tasks == 0:
+            beads_dir = run.workspace_path / ".beads"
+            if beads_dir.is_dir():
+                try:
+                    for jsonl_file in beads_dir.glob("*.jsonl"):
+                        for line in jsonl_file.read_text(errors="replace").splitlines():
+                            line = line.strip()
+                            if not line:
+                                continue
+                            try:
+                                entry = json.loads(line)
+                                if isinstance(entry, dict) and "id" in entry:
+                                    total_tasks += 1
+                                    if entry.get("status") == "closed":
+                                        closed += 1
+                            except json.JSONDecodeError:
+                                continue
+                except OSError:
+                    pass
 
         # Always clean up tmux sessions on completion
         self._cleanup_tmux(run)
@@ -2585,11 +2610,17 @@ class InvestigationDispatcher:
         lowered = self._normalize_log_tail(log_tail)
         if not lowered:
             return False
+        # Legacy markers (pre-2026 CLI) + current markers.
+        # Require >= 2 hits to avoid false positives from random log lines.
         markers = (
             "logout",
             "total session time",
             "total usage est",
             "breakdown by ai model",
+            # Current Copilot CLI (2026+) output format
+            "session exported to",
+            "requests",
+            "tokens",
         )
         return sum(marker in lowered for marker in markers) >= 2
 
