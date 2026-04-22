@@ -152,17 +152,35 @@ def build_orchestrator_prompt(
         f"**Max parallel hypothesis-tranches:** {max_agents}\n"
     )
     sections.append(
-        "\n### Hypothesis-Tranche Parallelism\n\n"
+        "\n### Hypothesis-Tranche Parallelism — Evidence-Gated Scaling\n\n"
         "Think in **tranches**, not in workers. A *tranche* is one hypothesis arm "
         "(a lead hypothesis + its controls + its sensitivity variants) dispatched "
         "as a coherent unit. A tranche may internally fan out to several worker "
         "agents (e.g. one runner per variant), but scientifically it counts as "
         "ONE arm of comparison.\n\n"
-        f"You may run up to **{max_agents} tranches in parallel**. Prefer running "
-        "hypotheses simultaneously on the same held-out data and same seeds — "
-        "serialization destroys comparability across arms. When a tranche finishes, "
-        "use its slot for a new tranche rather than for a new variant of an "
-        "already-finished arm.\n"
+        "**Evidence-gated scaling:** You operate in **epochs**. Each epoch earns "
+        "the right to scale by producing evidence.\n\n"
+        "- **Epoch 1** (start): Max 2 tranches. Prove the approach works.\n"
+        "- **Epoch 2** (after evidence): Max 4 tranches. Evidence supports scaling.\n"
+        "- **Epoch 3+** (validated): Full budget.\n\n"
+        "The dispatcher tracks epoch state in `.swarm/epoch-state.json` and "
+        "auto-advances when findings move the belief map. Read it each OODA cycle.\n\n"
+        "**CRITICAL:** Do NOT dispatch more tranches than `max_tranches` in "
+        "`epoch-state.json`. If the file says `max_tranches: 2`, you may NOT "
+        "run 6 hypotheses in parallel — even if you have ideas for all 6. "
+        "Pick the 2 highest information-gain hypotheses.\n\n"
+        "**Minimum viable experiment (epoch 1):** Your FIRST dispatch in a new "
+        "investigation MUST be a single concrete experiment that:\n"
+        "- Can complete in <30 minutes\n"
+        "- Produces ONE measurable outcome\n"
+        "- Tests the core assumption of the investigation\n\n"
+        "This is your pilot study. If it doesn't produce a result, diagnose why "
+        "before dispatching anything else. Do NOT scale to multiple tranches "
+        "until the MVE succeeds.\n\n"
+        f"**Hard cap:** {max_agents} tranches maximum (all epochs). "
+        "Prefer running hypotheses simultaneously on the same held-out data "
+        "and same seeds. When a tranche finishes, use its slot for a new "
+        "tranche rather than for a new variant of an already-finished arm.\n"
     )
     sections.append(f"\n**Project brief:** Read `{prompt_path}` completely — every line matters.\n")
     if output_dir:
@@ -578,6 +596,31 @@ def build_orchestrator_prompt(
                 + artifact_manifest + "\n"
             )
 
+        failure_diagnosis = prior_context.get("failure_diagnosis")
+        if isinstance(failure_diagnosis, dict):
+            sections.append(
+                "\n## Failure Diagnosis from Prior Round — READ CAREFULLY\n\n"
+                "The prior round's automated diagnosis identified these issues. "
+                "Your continuation plan MUST address them:\n\n"
+            )
+            systemic = failure_diagnosis.get("systemic_issues", [])
+            if systemic:
+                sections.append("**Systemic issues:**\n")
+                for issue in systemic:
+                    sections.append(f"- {issue}\n")
+            unmet = failure_diagnosis.get("unmet_criteria", [])
+            if unmet:
+                sections.append("\n**Unmet criteria:**\n")
+                for c in unmet:
+                    if isinstance(c, dict):
+                        cid = c.get("id", "?")
+                        diag = c.get("diagnosis", "unknown")
+                        rec = c.get("recommendation", "")
+                        sections.append(f"- **{cid}** ({diag}): {rec}\n")
+            proposed = failure_diagnosis.get("proposed_action", "")
+            if proposed:
+                sections.append(f"\n**Proposed action:** {proposed}\n")
+
     return "".join(sections)
 
 
@@ -709,6 +752,17 @@ def build_warm_start_context(
                     manifest_lines.append(
                         f"- `{data_dir}/`: {len(files)} files (DO NOT REGENERATE)"
                     )
+
+        # -- Failure diagnosis from prior round ---
+        diag_path = swarm / "failure-diagnosis.json"
+        if diag_path.exists():
+            try:
+                import json
+                diag = json.loads(diag_path.read_text())
+                if isinstance(diag, dict):
+                    context["failure_diagnosis"] = diag
+            except (OSError, json.JSONDecodeError):
+                pass
 
         if manifest_lines:
             context["artifact_manifest"] = "\n".join(manifest_lines)

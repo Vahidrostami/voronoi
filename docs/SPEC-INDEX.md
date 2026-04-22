@@ -63,6 +63,10 @@
 | Term definitions | [GLOSSARY.md](GLOSSARY.md) | — |
 | Paper-track manuscript production (Outliner, Lit-Synth, Figure-Critic, Refiner) | [AGENT-ROLES.md](AGENT-ROLES.md) | §2 (Paper-track) |
 | Citation-coverage gate (≥0.90 integration, zero orphans) | [SCIENCE.md](SCIENCE.md) | §20 (Citation Coverage) |
+| Evidence-gated epoch scaling, adaptive agent cap | [SCIENCE.md](SCIENCE.md) | §21 (Epoch Scaling) |
+| Structured failure diagnosis, continuation diagnostics | [SCIENCE.md](SCIENCE.md) | §22 (Failure Diagnosis) |
+| `.swarm/epoch-state.json` format | [SCIENCE.md](SCIENCE.md) | §21 |
+| `.swarm/failure-diagnosis.json` format | [SCIENCE.md](SCIENCE.md) | §22 |
 | `/voronoi paper <codename>` manuscript command | [GATEWAY.md](GATEWAY.md) | §3 (Router) |
 | `.swarm/manuscript/` state contract | [DATA-STRUCTURES.md](DATA-STRUCTURES.md) | §7 |
 

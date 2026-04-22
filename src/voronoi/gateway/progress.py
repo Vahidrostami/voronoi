@@ -530,6 +530,18 @@ def _build_narrative_paragraph(
     return " ".join(parts)
 
 
+def _epoch_display(workspace: Path) -> str:
+    """Read epoch-state.json and return a compact display string for digests."""
+    try:
+        from voronoi.science.convergence import (
+            load_epoch_state, compute_learning_rate_display,
+        )
+        epoch = load_epoch_state(workspace)
+        return compute_learning_rate_display(epoch)
+    except Exception:
+        return ""
+
+
 def build_digest(
     *,
     codename: str,
@@ -681,6 +693,11 @@ def build_digest(
             else VOICE_QUALITY_LABELS["low"]
         )
         footer_parts.append(f"Quality: {eval_score:.2f} — {label}")
+
+    # Evidence-gated scaling: epoch + learning rate
+    epoch_display = _epoch_display(workspace)
+    if epoch_display:
+        footer_parts.append(epoch_display)
 
     if footer_parts:
         lines.append("")

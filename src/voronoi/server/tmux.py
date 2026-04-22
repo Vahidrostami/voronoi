@@ -129,8 +129,17 @@ def launch_in_tmux(
     safe_ws = shlex.quote(str(workspace_path))
     safe_prompt = shlex.quote(str(prompt_file))
 
-    # Inject auth/state env vars
-    env_file = workspace_path / ".swarm" / ".tmux-env"
+    # Inject auth/state env vars.
+    #
+    # INV-31: the env file MUST NOT live inside the workspace, because the
+    # workspace is a git repo and multiple code paths (orchestrator prompt,
+    # scribe, teardown) run ``git add -A``.  A workspace-resident file with
+    # `export GH_TOKEN=...` would be committed and then pushed by
+    # GitHubPublisher, exfiltrating the operator's credentials.  We write
+    # it to a sibling directory (outside the repo) and have the tmux shell
+    # ``rm -f`` it immediately after sourcing, so the on-disk window is
+    # bounded by shell startup time.
+    env_file = workspace_path.parent / f".tmux-env-{session}"
     env_lines: list[str] = []
     for var in (
         "GH_TOKEN", "GITHUB_TOKEN", "COPILOT_GITHUB_TOKEN",
@@ -144,12 +153,16 @@ def launch_in_tmux(
                 capture_output=True, timeout=10,
             )
     if env_lines:
+        env_file.parent.mkdir(parents=True, exist_ok=True)
         fd = os.open(str(env_file), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
             os.write(fd, ("\n".join(env_lines) + "\n").encode())
         finally:
             os.close(fd)
-        source_cmd = f"source {shlex.quote(str(env_file))} && "
+        safe_env = shlex.quote(str(env_file))
+        # Source the env file and immediately remove it so a leaked
+        # workspace `git add -A` cannot race the reader.
+        source_cmd = f"source {safe_env} && rm -f {safe_env} && "
     else:
         source_cmd = ""
 

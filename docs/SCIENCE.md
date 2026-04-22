@@ -1071,3 +1071,102 @@ Orphan cites are treated as hallucinations — zero tolerance, regardless of int
 ### Related Invariant
 
 See [INVARIANTS.md](INVARIANTS.md) — "Every `\cite{...}` in a compiled paper-track manuscript must resolve to a verified entry in `citation-ledger.json`."
+
+---
+
+## 21. Evidence-Gated Epoch Scaling
+
+### Purpose
+
+Prevents unbounded resource commitment before evidence exists. The system operates in **epochs** — dynamically-scoped batches of work where each epoch must produce evidence (belief-map moves) before the agent cap increases.
+
+### EpochState Data Structure
+
+```python
+EPOCH_AGENT_CAP: dict[int, int] = {1: 2, 2: 4, 3: 6}
+
+@dataclass
+class EpochState:
+    epoch: int = 1
+    max_tranches: int = 2
+    findings_this_epoch: int = 0
+    belief_map_moves: int = 0
+    tokens_this_epoch: int = 0
+    epoch_started_at: str = ""
+    history: list[dict] = field(default_factory=list)
+
+    @property
+    def learning_rate(self) -> float: ...   # findings per M tokens
+    @property
+    def has_evidence(self) -> bool: ...     # belief_map_moves > 0
+```
+
+### File Location
+
+`.swarm/epoch-state.json` — read/written by dispatcher, read by orchestrator each OODA cycle.
+
+### Functions
+
+```python
+def load_epoch_state(workspace: Path) -> EpochState
+def save_epoch_state(workspace: Path, state: EpochState) -> None
+def advance_epoch(state: EpochState, configured_max: int) -> EpochState
+def compute_learning_rate_display(state: EpochState) -> str
+```
+
+### Epoch Advancement Rules
+
+- Epoch auto-advances when `has_evidence` is True and `max_tranches < configured_max`
+- Each epoch's findings/moves/tokens are archived into `history`
+- Cap never exceeds `DispatcherConfig.max_agents`
+- The orchestrator prompt instructs the LLM to respect `max_tranches` from the file
+
+### Minimum Viable Experiment (MVE)
+
+The orchestrator prompt mandates that in epoch 1, the FIRST dispatch must be a single concrete experiment that can complete in <30 minutes and produces one measurable outcome. This is a pilot study — it validates the experimental setup works before committing to the full plan.
+
+---
+
+## 22. Structured Failure Diagnosis
+
+### Purpose
+
+When an investigation stalls or fails, produces a structured machine-readable diagnosis that tells the continuation round exactly what failed and why — enabling targeted remediation instead of blind re-execution.
+
+### Function
+
+```python
+def build_failure_diagnosis(workspace: Path) -> dict
+def save_failure_diagnosis(workspace: Path, diagnosis: dict) -> None
+```
+
+### Output Schema
+
+```json
+{
+  "met_criteria": ["SC1", "SC3"],
+  "unmet_criteria": [
+    {"id": "SC2", "diagnosis": "NOT_TESTED|TESTED_BUT_UNMET", "description": "...", "recommendation": "..."}
+  ],
+  "systemic_issues": ["Zero experiments ran — plan likely overscoped"],
+  "epoch_history": [{"epoch": 1, "findings": 0, "belief_map_moves": 0}],
+  "proposed_action": "Start with a single MVE...",
+  "timestamp": "2026-01-01T00:00:00+00:00"
+}
+```
+
+### Diagnosis Categories
+
+| Category | Meaning |
+|----------|---------|
+| `NOT_TESTED` | No experiments ran that could have satisfied this criterion |
+| `TESTED_BUT_UNMET` | Experiments ran but results didn't satisfy the criterion |
+
+### When Written
+
+- Auto-park (stall strike 3)
+- `_handle_completion(failed=True)` — any failed investigation
+
+### Consumed By
+
+`build_warm_start_context()` reads `.swarm/failure-diagnosis.json` and injects it into the continuation prompt under a "Failure Diagnosis from Prior Round" heading.

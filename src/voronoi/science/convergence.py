@@ -186,6 +186,245 @@ def save_belief_map(workspace: Path, bm: BeliefMap) -> None:
 
 
 # ===================================================================
+# Evidence-Gated Epoch Tracking
+# ===================================================================
+
+# Scaling tiers: epoch → max parallel tranches allowed.
+# Each tier is earned by producing evidence in the prior epoch.
+EPOCH_AGENT_CAP: dict[int, int] = {
+    1: 2,   # Prove the approach works
+    2: 4,   # Evidence supports scaling
+    3: 6,   # Full scale (matches default max_agents)
+}
+
+# Default cap for epochs beyond the table
+_DEFAULT_FULL_CAP: int = 6
+
+
+@dataclass
+class EpochState:
+    """Persistent epoch tracking state for an investigation.
+
+    Written to ``.swarm/epoch-state.json`` and read by both the
+    dispatcher (to enforce agent caps and detect stalls) and the
+    orchestrator prompt (to communicate the current budget).
+    """
+    epoch: int = 1
+    max_tranches: int = 2
+    findings_this_epoch: int = 0
+    belief_map_moves: int = 0  # Confidence tier changes in this epoch
+    tokens_this_epoch: int = 0
+    epoch_started_at: str = ""
+    history: list[dict] = field(default_factory=list)
+
+    @property
+    def learning_rate(self) -> float:
+        """Findings per million tokens in this epoch (0 if no tokens yet)."""
+        if self.tokens_this_epoch <= 0:
+            return 0.0
+        return self.findings_this_epoch / (self.tokens_this_epoch / 1_000_000)
+
+    @property
+    def has_evidence(self) -> bool:
+        """True if this epoch produced at least one belief-map-moving finding."""
+        return self.belief_map_moves > 0
+
+
+def load_epoch_state(workspace: Path) -> EpochState:
+    """Load epoch state from workspace, returning defaults for new investigations."""
+    path = workspace / ".swarm" / "epoch-state.json"
+    if not path.exists():
+        return EpochState(
+            epoch_started_at=datetime.now(timezone.utc).isoformat(),
+        )
+    try:
+        d = json.loads(path.read_text())
+        if not isinstance(d, dict):
+            return EpochState(
+                epoch_started_at=datetime.now(timezone.utc).isoformat(),
+            )
+        return EpochState(
+            epoch=d.get("epoch", 1),
+            max_tranches=d.get("max_tranches", 2),
+            findings_this_epoch=d.get("findings_this_epoch", 0),
+            belief_map_moves=d.get("belief_map_moves", 0),
+            tokens_this_epoch=d.get("tokens_this_epoch", 0),
+            epoch_started_at=d.get("epoch_started_at", ""),
+            history=d.get("history", []),
+        )
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning("Failed to load epoch-state.json: %s", e)
+        return EpochState(
+            epoch_started_at=datetime.now(timezone.utc).isoformat(),
+        )
+
+
+def save_epoch_state(workspace: Path, state: EpochState) -> None:
+    """Persist epoch state to workspace."""
+    path = workspace / ".swarm" / "epoch-state.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(asdict(state), indent=2))
+
+
+def advance_epoch(state: EpochState, configured_max: int = _DEFAULT_FULL_CAP) -> EpochState:
+    """Advance to the next epoch after evidence was produced.
+
+    Archives the current epoch's metrics into ``history`` and increases
+    the agent cap for the next epoch.
+    """
+    state.history.append({
+        "epoch": state.epoch,
+        "findings": state.findings_this_epoch,
+        "belief_map_moves": state.belief_map_moves,
+        "tokens": state.tokens_this_epoch,
+        "started_at": state.epoch_started_at,
+        "advanced_at": datetime.now(timezone.utc).isoformat(),
+    })
+    state.epoch += 1
+    # Cap increases per EPOCH_AGENT_CAP table, never exceeding configured max
+    raw_cap = EPOCH_AGENT_CAP.get(state.epoch, configured_max)
+    state.max_tranches = min(raw_cap, configured_max)
+    state.findings_this_epoch = 0
+    state.belief_map_moves = 0
+    state.tokens_this_epoch = 0
+    state.epoch_started_at = datetime.now(timezone.utc).isoformat()
+    return state
+
+
+def compute_learning_rate_display(state: EpochState) -> str:
+    """Format learning rate for Telegram digest display."""
+    if state.tokens_this_epoch <= 0:
+        return ""
+    rate = state.learning_rate
+    if rate <= 0:
+        return f"Learning: 0 findings (epoch {state.epoch}, cap {state.max_tranches} tranches)"
+    return (
+        f"Learning: {rate:.1f} findings/M tokens "
+        f"(epoch {state.epoch}, cap {state.max_tranches} tranches)"
+    )
+
+
+# ===================================================================
+# Structured Failure Diagnosis
+# ===================================================================
+
+
+def build_failure_diagnosis(workspace: Path) -> dict:
+    """Build a structured diagnosis of why an investigation stalled or failed.
+
+    Returns a dict suitable for writing to ``.swarm/failure-diagnosis.json``
+    and for injecting into continuation warm-start prompts.
+    """
+    swarm = workspace / ".swarm"
+    diagnosis: dict = {
+        "met_criteria": [],
+        "unmet_criteria": [],
+        "systemic_issues": [],
+        "epoch_history": [],
+        "proposed_action": "",
+    }
+
+    # Success criteria analysis
+    sc_path = swarm / "success-criteria.json"
+    if sc_path.exists():
+        try:
+            sc = json.loads(sc_path.read_text())
+            if isinstance(sc, list):
+                for c in sc:
+                    if not isinstance(c, dict):
+                        continue
+                    cid = c.get("id", "?")
+                    desc = c.get("description", "")
+                    if c.get("met"):
+                        diagnosis["met_criteria"].append(cid)
+                    else:
+                        diagnosis["unmet_criteria"].append({
+                            "id": cid,
+                            "description": desc,
+                            "diagnosis": "NOT_TESTED",
+                            "recommendation": "",
+                        })
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    # Check experiments to refine diagnosis
+    exp_path = swarm / "experiments.tsv"
+    if exp_path.exists():
+        try:
+            lines = exp_path.read_text().strip().splitlines()
+            exp_count = max(0, len(lines) - 1)  # minus header
+            keep_count = sum(1 for l in lines[1:] if "\tkeep\t" in l)
+            crash_count = sum(1 for l in lines[1:] if "\tcrash\t" in l)
+            if exp_count == 0:
+                diagnosis["systemic_issues"].append(
+                    "Zero experiments ran — plan likely overscoped or setup failed"
+                )
+            elif keep_count == 0:
+                diagnosis["systemic_issues"].append(
+                    f"{exp_count} experiments attempted but 0 produced usable results"
+                )
+            if crash_count > exp_count * 0.5 and exp_count > 0:
+                diagnosis["systemic_issues"].append(
+                    f"{crash_count}/{exp_count} experiments crashed — infrastructure issue"
+                )
+        except OSError:
+            pass
+
+    # Epoch history for learning rate trajectory
+    epoch_state = load_epoch_state(workspace)
+    diagnosis["epoch_history"] = epoch_state.history
+    if epoch_state.epoch == 1 and epoch_state.findings_this_epoch == 0:
+        diagnosis["systemic_issues"].append(
+            "Never advanced past epoch 1 — no evidence-producing work completed"
+        )
+        diagnosis["proposed_action"] = (
+            "Start with a single minimum-viable experiment that tests "
+            "the core assumption before scaling"
+        )
+
+    # Belief map state
+    bm = load_belief_map(workspace)
+    if bm.hypotheses:
+        untested = sum(1 for h in bm.hypotheses if h.status == "untested")
+        if untested == len(bm.hypotheses):
+            diagnosis["systemic_issues"].append(
+                f"All {untested} hypotheses still untested — "
+                f"agents dispatched but none produced findings"
+            )
+    else:
+        diagnosis["systemic_issues"].append(
+            "No hypotheses in belief map — investigation never reached hypothesis stage"
+        )
+
+    # Refine unmet criteria diagnoses based on experiment data
+    for entry in diagnosis["unmet_criteria"]:
+        if entry["diagnosis"] == "NOT_TESTED" and exp_path.exists():
+            # If experiments ran but criterion unmet, it's a real null, not untested
+            try:
+                lines = exp_path.read_text().strip().splitlines()
+                keep_count = sum(1 for l in lines[1:] if "\tkeep\t" in l)
+                if keep_count > 0:
+                    entry["diagnosis"] = "TESTED_BUT_UNMET"
+                    entry["recommendation"] = (
+                        "Experiments ran but did not satisfy this criterion — "
+                        "review results to determine if this is a real null or "
+                        "a methodology issue"
+                    )
+            except OSError:
+                pass
+
+    return diagnosis
+
+
+def save_failure_diagnosis(workspace: Path, diagnosis: dict) -> None:
+    """Write structured diagnosis to workspace."""
+    path = workspace / ".swarm" / "failure-diagnosis.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    diagnosis["timestamp"] = datetime.now(timezone.utc).isoformat()
+    path.write_text(json.dumps(diagnosis, indent=2))
+
+
+# ===================================================================
 # Orchestrator Checkpoint
 # ===================================================================
 

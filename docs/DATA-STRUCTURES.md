@@ -1061,3 +1061,44 @@ PRE_REG_SENSITIVITY: lambda=[100, 400, 1000]
 ```
 
 These line formats are the canonical forms consumed by `parse_pre_registration()` and the science gates.
+
+### `.swarm/epoch-state.json`
+
+Evidence-gated epoch tracking. Written by dispatcher, read by orchestrator each OODA cycle.
+
+```json
+{
+  "epoch": 2,
+  "max_tranches": 4,
+  "findings_this_epoch": 3,
+  "belief_map_moves": 2,
+  "tokens_this_epoch": 500000,
+  "epoch_started_at": "2026-01-15T10:30:00+00:00",
+  "history": [
+    {"epoch": 1, "findings": 2, "belief_map_moves": 1, "tokens": 200000,
+     "started_at": "2026-01-15T08:00:00+00:00", "advanced_at": "2026-01-15T10:30:00+00:00"}
+  ]
+}
+```
+
+See SCIENCE.md §21 for epoch advancement rules and agent cap tiers.
+
+### `.swarm/failure-diagnosis.json`
+
+Structured failure diagnosis written on investigation failure or auto-park. Consumed by `build_warm_start_context()` for continuation prompts.
+
+```json
+{
+  "met_criteria": ["SC1", "SC3"],
+  "unmet_criteria": [
+    {"id": "SC2", "diagnosis": "NOT_TESTED", "description": "CVR reduction at high K",
+     "recommendation": "Run calibration experiments first"}
+  ],
+  "systemic_issues": ["Zero experiments ran — plan likely overscoped"],
+  "epoch_history": [],
+  "proposed_action": "Start with a single MVE testing the core assumption",
+  "timestamp": "2026-01-15T12:00:00+00:00"
+}
+```
+
+See SCIENCE.md §22 for diagnosis categories and when this file is written.

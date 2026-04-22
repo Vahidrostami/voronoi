@@ -972,3 +972,88 @@ class TestStallDirectiveInjection:
             workspace_path=str(tmp_path),
         )
         assert "STALL DIRECTIVE" not in prompt
+
+
+class TestEvidenceGatedScaling:
+    """Tests for evidence-gated scaling prompt sections."""
+
+    def test_epoch_constraints_in_prompt(self):
+        prompt = build_orchestrator_prompt(
+            question="Why does X fail?",
+            mode="discover",
+            rigor="adaptive",
+            max_agents=6,
+        )
+        assert "Evidence-Gated Scaling" in prompt
+        assert "Epoch 1" in prompt
+        assert "minimum viable experiment" in prompt.lower()
+        assert "epoch-state.json" in prompt
+
+    def test_epoch_cap_mentioned(self):
+        prompt = build_orchestrator_prompt(
+            question="test",
+            mode="discover",
+            rigor="adaptive",
+            max_agents=8,
+        )
+        assert "8 tranches maximum" in prompt
+
+    def test_failure_diagnosis_in_continuation_prompt(self):
+        from voronoi.server.prompt import build_orchestrator_prompt
+        prompt = build_orchestrator_prompt(
+            question="test",
+            mode="discover",
+            rigor="adaptive",
+            prior_context={
+                "cycle_number": 2,
+                "ledger_summary": "",
+                "pi_feedback": "",
+                "failure_diagnosis": {
+                    "systemic_issues": ["Zero experiments ran"],
+                    "unmet_criteria": [
+                        {"id": "SC1", "diagnosis": "NOT_TESTED",
+                         "recommendation": "Run calibration first"},
+                    ],
+                    "proposed_action": "Start with MVE",
+                },
+            },
+        )
+        assert "Failure Diagnosis" in prompt
+        assert "Zero experiments ran" in prompt
+        assert "SC1" in prompt
+        assert "NOT_TESTED" in prompt
+        assert "Start with MVE" in prompt
+
+    def test_no_diagnosis_section_without_data(self):
+        prompt = build_orchestrator_prompt(
+            question="test",
+            mode="discover",
+            rigor="adaptive",
+            prior_context={
+                "cycle_number": 2,
+                "ledger_summary": "",
+                "pi_feedback": "",
+            },
+        )
+        assert "Failure Diagnosis" not in prompt
+
+
+class TestWarmStartFailureDiagnosis:
+    """Tests for failure diagnosis in build_warm_start_context."""
+
+    def test_picks_up_failure_diagnosis_file(self, tmp_path):
+        import json
+        from voronoi.server.prompt import build_warm_start_context
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "failure-diagnosis.json").write_text(json.dumps({
+            "systemic_issues": ["Never past epoch 1"],
+            "unmet_criteria": [],
+            "proposed_action": "Run MVE first",
+        }))
+        ctx = build_warm_start_context(
+            lineage_id=1, cycle_number=2,
+            workspace=tmp_path,
+        )
+        assert "failure_diagnosis" in ctx
+        assert ctx["failure_diagnosis"]["proposed_action"] == "Run MVE first"

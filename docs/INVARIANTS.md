@@ -150,8 +150,10 @@ Bot tokens, API keys, and other secrets MUST NOT be included in orchestrator or 
 ### INV-30: Sandbox Resource Limits
 When Docker sandbox is enabled, containers MUST have CPU, memory, and timeout limits. Network isolation MUST be configurable.
 
-### INV-31: No Secrets in Logs
+### INV-31: No Secrets in Logs or Workspace Files
 Auth tokens (GH_TOKEN, GITHUB_TOKEN, COPILOT_GITHUB_TOKEN) MUST NOT appear in tmux pane logs or agent log files. Token injection into tmux shells MUST use environment file mechanisms (`tmux set-environment`) instead of inline `export VAR=value` in send-keys commands that are captured by `pipe-pane` logging.
+
+Secrets MUST NOT be written to any path under the investigation workspace (the git repo at `<base_dir>/active/inv-<id>-<slug>/`). Multiple code paths run `git add -A` over the workspace (orchestrator commit directive, scribe, teardown), and the GitHub publisher pushes the resulting tree to `voronoi-lab/*` with `--force`; a workspace-resident `.tmux-env` would exfiltrate operator credentials. The tmux launcher MUST write the env file to a sibling location outside the repo (e.g. `<base_dir>/active/.tmux-env-<session>`) and the launched shell MUST `rm -f` it immediately after sourcing.
 
 ### INV-32: Human Gate Pause Enforcement
 When a human gate is pending (`.swarm/human-gate.json` with `status: "pending"`), the dispatcher MUST kill the tmux session to halt the agent. A gate-pending dead session MUST NOT be routed through crash-retry logic. The agent resumes only after the gate is approved or revised.

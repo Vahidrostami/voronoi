@@ -11,20 +11,28 @@
 All public symbols re-exported here for ``from voronoi.science import X``.
 """
 
-# --- Convergence (+ belief map + checkpoint) ---
+# --- Convergence (+ belief map + checkpoint + epoch tracking) ---
 from voronoi.science.convergence import (
     CONFIDENCE_TIERS,
+    EPOCH_AGENT_CAP,
     VALID_CONFIDENCE_TIERS,
     BeliefMap,
     ConvergenceResult,
+    EpochState,
     Hypothesis,
     OrchestratorCheckpoint,
+    advance_epoch,
+    build_failure_diagnosis,
     check_convergence,
+    compute_learning_rate_display,
     format_checkpoint_for_prompt,
     load_belief_map,
     load_checkpoint,
+    load_epoch_state,
     save_belief_map,
     save_checkpoint,
+    save_epoch_state,
+    save_failure_diagnosis,
     write_convergence,
 )
 

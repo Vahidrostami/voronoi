@@ -129,6 +129,8 @@ class RunningInvestigation:
     _ledger_baseline_seeded: bool = False  # First poll seeds baseline without emitting deltas
     last_learning_activity_at: float = 0  # Last time a new finding/claim transition was observed
     stall_strike_level: int = 0  # Three-strike stall escalation: 0/1/2/3 (3 = auto-parked)
+    # Evidence-gated scaling: belief-map snapshot for detecting moves
+    _prior_belief_snapshot: dict[str, str] = field(default_factory=dict)  # hypothesis_id → confidence tier
 
     @property
     def label(self) -> str:
@@ -252,11 +254,12 @@ class InvestigationDispatcher:
         # Auto-fail paused investigations that exceeded the timeout
         self._check_paused_timeouts()
 
-        # Skip claiming if we're already provisioning an investigation —
-        # the launch thread will add it to self.running when done.
-        if self._launching:
-            logger.debug("dispatch_next: launch in progress for %s", self._launching)
-            return
+        # Note: we do NOT bail if another launch is in flight.  ``next_ready()``
+        # atomically marks each claimed row ``running`` (INV-06), so concurrent
+        # launch threads cannot collide on the same investigation.  Gating on
+        # ``self._launching`` being non-empty would serialize every launch and
+        # defeat the operator's ``max_concurrent`` setting whenever one
+        # investigation is in the middle of a slow ``git clone``.
 
         inv = self.queue.next_ready(self.config.max_concurrent)
         if inv is None:
@@ -838,11 +841,22 @@ class InvestigationDispatcher:
         override_path = run.workspace_path / ".swarm" / "timeout_hours"
         if override_path.exists():
             try:
-                value = int(override_path.read_text().strip())
+                raw = override_path.read_text().strip()
+                value = int(raw)
                 if value > 0:
                     return min(value, self._MAX_TIMEOUT_HOURS)
-            except (ValueError, OSError):
-                pass
+                logger.warning(
+                    "Invalid timeout override for #%d: value %r must be positive; "
+                    "falling back to config default %dh",
+                    run.investigation_id, value, self.config.timeout_hours,
+                )
+            except (ValueError, OSError) as e:
+                logger.warning(
+                    "Failed to read timeout override at %s for #%d (%s); "
+                    "falling back to config default %dh",
+                    override_path, run.investigation_id, e,
+                    self.config.timeout_hours,
+                )
         return self.config.timeout_hours
 
     def _write_timeout_convergence(self, run: RunningInvestigation) -> None:
@@ -2149,6 +2163,8 @@ class InvestigationDispatcher:
             if run.stall_strike_level > 0:
                 run.stall_strike_level = 0
                 self._clear_stall_signal(run)
+            # Evidence-gated scaling: update epoch state on learning
+            self._update_epoch_on_learning(run, events)
             return
 
         # Do not cry stall before the orchestrator has produced anything at all
@@ -2261,6 +2277,66 @@ class InvestigationDispatcher:
         except OSError:
             pass
 
+    # ── Evidence-gated scaling ────────────────────────────────────────
+
+    def _update_epoch_on_learning(
+        self, run: RunningInvestigation, events: list[dict],
+    ) -> None:
+        """Update epoch state when evidence-producing events arrive.
+
+        Counts findings, detects belief-map confidence tier changes,
+        and auto-advances the epoch when sufficient evidence accumulates.
+        """
+        from voronoi.science.convergence import (
+            load_epoch_state, save_epoch_state, advance_epoch,
+            load_belief_map,
+        )
+
+        epoch = load_epoch_state(run.workspace_path)
+
+        # Count new findings
+        finding_count = sum(1 for e in events if e.get("type") == "finding")
+        epoch.findings_this_epoch += finding_count
+
+        # Detect belief-map moves: compare current confidence tiers to snapshot
+        bm = load_belief_map(run.workspace_path)
+        moves = 0
+        current_snapshot: dict[str, str] = {}
+        for h in bm.hypotheses:
+            current_snapshot[h.id] = h.confidence or "unknown"
+            prior = run._prior_belief_snapshot.get(h.id, "unknown")
+            if (h.confidence or "unknown") != prior:
+                moves += 1
+        run._prior_belief_snapshot = current_snapshot
+        epoch.belief_map_moves += moves
+
+        # Auto-advance epoch if we have evidence and haven't hit max cap
+        if epoch.has_evidence and epoch.max_tranches < self.config.max_agents:
+            epoch = advance_epoch(epoch, configured_max=self.config.max_agents)
+            logger.info(
+                "Investigation #%d advanced to epoch %d (cap: %d tranches)",
+                run.investigation_id, epoch.epoch, epoch.max_tranches,
+            )
+            self.send_message(
+                f"📈 *{run.label}* — evidence produced! "
+                f"Scaling to epoch {epoch.epoch} "
+                f"(now up to {epoch.max_tranches} parallel tranches)."
+            )
+
+        save_epoch_state(run.workspace_path, epoch)
+
+    def _write_failure_diagnosis(self, run: RunningInvestigation) -> None:
+        """Write structured failure diagnosis for stalled/failed investigations."""
+        from voronoi.science.convergence import (
+            build_failure_diagnosis, save_failure_diagnosis,
+        )
+        try:
+            diagnosis = build_failure_diagnosis(run.workspace_path)
+            save_failure_diagnosis(run.workspace_path, diagnosis)
+        except Exception as e:
+            logger.warning("Failed to write failure diagnosis for %s: %s",
+                           run.label, e)
+
     def _write_partial_deliverable(
         self, run: RunningInvestigation, elapsed_min: float,
     ) -> None:
@@ -2320,6 +2396,8 @@ class InvestigationDispatcher:
         self, run: RunningInvestigation, elapsed_min: float,
     ) -> None:
         """Kill the tmux session and mark the investigation failed on strike 3."""
+        # Write structured diagnosis before killing the session
+        self._write_failure_diagnosis(run)
         try:
             subprocess.run(
                 ["tmux", "kill-session", "-t", run.tmux_session],
@@ -2603,6 +2681,9 @@ class InvestigationDispatcher:
                           closed, total_tasks, elapsed)
             self.queue.fail(run.investigation_id, failure_reason)
 
+            # Write structured failure diagnosis for continuation rounds
+            self._write_failure_diagnosis(run)
+
             # Include log tail in the failure message for diagnostics
             log_tail = ""
             if run.log_path.exists():
@@ -2755,11 +2836,24 @@ class InvestigationDispatcher:
 
             logger.info("Cleaned up worktrees for %s", run.label)
 
-        # 4. Clean secrets file from workspace
-        env_file = ws / ".swarm" / ".tmux-env"
+        # 4. Clean secrets env file (sibling of workspace, outside the git
+        # repo — see tmux.py / INV-31).  The shell also ``rm -f``s it
+        # immediately after sourcing, so this is belt-and-suspenders for
+        # crashes before that step runs.
+        env_file = ws.parent / f".tmux-env-{run.tmux_session}"
         if env_file.exists():
             try:
                 env_file.unlink()
+            except OSError:
+                pass
+
+        # Legacy cleanup: remove any residual secrets file from the old
+        # in-workspace location that may have been left by a prior
+        # dispatcher version.
+        legacy_env = ws / ".swarm" / ".tmux-env"
+        if legacy_env.exists():
+            try:
+                legacy_env.unlink()
             except OSError:
                 pass
 

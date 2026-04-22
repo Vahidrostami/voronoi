@@ -230,6 +230,20 @@ Beyond the worker-emitted event stream, the dispatcher synthesizes two classes o
 
    Keeps quiet during pre-task phases (`starting`, `scouting`, `planning` with empty `task_snapshot`).
 
+3. **Evidence-gated epoch scaling** (`_update_epoch_on_learning`) — when a learning event (finding or claim transition) fires, the dispatcher also updates `.swarm/epoch-state.json` which tracks the current epoch, findings count, belief-map confidence tier changes, and the adaptive agent cap. When `EpochState.has_evidence` becomes true (at least one belief-map move in the current epoch) and the cap is below `max_agents`, the epoch auto-advances:
+
+   | Epoch | Max Tranches | Unlocked by |
+   |:-----:|:------------:|-------------|
+   | 1 | 2 | Default — prove the approach works |
+   | 2 | 4 | Epoch 1 produced evidence (belief map moved) |
+   | 3+ | 6 (or `max_agents`) | Epoch 2 produced evidence |
+
+   The orchestrator prompt (`server/prompt.py`) injects the current epoch constraints and instructs the orchestrator to read `epoch-state.json` each OODA cycle and respect the `max_tranches` cap. The progress digest (`gateway/progress.py`) shows the learning rate and epoch info.
+
+   Belief-map moves are detected by snapshotting each hypothesis's confidence tier on `RunningInvestigation._prior_belief_snapshot` and comparing to the current belief map on each learning event.
+
+4. **Structured failure diagnosis** (`_write_failure_diagnosis`) — on auto-park (strike 3) and on `_handle_completion(failed=True)`, the dispatcher writes `.swarm/failure-diagnosis.json` via `convergence.build_failure_diagnosis()`. This contains: met/unmet criteria with per-criterion diagnosis (NOT_TESTED vs TESTED_BUT_UNMET), systemic issues (zero experiments, all crashed, never past epoch 1, untested hypotheses), epoch history, and a proposed action. The warm-start builder (`build_warm_start_context`) reads this file and injects it into continuation prompts so the next round's orchestrator knows exactly what failed and why.
+
 ### Copilot CLI Flags
 
 The dispatcher injects several Copilot CLI flags at launch time:
@@ -484,7 +498,7 @@ The dispatcher syncs `criteria_status` from the orchestrator checkpoint into `su
 6. **Federated knowledge sync**: Sync findings to `~/.voronoi/knowledge.db` for cross-investigation search
 7. Try GitHub publish if `gh` CLI available
 8. Clean up agent worktrees — prune git worktrees, remove worktree directories, remove the `-swarm/` directory
-9. Remove `.swarm/.tmux-env` secrets file from workspace
+9. Remove the per-session secrets env file (sibling of the workspace at `<base_dir>/active/.tmux-env-<session>`, outside the git repo — see INV-31). Also unlink any legacy `.swarm/.tmux-env` left over from prior dispatcher versions.
 10. Clean `~/.voronoi/tmp` if no other investigations are running
 
 ### Agent Restart

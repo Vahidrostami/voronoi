@@ -1238,21 +1238,26 @@ class TestLaunchInTmux:
             "tmux", "set-environment", "-t", "test-session",
             "GH_HOST", "github.example.com",
         ] in calls
-        # Env file written for the initial pane's shell
-        env_file = tmp_path / ".swarm" / ".tmux-env"
+        # Env file written for the initial pane's shell, OUTSIDE the
+        # workspace git repo (INV-31 — prevents `git add -A` from
+        # committing operator tokens).
+        env_file = tmp_path.parent / ".tmux-env-test-session"
         assert env_file.exists()
+        # Nothing under the workspace itself
+        assert not (tmp_path / ".swarm" / ".tmux-env").exists()
         content = env_file.read_text()
         assert "COPILOT_HOME=" in content
         assert "GH_HOST=" in content
         # File has restricted permissions
         assert oct(env_file.stat().st_mode & 0o777) == "0o600"
-        # send-keys sources the env file
+        # send-keys sources the env file AND removes it immediately after
         send_keys_calls = [c for c in mock_run.call_args_list
                            if "send-keys" in str(c)]
         assert send_keys_calls
         cmd = str(send_keys_calls[-1])
         assert "source" in cmd
-        assert ".tmux-env" in cmd
+        assert ".tmux-env-test-session" in cmd
+        assert "rm -f" in cmd
 
     def test_gh_token_written_to_env_file(self, dispatcher_setup, monkeypatch):
         """GH_TOKEN from .env reaches copilot via env file, not just set-environment."""
@@ -1265,8 +1270,10 @@ class TestLaunchInTmux:
                    return_value=MagicMock(returncode=0, stderr=b"")):
             d._launch_in_tmux("test-session", tmp_path)
 
-        env_file = tmp_path / ".swarm" / ".tmux-env"
+        env_file = tmp_path.parent / ".tmux-env-test-session"
         assert env_file.exists()
+        # Token must NOT land in the workspace git repo
+        assert not (tmp_path / ".swarm" / ".tmux-env").exists()
         content = env_file.read_text()
         assert "GH_TOKEN=" in content
 
@@ -1287,8 +1294,9 @@ class TestLaunchInTmux:
         assert ["tmux", "set-environment", "-t", "test-session", "TMP", "/srv/voronoi-tmp"] in calls
         assert ["tmux", "set-environment", "-t", "test-session", "TEMP", "/srv/voronoi-tmp"] in calls
 
-        env_file = tmp_path / ".swarm" / ".tmux-env"
+        env_file = tmp_path.parent / ".tmux-env-test-session"
         assert env_file.exists()
+        assert not (tmp_path / ".swarm" / ".tmux-env").exists()
         content = env_file.read_text()
         assert "TMPDIR=" in content
         assert "TMP=" in content
@@ -1307,8 +1315,9 @@ class TestLaunchInTmux:
                    return_value=MagicMock(returncode=0, stderr=b"")) as mock_run:
             d._launch_in_tmux("test-session", tmp_path)
 
-        env_file = tmp_path / ".swarm" / ".tmux-env"
+        env_file = tmp_path.parent / ".tmux-env-test-session"
         assert not env_file.exists()
+        assert not (tmp_path / ".swarm" / ".tmux-env").exists()
         send_keys_calls = [c for c in mock_run.call_args_list
                            if "send-keys" in str(c)]
         cmd = str(send_keys_calls[-1])
@@ -3254,12 +3263,16 @@ class TestCleanupWorktrees:
         assert not list(tmp_dir.iterdir())
 
     def test_removes_tmux_env_secrets(self, dispatcher_setup):
-        """Should remove .swarm/.tmux-env on cleanup."""
+        """Should remove both the out-of-workspace env file and any legacy\n        in-workspace ``.swarm/.tmux-env`` on cleanup (INV-31)."""
         d, msgs, docs, tmp_path = dispatcher_setup
+        # New location: sibling of the workspace, keyed by tmux session
+        env_file = tmp_path.parent / ".tmux-env-test"
+        env_file.write_text("export GH_TOKEN=secret")
+        # Legacy location: may linger from a previous dispatcher version
         swarm = tmp_path / ".swarm"
         swarm.mkdir(exist_ok=True)
-        env_file = swarm / ".tmux-env"
-        env_file.write_text("export GH_TOKEN=secret")
+        legacy = swarm / ".tmux-env"
+        legacy.write_text("export GH_TOKEN=old")
 
         run = RunningInvestigation(
             investigation_id=1,
@@ -3273,6 +3286,7 @@ class TestCleanupWorktrees:
             d._cleanup_worktrees(run)
 
         assert not env_file.exists()
+        assert not legacy.exists()
 
 
 # ---------------------------------------------------------------------------
