@@ -199,7 +199,10 @@ class DispatcherConfig:
     timeout_hours: int       # 48 — max investigation runtime
     max_retries: int         # 2 — retry failed launches
     stall_minutes: int       # 45 — minutes without progress before warning
-    learning_stall_minutes: int   # 20 — minutes without new findings/claim transitions before LEARNING_STALLED alert
+    learning_stall_minutes: int   # 20 — legacy knob, retained for digest context
+    stall_strike1_minutes: int    # 30 — strike 1: compact_plan directive
+    stall_strike2_minutes: int    # 60 — strike 2: experiments_only directive
+    stall_strike3_minutes: int    # 90 — strike 3: auto-park + partial deliverable
     pause_timeout_hours: int # 24 — auto-fail paused investigations after this
     context_advisory_hours: int   # 6 — "prioritize convergence" directive
     context_warning_hours: int    # 10 — "delegate remaining work" + force compact
@@ -213,7 +216,19 @@ class DispatcherConfig:
 Beyond the worker-emitted event stream, the dispatcher synthesizes two classes of events on every poll:
 
 1. **Claim deltas** (`_synthesize_claim_deltas`) — diffs the persistent claim ledger at `~/.voronoi/ledgers/<lineage_id>/claim-ledger.json` against the last-seen state stored on `RunningInvestigation.last_ledger_map`. Emits synthetic `{"type": "claim_delta", "kind": "new"|"transition", "claim_id", "from_status", "to_status", "statement"}` events. The first call after dispatcher start seeds the baseline without emitting events (`_ledger_baseline_seeded`), so restarts do not re-announce the full ledger. Consumed by `build_digest` — see GATEWAY.md §8.
-2. **Learning-stall alert** (`_update_learning_activity`) — resets `RunningInvestigation.last_learning_activity_at` on any `finding` event or any `claim_delta` with `kind="transition"`. New-provisional claims alone do NOT count as learning. When `now - last_learning_activity_at > learning_stall_minutes * 60`, fires `format_learning_stalled(...)` exactly once per investigation (guarded by `notified_learning_stalled`) and keeps quiet during pre-task phases (`starting`, `scouting`, `planning` with empty `task_snapshot`).
+2. **Learning-stall escalation** (`_update_learning_activity`) — resets `RunningInvestigation.last_learning_activity_at` AND `stall_strike_level` on any `finding` event or any `claim_delta` with `kind="transition"`. New-provisional claims alone do NOT count as learning. When the quiet window crosses a strike threshold, the dispatcher escalates in three levels (fires each level at most once per sequence — recovery drops the level back to 0 so a later stall can escalate again from scratch):
+
+   | Strike | Threshold | Directive | Side effects |
+   |:-:|---|---|---|
+   | 1 | `stall_strike1_minutes` (default 30) | `compact_plan` — audit open tasks against open hypotheses, no new planning this cycle | Writes `.swarm/stall-signal.json`; fires `format_learning_stalled(...)` Telegram notification |
+   | 2 | `stall_strike2_minutes` (default 60) | `experiments_only` — planning tasks forbidden; dispatch only experiment / replication / synthesis | Overwrites `.swarm/stall-signal.json`; fires strike-2 Telegram notification |
+   | 3 | `stall_strike3_minutes` (default 90) | `auto_park` — terminal | Overwrites `.swarm/stall-signal.json`; writes `.swarm/deliverable-partial.md`; kills tmux; calls `queue.fail(...)` with an "Auto-parked: no learning for ~N minutes" reason; fires strike-3 Telegram notification |
+
+   `.swarm/stall-signal.json` has the shape `{"level": int, "directive": str, "instruction": str, "elapsed_minutes": float, "timestamp": str}`. The orchestrator prompt builder (`server/prompt.py::build_orchestrator_prompt`) reads this file on every build and injects the `instruction` under a `## ⚠ STALL DIRECTIVE` heading at the top of the prompt so the orchestrator sees it before anything else. Escalation is walked one strike at a time even when the run has been stalled long enough to warrant multiple strikes — each level's side effects fire exactly once.
+
+   During pre-task phases (`starting`, `scouting`, `planning` with empty `task_snapshot`) the escalator keeps quiet: early idle is expected.
+
+   Keeps quiet during pre-task phases (`starting`, `scouting`, `planning` with empty `task_snapshot`).
 
 ### Copilot CLI Flags
 
@@ -355,8 +370,9 @@ Wake conditions (`_needs_orchestrator()`):
 
 Worker liveness (`_has_active_workers()`):
 1. Reads the swarm tmux session name from `.swarm-config.json` (`tmux_session` field, written by `swarm-init.sh`). Falls back to `{orchestrator_session}-swarm` if the config file is missing.
-2. Checks if any workers listed in the checkpoint have a matching tmux window in the swarm session **with an active agent process** — uses `tmux list-panes -F #{pane_current_command}` to verify the pane is running an agent (not a leftover shell like `bash`/`zsh`).
-3. Falls back to `pgrep` for orphaned processes associated with this workspace. Association is confirmed either by argv substring (common when the workspace path is passed as a CLI arg) **or** by inspecting each candidate PID's working directory via `lsof -a -p <pid> -d cwd -Fn` (agents launched with `tmux new-window -c <workspace>` get the workspace as CWD, not argv — the argv-only check would otherwise miss them).
+2. **Reconciles checkpoint against Beads (INV-49).** `active_workers` in the checkpoint is orchestrator self-report — it can be stale or simply wrong when the orchestrator crashed mid-update. The dispatcher calls `_bd_in_progress_task_ids()` (`bd list --status in_progress --json` scoped to the workspace) and augments the worker-candidate list with any task IDs that are in-progress in Beads but absent from the checkpoint. This closes the class of bugs where a stale `active_workers=[]` caused the dispatcher to restart the orchestrator and spawn a duplicate Scribe/Evaluator on identical data.
+3. Checks if any candidate worker has a matching tmux window in the swarm session **with an active agent process** — uses `tmux list-panes -F #{pane_current_command}` to verify the pane is running an agent (not a leftover shell like `bash`/`zsh`).
+4. Falls back to `pgrep` for orphaned processes associated with this workspace. Association is confirmed either by argv substring (common when the workspace path is passed as a CLI arg) **or** by inspecting each candidate PID's working directory via `lsof -a -p <pid> -d cwd -Fn` (agents launched with `tmux new-window -c <workspace>` get the workspace as CWD, not argv — the argv-only check would otherwise miss them).
 
 **Park timeout safety net**: If the orchestrator remains parked longer than `park_timeout_hours` (default 4h), the dispatcher checks worker liveness before force-waking. If workers are still alive, the park is extended (the timeout resets) — this prevents premature wake during long-running experiments. If workers are dead, the dispatcher force-wakes normally. This avoids the pathological case where a force-woken orchestrator enters a `sleep && poll` loop waiting for a healthy worker to finish.
 

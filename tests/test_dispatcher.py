@@ -3006,6 +3006,65 @@ class TestOrphanedWorkerDetection:
             assert d._has_active_workers(run) is True
 
 
+class TestActiveWorkersBeadsReconciliation:
+    """BUG-002: stale checkpoint + in-progress bd tasks must not produce restart."""
+
+    def test_bd_in_progress_augments_empty_checkpoint(self, dispatcher_setup):
+        """Empty active_workers + bd in_progress task → treat as active."""
+        d, _, _, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="voronoi-inv-1",
+            question="test",
+            mode="discover",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        # Stale checkpoint — orchestrator forgot to list the Scribe worker
+        (swarm / "orchestrator-checkpoint.json").write_text(json.dumps({
+            "active_workers": []
+        }))
+        (tmp_path / ".swarm-config.json").write_text(json.dumps({
+            "tmux_session": "test-swarm"
+        }))
+
+        # Simulate bd returning an in-progress Scribe task
+        with patch.object(d, "_bd_in_progress_task_ids",
+                          return_value=["bd-66"]):
+            def side_effect(cmd, **kwargs):
+                if cmd[0] == "tmux" and cmd[1] == "has-session":
+                    return MagicMock(returncode=0)
+                if cmd[0] == "tmux" and cmd[1] == "list-windows":
+                    return MagicMock(returncode=0,
+                                     stdout="agent-scribe-bd-66\norchestrator\n")
+                if cmd[0] == "tmux" and cmd[1] == "list-panes":
+                    return MagicMock(returncode=0, stdout="copilot\n")
+                return MagicMock(returncode=1, stdout="")
+
+            with patch("voronoi.server.dispatcher.subprocess.run",
+                        side_effect=side_effect):
+                assert d._has_active_workers(run) is True
+
+    def test_bd_empty_and_checkpoint_empty_returns_false(self, dispatcher_setup):
+        """No bd tasks, no checkpoint workers → no active workers."""
+        d, _, _, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="voronoi-inv-1",
+            question="test",
+            mode="discover",
+        )
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "orchestrator-checkpoint.json").write_text(json.dumps({
+            "active_workers": []
+        }))
+        with patch.object(d, "_bd_in_progress_task_ids", return_value=[]):
+            assert d._has_active_workers(run) is False
+
+
 class TestCompletionTaskFallback:
     """Tests for task count fallback when task_snapshot is empty."""
 
@@ -5176,7 +5235,7 @@ class TestClaimDeltaSynthesis:
 
 
 class TestLearningStalled:
-    """F2 — LEARNING_STALLED alert when no findings/claims for N minutes."""
+    """F2 — 3-strike stall escalation when no findings/claims for N minutes."""
 
     def _mk_active_run(self, tmp_path):
         run = RunningInvestigation(
@@ -5190,12 +5249,21 @@ class TestLearningStalled:
         run.task_snapshot = {"bd-1": {"status": "in_progress", "title": "x"}}
         return run
 
+    def _stale_past_strike(self, d, strike: int) -> float:
+        """Return a last_learning_activity_at timestamp past strike N."""
+        minutes = {
+            1: d.config.stall_strike1_minutes,
+            2: d.config.stall_strike2_minutes,
+            3: d.config.stall_strike3_minutes,
+        }[strike]
+        return time.time() - (minutes * 60 + 120)
+
     def test_finding_resets_activity(self, dispatcher_setup):
         d, msgs, _, base = dispatcher_setup
         run = self._mk_active_run(base)
         run.last_learning_activity_at = time.time() - 3600  # very stale
         d._update_learning_activity(run, [{"type": "finding", "msg": "x"}])
-        assert not run.notified_learning_stalled
+        assert run.stall_strike_level == 0
         assert not msgs
 
     def test_claim_transition_resets_activity(self, dispatcher_setup):
@@ -5206,38 +5274,37 @@ class TestLearningStalled:
             {"type": "claim_delta", "kind": "transition",
              "from_status": "asserted", "to_status": "locked"},
         ])
-        assert not run.notified_learning_stalled
+        assert run.stall_strike_level == 0
         assert not msgs
 
     def test_new_claim_alone_does_not_reset(self, dispatcher_setup):
         d, msgs, _, base = dispatcher_setup
         run = self._mk_active_run(base)
-        stale_ts = time.time() - (d.config.learning_stall_minutes * 60 + 300)
-        run.last_learning_activity_at = stale_ts
+        run.last_learning_activity_at = self._stale_past_strike(d, 1)
         d._update_learning_activity(run, [
             {"type": "claim_delta", "kind": "new",
              "from_status": None, "to_status": "provisional"},
         ])
-        assert run.notified_learning_stalled is True
+        # A new-provisional claim alone doesn't reset the timer, so strike 1 fires
+        assert run.stall_strike_level == 1
         assert any("learning stalled" in m.lower() for m in msgs)
 
-    def test_fires_once_after_stall_window(self, dispatcher_setup):
+    def test_strike1_fires_once_then_stays(self, dispatcher_setup):
         d, msgs, _, base = dispatcher_setup
         run = self._mk_active_run(base)
-        run.last_learning_activity_at = (
-            time.time() - (d.config.learning_stall_minutes * 60 + 120)
-        )
+        run.last_learning_activity_at = self._stale_past_strike(d, 1)
         d._update_learning_activity(run, [])
-        d._update_learning_activity(run, [])  # second call: should NOT re-fire
+        d._update_learning_activity(run, [])  # second call must NOT re-fire strike 1
         stalled_msgs = [m for m in msgs if "learning stalled" in m.lower()]
         assert len(stalled_msgs) == 1
+        assert run.stall_strike_level == 1
 
     def test_does_not_fire_before_window(self, dispatcher_setup):
         d, msgs, _, base = dispatcher_setup
         run = self._mk_active_run(base)
         run.last_learning_activity_at = time.time() - 60  # 1 min ago
         d._update_learning_activity(run, [])
-        assert not run.notified_learning_stalled
+        assert run.stall_strike_level == 0
         assert not any("learning stalled" in m.lower() for m in msgs)
 
     def test_skips_initial_phases_with_no_tasks(self, dispatcher_setup):
@@ -5247,11 +5314,79 @@ class TestLearningStalled:
             tmux_session="s", question="q", mode="discover",
             phase="starting",
         )
-        run.last_learning_activity_at = (
-            time.time() - (d.config.learning_stall_minutes * 60 + 120)
-        )
+        run.last_learning_activity_at = self._stale_past_strike(d, 1)
         d._update_learning_activity(run, [])
-        assert not run.notified_learning_stalled
+        assert run.stall_strike_level == 0
+
+    def test_strike1_writes_signal_file(self, dispatcher_setup):
+        d, msgs, _, base = dispatcher_setup
+        run = self._mk_active_run(base)
+        run.last_learning_activity_at = self._stale_past_strike(d, 1)
+        d._update_learning_activity(run, [])
+        signal = base / ".swarm" / "stall-signal.json"
+        assert signal.exists()
+        data = json.loads(signal.read_text())
+        assert data["level"] == 1
+        assert data["directive"] == "compact_plan"
+        assert "instruction" in data and data["instruction"].strip()
+
+    def test_strike2_escalates_and_updates_signal(self, dispatcher_setup):
+        d, msgs, _, base = dispatcher_setup
+        run = self._mk_active_run(base)
+        # Skip directly to stale-past-strike-2; escalation walks through
+        # strike 1 first, then strike 2 in the same call.
+        run.last_learning_activity_at = self._stale_past_strike(d, 2)
+        d._update_learning_activity(run, [])
+        assert run.stall_strike_level == 2
+        data = json.loads((base / ".swarm" / "stall-signal.json").read_text())
+        assert data["level"] == 2
+        assert data["directive"] == "experiments_only"
+        # Both strike-1 and strike-2 notifications should have fired
+        assert any("learning stalled" in m.lower() for m in msgs)
+        assert any("strike 2" in m.lower() for m in msgs)
+
+    def test_strike3_auto_parks_and_writes_partial_deliverable(
+        self, dispatcher_setup,
+    ):
+        d, msgs, _, base = dispatcher_setup
+        # Plug a mock queue so _auto_park_stalled_run can call queue.fail()
+        mock_queue = MagicMock()
+        mock_queue.get.return_value = SimpleNamespace(
+            lineage_id=None, cycle_number=1,
+        )
+        d._queue = mock_queue
+
+        run = self._mk_active_run(base)
+        d.running[run.investigation_id] = run
+        run.last_learning_activity_at = self._stale_past_strike(d, 3)
+
+        with patch("subprocess.run"):
+            d._update_learning_activity(run, [])
+
+        assert run.stall_strike_level == 3
+        data = json.loads((base / ".swarm" / "stall-signal.json").read_text())
+        assert data["level"] == 3
+        assert data["directive"] == "auto_park"
+        partial = base / ".swarm" / "deliverable-partial.md"
+        assert partial.exists()
+        assert "auto-parked" in partial.read_text().lower()
+        mock_queue.fail.assert_called_once()
+        # Run removed from dispatcher after auto-park
+        assert run.investigation_id not in d.running
+
+    def test_recovery_resets_level_and_clears_signal(self, dispatcher_setup):
+        d, msgs, _, base = dispatcher_setup
+        run = self._mk_active_run(base)
+        run.last_learning_activity_at = self._stale_past_strike(d, 1)
+        d._update_learning_activity(run, [])  # fire strike 1
+        assert run.stall_strike_level == 1
+        signal = base / ".swarm" / "stall-signal.json"
+        assert signal.exists()
+
+        # A real finding resets level to 0 and clears the signal
+        d._update_learning_activity(run, [{"type": "finding", "msg": "x"}])
+        assert run.stall_strike_level == 0
+        assert not signal.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -5434,3 +5569,94 @@ class TestTaskCountFallback:
 
         assert "0/0" in msgs[0]
 
+
+
+# ---------------------------------------------------------------------------
+# _sync_findings_to_ledger — claim-laundering regression tests
+# ---------------------------------------------------------------------------
+
+class TestSyncFindingsToLedger:
+    """Regression tests for the claim-laundering fix (INV-47).
+
+    Prior bug: the substring check ``"FINDING" in title.upper()`` matched
+    "FINDINGS" inside titles like "Analyze pricing dataset for five
+    action-changing findings", laundering task titles into provisional
+    claims. See docs/SCIENCE.md §17.
+    """
+
+    def _mk_inv(self, lineage_id=1, cycle=1):
+        from voronoi.server.queue import Investigation
+        return Investigation(
+            id=1, chat_id="test", status="running", question="q",
+            slug="test", lineage_id=lineage_id, cycle_number=cycle,
+        )
+
+    def _mk_run(self, tmp_path):
+        return RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="s",
+            question="q",
+            mode="discover",
+        )
+
+    def test_findings_suffix_title_does_not_launder(self, dispatcher_setup):
+        """Task titled with 'findings' as a noun suffix must NOT create a claim."""
+        d, _, _, base = dispatcher_setup
+        inv = self._mk_inv()
+        run = self._mk_run(base)
+        tasks = [
+            {
+                "id": "bd-1",
+                "title": "Analyze pricing dataset for five action-changing findings",
+                "notes": "",
+            },
+        ]
+        with patch.object(d.queue, "get", return_value=inv):
+            d._sync_findings_to_ledger(run, tasks=tasks)
+
+        from voronoi.science.claims import load_ledger
+        ledger = load_ledger(inv.lineage_id, base_dir=d.config.base_dir)
+        assert ledger.claims == []
+
+    def test_finding_prefix_title_creates_claim(self, dispatcher_setup):
+        d, _, _, base = dispatcher_setup
+        inv = self._mk_inv()
+        run = self._mk_run(base)
+        tasks = [
+            {
+                "id": "bd-2",
+                "title": "FINDING: L4 outperforms L1 on calibration (d=0.42)",
+                "notes": "EFFECT_SIZE: d=0.42\nN: 500\n",
+            },
+        ]
+        with patch.object(d.queue, "get", return_value=inv):
+            d._sync_findings_to_ledger(run, tasks=tasks)
+
+        from voronoi.science.claims import load_ledger
+        ledger = load_ledger(inv.lineage_id, base_dir=d.config.base_dir)
+        assert len(ledger.claims) == 1
+        c = ledger.claims[0]
+        assert "L4 outperforms L1" in c.statement
+        assert c.effect_summary == "d=0.42"
+
+    def test_invalid_finding_statement_logs_and_skips(self, dispatcher_setup):
+        """A FINDING: task with a bare-imperative body must log-and-skip, not crash."""
+        d, _, _, base = dispatcher_setup
+        inv = self._mk_inv()
+        run = self._mk_run(base)
+        tasks = [
+            {
+                "id": "bd-3",
+                # After stripping 'FINDING:' this becomes a bare imperative
+                "title": "FINDING: Analyze account decisions",
+                "notes": "",
+            },
+        ]
+        with patch.object(d.queue, "get", return_value=inv):
+            # Must not raise
+            d._sync_findings_to_ledger(run, tasks=tasks)
+
+        from voronoi.science.claims import load_ledger
+        ledger = load_ledger(inv.lineage_id, base_dir=d.config.base_dir)
+        assert ledger.claims == []

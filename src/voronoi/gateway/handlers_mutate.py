@@ -210,9 +210,30 @@ def handle_continue_investigation(project_dir: str, identifier: str,
             f"can only continue from review or complete."
         )
 
+    lineage_id = inv.lineage_id or inv.id
+    base_dir = q.db_path.parent
+
+    # No-info guard (BUG-001 / BUG-007): refuse to start a new round when
+    # there is nothing new to act on.  Without this, `voronoi continue`
+    # against a fully-converged investigation re-runs the same finisher
+    # chain indefinitely, burning tokens with zero belief-map delta.
+    if not _has_continuation_signal(inv, feedback.strip(), lineage_id, base_dir):
+        label = inv.codename or f"#{inv.id}"
+        return (
+            f"🛑 *{label}* has already converged with a manuscript and you "
+            f"provided no new information.\n\n"
+            f"Continuing now would re-run the same post-processing chain "
+            f"on identical data — no new experiments, no belief-map delta.\n\n"
+            f"To proceed, do one of:\n"
+            f"• `/voronoi deliberate {label}` — discuss what to pivot to\n"
+            f"• `/voronoi continue {label} challenge C<id>: <reason>` — "
+            f"lodge a specific objection\n"
+            f"• `/voronoi continue {label} <concrete new direction>` — "
+            f"give a scope/direction change\n"
+            f"• `/voronoi complete {label}` — accept the result as final"
+        )
+
     if feedback:
-        lineage_id = inv.lineage_id or inv.id
-        base_dir = q.db_path.parent
         _process_feedback(lineage_id, feedback, base_dir)
 
     new_id = q.continue_investigation(inv.id, feedback)
@@ -291,6 +312,55 @@ def handle_guide(project_dir: str, message: str) -> str:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _has_continuation_signal(inv, feedback: str, lineage_id: int,
+                              base_dir: Path) -> bool:
+    """Decide whether a ``continue`` call carries any new information.
+
+    Returns False only when ALL of the following hold:
+      - the prior run converged with ``gate_passed=true``
+      - a manuscript deliverable exists (``paper.tex`` or ``deliverable.md``)
+      - feedback is empty
+      - no unresolved (pending) objections exist on the ledger
+
+    In every other case we allow continuation — free-text feedback, a
+    pending objection, or an unconverged prior run all count as "there
+    is something new to do".  Goal is narrow: block the zero-information
+    rerun of an already-finished investigation that would otherwise just
+    re-run the Scribe/Evaluator finisher chain on identical data.
+    """
+    if feedback:
+        return True
+
+    try:
+        from voronoi.science.claims import load_ledger
+        ledger = load_ledger(lineage_id, base_dir=base_dir)
+        if ledger.get_pending_objections():
+            return True
+    except Exception:  # pragma: no cover — ledger load should never block
+        pass
+
+    ws = getattr(inv, "workspace_path", None)
+    if not ws:
+        return True
+    ws_path = Path(ws)
+    try:
+        conv = json.loads((ws_path / ".swarm" / "convergence.json").read_text())
+        if not bool(conv.get("gate_passed")):
+            return True
+    except (OSError, json.JSONDecodeError):
+        return True
+
+    has_paper = any((ws_path / name).exists() for name in (
+        "paper.tex", "deliverable.md",
+    ))
+    if not has_paper:
+        has_paper = (ws_path / ".swarm" / "manuscript" / "paper.tex").exists()
+    if not has_paper:
+        return True
+
+    return False
+
 
 def _find_investigation(q, identifier: str):
     """Find an investigation by ID or codename."""

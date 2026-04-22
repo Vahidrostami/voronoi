@@ -18,6 +18,26 @@ class ValidationError(Exception):
 
 
 # ---------------------------------------------------------------------------
+# Claim statement validator (delegates to science.claims)
+# ---------------------------------------------------------------------------
+
+def require_claim_statement(value: str, field: str = "statement") -> str:
+    """Validate a Claim Ledger statement at the MCP tool boundary.
+
+    Reject bare-imperative task directives (e.g. "Analyze pricing dataset")
+    and exact duplicates. Delegates to
+    :func:`voronoi.science.claims.validate_claim_statement` so the MCP
+    surface and the ledger stay in sync. See docs/SCIENCE.md §17.
+    """
+    from voronoi.science.claims import validate_claim_statement
+
+    ok, reason = validate_claim_statement(value, ())
+    if not ok:
+        raise ValidationError(f"{field}: {reason}")
+    return value
+
+
+# ---------------------------------------------------------------------------
 # Enum validators
 # ---------------------------------------------------------------------------
 

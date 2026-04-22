@@ -1097,6 +1097,47 @@ class TestReviewContinueClaims:
         assert "Round 2" in result
         assert "queued" in result.lower()
 
+    def test_continue_refuses_no_info_rerun(self, tmp_path):
+        """BUG-001: converged+paper+no-feedback must refuse to rerun."""
+        import json as _json
+        q, inv_id = self._setup_investigation(tmp_path)
+        inv = q.get(inv_id)
+        ws = Path(inv.workspace_path)
+        (ws / ".swarm").mkdir(parents=True, exist_ok=True)
+        (ws / ".swarm" / "convergence.json").write_text(
+            _json.dumps({"gate_passed": True})
+        )
+        (ws / "deliverable.md").write_text("# Final paper\n")
+        with patch("voronoi.gateway.handlers_mutate._get_queue", return_value=q):
+            result = handle_continue_investigation(str(tmp_path), "Synapse", "")
+        assert "converged" in result.lower() or "no new information" in result.lower()
+        # Investigation should NOT have been re-queued
+        assert q.get(inv_id).status in ("review", "complete")
+
+    def test_continue_allows_rerun_with_feedback(self, tmp_path):
+        """Converged+paper but with feedback → continuation allowed."""
+        import json as _json
+        q, inv_id = self._setup_investigation(tmp_path)
+        inv = q.get(inv_id)
+        ws = Path(inv.workspace_path)
+        (ws / ".swarm").mkdir(parents=True, exist_ok=True)
+        (ws / ".swarm" / "convergence.json").write_text(
+            _json.dumps({"gate_passed": True})
+        )
+        (ws / "deliverable.md").write_text("# Final paper\n")
+        with patch("voronoi.gateway.handlers_mutate._get_queue", return_value=q):
+            result = handle_continue_investigation(
+                str(tmp_path), "Synapse", "try a larger N",
+            )
+        assert "Round 2" in result
+
+    def test_continue_allows_rerun_when_not_converged(self, tmp_path):
+        """No convergence.json → not converged → continuation allowed."""
+        q, inv_id = self._setup_investigation(tmp_path)
+        with patch("voronoi.gateway.handlers_mutate._get_queue", return_value=q):
+            result = handle_continue_investigation(str(tmp_path), "Synapse", "")
+        assert "Round 2" in result
+
     def test_continue_wrong_status(self, tmp_path):
         from voronoi.server.queue import InvestigationQueue, Investigation
         q = InvestigationQueue(tmp_path / "queue.db")

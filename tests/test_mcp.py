@@ -734,3 +734,30 @@ class TestMCPConfigIntegration:
         data = json.loads(mcp_config_path.read_text())
         assert "voronoi" in data["mcpServers"]
         assert data["mcpServers"]["voronoi"]["args"] == ["-m", "voronoi.mcp"]
+
+
+# ---------------------------------------------------------------------------
+# require_claim_statement (INV-47 — claims are propositions, not tasks)
+# ---------------------------------------------------------------------------
+
+class TestRequireClaimStatement:
+    def test_accepts_proposition(self):
+        from voronoi.mcp.validators import require_claim_statement
+        assert require_claim_statement("L4 > L1 on F1 (d=0.35)") == \
+            "L4 > L1 on F1 (d=0.35)"
+
+    def test_rejects_bare_imperative(self):
+        from voronoi.mcp.validators import (
+            ValidationError, require_claim_statement,
+        )
+        with pytest.raises(ValidationError, match="imperative"):
+            require_claim_statement(
+                "Analyze pricing dataset for five action-changing findings",
+            )
+
+    def test_rejects_empty(self):
+        from voronoi.mcp.validators import (
+            ValidationError, require_claim_statement,
+        )
+        with pytest.raises(ValidationError, match="empty"):
+            require_claim_statement("")

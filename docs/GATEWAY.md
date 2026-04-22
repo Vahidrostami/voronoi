@@ -158,6 +158,8 @@ Central dispatch point for all user actions. Every Telegram command and programm
 
 These handlers interact with the Claim Ledger (`~/.voronoi/ledgers/<lineage_id>/claim-ledger.json`). The `continue` handler parses natural-language feedback for `lock C1`, `challenge C2: reason` patterns and updates the ledger before creating the continuation investigation. PI feedback is stored in the `pi_feedback` field on `Investigation` — it is NOT appended to the question text. The dispatcher reads `pi_feedback` to build the warm-start prompt context.
 
+**No-info guard (INV-48):** `handle_continue_investigation` refuses to enqueue a new round when the prior run already converged (`.swarm/convergence.json` has `gate_passed=true`), a manuscript exists, feedback is empty, and the ledger has no pending objections. The refusal surfaces `/voronoi deliberate`, explicit `challenge Cn: <reason>`, scope-change feedback, or `/voronoi complete` as the legitimate next moves. This prevents the zero-information rerun that would otherwise just replay the Scribe/Evaluator finisher chain on identical data.
+
 ### Workflow Handlers
 
 | Function | Mode | Rigor |
@@ -550,7 +552,9 @@ Transitions into `locked`, `replicated`, `challenged`, or `retired` escalate the
 
 ### LEARNING_STALLED Alert
 
-`format_learning_stalled(codename, elapsed_min)` produces a stand-alone notification sent when the dispatcher detects that no new findings and no claim-status transitions have arrived for `DispatcherConfig.learning_stall_minutes` (default 20). The message lists the PI's options: `pivot`, `ask`, `deliberate`, or `complete`. New-provisional claims alone do NOT reset the stall timer — a claim that never becomes asserted/locked is not learning. See SERVER.md §3 for the detection loop.
+`format_learning_stalled(codename, elapsed_min)` produces a stand-alone notification sent when the dispatcher detects that no new findings and no claim-status transitions have arrived for `DispatcherConfig.stall_strike1_minutes` (default 30). The message lists the PI's options: `pivot`, `ask`, `deliberate`, or `complete`. New-provisional claims alone do NOT reset the stall timer — a claim that never becomes asserted/locked is not learning.
+
+The alert is the **first of three escalation strikes**. If the stall persists through `stall_strike2_minutes` (default 60), the dispatcher sends a strike-2 notification and switches the orchestrator's directive to `experiments_only`; at `stall_strike3_minutes` (default 90) it writes a partial deliverable, sends a strike-3 notification, and auto-parks the run. Each strike fires at most once per sequence; a real finding or claim transition resets the level to 0, removes `.swarm/stall-signal.json`, and allows a later stall to escalate again. See SERVER.md §3 for the detection loop and `.swarm/stall-signal.json` shape.
 
 ---
 

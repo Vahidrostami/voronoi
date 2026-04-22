@@ -18,10 +18,11 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Iterable, Optional
 
 logger = logging.getLogger("voronoi.science.claims")
 
@@ -59,6 +60,97 @@ _TRANSITIONS: dict[str, set[str]] = {
 OBJECTION_TYPES = {"confound", "power", "methodology", "interpretation", "scope", "other"}
 OBJECTION_STATUSES = {"pending", "investigating", "resolved", "dismissed", "surfaced"}
 ARTIFACT_TYPES = {"data", "code", "result", "figure", "model"}
+
+
+# ---------------------------------------------------------------------------
+# Claim statement validation
+# ---------------------------------------------------------------------------
+#
+# A Claim is a *proposition* about the world (testable assertion), not a task
+# directive. Without this distinction, the dispatcher's Beads-to-Ledger sync
+# has been observed to launder task titles like "Analyze pricing dataset for
+# five action-changing findings" into provisional claims, inflating the
+# ledger with verb-phrase ghost-claims that satisfy success criteria and
+# mask genuine learning stalls. See docs/SCIENCE.md §17 ("Claim Statement
+# Shape") and docs/INVARIANTS.md (INV-47).
+
+# Bare imperative verbs that signal "task directive, not proposition".
+# Matched case-insensitively at the start of the statement (word boundary).
+_BANNED_IMPERATIVE_PREFIXES = (
+    "analyze", "analyse", "investigate", "run", "check", "explore",
+    "examine", "study", "review", "assess", "evaluate", "test", "verify",
+    "look", "find", "identify", "determine", "survey",
+)
+
+# Relational markers that, if present, rescue an imperative-looking
+# statement (e.g. "test whether L4 > L1" — imperative form but carries a
+# concrete proposition). Matched with simple substring/word checks.
+_RELATIONAL_MARKERS = (
+    ">", "<", "=", "≥", "≤", "≠",
+    " vs ", " versus ", " causes ", " predicts ", " correlates ",
+    " increases ", " decreases ", " is ", " are ", " differs ",
+    " exceeds ", " outperforms ", " beats ",
+)
+
+_BANNED_PREFIX_RE = re.compile(
+    r"^\s*(" + "|".join(_BANNED_IMPERATIVE_PREFIXES) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def _normalize_statement(s: str) -> str:
+    """Normalize a statement for exact-match duplicate detection.
+
+    Lowercases, collapses whitespace, strips trailing punctuation. No
+    stemming, no embeddings — deterministic exact-match only.
+    """
+    if not s:
+        return ""
+    normalized = " ".join(s.lower().split())
+    return normalized.rstrip(".?!,; ")
+
+
+def validate_claim_statement(
+    statement: str,
+    existing: Iterable["Claim"] = (),
+) -> tuple[bool, str]:
+    """Check whether *statement* is a well-formed claim proposition.
+
+    Returns ``(True, "")`` if valid, else ``(False, reason)``.
+
+    Rejects:
+      - Empty or whitespace-only statements.
+      - Statements that start with a bare imperative verb (Analyze, Run,
+        Investigate, ...) AND contain no relational marker (``>``, ``vs``,
+        ``causes``, ...). Such statements are task directives, not claims.
+      - Exact duplicates (after normalization) of any existing claim.
+
+    Effect-size anchoring is *encouraged* but not required — hunches
+    without quantitative backing are still propositions.
+    """
+    if not statement or not statement.strip():
+        return False, "empty statement"
+
+    stripped = statement.strip()
+
+    m = _BANNED_PREFIX_RE.match(stripped)
+    if m:
+        lower = stripped.lower()
+        has_relational = any(marker in lower for marker in _RELATIONAL_MARKERS)
+        if not has_relational:
+            return (
+                False,
+                f"statement begins with imperative verb {m.group(1)!r} "
+                "and contains no relational marker — claims must be "
+                "propositions, not task directives",
+            )
+
+    normalized = _normalize_statement(stripped)
+    for c in existing:
+        if _normalize_statement(c.statement) == normalized:
+            return False, f"duplicate of existing claim {c.id}"
+
+    return True, ""
 
 
 # ---------------------------------------------------------------------------
@@ -171,7 +263,15 @@ class ClaimLedger:
         model_basis: str | None = None,
         artifacts: list[ClaimArtifact] | None = None,
     ) -> Claim:
-        """Add a new claim to the ledger. Returns the created Claim."""
+        """Add a new claim to the ledger. Returns the created Claim.
+
+        Raises ``ValueError`` if *statement* is not a well-formed claim
+        proposition (empty, bare-imperative task directive, or exact
+        duplicate). See ``validate_claim_statement`` for the rules.
+        """
+        ok, reason = validate_claim_statement(statement, self.claims)
+        if not ok:
+            raise ValueError(f"Invalid claim statement: {reason}")
         claim = Claim(
             id=f"C{self._next_claim_id}",
             statement=statement,
@@ -552,12 +652,52 @@ def _ledger_to_dict(ledger: ClaimLedger) -> dict:
 
 
 def _dict_to_ledger(d: dict) -> ClaimLedger:
-    """Reconstruct a ClaimLedger from a dict."""
+    """Reconstruct a ClaimLedger from a dict.
+
+    Applies the :func:`validate_claim_statement` shape check to every
+    incoming claim (BUG-006).  Legacy ledgers — produced before the
+    Beads-to-Ledger launderer was fixed — contain entries whose
+    statements are bare imperatives like ``"Analyze pricing dataset"``.
+    Those entries have ``effect_summary=None`` and no challenges and
+    merely pollute the Telegram "new claim" stream.  They are dropped
+    on load with a WARNING that tells operators to inspect the ledger.
+
+    IDs of surviving claims are preserved, so existing references
+    (``supporting_findings``, objections) stay valid.
+    """
     ledger = ClaimLedger()
-    ledger.claims = [_dict_to_claim(c) for c in d.get("claims", [])]
+    dropped = 0
+    for raw in d.get("claims", []):
+        try:
+            claim = _dict_to_claim(raw)
+        except (TypeError, ValueError) as e:
+            logger.warning("Skipping malformed claim in ledger: %s", e)
+            dropped += 1
+            continue
+        ok, reason = validate_claim_statement(claim.statement, ledger.claims)
+        if not ok:
+            # Allow exact-duplicates-of-existing through if this is a
+            # legacy ledger where the SAME imperative was recorded many
+            # times; but drop the duplicate itself.  Shape violations
+            # (imperative-prefix) are dropped unconditionally.
+            logger.warning(
+                "Dropping legacy/invalid claim %s on load: %s (statement=%r)",
+                claim.id, reason, claim.statement[:80],
+            )
+            dropped += 1
+            continue
+        ledger.claims.append(claim)
     ledger.objections = [_dict_to_objection(o) for o in d.get("objections", [])]
-    ledger._next_claim_id = d.get("_next_claim_id", len(ledger.claims) + 1)
+    # Preserve next-id counters from disk so new claims never collide
+    # with dropped-but-referenced IDs.
+    ledger._next_claim_id = d.get("_next_claim_id", len(ledger.claims) + 1 + dropped)
     ledger._next_objection_id = d.get("_next_objection_id", len(ledger.objections) + 1)
+    if dropped:
+        logger.warning(
+            "Claim ledger: quarantined %d invalid/legacy entries on load. "
+            "Run `voronoi ledger prune` to persist the cleanup.",
+            dropped,
+        )
     return ledger
 
 

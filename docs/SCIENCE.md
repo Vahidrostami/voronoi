@@ -582,9 +582,10 @@ When `validate_experiment_contract` then detects the on-disk file still exists, 
 
 When the sentinel finds a critical failure:
 1. Writes `.swarm/sentinel-audit.json` (persisted for orchestrator to read)
-2. Writes `.swarm/dispatcher-directive.json` with `level: sentinel_violation` (forces orchestrator to act)
+2. Writes `.swarm/dispatcher-directive.json` with `level: sentinel_violation` and `action: stop_and_fix` (forces orchestrator to act)
 3. Returns `design_invalid` event (triggers Telegram alert to PI)
 4. `_is_complete()` returns False while DESIGN_INVALID exists (hard gate — cannot be bypassed)
+5. **Structural dispatch block (INV-50).** `spawn-agent.sh` reads `.swarm/dispatcher-directive.json` before claiming any task. If `action == "stop_and_fix"`, it refuses to spawn any task whose title does not match the methodologist/post-mortem/revise/fix-contract/sentinel pattern, and marks the task BLOCKED in Beads. This catches orchestrators that ignore the sentinel directive in their prompt: no new workers can burn hours on invalid data.
 
 The directive explicitly states: "This IS a DESIGN_INVALID event — do NOT create a separate DESIGN_INVALID task." This prevents duplicate escalation.
 
@@ -834,6 +835,20 @@ During progress polling, the dispatcher syncs Beads findings to the Claim Ledger
 - Scout/literature findings → `retrieved_prior` provenance
 - Investigator findings → `run_evidence` provenance
 - On convergence: provisional claims promoted to `asserted`, self-critique generated
+
+A task is treated as a finding ONLY when its title **starts with** `FINDING:`, `FINDING -`, or `FINDING —` (case-insensitive). Substring matches on "findings" in arbitrary titles (e.g. "Analyze pricing dataset for five action-changing findings") are explicitly rejected — otherwise task titles launder into provisional claims, inflating the ledger with verb-phrase ghost-claims that satisfy success criteria and mask genuine learning stalls. See INV-47.
+
+### Claim Statement Shape
+
+A claim is a *proposition* about the world — a statement that can be true or false given evidence. It is NOT a task directive. `ClaimLedger.add_claim` validates each incoming statement via `validate_claim_statement` and raises `ValueError` on:
+
+- **Empty or whitespace-only** statements.
+- **Bare-imperative task directives**: statements that begin with `Analyze`, `Analyse`, `Investigate`, `Run`, `Check`, `Explore`, `Examine`, `Study`, `Review`, `Assess`, `Evaluate`, `Test`, `Verify`, `Look`, `Find`, `Identify`, `Determine`, or `Survey` AND contain no relational marker. An imperative-shaped statement that carries a concrete proposition (e.g. "Test whether L4 > L1") is accepted because it includes a relational marker.
+- **Exact duplicates** (after normalization — lowercase, collapsed whitespace, stripped trailing punctuation) against any existing claim in the same ledger.
+
+Effect-size anchoring (`effect_summary`) is encouraged but **not required** — hunches without quantitative backing are still legitimate propositions in DISCOVER mode. The MCP tool surface enforces the same shape via `voronoi.mcp.validators.require_claim_statement`.
+
+When the dispatcher's Beads-to-Ledger sync produces a statement that fails validation, it logs at INFO level and skips the task rather than crashing the poll loop — the finding task stays closed, no provisional claim is created.
 
 ### Self-Critique
 

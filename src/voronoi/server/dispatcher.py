@@ -77,6 +77,13 @@ class DispatcherConfig:
     max_context_restarts: int = 2      # max proactive context refreshes
     park_timeout_hours: int = 4        # force-wake parked orchestrator after this
     learning_stall_minutes: int = 20   # alert if no new findings/claims for this long
+    # Three-strike stall escalation (cumulative minutes without learning).
+    # Strike 1: directive = "compact_plan" (audit open tasks, no new planning)
+    # Strike 2: directive = "experiments_only" (planning tasks forbidden)
+    # Strike 3: directive = "auto_park" (write partial deliverable, kill run)
+    stall_strike1_minutes: int = 30
+    stall_strike2_minutes: int = 60
+    stall_strike3_minutes: int = 90
 
 
 @dataclass
@@ -121,7 +128,7 @@ class RunningInvestigation:
     last_ledger_map: dict[str, str] = field(default_factory=dict)  # claim_id → status for delta detection
     _ledger_baseline_seeded: bool = False  # First poll seeds baseline without emitting deltas
     last_learning_activity_at: float = 0  # Last time a new finding/claim transition was observed
-    notified_learning_stalled: bool = False  # Fire LEARNING_STALLED at most once per run
+    stall_strike_level: int = 0  # Three-strike stall escalation: 0/1/2/3 (3 = auto-parked)
 
     @property
     def label(self) -> str:
@@ -2105,12 +2112,28 @@ class InvestigationDispatcher:
     def _update_learning_activity(
         self, run: RunningInvestigation, events: list[dict],
     ) -> None:
-        """Track learning progress and fire LEARNING_STALLED once when idle.
+        """Track learning progress and escalate stall severity in 3 strikes.
 
-        A new finding or a claim status transition resets the activity timer.
-        New-provisional claims alone do not reset it (a claim that never
-        becomes asserted/locked is not learning).  If the quiet window
-        exceeds ``config.learning_stall_minutes``, send the alert once.
+        A new finding or a claim status transition resets the activity timer
+        AND the strike level — learning has resumed.  New-provisional claims
+        alone do not reset it (a claim that never becomes asserted/locked is
+        not learning).
+
+        If the quiet window exceeds ``config.stall_strikeN_minutes``, the
+        run escalates:
+
+          * Strike 1 (``stall_strike1_minutes``): write
+            ``.swarm/stall-signal.json`` with directive ``compact_plan`` —
+            orchestrator must audit open tasks and dispatch no new planning
+            tasks this cycle. Fire Telegram notification.
+          * Strike 2 (``stall_strike2_minutes``): directive
+            ``experiments_only`` — planning tasks forbidden. Fire Telegram.
+          * Strike 3 (``stall_strike3_minutes``): directive ``auto_park`` —
+            write a partial deliverable, fail the run, fire Telegram.
+
+        Each strike fires at most once per escalation sequence. Recovery
+        (a real finding / claim transition) drops the level back to 0, so
+        a later stall can escalate again from scratch.
         """
         now = time.time()
         if run.last_learning_activity_at == 0:
@@ -2123,20 +2146,197 @@ class InvestigationDispatcher:
         )
         if has_finding or has_claim_transition:
             run.last_learning_activity_at = now
-            run.notified_learning_stalled = False
+            if run.stall_strike_level > 0:
+                run.stall_strike_level = 0
+                self._clear_stall_signal(run)
             return
 
-        if run.notified_learning_stalled:
-            return
-        stall_seconds = self.config.learning_stall_minutes * 60
-        if now - run.last_learning_activity_at < stall_seconds:
-            return
         # Do not cry stall before the orchestrator has produced anything at all
         if run.phase in ("starting", "scouting", "planning") and not run.task_snapshot:
             return
-        run.notified_learning_stalled = True
+
         elapsed_min = (now - run.last_learning_activity_at) / 60
-        self.send_message(format_learning_stalled(run.label, elapsed_min))
+
+        # Determine the highest strike level the elapsed time now warrants.
+        if elapsed_min >= self.config.stall_strike3_minutes:
+            target_level = 3
+        elif elapsed_min >= self.config.stall_strike2_minutes:
+            target_level = 2
+        elif elapsed_min >= self.config.stall_strike1_minutes:
+            target_level = 1
+        else:
+            target_level = 0
+
+        # Escalate one step at a time so each strike's side-effects
+        # (signal file write, Telegram notification, auto-park) fire.
+        while run.stall_strike_level < target_level:
+            run.stall_strike_level += 1
+            self._fire_stall_strike(run, run.stall_strike_level, elapsed_min)
+            if run.stall_strike_level >= 3:
+                # Auto-park is terminal; do not escalate further.
+                break
+
+    _STALL_STRIKE_DIRECTIVE = {
+        1: {
+            "directive": "compact_plan",
+            "instruction": (
+                "Next OODA cycle: audit every open task against an open "
+                "hypothesis. Do NOT dispatch new planning tasks this cycle — "
+                "close or justify what is already in the queue first."
+            ),
+        },
+        2: {
+            "directive": "experiments_only",
+            "instruction": (
+                "Planning tasks are FORBIDDEN until the stall clears. "
+                "Dispatch only experiment, replication, or synthesis tasks. "
+                "If no such task is actionable, write a partial deliverable "
+                "and converge with current evidence."
+            ),
+        },
+        3: {
+            "directive": "auto_park",
+            "instruction": (
+                "Auto-parked by dispatcher: 0 findings in the strike-3 window. "
+                "Run is terminated. See .swarm/deliverable-partial.md."
+            ),
+        },
+    }
+
+    def _fire_stall_strike(
+        self, run: RunningInvestigation, level: int, elapsed_min: float,
+    ) -> None:
+        """Write stall-signal.json, notify, and (at level 3) auto-park."""
+        spec = self._STALL_STRIKE_DIRECTIVE.get(level)
+        if spec is None:
+            return
+        signal_path = run.workspace_path / ".swarm" / "stall-signal.json"
+        try:
+            signal_path.parent.mkdir(parents=True, exist_ok=True)
+            signal_path.write_text(json.dumps({
+                "level": level,
+                "directive": spec["directive"],
+                "instruction": spec["instruction"],
+                "elapsed_minutes": round(elapsed_min, 1),
+                "timestamp": datetime.now(timezone.utc).isoformat(
+                    timespec="seconds",
+                ),
+            }, indent=2))
+        except OSError as e:
+            logger.warning("Failed to write stall-signal.json for %s: %s",
+                           run.label, e)
+
+        if level == 1:
+            # First strike keeps the familiar LEARNING_STALLED notification
+            self.send_message(format_learning_stalled(run.label, elapsed_min))
+        elif level == 2:
+            self.send_message(
+                f"🪫🪫 *{run.label}* — stall escalated (strike 2, "
+                f"~{int(round(elapsed_min))}min). Planning tasks are now "
+                f"forbidden — experiments only until stall clears."
+            )
+        elif level == 3:
+            self.send_message(
+                f"🪫🪫🪫 *{run.label}* — NO_LEARNING auto-parked after "
+                f"~{int(round(elapsed_min))}min with zero findings. "
+                f"Writing partial deliverable and terminating run."
+            )
+            try:
+                self._write_partial_deliverable(run, elapsed_min)
+            except Exception as e:  # pragma: no cover - defensive
+                logger.warning("Failed to write partial deliverable for %s: %s",
+                               run.label, e)
+            try:
+                self._auto_park_stalled_run(run, elapsed_min)
+            except Exception as e:  # pragma: no cover - defensive
+                logger.warning("Failed to auto-park stalled run %s: %s",
+                               run.label, e)
+
+    def _clear_stall_signal(self, run: RunningInvestigation) -> None:
+        """Remove .swarm/stall-signal.json when learning resumes."""
+        signal_path = run.workspace_path / ".swarm" / "stall-signal.json"
+        try:
+            if signal_path.exists():
+                signal_path.unlink()
+        except OSError:
+            pass
+
+    def _write_partial_deliverable(
+        self, run: RunningInvestigation, elapsed_min: float,
+    ) -> None:
+        """Emit ``.swarm/deliverable-partial.md`` on auto-park.
+
+        Best-effort: list current claims from the ledger (if any) and the
+        success-criteria state so the PI has a record of what the run knew.
+        """
+        path = run.workspace_path / ".swarm" / "deliverable-partial.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        lines: list[str] = []
+        lines.append(f"# {run.label} — Partial Deliverable (auto-parked)\n")
+        lines.append(
+            f"**Reason:** No new findings or claim transitions for "
+            f"~{int(round(elapsed_min))} minutes "
+            f"(stall_strike3_minutes={self.config.stall_strike3_minutes}).\n"
+        )
+        lines.append(f"**Mode:** {run.mode}  |  **Phase:** {run.phase}\n")
+
+        # Ledger claims (if available)
+        inv = self.queue.get(run.investigation_id) if self._queue else None
+        if inv is not None and getattr(inv, "lineage_id", None):
+            try:
+                from voronoi.science.claims import load_ledger
+                ledger = load_ledger(inv.lineage_id, base_dir=self.config.base_dir)
+                if ledger.claims:
+                    lines.append("\n## Claims in Ledger\n")
+                    for c in ledger.claims:
+                        lines.append(f"- **{c.id}** ({c.status}): {c.statement}\n")
+                else:
+                    lines.append("\n## Claims in Ledger\n\n*None.*\n")
+            except Exception as e:  # pragma: no cover - defensive
+                logger.debug("Ledger load for partial deliverable failed: %s", e)
+
+        # Success criteria
+        sc_path = run.workspace_path / ".swarm" / "success-criteria.json"
+        if sc_path.exists():
+            try:
+                sc = json.loads(sc_path.read_text())
+                if isinstance(sc, list):
+                    met = sum(1 for s in sc if s.get("met"))
+                    lines.append(
+                        f"\n## Success Criteria\n\n{met}/{len(sc)} met at park time.\n"
+                    )
+                    for s in sc:
+                        mark = "x" if s.get("met") else " "
+                        lines.append(
+                            f"- [{mark}] **{s.get('id','?')}** — {s.get('description','')}\n"
+                        )
+            except (OSError, json.JSONDecodeError):
+                pass
+
+        path.write_text("".join(lines))
+
+    def _auto_park_stalled_run(
+        self, run: RunningInvestigation, elapsed_min: float,
+    ) -> None:
+        """Kill the tmux session and mark the investigation failed on strike 3."""
+        try:
+            subprocess.run(
+                ["tmux", "kill-session", "-t", run.tmux_session],
+                capture_output=True, timeout=10,
+            )
+        except Exception:
+            pass
+        reason = (
+            f"Auto-parked: no learning for ~{int(round(elapsed_min))} minutes "
+            f"(stall strike 3)."
+        )
+        try:
+            self.queue.fail(run.investigation_id, reason)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("queue.fail() raised for auto-parked %s: %s",
+                           run.label, e)
+        self.running.pop(run.investigation_id, None)
 
     def _send_progress_batch(self, run: RunningInvestigation, events: list[dict]) -> None:
         # Synthesize claim-delta events from the persistent claim ledger
@@ -2624,6 +2824,35 @@ class InvestigationDispatcher:
         )
         return sum(marker in lowered for marker in markers) >= 2
 
+    def _bd_in_progress_task_ids(self, workspace: Path) -> list[str]:
+        """Return Beads task IDs currently marked ``in_progress``.
+
+        Used by ``_has_active_workers`` to reconcile a possibly-stale
+        ``orchestrator-checkpoint.json`` against ground-truth task state
+        (BUG-002).  Returns an empty list on any failure — the caller
+        treats absence of bd data as "no extra workers to track".
+        """
+        try:
+            from voronoi.beads import has_beads_dir, run_bd_json
+            if not has_beads_dir(str(workspace)):
+                return []
+            code, parsed = run_bd_json(
+                "list", "--status", "in_progress", "--json",
+                cwd=str(workspace),
+            )
+        except Exception:  # pragma: no cover — beads module optional
+            return []
+        if code != 0 or not isinstance(parsed, list):
+            return []
+        ids: list[str] = []
+        for task in parsed:
+            if not isinstance(task, dict):
+                continue
+            tid = task.get("id")
+            if isinstance(tid, str) and tid:
+                ids.append(tid)
+        return ids
+
     def _has_active_workers(self, run: RunningInvestigation) -> bool:
         """Check if the orchestrator exited with workers still running.
 
@@ -2633,6 +2862,11 @@ class InvestigationDispatcher:
         workspace (workers that survived after tmux cleanup).  If so,
         the orchestrator intentionally exited to conserve context and
         should NOT be restarted until the workers finish.
+
+        Reconciles the checkpoint against Beads in-progress tasks
+        (BUG-002): a stale checkpoint with ``active_workers=[]`` while
+        bd reports ``in_progress`` tasks used to produce duplicate
+        worker dispatch on restart.  We now cross-check both sources.
         """
         cp_path = _find_checkpoint(run.workspace_path)
         if cp_path is None:
@@ -2644,7 +2878,17 @@ class InvestigationDispatcher:
         except (json.JSONDecodeError, OSError):
             return False
 
-        workers = cp.get("active_workers", [])
+        workers = list(cp.get("active_workers", []))
+
+        # Reconcile with Beads: any in_progress task whose ID isn't already
+        # covered by the checkpoint means a worker was dispatched but the
+        # checkpoint is stale.  We add the task ID as a potential worker
+        # identifier — tmux window names typically encode the task ID, so
+        # the downstream substring match ("worker in w") will find it.
+        for tid in self._bd_in_progress_task_ids(run.workspace_path):
+            if tid and not any(tid in w for w in workers):
+                workers.append(tid)
+
         if not workers:
             return False
 
@@ -3651,7 +3895,17 @@ class InvestigationDispatcher:
             title = task.get("title", "")
             notes = task.get("notes", "")
 
-            if "FINDING" not in title.upper():
+            # Require the task title to START with a FINDING marker. The
+            # prior substring check matched "FINDINGS" anywhere in a title
+            # (e.g. "Analyze pricing dataset for five action-changing
+            # findings"), which laundered task titles into provisional
+            # claims.  See docs/SCIENCE.md §17 and docs/INVARIANTS.md INV-47.
+            title_upper = title.upper().lstrip()
+            if not (
+                title_upper.startswith("FINDING:")
+                or title_upper.startswith("FINDING -")
+                or title_upper.startswith("FINDING —")
+            ):
                 continue
             if tid in synced_ids:
                 continue
@@ -3683,20 +3937,27 @@ class InvestigationDispatcher:
 
             # Clean statement from FINDING prefix
             statement = title
-            for prefix in ("FINDING:", "FINDING -", "FINDING"):
+            for prefix in ("FINDING:", "FINDING -", "FINDING —", "FINDING"):
                 if statement.upper().startswith(prefix):
                     statement = statement[len(prefix):].strip()
                     break
 
-            ledger.add_claim(
-                statement=statement,
-                provenance=provenance,
-                source_cycle=inv.cycle_number,
-                supporting_findings=[tid],
-                effect_summary=effect or None,
-                sample_summary=sample_summary,
-                artifacts=artifacts,
-            )
+            try:
+                ledger.add_claim(
+                    statement=statement,
+                    provenance=provenance,
+                    source_cycle=inv.cycle_number,
+                    supporting_findings=[tid],
+                    effect_summary=effect or None,
+                    sample_summary=sample_summary,
+                    artifacts=artifacts,
+                )
+            except ValueError as e:
+                logger.info(
+                    "Skipping ill-formed FINDING for task %s in %s: %s",
+                    tid, run.label, e,
+                )
+                continue
             new_claims = True
 
         if new_claims:

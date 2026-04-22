@@ -923,3 +923,52 @@ class TestBuildRedTeamPrompt:
         assert "Current tasks" not in prompt
         assert "Belief map" not in prompt
         assert "OODA cycle" not in prompt
+
+
+# ---------------------------------------------------------------------------
+# Stall directive injection (F2 — 3-strike stall escalation)
+# ---------------------------------------------------------------------------
+
+class TestStallDirectiveInjection:
+    """When .swarm/stall-signal.json exists, surface it at the top of the prompt."""
+
+    def test_no_directive_when_signal_missing(self, tmp_path):
+        prompt = build_orchestrator_prompt(
+            question="x",
+            mode="discover",
+            rigor="adaptive",
+            workspace_path=str(tmp_path),
+        )
+        assert "STALL DIRECTIVE" not in prompt
+
+    def test_directive_injected_when_signal_exists(self, tmp_path):
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "stall-signal.json").write_text(json.dumps({
+            "level": 2,
+            "directive": "experiments_only",
+            "instruction": "Planning tasks are FORBIDDEN until the stall clears.",
+            "elapsed_minutes": 65.0,
+        }))
+        prompt = build_orchestrator_prompt(
+            question="x",
+            mode="discover",
+            rigor="adaptive",
+            workspace_path=str(tmp_path),
+        )
+        assert "STALL DIRECTIVE" in prompt
+        assert "LEVEL 2" in prompt
+        assert "experiments_only" in prompt
+        assert "Planning tasks are FORBIDDEN" in prompt
+
+    def test_malformed_signal_is_ignored(self, tmp_path):
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "stall-signal.json").write_text("not-json")
+        prompt = build_orchestrator_prompt(
+            question="x",
+            mode="discover",
+            rigor="adaptive",
+            workspace_path=str(tmp_path),
+        )
+        assert "STALL DIRECTIVE" not in prompt

@@ -617,6 +617,35 @@ class TestParadigmStress:
         assert r.stressed is True
         assert r.contradiction_count == 3
 
+    def test_refuted_hypotheses_count_as_stress(self, tmp_path):
+        """BUG-004: ≥3 refuted hypotheses must trigger paradigm stress."""
+        import json as _json
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "belief-map.json").write_text(_json.dumps({
+            "hypotheses": [
+                {"id": "H1", "name": "a", "status": "refuted"},
+                {"id": "H2", "name": "b", "status": "refuted"},
+                {"id": "H3", "name": "c", "status": "refuted"},
+                {"id": "H4", "name": "d", "status": "confirmed"},
+            ]
+        }))
+        result = check_paradigm_stress(tmp_path)
+        assert result.stressed is True
+        assert result.contradiction_count == 3
+        assert set(result.contradicting_findings) == {"H1", "H2", "H3"}
+
+    def test_two_refuted_is_not_stress(self, tmp_path):
+        """Below-threshold refutations should NOT trigger."""
+        import json as _json
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "belief-map.json").write_text(_json.dumps({
+            "hypotheses": [
+                {"id": "H1", "status": "refuted"},
+                {"id": "H2", "status": "refuted"},
+            ]
+        }))
+        assert check_paradigm_stress(tmp_path).stressed is False
+
 
 # ---------------------------------------------------------------------------
 # Consistency Gate

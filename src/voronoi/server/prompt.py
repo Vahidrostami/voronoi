@@ -76,6 +76,31 @@ def build_orchestrator_prompt(
 
     sections: list[str] = []
 
+    # -- Stall directive (highest priority — inject before anything else) --
+    # When the dispatcher escalates a learning stall, it writes
+    # .swarm/stall-signal.json. Surface the instruction at the very top so
+    # the orchestrator sees it before the rest of the prompt.
+    # See docs/SERVER.md §3 (Stall Escalation).
+    if workspace_path:
+        signal_path = Path(workspace_path) / ".swarm" / "stall-signal.json"
+        if signal_path.exists():
+            try:
+                import json as _json
+                signal = _json.loads(signal_path.read_text())
+                instruction = signal.get("instruction", "").strip()
+                level = signal.get("level")
+                directive = signal.get("directive", "")
+                if instruction:
+                    sections.append(
+                        f"## ⚠ STALL DIRECTIVE — LEVEL {level} "
+                        f"({directive})\n\n"
+                        f"{instruction}\n\n"
+                        "This directive overrides default OODA behaviour. "
+                        "Obey it on this cycle.\n\n"
+                    )
+            except (OSError, ValueError):
+                pass
+
     # -- Identity & Lifecycle (top-level — read first) --------------------
     sections.append(
         "You are the Voronoi swarm orchestrator — a strategist called in when "

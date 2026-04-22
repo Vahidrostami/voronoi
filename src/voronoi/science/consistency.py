@@ -234,14 +234,79 @@ class ParadigmStressResult:
 
 
 def check_paradigm_stress(workspace: Path) -> ParadigmStressResult:
+    """Detect paradigm stress: systemic strain on the working theory.
+
+    Counts two signals as equivalent stress events (BUG-004):
+
+    1. Consistency contradictions between validated findings (original
+       behavior).
+    2. Hypotheses in ``belief-map.json`` with ``status == "refuted"``.
+       Silent refutations of paper-level hypotheses (e.g. H4/H5 in the
+       user's run) used to count as zero stress because we only looked
+       at pairwise finding conflicts — but a refuted hypothesis that
+       underwrites an abstract-level claim *is* the purest form of
+       paradigm stress.
+
+    Threshold stays at 3 combined events to preserve the original gate.
+    """
     contradictions = _find_consistency_conflicts(workspace)
-    count = len(contradictions)
-    ids = list(set(c.get("finding_a", "") for c in contradictions) |
-               set(c.get("finding_b", "") for c in contradictions) - {""})
-    if count >= 3:
-        return ParadigmStressResult(True, count, ids,
-                                    f"PARADIGM STRESS: {count} contradictions detected.")
-    return ParadigmStressResult(False, count, ids, f"{count} contradiction(s) — within normal range")
+    contradiction_count = len(contradictions)
+    ids = set(c.get("finding_a", "") for c in contradictions)
+    ids |= set(c.get("finding_b", "") for c in contradictions)
+    ids.discard("")
+
+    refuted_ids = _refuted_hypothesis_ids(workspace)
+    ids |= set(refuted_ids)
+
+    total = contradiction_count + len(refuted_ids)
+    if total >= 3:
+        parts = []
+        if contradiction_count:
+            parts.append(f"{contradiction_count} contradiction(s)")
+        if refuted_ids:
+            parts.append(f"{len(refuted_ids)} refuted hypothesis/es")
+        return ParadigmStressResult(
+            True, total, sorted(ids),
+            f"PARADIGM STRESS: {' + '.join(parts)} detected.",
+        )
+    return ParadigmStressResult(False, total, sorted(ids),
+                                f"{total} stress event(s) — within normal range")
+
+
+def _refuted_hypothesis_ids(workspace: Path) -> list[str]:
+    """Return IDs of hypotheses with ``status == 'refuted'`` in belief-map.
+
+    Tolerates missing/malformed files and both list- and dict-shaped
+    hypothesis containers (the loader in ``convergence.py`` migrates
+    dict-keyed maps to lists, but this helper reads raw JSON to stay
+    independent of that module).
+    """
+    path = workspace / ".swarm" / "belief-map.json"
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    hyps = data.get("hypotheses", [])
+    if isinstance(hyps, dict):
+        hyps = [
+            {**v, "id": v.get("id", k)} if isinstance(v, dict) else {"id": k}
+            for k, v in hyps.items()
+        ]
+    if not isinstance(hyps, list):
+        return []
+    ids: list[str] = []
+    for h in hyps:
+        if not isinstance(h, dict):
+            continue
+        if str(h.get("status", "")).lower() == "refuted":
+            hid = h.get("id") or h.get("name") or ""
+            if hid:
+                ids.append(str(hid))
+    return ids
 
 
 # ---------------------------------------------------------------------------

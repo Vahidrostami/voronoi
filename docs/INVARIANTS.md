@@ -68,6 +68,9 @@ The Statistician MUST independently recompute statistics from raw data. NEVER tr
 ### INV-15: Claim-Evidence Traceability
 At Analytical+ rigor, every claim in the deliverable MUST trace to specific finding IDs via `.swarm/claim-evidence.json`. Orphan findings and unsupported claims are audit flags.
 
+### INV-47: Claims Are Propositions, Not Tasks
+A Claim Ledger entry MUST be a proposition about the world (a testable assertion), not a task directive. Statements that begin with a bare imperative verb (`Analyze`, `Investigate`, `Run`, `Check`, `Explore`, `Examine`, `Study`, `Review`, `Assess`, `Evaluate`, `Test`, `Verify`, `Look`, `Find`, `Identify`, `Determine`, `Survey`) AND contain no relational marker (`>`, `<`, `=`, `vs`, `causes`, `predicts`, `increases`, `decreases`, `is`, `are`, ...) MUST be rejected by `ClaimLedger.add_claim` with `ValueError`. Exact duplicates (after normalization — lowercase, collapsed whitespace, stripped trailing punctuation) MUST also be rejected. Enforced by `voronoi.science.claims.validate_claim_statement` and mirrored at the MCP boundary by `require_claim_statement`. The dispatcher's Beads-to-Ledger sync MUST additionally require task titles to **start** with a `FINDING:` / `FINDING -` / `FINDING —` prefix before synthesizing a claim — substring matches on "findings" in arbitrary task titles are banned.
+
 ---
 
 ## 4. Anti-Fabrication Invariants
@@ -220,3 +223,18 @@ The dispatcher unit of parallelism is a **hypothesis tranche** — one hypothesi
 
 ### INV-47: Red Team Verdict Before Convergence (Scientific+)
 At rigor levels `scientific` and `experimental`, `check_convergence()` MUST NOT return `converged=True` unless `<workspace>/.swarm/red-team-verdict.json` exists, is valid JSON, and has `verdict ∈ {pass, pass_with_caveats}`. A `fatal_flaw` verdict is a hard blocker with the verdict's `reason` surfaced in `ConvergenceResult.blockers`. The Red Team agent (`src/voronoi/data/agents/red-team.agent.md`) is invoked with a **cold context** via `build_red_team_prompt()` — it reads only `deliverable.md`, `claim-ledger.json`, and raw artifacts under `output/`, never investigation history. Adaptive rigor skips this gate (cost/speed). Enforced by `voronoi.science.convergence._check_red_team_verdict()`.
+
+### INV-48: Continuation Requires New Information
+`handle_continue_investigation` MUST refuse to enqueue a new round when ALL of the following hold: (a) feedback is empty, (b) the prior workspace's `.swarm/convergence.json` has `gate_passed=true`, (c) a manuscript deliverable exists (`paper.tex`, `deliverable.md`, or `.swarm/manuscript/paper.tex`), AND (d) the claim ledger has no pending objections. Re-running a fully-converged investigation with zero new information merely replays the Scribe/Evaluator finisher chain and produces no belief-map delta. The refusal message points the operator at `/voronoi deliberate`, an explicit `challenge Cn: <reason>`, a free-text scope change, or `/voronoi complete`. Enforced by `voronoi.gateway.handlers_mutate._has_continuation_signal()`.
+
+### INV-49: Checkpoint Reconciled Against Beads Before Restart
+`InvestigationDispatcher._has_active_workers` MUST NOT trust `orchestrator-checkpoint.active_workers` alone. Before deciding that workers are done, it cross-checks `bd list --status in_progress --json` and augments the worker-candidate list with any task IDs that are in-progress in Beads but absent from the checkpoint. Without this reconciliation, a stale checkpoint with `active_workers=[]` while a real worker (e.g. Scribe) is still in-progress caused the dispatcher to restart the orchestrator and spawn a duplicate finisher. Enforced by `InvestigationDispatcher._bd_in_progress_task_ids()` feeding into `_has_active_workers()`.
+
+### INV-50: Stop-and-Fix Directive Blocks Dispatch Structurally
+When `.swarm/dispatcher-directive.json` contains `{"action": "stop_and_fix"}`, `spawn-agent.sh` MUST refuse to spawn any task whose title does not match the methodologist/post-mortem/revise/fix-contract/sentinel pattern, returning exit 1 and marking the task BLOCKED in Beads. This is the structural counterpart to INV-40 (prompt-level enforcement of sentinel audits): an orchestrator that ignores the sentinel directive in its prompt is caught at dispatch time, so no new workers can burn hours on invalid data.
+
+### INV-51: Paradigm Stress Counts Refuted Hypotheses
+`check_paradigm_stress` MUST count hypotheses with `status == "refuted"` in `belief-map.json` as equivalent stress events alongside pairwise finding contradictions. The threshold of 3 total stress events is preserved. This closes a blind spot where refuted paper-level hypotheses (contradicting abstract-level claims) silently accumulated at `paradigm_stress=0`, preventing auto-deliberation and paradigm pivots.
+
+### INV-52: Ledger Load-Time Shape Validation
+`_dict_to_ledger` MUST apply `validate_claim_statement` to every incoming claim and drop those that fail (logging a WARNING with the claim ID and reason). This quarantines legacy ledgers — produced before the Beads-to-Ledger launderer was fixed — whose statements are bare imperatives like `"Analyze pricing dataset"`. Surviving claim IDs are preserved and `_next_claim_id` is bumped so the counter never collides with a dropped-but-referenced ID.
