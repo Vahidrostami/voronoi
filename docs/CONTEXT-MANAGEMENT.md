@@ -83,6 +83,7 @@ Written after every OODA cycle. Read at the start of the next cycle.
 |-------|---------|
 | `cycle` | OODA cycle counter |
 | `phase` | Current investigation phase |
+| `lifecycle_phase` | Orchestrator-declared work mode: `"setup" \| "explore" \| "test" \| "synthesize" \| ""` (empty = inferred from `phase`). Dispatcher uses this to apply phase-aware stall budgets — `setup` scales stall thresholds by 3×, `synthesize` by 0.5×, others 1×. See SERVER.md §3. |
 | `hypotheses_summary` | Compact string: `"H1:confirmed, H2:testing"` |
 | `total_tasks` / `closed_tasks` | Progress count |
 | `active_workers` | Branch names of running agents |

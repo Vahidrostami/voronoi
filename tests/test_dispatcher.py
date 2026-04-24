@@ -1074,8 +1074,7 @@ class TestSentinelDispatcher:
         directive = swarm / "dispatcher-directive.json"
         assert directive.exists()
         data = json.loads(directive.read_text())
-        assert data["level"] == "sentinel_violation"
-        assert data["action"] == "stop_and_fix"
+        assert data["directive"] == "sentinel_violation"
 
     def test_has_experiment_tasks(self, dispatcher_setup):
         d, msgs, docs, tmp_path = dispatcher_setup
@@ -1216,9 +1215,9 @@ class TestLaunchInTmux:
     def test_non_copilot_agent_skips_copilot_auth(self, dispatcher_setup):
         d, msgs, docs, tmp_path = dispatcher_setup
 
-        with patch.object(d, "_ensure_copilot_auth", side_effect=AssertionError("should not be called")), \
-             patch("voronoi.server.dispatcher.shutil.which", return_value="/bin/echo"), \
-             patch("voronoi.server.dispatcher.subprocess.run",
+        with patch("voronoi.server.tmux.ensure_copilot_auth", side_effect=AssertionError("should not be called")), \
+             patch("voronoi.server.tmux.shutil.which", return_value="/bin/echo"), \
+             patch("voronoi.server.tmux.subprocess.run",
                    return_value=MagicMock(returncode=0, stderr=b"")) as mock_run:
             d._launch_in_tmux("test-session", tmp_path)
 
@@ -1230,8 +1229,8 @@ class TestLaunchInTmux:
         monkeypatch.setenv("GH_HOST", "github.example.com")
         (tmp_path / ".swarm").mkdir(parents=True, exist_ok=True)
 
-        with patch("voronoi.server.dispatcher.shutil.which", return_value="/bin/echo"), \
-             patch("voronoi.server.dispatcher.subprocess.run",
+        with patch("voronoi.server.tmux.shutil.which", return_value="/bin/echo"), \
+             patch("voronoi.server.tmux.subprocess.run",
                    return_value=MagicMock(returncode=0, stderr=b"")) as mock_run:
             d._launch_in_tmux("test-session", tmp_path)
 
@@ -1272,8 +1271,8 @@ class TestLaunchInTmux:
         monkeypatch.setenv("GH_TOKEN", "ghp_test_token_value")
         (tmp_path / ".swarm").mkdir(parents=True, exist_ok=True)
 
-        with patch("voronoi.server.dispatcher.shutil.which", return_value="/bin/echo"), \
-             patch("voronoi.server.dispatcher.subprocess.run",
+        with patch("voronoi.server.tmux.shutil.which", return_value="/bin/echo"), \
+             patch("voronoi.server.tmux.subprocess.run",
                    return_value=MagicMock(returncode=0, stderr=b"")):
             d._launch_in_tmux("test-session", tmp_path)
 
@@ -1291,8 +1290,8 @@ class TestLaunchInTmux:
         monkeypatch.setenv("TEMP", "/srv/voronoi-tmp")
         (tmp_path / ".swarm").mkdir(parents=True, exist_ok=True)
 
-        with patch("voronoi.server.dispatcher.shutil.which", return_value="/bin/echo"), \
-             patch("voronoi.server.dispatcher.subprocess.run",
+        with patch("voronoi.server.tmux.shutil.which", return_value="/bin/echo"), \
+             patch("voronoi.server.tmux.subprocess.run",
                    return_value=MagicMock(returncode=0, stderr=b"")) as mock_run:
             d._launch_in_tmux("test-session", tmp_path)
 
@@ -1316,9 +1315,13 @@ class TestLaunchInTmux:
                     "COPILOT_HOME", "GH_HOST", "TMPDIR", "TMP", "TEMP"):
             monkeypatch.delenv(var, raising=False)
         (tmp_path / ".swarm").mkdir(parents=True, exist_ok=True)
+        # Clean up stale env file from prior tests (shared tmp_path.parent)
+        stale_env = tmp_path.parent / ".tmux-env-test-session"
+        if stale_env.exists():
+            stale_env.unlink()
 
-        with patch("voronoi.server.dispatcher.shutil.which", return_value="/bin/echo"), \
-             patch("voronoi.server.dispatcher.subprocess.run",
+        with patch("voronoi.server.tmux.shutil.which", return_value="/bin/echo"), \
+             patch("voronoi.server.tmux.subprocess.run",
                    return_value=MagicMock(returncode=0, stderr=b"")) as mock_run:
             d._launch_in_tmux("test-session", tmp_path)
 
@@ -1335,8 +1338,8 @@ class TestLaunchInTmux:
         d, msgs, docs, tmp_path = dispatcher_setup
         (tmp_path / ".swarm").mkdir(parents=True, exist_ok=True)
 
-        with patch("voronoi.server.dispatcher.shutil.which", return_value="/bin/echo"), \
-             patch("voronoi.server.dispatcher.subprocess.run",
+        with patch("voronoi.server.tmux.shutil.which", return_value="/bin/echo"), \
+             patch("voronoi.server.tmux.subprocess.run",
                    return_value=MagicMock(returncode=0, stderr=b"")) as mock_run:
             d._launch_in_tmux("test-session", tmp_path, rigor="experimental")
 
@@ -1352,8 +1355,8 @@ class TestLaunchInTmux:
         d, msgs, docs, tmp_path = dispatcher_setup
         (tmp_path / ".swarm").mkdir(parents=True, exist_ok=True)
 
-        with patch("voronoi.server.dispatcher.shutil.which", return_value="/bin/echo"), \
-             patch("voronoi.server.dispatcher.subprocess.run",
+        with patch("voronoi.server.tmux.shutil.which", return_value="/bin/echo"), \
+             patch("voronoi.server.tmux.subprocess.run",
                    return_value=MagicMock(returncode=0, stderr=b"")) as mock_run:
             d._launch_in_tmux("test-session", tmp_path, rigor="")
 
@@ -1368,8 +1371,8 @@ class TestLaunchInTmux:
         d, msgs, docs, tmp_path = dispatcher_setup
         (tmp_path / ".swarm").mkdir(parents=True, exist_ok=True)
 
-        with patch("voronoi.server.dispatcher.shutil.which", return_value="/bin/echo"), \
-             patch("voronoi.server.dispatcher.subprocess.run",
+        with patch("voronoi.server.tmux.shutil.which", return_value="/bin/echo"), \
+             patch("voronoi.server.tmux.subprocess.run",
                    return_value=MagicMock(returncode=0, stderr=b"")) as mock_run:
             d._launch_in_tmux("test-session", tmp_path)
 
@@ -2366,8 +2369,8 @@ class TestLaunchInTmuxSessionSafety:
                 call_order.append(args[1])
             return MagicMock(returncode=0, stderr=b"")
 
-        with patch("voronoi.server.dispatcher.shutil.which", return_value="/bin/echo"), \
-             patch("voronoi.server.dispatcher.subprocess.run", side_effect=track_calls):
+        with patch("voronoi.server.tmux.shutil.which", return_value="/bin/echo"), \
+             patch("voronoi.server.tmux.subprocess.run", side_effect=track_calls):
             d._launch_in_tmux("test-session", tmp_path)
 
         # kill-session must come before new-session
@@ -2387,8 +2390,8 @@ class TestLaunchInTmuxSessionSafety:
                 return MagicMock(returncode=1, stderr=b"duplicate session: test-session")
             return MagicMock(returncode=0, stderr=b"")
 
-        with patch("voronoi.server.dispatcher.shutil.which", return_value="/bin/echo"), \
-             patch("voronoi.server.dispatcher.subprocess.run", side_effect=mock_run):
+        with patch("voronoi.server.tmux.shutil.which", return_value="/bin/echo"), \
+             patch("voronoi.server.tmux.subprocess.run", side_effect=mock_run):
             with pytest.raises(RuntimeError, match="Failed to create tmux session"):
                 d._launch_in_tmux("test-session", tmp_path)
 
@@ -5334,7 +5337,7 @@ class TestClaimDeltaSynthesis:
 
 
 class TestLearningStalled:
-    """F2 — 3-strike stall escalation when no findings/claims for N minutes."""
+    """F2 — self-steer stall escalation when no findings/claims for N minutes."""
 
     def _mk_active_run(self, tmp_path):
         run = RunningInvestigation(
@@ -5354,6 +5357,8 @@ class TestLearningStalled:
             1: d.config.stall_strike1_minutes,
             2: d.config.stall_strike2_minutes,
             3: d.config.stall_strike3_minutes,
+            # Strike 4 (auto-park) = strike3 + final grace window.
+            4: d.config.stall_strike3_minutes + d.config.stall_final_grace_minutes,
         }[strike]
         return time.time() - (minutes * 60 + 120)
 
@@ -5426,8 +5431,15 @@ class TestLearningStalled:
         assert signal.exists()
         data = json.loads(signal.read_text())
         assert data["level"] == 1
-        assert data["directive"] == "compact_plan"
+        assert data["directive"] == "diagnose_and_steer"
         assert "instruction" in data and data["instruction"].strip()
+        # Strike 1 must carry a belief-snapshot so the orchestrator can
+        # self-steer with concrete state on its next OODA cycle.
+        assert "diagnosis" in data
+        diag = data["diagnosis"]
+        assert isinstance(diag, dict)
+        assert diag.get("phase") == "investigating"
+        assert diag.get("tasks_in_progress") == 1
 
     def test_strike2_escalates_and_updates_signal(self, dispatcher_setup):
         d, msgs, _, base = dispatcher_setup
@@ -5439,16 +5451,46 @@ class TestLearningStalled:
         assert run.stall_strike_level == 2
         data = json.loads((base / ".swarm" / "stall-signal.json").read_text())
         assert data["level"] == 2
-        assert data["directive"] == "experiments_only"
+        assert data["directive"] == "pivot_or_declare"
         # Both strike-1 and strike-2 notifications should have fired
         assert any("learning stalled" in m.lower() for m in msgs)
         assert any("strike 2" in m.lower() for m in msgs)
 
-    def test_strike3_auto_parks_and_writes_partial_deliverable(
+    def test_strike3_issues_final_steer_without_killing(
         self, dispatcher_setup,
     ):
+        """Strike 3 is the final self-steer, NOT an auto-park.
+
+        The dispatcher must give the orchestrator one more cycle (the
+        ``stall_final_grace_minutes`` window) to emit a negative finding,
+        BLOCKED declaration, or partial deliverable before terminating.
+        """
         d, msgs, _, base = dispatcher_setup
-        # Plug a mock queue so _auto_park_stalled_run can call queue.fail()
+        mock_queue = MagicMock()
+        d._queue = mock_queue
+        run = self._mk_active_run(base)
+        d.running[run.investigation_id] = run
+        run.last_learning_activity_at = self._stale_past_strike(d, 3)
+
+        d._update_learning_activity(run, [])
+
+        assert run.stall_strike_level == 3
+        data = json.loads((base / ".swarm" / "stall-signal.json").read_text())
+        assert data["level"] == 3
+        assert data["directive"] == "final_steer"
+        # No partial deliverable yet — that's the dispatcher's fallback at
+        # strike 4. The orchestrator is expected to write one itself.
+        assert not (base / ".swarm" / "deliverable-partial.md").exists()
+        # Run must still be tracked by the dispatcher.
+        mock_queue.fail.assert_not_called()
+        assert run.investigation_id in d.running
+        # Belief snapshot still attached at strike 3 so the self-steer
+        # prompt has state to reason about.
+        assert "diagnosis" in data and data["diagnosis"].get("phase")
+
+    def test_strike4_auto_parks_after_grace(self, dispatcher_setup):
+        """Strike 4 fires only after strike 3 + grace and IS terminal."""
+        d, msgs, _, base = dispatcher_setup
         mock_queue = MagicMock()
         mock_queue.get.return_value = SimpleNamespace(
             lineage_id=None, cycle_number=1,
@@ -5457,20 +5499,53 @@ class TestLearningStalled:
 
         run = self._mk_active_run(base)
         d.running[run.investigation_id] = run
-        run.last_learning_activity_at = self._stale_past_strike(d, 3)
+        # Past strike 3 + stall_final_grace_minutes.
+        run.last_learning_activity_at = self._stale_past_strike(d, 4)
 
         with patch("subprocess.run"):
             d._update_learning_activity(run, [])
 
-        assert run.stall_strike_level == 3
+        assert run.stall_strike_level == 4
         data = json.loads((base / ".swarm" / "stall-signal.json").read_text())
-        assert data["level"] == 3
+        assert data["level"] == 4
         assert data["directive"] == "auto_park"
         partial = base / ".swarm" / "deliverable-partial.md"
         assert partial.exists()
         assert "auto-parked" in partial.read_text().lower()
         mock_queue.fail.assert_called_once()
-        # Run removed from dispatcher after auto-park
+        # Run removed from dispatcher after auto-park.
+        assert run.investigation_id not in d.running
+
+    def test_strike3_then_grace_escalates_to_strike4(self, dispatcher_setup):
+        """Strike 3 followed by additional silence escalates to auto-park.
+
+        Models the real flow: dispatcher polls, fires strike 3 self-steer,
+        orchestrator still produces nothing, next poll sees elapsed past
+        strike3 + grace and terminates.
+        """
+        d, msgs, _, base = dispatcher_setup
+        mock_queue = MagicMock()
+        mock_queue.get.return_value = SimpleNamespace(
+            lineage_id=None, cycle_number=1,
+        )
+        d._queue = mock_queue
+
+        run = self._mk_active_run(base)
+        d.running[run.investigation_id] = run
+
+        # First poll: firmly past strike 3 but before strike 4.
+        run.last_learning_activity_at = self._stale_past_strike(d, 3)
+        d._update_learning_activity(run, [])
+        assert run.stall_strike_level == 3
+        assert run.investigation_id in d.running
+
+        # Second poll: push the stale clock past strike 3 + grace.
+        run.last_learning_activity_at = self._stale_past_strike(d, 4)
+        with patch("subprocess.run"):
+            d._update_learning_activity(run, [])
+
+        assert run.stall_strike_level == 4
+        mock_queue.fail.assert_called_once()
         assert run.investigation_id not in d.running
 
     def test_recovery_resets_level_and_clears_signal(self, dispatcher_setup):
@@ -5486,6 +5561,160 @@ class TestLearningStalled:
         d._update_learning_activity(run, [{"type": "finding", "msg": "x"}])
         assert run.stall_strike_level == 0
         assert not signal.exists()
+
+    # ── Phase-aware stall budgets + infra-progress credit ──────────────
+
+    def _write_checkpoint(self, base, **fields):
+        """Helper: write a minimal orchestrator-checkpoint.json."""
+        import json as _json
+        cp_path = base / ".swarm" / "orchestrator-checkpoint.json"
+        cp_path.parent.mkdir(parents=True, exist_ok=True)
+        body = {"cycle": 1, "phase": "investigating", "mode": "discover"}
+        body.update(fields)
+        cp_path.write_text(_json.dumps(body))
+
+    def test_task_done_resets_activity_timer(self, dispatcher_setup):
+        """Merging a worker branch (task_done) counts as infra progress.
+
+        This is the regression test for the epistemic-trajectories failure
+        mode: an orchestrator that merges 23 green unit-test tasks in cycle
+        1-2 must not be marked as "zero learning" by the stall escalator.
+        """
+        d, msgs, _, base = dispatcher_setup
+        run = self._mk_active_run(base)
+        before = time.time() - 600  # 10 min stale
+        run.last_learning_activity_at = before
+        d._update_learning_activity(run, [
+            {"type": "task_done", "msg": "✅ Wrapped up: *agent-encoder*"},
+        ])
+        # Timer reset: activity moved forward to ~now
+        assert run.last_learning_activity_at > before + 500
+        # Strike level is unchanged (not escalated, not reset below prior)
+        assert run.stall_strike_level == 0
+
+    def test_task_done_does_not_clear_existing_strike(self, dispatcher_setup):
+        """task_done keeps strike level — only findings/claims fully recover."""
+        d, msgs, _, base = dispatcher_setup
+        run = self._mk_active_run(base)
+        run.stall_strike_level = 2  # already escalated
+        signal = base / ".swarm" / "stall-signal.json"
+        signal.parent.mkdir(parents=True, exist_ok=True)
+        signal.write_text('{"level": 2}')
+        run.last_learning_activity_at = time.time() - 120
+        d._update_learning_activity(run, [
+            {"type": "task_done", "msg": "✅ Wrapped up: *agent-runner*"},
+        ])
+        # Strike level preserved — task merges don't prove learning is back
+        assert run.stall_strike_level == 2
+        # Signal still present
+        assert signal.exists()
+
+    def test_setup_lifecycle_phase_extends_stall_budget(self, dispatcher_setup):
+        """lifecycle_phase='setup' should triple the stall thresholds.
+
+        A run that would hit strike 1 at 30 min under normal thresholds
+        should NOT escalate until ~90 min when the orchestrator has
+        declared itself in setup (infra-build) mode.
+        """
+        d, msgs, _, base = dispatcher_setup
+        run = self._mk_active_run(base)
+        self._write_checkpoint(base, lifecycle_phase="setup")
+        # Stale past the 1× strike 1 threshold but well within 3× budget
+        run.last_learning_activity_at = self._stale_past_strike(d, 1)
+        d._update_learning_activity(run, [])
+        # Setup multiplier prevents escalation at the normal-budget threshold
+        assert run.stall_strike_level == 0
+
+    def test_setup_multiplier_still_fires_when_exceeded(self, dispatcher_setup):
+        """setup grants 3× budget, but 3×strike1 is still enforced."""
+        d, msgs, _, base = dispatcher_setup
+        run = self._mk_active_run(base)
+        self._write_checkpoint(base, lifecycle_phase="setup")
+        # 3× strike1 + a buffer
+        run.last_learning_activity_at = time.time() - (
+            d.config.stall_strike1_minutes * 3 * 60 + 180
+        )
+        d._update_learning_activity(run, [])
+        assert run.stall_strike_level >= 1
+
+    def test_synthesize_lifecycle_phase_tightens_budget(self, dispatcher_setup):
+        """lifecycle_phase='synthesize' halves the stall thresholds."""
+        d, msgs, _, base = dispatcher_setup
+        run = self._mk_active_run(base)
+        self._write_checkpoint(base, lifecycle_phase="synthesize")
+        # Halfway to strike 1 under normal thresholds should fire at 0.5×
+        run.last_learning_activity_at = time.time() - (
+            d.config.stall_strike1_minutes * 60 // 2 + 60
+        )
+        d._update_learning_activity(run, [])
+        assert run.stall_strike_level == 1
+
+    def test_extend_run_grants_budget_and_clears_signal(self, dispatcher_setup):
+        """extend_run() pushes activity timer forward and clears signal."""
+        d, msgs, _, base = dispatcher_setup
+        run = self._mk_active_run(base)
+        run.codename = "serotonin"
+        run.stall_strike_level = 2
+        d.running[run.investigation_id] = run
+        signal = base / ".swarm" / "stall-signal.json"
+        signal.parent.mkdir(parents=True, exist_ok=True)
+        signal.write_text('{"level": 2}')
+
+        result = d.extend_run("serotonin", minutes=45)
+        assert "45" in result
+        assert run.stall_strike_level == 0
+        assert not signal.exists()
+        # Extension uses a dedicated expiry field (not a future activity timestamp)
+        assert run.stall_extension_expires_at > time.time() + 40 * 60
+        # Activity timer is reset to now, not pushed into the future
+        assert abs(run.last_learning_activity_at - time.time()) < 5
+
+    def test_extend_run_rejects_unknown_codename(self, dispatcher_setup):
+        d, _, _, base = dispatcher_setup
+        result = d.extend_run("nonexistent", minutes=60)
+        assert result.startswith("❌")
+
+    def test_extend_run_rejects_nonpositive_minutes(self, dispatcher_setup):
+        d, _, _, base = dispatcher_setup
+        run = self._mk_active_run(base)
+        run.codename = "dopamine"
+        d.running[run.investigation_id] = run
+        result = d.extend_run("dopamine", minutes=0)
+        assert result.startswith("❌")
+
+    def test_strike2_message_mentions_extend_command(self, dispatcher_setup):
+        """The strike-2 notification must prompt the PI with /voronoi extend."""
+        d, msgs, _, base = dispatcher_setup
+        run = self._mk_active_run(base)
+        run.codename = "cortex"
+        run.last_learning_activity_at = self._stale_past_strike(d, 2)
+        d._update_learning_activity(run, [])
+        assert any("/voronoi extend" in m for m in msgs)
+
+    def test_partial_deliverable_includes_next_actions(self, dispatcher_setup):
+        """Auto-park (strike 4) must include the checkpoint's next_actions + workers."""
+        d, _, _, base = dispatcher_setup
+        mock_queue = MagicMock()
+        mock_queue.get.return_value = SimpleNamespace(
+            lineage_id=None, cycle_number=1,
+        )
+        d._queue = mock_queue
+        run = self._mk_active_run(base)
+        d.running[run.investigation_id] = run
+        self._write_checkpoint(
+            base,
+            active_workers=["agent-runner"],
+            next_actions=["Dispatch agent-runner to build run_experiments.py"],
+        )
+        # Past strike 3 + final grace window triggers auto-park at level 4.
+        run.last_learning_activity_at = self._stale_past_strike(d, 4)
+
+        with patch("subprocess.run"):
+            d._update_learning_activity(run, [])
+
+        partial_txt = (base / ".swarm" / "deliverable-partial.md").read_text()
+        assert "agent-runner" in partial_txt
+        assert "run_experiments.py" in partial_txt
 
 
 # ---------------------------------------------------------------------------

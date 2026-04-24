@@ -77,13 +77,17 @@ class DispatcherConfig:
     max_context_restarts: int = 2      # max proactive context refreshes
     park_timeout_hours: int = 4        # force-wake parked orchestrator after this
     learning_stall_minutes: int = 20   # alert if no new findings/claims for this long
-    # Three-strike stall escalation (cumulative minutes without learning).
-    # Strike 1: directive = "compact_plan" (audit open tasks, no new planning)
-    # Strike 2: directive = "experiments_only" (planning tasks forbidden)
-    # Strike 3: directive = "auto_park" (write partial deliverable, kill run)
+    # Self-steer stall escalation (cumulative minutes without learning).
+    # Each strike writes a richer directive + belief-snapshot into
+    # .swarm/stall-signal.json which the next orchestrator prompt injects.
+    # Strike 1: directive = "diagnose_and_steer" (self-steer prompt #1)
+    # Strike 2: directive = "pivot_or_declare" (self-steer prompt #2)
+    # Strike 3: directive = "final_steer" (last self-steer, grace before auto-park)
+    # Strike 4: directive = "auto_park" (terminal, fires after strike3 + grace)
     stall_strike1_minutes: int = 30
     stall_strike2_minutes: int = 60
     stall_strike3_minutes: int = 90
+    stall_final_grace_minutes: int = 20
 
 
 @dataclass
@@ -128,7 +132,8 @@ class RunningInvestigation:
     last_ledger_map: dict[str, str] = field(default_factory=dict)  # claim_id → status for delta detection
     _ledger_baseline_seeded: bool = False  # First poll seeds baseline without emitting deltas
     last_learning_activity_at: float = 0  # Last time a new finding/claim transition was observed
-    stall_strike_level: int = 0  # Three-strike stall escalation: 0/1/2/3 (3 = auto-parked)
+    stall_strike_level: int = 0  # Self-steer escalation: 0/1/2/3/4 (4 = auto-parked)
+    stall_extension_expires_at: float = 0  # /extend grants stall immunity until this timestamp
     # Evidence-gated scaling: belief-map snapshot for detecting moves
     _prior_belief_snapshot: dict[str, str] = field(default_factory=dict)  # hypothesis_id → confidence tier
 
@@ -516,8 +521,11 @@ class InvestigationDispatcher:
 
             self.queue.start(inv.id, ws.path)
 
+        # Resolve rigor once — Investigation.rigor is always a non-empty str
+        # (coerced by _row_to_investigation), no getattr/fallback needed.
+        rigor = inv.rigor
+
         # Patch .swarm-config.json with rigor-mapped effort level
-        rigor = getattr(inv, 'rigor', 'scientific') or 'scientific'
         self._patch_swarm_config(workspace_path, rigor)
 
         # For non-continuation launches, build the prompt now (continuations
@@ -529,7 +537,6 @@ class InvestigationDispatcher:
         prompt_file.write_text(prompt)
 
         tmux_session = f"voronoi-inv-{inv.id}"
-        rigor = getattr(inv, 'rigor', 'scientific') or 'scientific'
         self._launch_in_tmux(tmux_session, workspace_path, rigor=rigor)
 
         self.running[inv.id] = RunningInvestigation(
@@ -540,14 +547,13 @@ class InvestigationDispatcher:
             mode=inv.mode,
             codename=inv.codename,
             chat_id=inv.chat_id,
-            rigor=getattr(inv, 'rigor', 'scientific') or 'scientific',
+            rigor=rigor,
         )
 
         logger.info("Investigation %s (#%d) LIVE in tmux=%s workspace=%s",
                     inv.codename, inv.id, tmux_session, workspace_path)
 
         label = inv.codename or f"#{inv.id}"
-        rigor = getattr(inv, 'rigor', 'scientific') or 'scientific'
         self.send_message(format_launch(
             codename=label,
             mode=inv.mode,
@@ -558,13 +564,13 @@ class InvestigationDispatcher:
     def _build_prompt(self, inv, workspace_path: Path) -> str:
         from voronoi.server.prompt import build_orchestrator_prompt
 
-        rigor = getattr(inv, 'rigor', 'scientific') or 'scientific'
+        rigor = inv.rigor
         label = inv.codename or f"#{inv.id}"
 
         prior_context = None
         if inv.parent_id is not None:
             from voronoi.server.prompt import build_warm_start_context
-            pi_feedback = getattr(inv, 'pi_feedback', '') or ''
+            pi_feedback = inv.pi_feedback or ''
             lineage_id = inv.lineage_id or inv.parent_id
             prior_context = build_warm_start_context(
                 lineage_id=lineage_id,
@@ -1625,21 +1631,10 @@ class InvestigationDispatcher:
                     ),
                 })
                 # Write directive to force orchestrator to act
-                directive_path = run.workspace_path / ".swarm" / "dispatcher-directive.json"
-                directive_path.parent.mkdir(parents=True, exist_ok=True)
-                try:
-                    directive_path.write_text(json.dumps({
-                        "level": "sentinel_violation",
-                        "message": (
-                            "SENTINEL WARNING: No experiment contract found after 1+ hour. "
-                            "Write .swarm/experiment-contract.json before dispatching more workers. "
-                            "See the Experiment Contract section in your prompt for the schema."
-                        ),
-                        "action": "write_contract",
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                    }, indent=2))
-                except OSError:
-                    pass
+                self._write_directive(run, "sentinel_violation",
+                    "SENTINEL WARNING: No experiment contract found after 1+ hour. "
+                    "Write .swarm/experiment-contract.json before dispatching more workers. "
+                    "See the Experiment Contract section in your prompt for the schema.")
             return events
 
         # --- Phase transition detection via checkpoint ---
@@ -1756,25 +1751,13 @@ class InvestigationDispatcher:
 
             # Write a dispatcher directive so the orchestrator is FORCED to act
             # on its next OODA cycle (the orchestrator already obeys directives).
-            directive_path = run.workspace_path / ".swarm" / "dispatcher-directive.json"
-            directive_path.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                directive_path.write_text(json.dumps({
-                    "level": "sentinel_violation",
-                    "message": (
-                        "SENTINEL ALERT: Experiment contract violated. "
-                        "Read .swarm/sentinel-audit.json for details. "
-                        "This IS a DESIGN_INVALID event — do NOT create a separate "
-                        "DESIGN_INVALID task. The sentinel has already flagged it. "
-                        "Do NOT proceed to the next phase or dispatch new workers. "
-                        "Dispatch Methodologist for post-mortem, then create a REVISE task."
-                    ),
-                    "action": "stop_and_fix",
-                    "sentinel_failures": result.critical_failures,
-                    "timestamp": result.timestamp,
-                }, indent=2))
-            except OSError:
-                pass
+            self._write_directive(run, "sentinel_violation",
+                "SENTINEL ALERT: Experiment contract violated. "
+                "Read .swarm/sentinel-audit.json for details. "
+                "This IS a DESIGN_INVALID event — do NOT create a separate "
+                "DESIGN_INVALID task. The sentinel has already flagged it. "
+                "Do NOT proceed to the next phase or dispatch new workers. "
+                "Dispatch Methodologist for post-mortem, then create a REVISE task.")
         else:
             logger.info(
                 "Sentinel audit PASSED for #%d (trigger=%s, %d checks)",
@@ -1826,10 +1809,21 @@ class InvestigationDispatcher:
         old_phase = run.phase
         checkpoint = self._latest_checkpoint(run)
 
+        # Phases explicitly set by the orchestrator that must NOT be
+        # overridden by file-existence heuristics.  These represent
+        # intentional orchestrator states (gate pauses, design phases)
+        # that would be incorrectly clobbered by stale files.
+        _AUTHORITATIVE_PHASES = frozenset({
+            "awaiting-human-gate", "design-review", "experiment-running",
+            "pre-registration", "parked", "dispatching",
+        })
+
+        checkpoint_phase = ""
         if checkpoint:
             phase = checkpoint.get("phase", "")
             if isinstance(phase, str) and phase:
                 run.phase = phase
+                checkpoint_phase = phase
             try:
                 score = float(checkpoint.get("eval_score", 0.0))
                 if 0.0 <= score <= 1.0:
@@ -1864,32 +1858,36 @@ class InvestigationDispatcher:
                     logger.info("Effective rigor for #%d escalated: %s → %s",
                                 run.investigation_id, run.rigor, checkpoint_rigor)
 
-        if (ws / ".swarm" / "deliverable.md").exists():
-            run.phase = "complete"
-        elif (ws / ".swarm" / "convergence.json").exists():
-            run.phase = "converging"
-        elif (ws / ".swarm" / "belief-map.json").exists():
-            run.phase = "synthesizing"
-        elif (ws / ".swarm" / "scout-brief.md").exists() and run.phase == "scouting":
-            run.phase = "planning"
-        elif run.task_snapshot:
-            # Detect science-specific phases
-            titles = [t.get("title", "") for t in run.task_snapshot.values()]
-            has_scout = any("scout" in t.lower() for t in titles)
-            has_review = any(k in " ".join(titles).upper()
-                            for k in ("STAT_REVIEW", "CRITIC_REVIEW", "METHODOLOGIST"))
-
-            in_progress = sum(1 for t in run.task_snapshot.values() if t["status"] == "in_progress")
-            closed = sum(1 for t in run.task_snapshot.values() if t["status"] == "closed")
-
-            if has_scout and closed == 0 and in_progress > 0:
-                run.phase = "scouting"
-            elif has_review and in_progress > 0:
-                run.phase = "reviewing"
-            elif in_progress > 0 or closed > 0:
-                run.phase = "investigating"
-            elif len(run.task_snapshot) > 0:
+        # File-existence heuristics: only apply when the checkpoint did not
+        # report an authoritative phase.  Authoritative phases represent
+        # intentional orchestrator states that stale files must not clobber.
+        if checkpoint_phase not in _AUTHORITATIVE_PHASES:
+            if (ws / ".swarm" / "deliverable.md").exists():
+                run.phase = "complete"
+            elif (ws / ".swarm" / "convergence.json").exists():
+                run.phase = "converging"
+            elif (ws / ".swarm" / "belief-map.json").exists():
+                run.phase = "synthesizing"
+            elif (ws / ".swarm" / "scout-brief.md").exists() and run.phase == "scouting":
                 run.phase = "planning"
+            elif run.task_snapshot:
+                # Detect science-specific phases
+                titles = [t.get("title", "") for t in run.task_snapshot.values()]
+                has_scout = any("scout" in t.lower() for t in titles)
+                has_review = any(k in " ".join(titles).upper()
+                                for k in ("STAT_REVIEW", "CRITIC_REVIEW", "METHODOLOGIST"))
+
+                in_progress = sum(1 for t in run.task_snapshot.values() if t["status"] == "in_progress")
+                closed = sum(1 for t in run.task_snapshot.values() if t["status"] == "closed")
+
+                if has_scout and closed == 0 and in_progress > 0:
+                    run.phase = "scouting"
+                elif has_review and in_progress > 0:
+                    run.phase = "reviewing"
+                elif in_progress > 0 or closed > 0:
+                    run.phase = "investigating"
+                elif len(run.task_snapshot) > 0:
+                    run.phase = "planning"
 
         if run.phase != old_phase:
             phase_msg = phase_description(run.mode, run.phase)
@@ -2176,24 +2174,30 @@ class InvestigationDispatcher:
     def _update_learning_activity(
         self, run: RunningInvestigation, events: list[dict],
     ) -> None:
-        """Track learning progress and escalate stall severity in 3 strikes.
+        """Track learning progress and escalate via self-steer directives.
 
         A new finding or a claim status transition resets the activity timer
         AND the strike level — learning has resumed.  New-provisional claims
         alone do not reset it (a claim that never becomes asserted/locked is
         not learning).
 
-        If the quiet window exceeds ``config.stall_strikeN_minutes``, the
-        run escalates:
+        When the quiet window crosses a strike threshold, the dispatcher
+        injects an escalating **self-steer directive** into the next
+        orchestrator prompt (via ``.swarm/stall-signal.json``). Each strike
+        adds a richer belief-snapshot and a concrete set of alternatives
+        the orchestrator must choose between. Auto-park only fires at a
+        fourth, internal level that requires an additional
+        ``stall_final_grace_minutes`` window of silence past strike 3 —
+        i.e. three explicit self-steer prompts had no effect.
 
-          * Strike 1 (``stall_strike1_minutes``): write
-            ``.swarm/stall-signal.json`` with directive ``compact_plan`` —
-            orchestrator must audit open tasks and dispatch no new planning
-            tasks this cycle. Fire Telegram notification.
+          * Strike 1 (``stall_strike1_minutes``): directive
+            ``diagnose_and_steer``. Telegram: LEARNING_STALLED.
           * Strike 2 (``stall_strike2_minutes``): directive
-            ``experiments_only`` — planning tasks forbidden. Fire Telegram.
-          * Strike 3 (``stall_strike3_minutes``): directive ``auto_park`` —
-            write a partial deliverable, fail the run, fire Telegram.
+            ``pivot_or_declare``. Telegram: strike-2 with extend hint.
+          * Strike 3 (``stall_strike3_minutes``): directive
+            ``final_steer`` — final self-steer; run NOT killed yet.
+          * Strike 4 (``stall_strike3_minutes + stall_final_grace_minutes``):
+            directive ``auto_park`` — write partial deliverable, kill run.
 
         Each strike fires at most once per escalation sequence. Recovery
         (a real finding / claim transition) drops the level back to 0, so
@@ -2208,6 +2212,7 @@ class InvestigationDispatcher:
             e.get("type") == "claim_delta" and e.get("kind") == "transition"
             for e in events
         )
+        has_task_done = any(e.get("type") == "task_done" for e in events)
         if has_finding or has_claim_transition:
             run.last_learning_activity_at = now
             if run.stall_strike_level > 0:
@@ -2217,18 +2222,51 @@ class InvestigationDispatcher:
             self._update_epoch_on_learning(run, events)
             return
 
+        # Infra-progress credit: a task_done event (worker branch merged /
+        # task closed) is productive work — reset the activity timer so the
+        # stall clock restarts, but keep ``stall_strike_level`` intact so a
+        # run that's been escalated still needs real learning to fully
+        # recover. This prevents auto-park during hours-long build-out work
+        # (encoder + evaluator + runner merges) where findings legitimately
+        # cannot exist yet. See docs/SERVER.md §3.
+        if has_task_done:
+            run.last_learning_activity_at = now
+            return
+
         # Do not cry stall before the orchestrator has produced anything at all
         if run.phase in ("starting", "scouting", "planning") and not run.task_snapshot:
             return
 
+        # Honour explicit stall extension from /voronoi extend command.
+        # The extension grants full immunity; findings during the extension
+        # period do NOT consume the budget (unlike the old future-timestamp
+        # hack).
+        if run.stall_extension_expires_at and now < run.stall_extension_expires_at:
+            return
+
         elapsed_min = (now - run.last_learning_activity_at) / 60
 
+        # Phase-aware stall budgets: scale thresholds by a multiplier derived
+        # from the orchestrator-declared ``lifecycle_phase`` in the checkpoint.
+        multiplier = self._stall_phase_multiplier(run)
+        strike1 = self.config.stall_strike1_minutes * multiplier
+        strike2 = self.config.stall_strike2_minutes * multiplier
+        strike3 = self.config.stall_strike3_minutes * multiplier
+        # Strike 4 (auto-park) fires only after an additional grace window
+        # past strike 3 — i.e. the orchestrator has had the final self-steer
+        # prompt and still produced no learning. Grace is NOT scaled by the
+        # phase multiplier: once in final-steer, every phase gets the same
+        # bounded tail before termination.
+        strike4 = strike3 + self.config.stall_final_grace_minutes
+
         # Determine the highest strike level the elapsed time now warrants.
-        if elapsed_min >= self.config.stall_strike3_minutes:
+        if elapsed_min >= strike4:
+            target_level = 4
+        elif elapsed_min >= strike3:
             target_level = 3
-        elif elapsed_min >= self.config.stall_strike2_minutes:
+        elif elapsed_min >= strike2:
             target_level = 2
-        elif elapsed_min >= self.config.stall_strike1_minutes:
+        elif elapsed_min >= strike1:
             target_level = 1
         else:
             target_level = 0
@@ -2238,48 +2276,156 @@ class InvestigationDispatcher:
         while run.stall_strike_level < target_level:
             run.stall_strike_level += 1
             self._fire_stall_strike(run, run.stall_strike_level, elapsed_min)
-            if run.stall_strike_level >= 3:
+            if run.stall_strike_level >= 4:
                 # Auto-park is terminal; do not escalate further.
                 break
 
+    # Phase-aware stall multipliers — applied to stall_strikeN_minutes at
+    # comparison time in ``_update_learning_activity``. Mirrors the table in
+    # docs/SERVER.md §3.
+    _STALL_PHASE_MULTIPLIERS = {
+        "setup": 3.0,
+        "explore": 1.0,
+        "test": 1.0,
+        "synthesize": 0.5,
+    }
+
+    def _stall_phase_multiplier(self, run: RunningInvestigation) -> float:
+        """Return the stall-threshold multiplier for the current lifecycle phase.
+
+        Reads ``OrchestratorCheckpoint.lifecycle_phase`` from the workspace
+        when set; otherwise infers a 2× grace for pre-task phases (starting,
+        scouting, planning) and 1× for everything else.
+        """
+        try:
+            from voronoi.science.convergence import load_checkpoint
+            cp = load_checkpoint(run.workspace_path)
+        except Exception:
+            cp = None
+        declared = (cp.lifecycle_phase or "").strip().lower() if cp else ""
+        if declared in self._STALL_PHASE_MULTIPLIERS:
+            return self._STALL_PHASE_MULTIPLIERS[declared]
+        # Inferred fallback: coarse ``phase`` hints at pre-task state.
+        if run.phase in ("starting", "scouting", "planning"):
+            return 2.0
+        return 1.0
+
     _STALL_STRIKE_DIRECTIVE = {
         1: {
-            "directive": "compact_plan",
+            "directive": "diagnose_and_steer",
             "instruction": (
-                "Next OODA cycle: audit every open task against an open "
-                "hypothesis. Do NOT dispatch new planning tasks this cycle — "
-                "close or justify what is already in the queue first."
+                "Learning stall detected — no finding or claim transition "
+                "for the strike-1 window. This is your first self-steer "
+                "prompt. Review the belief snapshot below, then on THIS "
+                "OODA cycle pick exactly ONE action:\n"
+                "  (a) Split the hardest open task into smaller, independently "
+                "verifiable sub-tasks and dispatch them.\n"
+                "  (b) Mark the task currently blocking progress as BLOCKED "
+                "on its beads entry, then switch focus to an alternative "
+                "hypothesis from your belief map.\n"
+                "  (c) Declare a negative / null finding — evidence that the "
+                "current path is NOT productive IS learning and resets this "
+                "counter.\n"
+                "Do NOT dispatch new planning tasks this cycle."
             ),
         },
         2: {
-            "directive": "experiments_only",
+            "directive": "pivot_or_declare",
             "instruction": (
-                "Planning tasks are FORBIDDEN until the stall clears. "
-                "Dispatch only experiment, replication, or synthesis tasks. "
-                "If no such task is actionable, write a partial deliverable "
-                "and converge with current evidence."
+                "Previous self-steer did not produce a finding or claim "
+                "transition. You must act decisively THIS cycle:\n"
+                "  (a) Pivot — pick an alternative hypothesis from your "
+                "belief map and dispatch an experiment task for it, OR\n"
+                "  (b) Declare partial findings with whatever evidence "
+                "currently exists on the ledger.\n"
+                "Planning tasks remain forbidden. Indecision on this cycle "
+                "escalates to the final self-steer directive."
             ),
         },
         3: {
+            "directive": "final_steer",
+            "instruction": (
+                "FINAL self-steer. Two prior directives produced no learning. "
+                "Emit AT MINIMUM one of the following on this cycle — any of "
+                "these counts as learning and resets the escalator:\n"
+                "  • A negative finding (evidence a path does not work).\n"
+                "  • A claim status transition to BLOCKED or REFUTED on the "
+                "ledger.\n"
+                "  • A partial deliverable written to "
+                "`.swarm/deliverable-partial.md` summarising what IS known.\n"
+                "If no learning event is observed within the grace window "
+                "that follows, the dispatcher will auto-park the run."
+            ),
+        },
+        4: {
             "directive": "auto_park",
             "instruction": (
-                "Auto-parked by dispatcher: 0 findings in the strike-3 window. "
-                "Run is terminated. See .swarm/deliverable-partial.md."
+                "Auto-parked by dispatcher after strike 3 + grace window: "
+                "zero learning despite three self-steer directives. Run is "
+                "terminated. See .swarm/deliverable-partial.md."
             ),
         },
     }
 
+    def _build_stall_diagnosis(
+        self, run: RunningInvestigation, elapsed_min: float,
+    ) -> dict:
+        """Assemble the belief-snapshot injected into every strike signal.
+
+        Mirrors what ``_write_partial_deliverable`` captures at terminal
+        auto-park, but cheap enough to emit on every strike so the
+        orchestrator always has concrete state to reason about when it
+        reads the stall directive in its next prompt.
+        """
+        snapshot: dict = {
+            "elapsed_minutes": round(elapsed_min, 1),
+            "phase": run.phase,
+        }
+        try:
+            from voronoi.science.convergence import load_checkpoint
+            cp = load_checkpoint(run.workspace_path)
+        except Exception:
+            cp = None
+        if cp is not None:
+            if cp.lifecycle_phase:
+                snapshot["lifecycle_phase"] = cp.lifecycle_phase
+            if cp.active_workers:
+                snapshot["active_workers"] = list(cp.active_workers)
+            if cp.next_actions:
+                # Cap to the first few so the prompt stays compact.
+                snapshot["next_actions"] = list(cp.next_actions)[:5]
+        # Open-task count (coarse but informative): count in-progress
+        # and open tasks from the last task snapshot the dispatcher saw.
+        if run.task_snapshot:
+            open_count = 0
+            in_progress_count = 0
+            for t in run.task_snapshot.values():
+                status = (t or {}).get("status", "")
+                if status == "in_progress":
+                    in_progress_count += 1
+                elif status in ("open", "ready", "blocked"):
+                    open_count += 1
+            snapshot["tasks_in_progress"] = in_progress_count
+            snapshot["tasks_open"] = open_count
+        return snapshot
+
     def _fire_stall_strike(
         self, run: RunningInvestigation, level: int, elapsed_min: float,
     ) -> None:
-        """Write stall-signal.json, notify, and (at level 3) auto-park."""
+        """Write stall-signal.json, notify, and (at level 4) auto-park.
+
+        Levels 1–3 are self-steer directives: they inject a belief snapshot
+        + concrete alternatives into the next orchestrator prompt. The run
+        keeps going. Only level 4 — strike 3 threshold plus the final grace
+        window — actually terminates the run.
+        """
         spec = self._STALL_STRIKE_DIRECTIVE.get(level)
         if spec is None:
             return
         signal_path = run.workspace_path / ".swarm" / "stall-signal.json"
         try:
             signal_path.parent.mkdir(parents=True, exist_ok=True)
-            signal_path.write_text(json.dumps({
+            payload = {
                 "level": level,
                 "directive": spec["directive"],
                 "instruction": spec["instruction"],
@@ -2287,7 +2433,15 @@ class InvestigationDispatcher:
                 "timestamp": datetime.now(timezone.utc).isoformat(
                     timespec="seconds",
                 ),
-            }, indent=2))
+            }
+            # Belief snapshot: only meaningful for self-steer levels (1–3).
+            # At level 4 the run is terminating; the partial deliverable
+            # captures final state instead.
+            if level < 4:
+                payload["diagnosis"] = self._build_stall_diagnosis(
+                    run, elapsed_min,
+                )
+            signal_path.write_text(json.dumps(payload, indent=2))
         except OSError as e:
             logger.warning("Failed to write stall-signal.json for %s: %s",
                            run.label, e)
@@ -2298,14 +2452,29 @@ class InvestigationDispatcher:
         elif level == 2:
             self.send_message(
                 f"🪫🪫 *{run.label}* — stall escalated (strike 2, "
-                f"~{int(round(elapsed_min))}min). Planning tasks are now "
-                f"forbidden — experiments only until stall clears."
+                f"~{int(round(elapsed_min))}min). Self-steer directive: "
+                f"pivot to an alternative hypothesis or declare partial "
+                f"findings this cycle.\n\n"
+                f"Reply `/voronoi extend {run.label} 60` to grant +60 "
+                f"minutes before the final self-steer escalates."
             )
         elif level == 3:
+            grace = self.config.stall_final_grace_minutes
             self.send_message(
-                f"🪫🪫🪫 *{run.label}* — NO_LEARNING auto-parked after "
-                f"~{int(round(elapsed_min))}min with zero findings. "
-                f"Writing partial deliverable and terminating run."
+                f"🪫🪫🪫 *{run.label}* — final self-steer directive "
+                f"(strike 3, ~{int(round(elapsed_min))}min). "
+                f"Orchestrator must emit a negative finding, a BLOCKED "
+                f"declaration, or a partial deliverable this cycle. "
+                f"Auto-park in ~{grace}min if no learning.\n\n"
+                f"Reply `/voronoi extend {run.label} 60` to grant more "
+                f"time."
+            )
+        elif level == 4:
+            self.send_message(
+                f"🪫🪫🪫🪫 *{run.label}* — NO_LEARNING auto-parked after "
+                f"~{int(round(elapsed_min))}min with zero findings despite "
+                f"three self-steer directives. Writing partial deliverable "
+                f"and terminating run."
             )
             try:
                 self._write_partial_deliverable(run, elapsed_min)
@@ -2440,7 +2609,70 @@ class InvestigationDispatcher:
             except (OSError, json.JSONDecodeError):
                 pass
 
+        # Orchestrator checkpoint — what was the agent about to do?
+        # This turns "the log is 391 lines, go dig" into a one-glance answer.
+        try:
+            from voronoi.science.convergence import load_checkpoint
+            cp = load_checkpoint(run.workspace_path)
+        except Exception:
+            cp = None
+        if cp is not None and (cp.active_workers or cp.next_actions):
+            lines.append("\n## Where The Run Was Headed\n")
+            if cp.active_workers:
+                lines.append(
+                    "\n**Active workers at park time:** "
+                    f"{', '.join(cp.active_workers)}\n"
+                )
+            if cp.next_actions:
+                lines.append("\n**Planned next actions:**\n")
+                for a in cp.next_actions:
+                    lines.append(f"- {a}\n")
+
         path.write_text("".join(lines))
+
+    def extend_run(
+        self, identifier: str, minutes: int = 60,
+    ) -> str:
+        """Human-in-the-loop stall extension.
+
+        Pushes ``last_learning_activity_at`` forward by ``minutes`` minutes,
+        drops ``stall_strike_level`` back to 0, and clears
+        ``.swarm/stall-signal.json`` so the next prompt build contains no
+        stall directive. Invoked by ``handle_extend`` in response to
+        ``/voronoi extend <codename> [minutes]`` — the strike-2 notification
+        prompts the PI with this exact command. See docs/SERVER.md §3.
+        """
+        if minutes <= 0:
+            return "❌ `minutes` must be positive."
+        # Resolve the target run: match by codename (case-insensitive) or id.
+        needle = identifier.strip().lower()
+        target: Optional[RunningInvestigation] = None
+        for run in self.running.values():
+            if (run.codename or "").lower() == needle:
+                target = run
+                break
+            if f"#{run.investigation_id}" == needle or str(run.investigation_id) == needle:
+                target = run
+                break
+        if target is None:
+            return f"❌ No running investigation matches *{identifier}*."
+        # Grant the extension: set explicit immunity expiry, reset strikes,
+        # clear signal.  The activity timer is NOT pushed into the future —
+        # that would be silently consumed by the next finding event.
+        target.stall_extension_expires_at = time.time() + minutes * 60
+        target.last_learning_activity_at = time.time()
+        prior_level = target.stall_strike_level
+        target.stall_strike_level = 0
+        self._clear_stall_signal(target)
+        logger.info(
+            "Investigation #%d (%s): extended by %d min (strike level was %d)",
+            target.investigation_id, target.label, minutes, prior_level,
+        )
+        return (
+            f"⏱ *{target.label}* — granted +{minutes} min stall budget. "
+            f"Strike level reset (was {prior_level}). Agent will see a "
+            f"clean prompt on the next build."
+        )
 
     def _auto_park_stalled_run(
         self, run: RunningInvestigation, elapsed_min: float,
@@ -2779,7 +3011,12 @@ class InvestigationDispatcher:
         # build-mode investigations complete immediately.
         is_science = run.mode in ("discover", "prove")
         if is_science:
-            self._transition_to_review(run)
+            if not self._transition_to_review(run):
+                # Review transition failed — fall back to complete so the
+                # investigation doesn't stay as a zombie "running" row.
+                logger.warning("Review transition failed for %s — falling back to complete",
+                               run.label)
+                self.queue.complete(run.investigation_id)
         else:
             self.queue.complete(run.investigation_id)
 
@@ -4170,15 +4407,18 @@ class InvestigationDispatcher:
         except Exception as e:
             logger.warning("Failed to write run manifest for %s: %s", run.label, e)
 
-    def _transition_to_review(self, run: RunningInvestigation) -> None:
+    def _transition_to_review(self, run: RunningInvestigation) -> bool:
         """Transition a completed science investigation to review status.
 
         Generates self-critique, continuation proposals, syncs final findings
         to ledger, and sends the review message to Telegram.
+
+        Returns True if the transition succeeded, False if it failed
+        (caller should fall back to queue.complete()).
         """
         inv = self.queue.get(run.investigation_id)
         if inv is None:
-            return
+            return False
 
         # Final sync of all findings
         self._sync_findings_to_ledger(run)
@@ -4221,7 +4461,7 @@ class InvestigationDispatcher:
             if not self.queue.review(run.investigation_id):
                 logger.warning("Review transition failed for #%d — status may have changed",
                                run.investigation_id)
-                return
+                return False
 
             # Build review message with claims
             review_text = self._build_review_message(run, ledger)
@@ -4230,11 +4470,12 @@ class InvestigationDispatcher:
             if not self.queue.review(run.investigation_id):
                 logger.warning("Review transition failed for #%d — status may have changed",
                                run.investigation_id)
-                return
+                return False
             self.send_message(
                 f"🔬 *{run.label}* converged — ready for review.\n"
                 f"Reply with feedback or send `/voronoi continue {run.label}` to iterate."
             )
+        return True
 
     def _build_review_message(self, run: RunningInvestigation,
                               ledger) -> str:

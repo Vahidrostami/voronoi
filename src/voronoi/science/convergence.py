@@ -434,6 +434,11 @@ class OrchestratorCheckpoint:
     phase: str = "starting"
     mode: str = "discover"
     rigor: str = "adaptive"
+    # Orchestrator-declared work mode for phase-aware stall budgets.
+    # "" (empty) = inferred from ``phase``; "setup" | "explore" | "test" |
+    # "synthesize" when the orchestrator knows better than the coarse phase.
+    # Consumed by dispatcher._stall_phase_multiplier(). See docs/SERVER.md §3.
+    lifecycle_phase: str = ""
     hypotheses_summary: str = ""
     total_tasks: int = 0
     closed_tasks: int = 0
@@ -467,6 +472,7 @@ def load_checkpoint(workspace: Path) -> OrchestratorCheckpoint:
         return OrchestratorCheckpoint(
             cycle=d.get("cycle", 0), phase=d.get("phase", "starting"),
             mode=d.get("mode", "discover"), rigor=d.get("rigor", "adaptive"),
+            lifecycle_phase=d.get("lifecycle_phase", ""),
             hypotheses_summary=d.get("hypotheses_summary", ""),
             total_tasks=d.get("total_tasks", 0), closed_tasks=d.get("closed_tasks", 0),
             active_workers=d.get("active_workers", []),

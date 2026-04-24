@@ -973,6 +973,37 @@ class TestStallDirectiveInjection:
         )
         assert "STALL DIRECTIVE" not in prompt
 
+    def test_diagnosis_block_rendered_when_present(self, tmp_path):
+        """Strike 1-3 carry a belief-snapshot; prompt must render it so the
+        orchestrator can self-steer with concrete state."""
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "stall-signal.json").write_text(json.dumps({
+            "level": 1,
+            "directive": "diagnose_and_steer",
+            "instruction": "Self-steer now.",
+            "elapsed_minutes": 32.0,
+            "diagnosis": {
+                "phase": "investigating",
+                "lifecycle_phase": "explore",
+                "tasks_in_progress": 2,
+                "tasks_open": 5,
+                "active_workers": ["agent-encoder", "agent-evaluator"],
+                "next_actions": ["Verify encoder", "Run baseline"],
+            },
+        }))
+        prompt = build_orchestrator_prompt(
+            question="x",
+            mode="discover",
+            rigor="adaptive",
+            workspace_path=str(tmp_path),
+        )
+        assert "Belief snapshot" in prompt
+        assert "lifecycle_phase: explore" in prompt
+        assert "tasks_in_progress: 2" in prompt
+        assert "agent-encoder" in prompt
+        assert "Verify encoder" in prompt
+
 
 class TestEvidenceGatedScaling:
     """Tests for evidence-gated scaling prompt sections."""

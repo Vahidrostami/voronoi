@@ -53,6 +53,7 @@ from voronoi.gateway.handlers_mutate import (  # noqa: F401
     handle_abort,
     handle_pivot,
     handle_guide,
+    handle_extend,
 )
 from voronoi.gateway.handlers_workflow import (  # noqa: F401
     handle_discover,
@@ -73,7 +74,7 @@ __all__ = [
     "handle_complete_investigation",
     "handle_review_investigation", "handle_continue_investigation", "handle_claims",
     "handle_dead_ends",
-    "handle_abort", "handle_pivot", "handle_guide",
+    "handle_abort", "handle_pivot", "handle_guide", "handle_extend",
     "handle_discover", "handle_prove", "handle_paper",
     "handle_recall", "handle_belief", "handle_finding", "handle_ops",
     "handle_results", "handle_demo", "handle_details",
@@ -155,7 +156,8 @@ _HELP_MESSAGE = (
     "*Review*\n"
     "`/voronoi deliberate [codename]` — reason about results interactively\n\n"
     "*Steer*\n"
-    "`/voronoi guide <msg>` · `pivot <msg>` · `abort`\n\n"
+    "`/voronoi guide <msg>` · `pivot <msg>` · `abort`\n"
+    "`/voronoi extend <codename> [minutes]` — grant +N min before auto-park\n\n"
     "*Ops*\n"
     "`/voronoi ops` — server diagnostics (tmux, disk, logs)\n\n"
     "_In groups, @mention me or reply to my messages._"
@@ -289,6 +291,11 @@ class CommandRouter:
                 return handle_pivot(self.project_dir, " ".join(args)), None
             elif sub == "guide" and args:
                 return handle_guide(self.project_dir, " ".join(args)), None
+            elif sub == "extend" and args:
+                minutes_arg = args[1] if len(args) > 1 else ""
+                return handle_extend(
+                    self.project_dir, args[0], minutes_arg,
+                ), None
             elif sub == "review":
                 arg = args[0] if args else ""
                 return handle_review_investigation(self.project_dir, arg), None

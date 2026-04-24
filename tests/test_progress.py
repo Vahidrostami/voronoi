@@ -338,6 +338,34 @@ class TestBuildDigest:
         assert "✗" in msg
         assert msg_type == MSG_TYPE_MILESTONE
 
+    def test_digest_suppresses_reassurance_when_stall_signal_present(
+        self, tmp_path,
+    ):
+        """Stall signal must override 'nothing to worry about' reassurance.
+
+        Regression test: previously the digest told the PI "Still setting up
+        — nothing to worry about yet." minutes before the stall escalator
+        auto-parked the run. Digest and escalator must now agree.
+        """
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "stall-signal.json").write_text(
+            '{"level": 2, "directive": "experiments_only", '
+            '"instruction": "Planning forbidden", '
+            '"elapsed_minutes": 65.0, "timestamp": "2026-04-24T00:00:00Z"}'
+        )
+        msg, _ = build_digest(
+            codename="Serotonin",
+            mode="discover",
+            phase="planning",  # is_early → would normally say "nothing to worry about"
+            elapsed_sec=65 * 60,
+            task_snapshot={"t1": {"status": "open", "notes": ""}},
+            workspace=tmp_path,
+            events_since_last=[],
+        )
+        assert "nothing to worry about" not in msg.lower()
+        assert "strike 2" in msg.lower() or "🪫🪫" in msg
+        assert "/voronoi extend" in msg
+
 
 class TestBuildDigestWhatsup:
     def test_nothing_running(self):

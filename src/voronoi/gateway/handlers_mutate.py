@@ -309,6 +309,40 @@ def handle_guide(project_dir: str, message: str) -> str:
     return f"📝 *Guidance noted* ({dest})\n\n_{message}_"
 
 
+def handle_extend(
+    project_dir: str, identifier: str, minutes_str: str = "",
+) -> str:
+    """Grant additional stall budget to a running investigation.
+
+    Wired to ``/voronoi extend <codename> [minutes]`` — the strike-2
+    Telegram notification prompts the PI with this exact command.
+    Defaults to 60 minutes when ``minutes_str`` is empty. See SERVER.md §3.
+    """
+    identifier = (identifier or "").strip()
+    if not identifier:
+        return (
+            "Usage: `/voronoi extend <codename> [minutes]`\n\n"
+            "Example: `/voronoi extend Serotonin 60` — grants 60 extra "
+            "minutes before auto-park and clears the stall directive."
+        )
+    minutes = 60
+    if minutes_str:
+        try:
+            minutes = int(minutes_str)
+        except ValueError:
+            return f"❌ `{minutes_str}` is not a valid integer number of minutes."
+    if minutes <= 0 or minutes > 6 * 60:
+        return "❌ `minutes` must be between 1 and 360."
+    from voronoi.server.dispatcher import _active_dispatcher
+    dispatcher = _active_dispatcher()
+    if dispatcher is None:
+        return (
+            "❌ No active dispatcher — extend is only meaningful while a "
+            "run is in progress. Is `voronoi server start` running?"
+        )
+    return dispatcher.extend_run(identifier, minutes)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

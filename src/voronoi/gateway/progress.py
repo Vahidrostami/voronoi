@@ -511,8 +511,13 @@ def _build_narrative_paragraph(
         if remaining > 0:
             parts.append(f"{in_progress} {'agent' if in_progress == 1 else 'agents'} still working; {remaining} tasks to go.")
 
-    # Add "so what?" calibration — tell the user if things are normal
-    if is_early and total > 0:
+    # Add "so what?" calibration — tell the user if things are normal.
+    # Stall-signal overrides the default "nothing to worry about" voice so
+    # the digest cannot contradict the stall escalator (strike ≥ 1).
+    stall_warning = _stall_signal_warning(workspace)
+    if stall_warning:
+        parts.append(stall_warning)
+    elif is_early and total > 0:
         parts.append("Still setting up — nothing to worry about yet.")
     elif phase == "investigating" and closed == 0 and total > 0:
         parts.append("Experiments haven't reported back yet — normal at this stage.")
@@ -540,6 +545,49 @@ def _epoch_display(workspace: Path) -> str:
         return compute_learning_rate_display(epoch)
     except Exception:
         return ""
+
+
+def _stall_signal_warning(workspace: Path) -> str:
+    """Read `.swarm/stall-signal.json` and return a strike-aware warning.
+
+    The digest voice and the dispatcher's stall escalator must agree. When
+    a stall signal is active we replace the default "nothing to worry about"
+    reassurance with a warning whose urgency tracks the strike level. See
+    docs/SERVER.md §3.
+    """
+    try:
+        path = workspace / ".swarm" / "stall-signal.json"
+        if not path.exists():
+            return ""
+        data = json.loads(path.read_text())
+        level = int(data.get("level", 0))
+        elapsed = float(data.get("elapsed_minutes", 0))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return ""
+    elapsed_int = int(round(elapsed))
+    if level >= 4:
+        return (
+            f"🪫🪫🪫🪫 Auto-parked after ~{elapsed_int}min with no findings "
+            "— see .swarm/deliverable-partial.md."
+        )
+    if level == 3:
+        return (
+            f"🪫🪫🪫 Stall strike 3 at ~{elapsed_int}min — final self-steer "
+            "directive issued. Reply `/voronoi extend` to grant more time "
+            "before auto-park."
+        )
+    if level == 2:
+        return (
+            f"🪫🪫 Stall strike 2 at ~{elapsed_int}min — pivot-or-declare "
+            "directive issued. Reply `/voronoi extend` to grant more time "
+            "before the final self-steer."
+        )
+    if level == 1:
+        return (
+            f"🪫 Stall warning at ~{elapsed_int}min — no findings yet. "
+            "Diagnose-and-steer directive issued."
+        )
+    return ""
 
 
 def build_digest(

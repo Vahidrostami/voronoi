@@ -260,6 +260,7 @@ from voronoi.science import OrchestratorCheckpoint, save_checkpoint
 from pathlib import Path
 cp = OrchestratorCheckpoint(
     cycle=N, phase='...', mode='...', rigor='...',
+    lifecycle_phase='setup',   # See "Lifecycle Phase Declaration" below
     hypotheses_summary='H1:confirmed, H2:testing',
     total_tasks=50, closed_tasks=25,
     active_workers=['agent-X', 'agent-Y'],
@@ -272,6 +273,23 @@ cp = OrchestratorCheckpoint(
 save_checkpoint(Path('.'), cp)
 "
 ```
+
+### Lifecycle Phase Declaration — MANDATORY
+
+Set `lifecycle_phase` in every checkpoint write. The dispatcher's stall
+escalator uses it to size budgets for the kind of work you're actually
+doing (see docs/SERVER.md §3):
+
+| Value | When to use | Stall-budget multiplier |
+|-------|-------------|:----------------------:|
+| `"setup"` | Building infra the real experiments depend on (encoders, evaluators, harnesses, run scripts) — no findings possible yet | **3×** |
+| `"explore"` | Running hypothesis-generating experiments, wide sweeps, pilot runs | 1× |
+| `"test"` | Confirmatory experiments, replication, targeted probes | 1× |
+| `"synthesize"` | Wrap-up, cross-experiment integration, paper assembly — findings should already exist | 0.5× |
+
+**Be honest.** Declaring `"setup"` to dodge stall pressure while actually
+running experiments will mask real stalls. Declaring `"test"` while
+building infra will get you auto-parked. Recompute the label each cycle.
 
 ### Context Budget Per Cycle
 | Action | Tokens |

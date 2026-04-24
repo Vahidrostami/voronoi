@@ -200,9 +200,10 @@ class DispatcherConfig:
     max_retries: int         # 2 — retry failed launches
     stall_minutes: int       # 45 — minutes without progress before warning
     learning_stall_minutes: int   # 20 — legacy knob, retained for digest context
-    stall_strike1_minutes: int    # 30 — strike 1: compact_plan directive
-    stall_strike2_minutes: int    # 60 — strike 2: experiments_only directive
-    stall_strike3_minutes: int    # 90 — strike 3: auto-park + partial deliverable
+    stall_strike1_minutes: int    # 30 — strike 1: diagnose_and_steer directive
+    stall_strike2_minutes: int    # 60 — strike 2: pivot_or_declare directive
+    stall_strike3_minutes: int    # 90 — strike 3: final_steer directive (no kill yet)
+    stall_final_grace_minutes: int # 20 — extra quiet window past strike 3 before auto-park
     pause_timeout_hours: int # 24 — auto-fail paused investigations after this
     context_advisory_hours: int   # 6 — "prioritize convergence" directive
     context_warning_hours: int    # 10 — "delegate remaining work" + force compact
@@ -216,15 +217,31 @@ class DispatcherConfig:
 Beyond the worker-emitted event stream, the dispatcher synthesizes two classes of events on every poll:
 
 1. **Claim deltas** (`_synthesize_claim_deltas`) — diffs the persistent claim ledger at `~/.voronoi/ledgers/<lineage_id>/claim-ledger.json` against the last-seen state stored on `RunningInvestigation.last_ledger_map`. Emits synthetic `{"type": "claim_delta", "kind": "new"|"transition", "claim_id", "from_status", "to_status", "statement"}` events. The first call after dispatcher start seeds the baseline without emitting events (`_ledger_baseline_seeded`), so restarts do not re-announce the full ledger. Consumed by `build_digest` — see GATEWAY.md §8.
-2. **Learning-stall escalation** (`_update_learning_activity`) — resets `RunningInvestigation.last_learning_activity_at` AND `stall_strike_level` on any `finding` event or any `claim_delta` with `kind="transition"`. New-provisional claims alone do NOT count as learning. When the quiet window crosses a strike threshold, the dispatcher escalates in three levels (fires each level at most once per sequence — recovery drops the level back to 0 so a later stall can escalate again from scratch):
+2. **Learning-stall escalation** (`_update_learning_activity`) — resets `RunningInvestigation.last_learning_activity_at` AND `stall_strike_level` on any `finding` event or any `claim_delta` with `kind="transition"`. New-provisional claims alone do NOT count as learning. A `task_done` event resets only the activity timer (not the strike level) so productive merges of infra worker-branches give the orchestrator budget headroom without declaring the stall "solved." Stall escalation is a **self-steer feedback loop**, not a death spiral: each strike injects a richer diagnostic directive (plus a belief-snapshot drawn from the orchestrator checkpoint) back into the next orchestrator prompt. Auto-park only fires at a fourth, internal level that requires an additional grace window of silence past strike 3 — i.e. the orchestrator has had three explicit self-steer prompts and still produced no learning.
 
    | Strike | Threshold | Directive | Side effects |
    |:-:|---|---|---|
-   | 1 | `stall_strike1_minutes` (default 30) | `compact_plan` — audit open tasks against open hypotheses, no new planning this cycle | Writes `.swarm/stall-signal.json`; fires `format_learning_stalled(...)` Telegram notification |
-   | 2 | `stall_strike2_minutes` (default 60) | `experiments_only` — planning tasks forbidden; dispatch only experiment / replication / synthesis | Overwrites `.swarm/stall-signal.json`; fires strike-2 Telegram notification |
-   | 3 | `stall_strike3_minutes` (default 90) | `auto_park` — terminal | Overwrites `.swarm/stall-signal.json`; writes `.swarm/deliverable-partial.md`; kills tmux; calls `queue.fail(...)` with an "Auto-parked: no learning for ~N minutes" reason; fires strike-3 Telegram notification |
+   | 1 | `stall_strike1_minutes` (default 30) × phase multiplier | `diagnose_and_steer` — stall observed; orchestrator receives a belief snapshot (lifecycle phase, active workers, next actions, open-task count) and must pick ONE action next cycle: (a) split the hardest open task into smaller verifiable sub-tasks, (b) mark the stuck task BLOCKED and switch focus to an alternative hypothesis, or (c) declare a negative / null finding (evidence that a path does not work IS learning). No new planning tasks. | Writes `.swarm/stall-signal.json` with `diagnosis` block; fires `format_learning_stalled(...)` Telegram notification |
+   | 2 | `stall_strike2_minutes` (default 60) × phase multiplier | `pivot_or_declare` — previous self-steer did not yield learning. Orchestrator must act decisively this cycle: pivot to an alternative hypothesis from the belief map and dispatch an experiment task for it, OR declare partial findings with whatever evidence exists. Planning tasks remain forbidden. | Overwrites `.swarm/stall-signal.json` with refreshed `diagnosis`; fires strike-2 Telegram notification including an extend-budget hint |
+   | 3 | `stall_strike3_minutes` (default 90) × phase multiplier | `final_steer` — final self-steer prompt. Orchestrator must emit at minimum one of: a negative finding, a BLOCKED declaration on the stuck claim, or a partial deliverable at `.swarm/deliverable-partial.md`. Run is **not** killed at this level — the dispatcher gives an additional `stall_final_grace_minutes` window for the orchestrator to produce any learning event or declared partial deliverable. | Overwrites `.swarm/stall-signal.json` with refreshed `diagnosis`; fires strike-3 Telegram notification including the grace window and an extend-budget hint |
+   | 4 | strike 3 + `stall_final_grace_minutes` (default 20) | `auto_park` — terminal. Internal level; never surfaced to the orchestrator (the run is already exiting). | Writes `.swarm/deliverable-partial.md` (including `next_actions` + `active_workers` from the orchestrator checkpoint so the PI sees what was about to happen); kills tmux; calls `queue.fail(...)` with an "Auto-parked: no learning for ~N minutes" reason; fires strike-4 Telegram notification |
 
-   `.swarm/stall-signal.json` has the shape `{"level": int, "directive": str, "instruction": str, "elapsed_minutes": float, "timestamp": str}`. The orchestrator prompt builder (`server/prompt.py::build_orchestrator_prompt`) reads this file on every build and injects the `instruction` under a `## ⚠ STALL DIRECTIVE` heading at the top of the prompt so the orchestrator sees it before anything else. Escalation is walked one strike at a time even when the run has been stalled long enough to warrant multiple strikes — each level's side effects fire exactly once.
+   **Phase-aware stall budgets.** The three thresholds above are multiplied at comparison time by a factor derived from `OrchestratorCheckpoint.lifecycle_phase`:
+
+   | `lifecycle_phase` | Multiplier | Use case |
+   |---|:-:|---|
+   | `"setup"` | 3.0 | Infra build-out — long-running worker tasks writing experiment harnesses, evaluators, runners. Findings are not expected yet. |
+   | `"explore"` / `"test"` | 1.0 | Normal hypothesis-driven work. |
+   | `"synthesize"` | 0.5 | Wrap-up — if findings have dried up here, close fast. |
+   | `""` (unset) | 2.0 if `phase ∈ {starting, scouting, planning}` else 1.0 | Inferred fallback so pre-existing runs still get setup grace. |
+
+   The orchestrator declares its lifecycle phase in `.swarm/orchestrator-checkpoint.json` (field `lifecycle_phase`). The declaration is advisory — the dispatcher reads it each poll but the multipliers are fixed by the table above; an orchestrator cannot lengthen its setup grace beyond 3× or its synthesize grace below 0.5× by choice of label.
+
+   `.swarm/stall-signal.json` has the shape `{"level": int, "directive": str, "instruction": str, "elapsed_minutes": float, "timestamp": str, "diagnosis": {...}}`. The `diagnosis` block is populated on every strike (1–3) and mirrors the orchestrator checkpoint (`lifecycle_phase`, `active_workers`, `next_actions`) plus the current open-task count — this is the belief-snapshot the next prompt injects. The orchestrator prompt builder (`server/prompt.py::build_orchestrator_prompt`) reads this file on every build and renders the `instruction` plus a bulleted view of the `diagnosis` under a `## ⚠ STALL DIRECTIVE` heading at the top of the prompt so the orchestrator sees it before anything else. Escalation is walked one strike at a time even when the run has been stalled long enough to warrant multiple strikes — each level's side effects fire exactly once.
+
+   **Human override (`/voronoi extend`).** The strike-2 and strike-3 Telegram messages prompt the PI with the extend command. Calling `/voronoi extend <codename> [minutes]` (default 60) invokes `InvestigationDispatcher.extend_run(...)`, which (a) grants explicit stall immunity for the requested window, (b) drops `stall_strike_level` back to 0, and (c) deletes `.swarm/stall-signal.json` so the next prompt build contains no stall directive. This is the human-in-the-loop affordance; in the default autonomous path, the self-steer loop runs without human intervention — the orchestrator reads each strike directive, adjusts, and the dispatcher either sees learning events (strikes reset) or eventually reaches strike 4 (auto-park).
+
+   The progress digest (`gateway/progress.py::build_digest`) consumes `.swarm/stall-signal.json` on every build: while any stall level ≥ 1 is active, the "Still setting up — nothing to worry about yet." narrative line is suppressed and replaced with a strike-aware warning so the digest voice and the stall escalator agree.
 
    During pre-task phases (`starting`, `scouting`, `planning` with empty `task_snapshot`) the escalator keeps quiet: early idle is expected.
 

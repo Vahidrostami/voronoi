@@ -146,6 +146,7 @@ Central dispatch point for all user actions. Every Telegram command and programm
 | `handle_abort(project_dir, inv_id) -> str` | Aborts investigation |
 | `handle_pivot(project_dir, inv_id, new_question) -> str` | Pivots investigation question |
 | `handle_guide(project_dir, message) -> str` | Writes operator guidance to active workspaces |
+| `handle_extend(project_dir, codename, minutes) -> str` | Grants additional stall budget — clears `.swarm/stall-signal.json`, pushes `last_learning_activity_at` forward, resets strike level. Surfaced by the strike-2 Telegram notification. Default 60 minutes. See SERVER.md §3. |
 
 ### Iterative Science Handlers
 

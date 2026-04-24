@@ -80,6 +80,8 @@ def build_orchestrator_prompt(
     # When the dispatcher escalates a learning stall, it writes
     # .swarm/stall-signal.json. Surface the instruction at the very top so
     # the orchestrator sees it before the rest of the prompt.
+    # Each strike (1-3) also carries a `diagnosis` block — a belief snapshot
+    # the orchestrator uses to self-steer on the next OODA cycle.
     # See docs/SERVER.md §3 (Stall Escalation).
     if workspace_path:
         signal_path = Path(workspace_path) / ".swarm" / "stall-signal.json"
@@ -90,14 +92,39 @@ def build_orchestrator_prompt(
                 instruction = signal.get("instruction", "").strip()
                 level = signal.get("level")
                 directive = signal.get("directive", "")
+                diagnosis = signal.get("diagnosis") or {}
                 if instruction:
-                    sections.append(
+                    block = (
                         f"## ⚠ STALL DIRECTIVE — LEVEL {level} "
                         f"({directive})\n\n"
                         f"{instruction}\n\n"
+                    )
+                    if isinstance(diagnosis, dict) and diagnosis:
+                        block += "**Belief snapshot (from your last checkpoint):**\n"
+                        # Render a compact, stable-ordered view.
+                        _order = [
+                            "elapsed_minutes", "phase", "lifecycle_phase",
+                            "tasks_in_progress", "tasks_open",
+                            "active_workers", "next_actions",
+                        ]
+                        for key in _order:
+                            if key not in diagnosis:
+                                continue
+                            val = diagnosis[key]
+                            if isinstance(val, list):
+                                if not val:
+                                    continue
+                                block += f"- {key}:\n"
+                                for item in val:
+                                    block += f"  - {item}\n"
+                            else:
+                                block += f"- {key}: {val}\n"
+                        block += "\n"
+                    block += (
                         "This directive overrides default OODA behaviour. "
                         "Obey it on this cycle.\n\n"
                     )
+                    sections.append(block)
             except (OSError, ValueError):
                 pass
 
