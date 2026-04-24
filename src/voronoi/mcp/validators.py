@@ -22,12 +22,16 @@ class ValidationError(Exception):
 # ---------------------------------------------------------------------------
 
 def require_claim_statement(value: str, field: str = "statement") -> str:
-    """Validate a Claim Ledger statement at the MCP tool boundary.
+    """Validate a Claim Ledger statement shape at the MCP tool boundary.
 
-    Reject bare-imperative task directives (e.g. "Analyze pricing dataset")
-    and exact duplicates. Delegates to
-    :func:`voronoi.science.claims.validate_claim_statement` so the MCP
-    surface and the ledger stay in sync. See docs/SCIENCE.md §17.
+    Rejects bare-imperative task directives (e.g. "Analyze pricing dataset").
+    Delegates to :func:`voronoi.science.claims.validate_claim_statement`
+    for shape validation only. See docs/SCIENCE.md §17.
+
+    Note: duplicate detection is NOT performed here because this function
+    has no access to the current ledger. Duplicates are caught by
+    ``ClaimLedger.add_claim()`` which passes all existing claims to the
+    same validator.
     """
     from voronoi.science.claims import validate_claim_statement
 

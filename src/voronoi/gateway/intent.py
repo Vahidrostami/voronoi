@@ -33,6 +33,13 @@ class RigorLevel(Enum):
     EXPERIMENTAL = "experimental"    # PROVE + replication
 
 
+#: PROVE classifications whose confidence is at or below this value are
+#: treated as ambiguous by :func:`classify_for_new_investigation`.  The
+#: router uses this to prompt the user to confirm PROVE (locks the question)
+#: vs switch to DISCOVER (allows question refinement).  See INV-54.
+PROVE_AMBIGUITY_THRESHOLD = 0.75
+
+
 @dataclass(frozen=True)
 class ClassifiedIntent:
     """Result of intent classification."""
@@ -41,6 +48,11 @@ class ClassifiedIntent:
     confidence: float          # 0.0–1.0
     summary: str               # One-line description for the user
     original_text: str         # The raw input
+    # True when the classifier picked PROVE but confidence is borderline.
+    # Surface a confirmation gate to the user before committing to fixed
+    # rigor: the PROVE contract locks the question (INV-10, INV-54), which
+    # is expensive to get wrong.
+    ambiguous: bool = False
 
     @property
     def is_science(self) -> bool:
@@ -269,12 +281,22 @@ def classify(text: str) -> ClassifiedIntent:
     # PROVE if strong prove signals dominate
     if prove_score >= 2 or (prove_score >= 1 and discover_score == 0):
         rigor = RigorLevel.EXPERIMENTAL if prove_score >= 3 else RigorLevel.SCIENTIFIC
+        confidence = min(0.6 + prove_score * 0.15, 0.95)
+        # PROVE locks the question (INV-10, INV-49).  Flag as ambiguous when
+        # the signal is borderline so the router can surface a confirmation
+        # gate.  Borderline means: confidence below threshold, OR the PROVE
+        # signal count only narrowly beats the DISCOVER signal count.
+        ambiguous = (
+            confidence <= PROVE_AMBIGUITY_THRESHOLD
+            or discover_score >= prove_score
+        )
         return ClassifiedIntent(
             mode=WorkflowMode.PROVE,
             rigor=rigor,
-            confidence=min(0.6 + prove_score * 0.15, 0.95),
+            confidence=confidence,
             summary=_make_summary(text),
             original_text=text,
+            ambiguous=ambiguous,
         )
 
     # Recall — only if recall signals strictly dominate discovery
@@ -370,12 +392,18 @@ def classify_for_new_investigation(text: str) -> ClassifiedIntent:
     # PROVE if strong prove signals
     if prove_score >= 2 or (prove_score >= 1 and discover_score == 0):
         rigor = RigorLevel.EXPERIMENTAL if prove_score >= 3 else RigorLevel.SCIENTIFIC
+        confidence = min(0.6 + prove_score * 0.15, 0.95)
+        ambiguous = (
+            confidence <= PROVE_AMBIGUITY_THRESHOLD
+            or discover_score >= prove_score
+        )
         return ClassifiedIntent(
             mode=WorkflowMode.PROVE,
             rigor=rigor,
-            confidence=min(0.6 + prove_score * 0.15, 0.95),
+            confidence=confidence,
             summary=_make_summary(text),
             original_text=text,
+            ambiguous=ambiguous,
         )
 
     # Recall — if recall signals dominate discovery

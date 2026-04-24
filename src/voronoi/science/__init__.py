@@ -130,6 +130,16 @@ from voronoi.science.claims import (
     save_ledger,
 )
 
+# --- Lab-KG (per-PI institutional memory across lineages) ---
+from voronoi.science.lab_kg import (
+    DeadEnd,
+    DEFAULT_HALF_LIFE_DAYS,
+    DURABLE_STATUSES,
+    LabEntry,
+    LabKG,
+    default_store_path as default_lab_kg_path,
+)
+
 # --- Manifest (structured deliverable) ---
 from voronoi.science.manifest import (
     MANIFEST_FILENAME,

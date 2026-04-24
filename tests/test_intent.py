@@ -285,6 +285,54 @@ class TestClassifyForNewInvestigation:
 
 
 # ---------------------------------------------------------------------------
+# PROVE mode ambiguity escape hatch (INV-54)
+# ---------------------------------------------------------------------------
+
+class TestProveAmbiguity:
+    """PROVE locks the question; borderline classifications must set
+    `ambiguous=True` so the router can surface a confirmation gate."""
+
+    def test_strong_prove_is_not_ambiguous(self):
+        # Many strong signals — clearly PROVE
+        r = classify_for_new_investigation(
+            "Test whether randomized double-blind trials with pre-registered "
+            "power analysis show significance at alpha=0.05"
+        )
+        assert r.mode == WorkflowMode.PROVE
+        assert r.confidence > 0.75
+        assert r.ambiguous is False
+
+    def test_weak_prove_is_ambiguous(self):
+        # Single signal, confidence lands at/under the threshold
+        r = classify_for_new_investigation("run an experiment on our caching layer")
+        assert r.mode == WorkflowMode.PROVE
+        assert r.confidence <= 0.75
+        assert r.ambiguous is True
+
+    def test_mixed_prove_and_discover_is_ambiguous(self):
+        # Strong prove win (>=2 signals) but DISCOVER signals are comparable —
+        # exactly the PROVE-vs-DISCOVER boundary the escape hatch is for.
+        r = classify_for_new_investigation(
+            "run a controlled experiment and compare against the hypothesis baseline"
+        )
+        assert r.mode == WorkflowMode.PROVE
+        assert r.ambiguous is True
+
+    def test_explicit_prove_command_not_ambiguous(self):
+        # /voronoi prove is an explicit contract — never ambiguous
+        r = classify("/voronoi prove hypothesis X")
+        assert r.mode == WorkflowMode.PROVE
+        assert r.ambiguous is False
+
+    def test_discover_never_ambiguous(self):
+        # The escape hatch exists only for PROVE; DISCOVER has the
+        # Question Framer for refinement instead.
+        r = classify_for_new_investigation("Why is our API slow?")
+        assert r.mode == WorkflowMode.DISCOVER
+        assert r.ambiguous is False
+
+
+# ---------------------------------------------------------------------------
 # Edge cases
 # ---------------------------------------------------------------------------
 

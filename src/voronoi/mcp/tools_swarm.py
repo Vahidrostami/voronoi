@@ -147,7 +147,16 @@ def write_checkpoint(
     if criteria_status is not None:
         if not isinstance(criteria_status, dict):
             raise ValidationError(f"criteria_status must be a dict, got {type(criteria_status).__name__}")
-        checkpoint.criteria_status = {str(key): bool(value) for key, value in criteria_status.items()}
+        coerced: dict[str, bool] = {}
+        for key, value in criteria_status.items():
+            if value is True or value is False:
+                coerced[str(key)] = value
+            else:
+                raise ValidationError(
+                    f"criteria_status[{key!r}] must be a boolean (true/false), "
+                    f"got {value!r}. Do not pass status strings like 'pending'."
+                )
+        checkpoint.criteria_status = coerced
     if eval_score is not None and eval_score != "":
         checkpoint.eval_score = require_probability(eval_score, "eval_score")
     improvement_rounds_val = _optional_non_negative_int(improvement_rounds, "improvement_rounds")

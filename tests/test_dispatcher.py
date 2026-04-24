@@ -53,19 +53,26 @@ class TestDispatchNext:
         d.dispatch_next()
         assert len(msgs) == 0
 
-    def test_dispatch_next_skips_claim_while_launching(self, dispatcher_setup):
-        """dispatch_next should skip queue claim when a launch is in progress."""
+    def test_dispatch_next_claims_concurrently_with_launching(self, dispatcher_setup):
+        """dispatch_next should still call next_ready even when a launch is in progress.
+
+        INV-06 guarantees atomic claiming via BEGIN IMMEDIATE, so concurrent
+        launches are safe. Gating on _launching would serialize every launch
+        and defeat the operator's max_concurrent setting.
+        """
         d, msgs, docs, _ = dispatcher_setup
         mock_queue = MagicMock()
         mock_queue.next_ready.return_value = None
+        mock_queue.get_running.return_value = []
+        mock_queue.get_paused.return_value = []
         d._queue = mock_queue
 
         # Simulate a launch in progress
         d._launching.add(99)
         d.dispatch_next()
 
-        # next_ready should NOT have been called — we skipped the claim phase
-        mock_queue.next_ready.assert_not_called()
+        # next_ready SHOULD still be called — concurrent launches are safe (INV-06)
+        mock_queue.next_ready.assert_called_once()
         d._launching.discard(99)
 
     def test_abort_kills_running(self, dispatcher_setup):
@@ -3070,6 +3077,84 @@ class TestActiveWorkersBeadsReconciliation:
         (swarm / "orchestrator-checkpoint.json").write_text(json.dumps({
             "active_workers": []
         }))
+        with patch.object(d, "_bd_in_progress_task_ids", return_value=[]):
+            assert d._has_active_workers(run) is False
+
+
+class TestActiveWorkersMalformedCheckpoint:
+    """Orchestrator may write active_workers as list[dict] bypassing MCP
+    validation; _has_active_workers must coerce rather than crash."""
+
+    def _run(self, tmp_path):
+        return RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="voronoi-inv-1",
+            question="test",
+            mode="discover",
+        )
+
+    def test_dict_entries_do_not_raise(self, dispatcher_setup):
+        """active_workers=[{"id": ...}] must not raise TypeError.
+
+        Regression for production crash:
+            TypeError: 'in <string>' requires string as left operand, not dict
+        at dispatcher.py `any(worker in w for w in windows)`.
+        """
+        d, _, _, tmp_path = dispatcher_setup
+        run = self._run(tmp_path)
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "orchestrator-checkpoint.json").write_text(json.dumps({
+            "active_workers": [
+                {"id": "bd-123", "branch": "agent-scout-bd-123"},
+                {"id": "bd-124", "branch": "agent-scribe-bd-124"},
+            ]
+        }))
+        (tmp_path / ".swarm-config.json").write_text(json.dumps({
+            "tmux_session": "test-swarm"
+        }))
+
+        def side_effect(cmd, **kwargs):
+            if cmd[0] == "tmux" and cmd[1] == "has-session":
+                return MagicMock(returncode=0)
+            if cmd[0] == "tmux" and cmd[1] == "list-windows":
+                return MagicMock(returncode=0,
+                                 stdout="agent-scout-bd-123\norchestrator\n")
+            if cmd[0] == "tmux" and cmd[1] == "list-panes":
+                return MagicMock(returncode=0, stdout="copilot\n")
+            return MagicMock(returncode=1, stdout="")
+
+        with patch.object(d, "_bd_in_progress_task_ids", return_value=[]):
+            with patch("voronoi.server.dispatcher.subprocess.run",
+                        side_effect=side_effect):
+                # Coerced "bd-123" matches tmux window "agent-scout-bd-123"
+                assert d._has_active_workers(run) is True
+
+    def test_dict_entries_without_known_keys_are_dropped(self, dispatcher_setup):
+        """Dict with no id/task_id/branch/worker/name should be skipped."""
+        d, _, _, tmp_path = dispatcher_setup
+        run = self._run(tmp_path)
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "orchestrator-checkpoint.json").write_text(json.dumps({
+            "active_workers": [{"nope": "x"}]
+        }))
+
+        with patch.object(d, "_bd_in_progress_task_ids", return_value=[]):
+            # No usable workers, no bd tasks → False, and no exception.
+            assert d._has_active_workers(run) is False
+
+    def test_non_list_active_workers_returns_false(self, dispatcher_setup):
+        """active_workers as non-list (e.g., dict) must be handled."""
+        d, _, _, tmp_path = dispatcher_setup
+        run = self._run(tmp_path)
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "orchestrator-checkpoint.json").write_text(json.dumps({
+            "active_workers": {"wat": "this is not a list"}
+        }))
+
         with patch.object(d, "_bd_in_progress_task_ids", return_value=[]):
             assert d._has_active_workers(run) is False
 

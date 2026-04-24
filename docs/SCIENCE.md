@@ -1170,3 +1170,102 @@ def save_failure_diagnosis(workspace: Path, diagnosis: dict) -> None
 ### Consumed By
 
 `build_warm_start_context()` reads `.swarm/failure-diagnosis.json` and injects it into the continuation prompt under a "Failure Diagnosis from Prior Round" heading.
+
+---
+
+## 23. Lab-Wide Knowledge Graph (Per-PI)
+
+### Purpose
+
+The Claim Ledger (§17) is scoped to a single *lineage* of investigations. The Lab-KG accumulates snapshots of ledger claims, dead ends, and known artifact-traps across **every** lineage a single scientist runs. Purpose: make investigation #100 structurally smarter than investigation #1.
+
+**Scope is per-PI.** The store lives at `~/.voronoi/lab/kg/kg.json` (overridable via `VORONOI_LAB_KG_PATH`). Cross-lab sharing is explicit opt-in and out of scope for this section.
+
+### Module
+
+`src/voronoi/science/lab_kg.py` — `LabKG`, `LabEntry`, `DeadEnd`, `default_store_path`. Re-exported from `voronoi.science`.
+
+### Safeguards Against Contamination
+
+A naive "accumulate everything and trust it" store would rebuild the replication crisis. The KG therefore enforces:
+
+1. **Provenance preservation.** Every entry carries the Claim Ledger provenance tag (`model_prior` / `retrieved_prior` / `run_evidence`). Callers that inject KG content into prompts MUST NOT elevate an entry's trust beyond what its provenance + status justify.
+2. **Durability filter.** Only `locked` and `replicated` entries (`DURABLE_STATUSES`) are returned by `query()` by default. `provisional`/`asserted` are retained but require `include_non_durable=True` and MUST be presented to downstream agents as "prior attempts, unsettled", never as established facts.
+3. **Replication-on-convergence.** When two independent lineages assert the *same* locked statement, the entry is automatically promoted to `replicated`. Single-run findings never harden into dogma through this path.
+4. **Dissent as a first-class edge.** When a lineage challenges a claim that matches an existing entry, that lineage is appended to the entry's `dissent` list. Queries and the Lab Context Brief surface dissenting lineages alongside the claim.
+5. **Half-life.** Every durable entry gets `half_life_due` (default 180 days). Entries older than `half_life_due` are returned with `stale_as_of_query=True`; callers SHOULD force re-examination rather than trust stale priors.
+6. **Retirement propagation.** When any lineage retires a claim (PI-driven demotion), the KG entry's status flips to `retired` — no further durable use.
+
+### Safeguards Against Groupthink
+
+1. **KG is a second source, never the first.** Scout's `/research` against external literature still runs for every investigation. KG is consulted *after* and *in comparison with* external results.
+2. **Adversarial framing on read.** `format_brief()` renders entries with the explicit preamble *"Treat every entry below as a hypothesis to challenge, not a fact to accept. Always run fresh external `/research` before trusting any lab-KG item."*
+3. **Novelty Gate asymmetry.** (Orchestrator-level policy, not enforced by this module.) A KG hit that suggests `REDUNDANT` requires stronger evidence than a KG hit that suggests `NOVEL`. Default is "proceed until proven redundant".
+4. **Scope by default.** Per-PI scope; cross-lab transfer is explicit `/voronoi kg export/import` (future).
+
+### API
+
+```python
+class LabKG:
+    @classmethod
+    def load(cls, path: Path | None = None) -> "LabKG": ...
+    def save(self) -> None: ...
+    def upsert_from_ledger(self, lineage_id: str, ledger: ClaimLedger) -> list[LabEntry]: ...
+    def record_dead_end(self, lineage_id: str, description: str, reason: str, category: str) -> DeadEnd: ...
+    def query(self, topic: str, *, limit: int = 20, include_non_durable: bool = False) -> list[LabEntry]: ...
+    def query_dead_ends(self, topic: str, *, limit: int = 20) -> list[DeadEnd]: ...
+    def format_brief(self, topic: str, *, limit: int = 10, include_non_durable: bool = False) -> str: ...
+```
+
+`upsert_from_ledger` is idempotent: re-inserting an already-present statement updates in place and applies the replication / dissent / retirement rules above.
+
+### Storage Schema
+
+```json
+{
+  "schema_version": 1,
+  "entries": [
+    {
+      "id": "L1",
+      "statement": "...",
+      "provenance": "run_evidence",
+      "status": "replicated",
+      "source_lineage": "lineage-alpha",
+      "source_claim_id": "C7",
+      "supporting_lineages": ["lineage-alpha", "lineage-beta"],
+      "replicated_in": ["lineage-beta"],
+      "dissent": [],
+      "effect_summary": "+14.2pp (95% CI ...)",
+      "artifact_paths": ["output/k4_depth.csv"],
+      "first_recorded": "...",
+      "last_updated": "...",
+      "half_life_due": "..."
+    }
+  ],
+  "dead_ends": [
+    {
+      "id": "DE1",
+      "lineage": "lineage-7",
+      "description": "StandardScaler applied per-batch before train/val split",
+      "reason": "Caused 14pp spurious improvement; artifact of data leakage",
+      "category": "artifact",
+      "recorded": "..."
+    }
+  ]
+}
+```
+
+### Wire-Up (Future Work)
+
+This section defines the substrate. Three follow-ups remain:
+
+- **Dispatcher**: on completion, call `LabKG.load().upsert_from_ledger(lineage_id, ledger)` after the Claim Ledger is synced.
+- **Prompt builder**: write `.swarm/lab-context-brief.md` via `format_brief(question)` before orchestrator launch; Scout/Theorist prompts reference it.
+- **Router**: `/voronoi kg query <topic>` for PI-driven exploration.
+
+Each follow-up has its own spec section when implemented; this section is the substrate contract.
+
+### Invariant
+
+See `docs/INVARIANTS.md` INV-53 (KG provenance & durability).
+

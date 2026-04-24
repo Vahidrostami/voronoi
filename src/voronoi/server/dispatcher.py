@@ -391,6 +391,56 @@ class InvestigationDispatcher:
                 logger.info("Re-adopted running investigation #%d (%s)",
                             inv.id, inv.codename)
 
+        # Sweep for completed/reviewed investigations that lack a run manifest
+        # (crash recovery for the race between status transition and manifest
+        # write — see INV-44).
+        self._sweep_missing_manifests()
+
+    def _sweep_missing_manifests(self) -> None:
+        """Write run manifests for completed investigations that are missing one.
+
+        Covers the crash window between the queue status transition
+        (review/complete) and ``_write_run_manifest()``.  Called once per
+        ``dispatch_next()`` cycle via ``_recover_running()``.
+        """
+        for status in ("review", "complete"):
+            try:
+                with self.queue._connect() as conn:
+                    rows = conn.execute(
+                        "SELECT * FROM investigations WHERE status=? "
+                        "ORDER BY completed_at DESC LIMIT 10",
+                        (status,),
+                    ).fetchall()
+                    invs = [self.queue._row_to_investigation(r) for r in rows]
+            except Exception:
+                continue
+            for inv in invs:
+                if not inv.workspace_path:
+                    continue
+                ws = Path(inv.workspace_path)
+                manifest_path = ws / ".swarm" / "run-manifest.json"
+                if manifest_path.exists():
+                    continue
+                if not (ws / ".swarm" / "deliverable.md").exists():
+                    continue  # not actually finished
+                logger.info("Sweeping missing run manifest for #%d (%s)",
+                            inv.id, inv.codename)
+                run = RunningInvestigation(
+                    investigation_id=inv.id,
+                    workspace_path=ws,
+                    tmux_session="",
+                    question=inv.question,
+                    mode=inv.mode,
+                    codename=inv.codename,
+                    chat_id=inv.chat_id,
+                    rigor=inv.rigor or "adaptive",
+                )
+                try:
+                    self._write_run_manifest(run)
+                except Exception as e:
+                    logger.warning("Failed to sweep manifest for #%d: %s",
+                                   inv.id, e)
+
     def _requeue_unprovisioned(self, investigation_id: int) -> None:
         """Reset a claimed-but-not-launched investigation back to queued.
 
@@ -2737,8 +2787,9 @@ class InvestigationDispatcher:
         # of the run's claims, experiments, artifacts, and provenance.  Written
         # AFTER the status transition so the manifest captures the finalized
         # ledger state (promoted claims, self-critique objections, continuation
-        # proposals).  See ``_sweep_missing_manifests`` for crash recovery of
-        # the small write-after-transition race window (INV-44).
+        # proposals).  If the dispatcher crashes between the status transition
+        # and this write, _recover_running will sweep for the missing manifest
+        # on the next startup (INV-44).
         self._write_run_manifest(run)
 
         # Send appropriate completion message
@@ -2972,7 +3023,32 @@ class InvestigationDispatcher:
         except (json.JSONDecodeError, OSError):
             return False
 
-        workers = list(cp.get("active_workers", []))
+        # Coerce active_workers to list[str].  The spec types this as a list
+        # of task-id strings, but the orchestrator writes the checkpoint
+        # directly (bypassing MCP validation), and has been observed emitting
+        # list[dict] entries like [{"id": "bd-123", "branch": "..."}].  Such
+        # values would crash the downstream `worker in w` substring match
+        # with "'in <string>' requires string as left operand, not dict".
+        # Extract a string identifier from dict entries; drop anything else.
+        raw_workers = cp.get("active_workers", [])
+        workers: list[str] = []
+        if isinstance(raw_workers, list):
+            for item in raw_workers:
+                if isinstance(item, str) and item:
+                    workers.append(item)
+                elif isinstance(item, dict):
+                    for key in ("id", "task_id", "branch", "worker", "name"):
+                        v = item.get(key)
+                        if isinstance(v, str) and v:
+                            workers.append(v)
+                            break
+        if workers and not all(isinstance(w, str)
+                               for w in raw_workers if w is not None):
+            logger.warning(
+                "Investigation %s: checkpoint active_workers contained "
+                "non-string entries; coerced to %r",
+                run.label, workers,
+            )
 
         # Reconcile with Beads: any in_progress task whose ID isn't already
         # covered by the checkpoint means a worker was dispatched but the
@@ -3179,9 +3255,10 @@ class InvestigationDispatcher:
         try:
             from voronoi.science import check_convergence
 
+            effective_rigor = self._effective_rigor(run)
             result = check_convergence(
                 run.workspace_path,
-                run.rigor,
+                effective_rigor,
                 eval_score=run.eval_score,
                 improvement_rounds=run.improvement_rounds,
             )
