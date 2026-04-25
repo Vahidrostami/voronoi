@@ -5,6 +5,7 @@ The dispatcher now only: dispatch_next() + poll_progress().
 """
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -1075,6 +1076,86 @@ class TestSentinelDispatcher:
         assert directive.exists()
         data = json.loads(directive.read_text())
         assert data["directive"] == "sentinel_violation"
+        assert data["action"] == "stop_and_fix"
+
+    def test_spawn_agent_blocks_legacy_sentinel_directive(self, tmp_path):
+        """spawn-agent.sh should block legacy sentinel_violation directives."""
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".swarm").mkdir()
+        (project / ".swarm" / "dispatcher-directive.json").write_text(json.dumps({
+            "directive": "sentinel_violation",
+            "message": "legacy sentinel directive without action",
+        }))
+        (project / ".swarm-config.json").write_text(json.dumps({
+            "project_dir": str(project),
+            "swarm_dir": str(tmp_path / "worktrees"),
+            "tmux_session": "test-session",
+            "agent_command": "copilot",
+            "worker_model": "",
+            "effort": "medium",
+            "agent_flags": "--allow-all",
+        }))
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        jq = bin_dir / "jq"
+        jq.write_text(f"""#!{sys.executable}
+import json
+import sys
+
+query = sys.argv[-1]
+data = json.load(sys.stdin)
+values = {{
+    '.project_dir': data.get('project_dir', ''),
+    '.swarm_dir': data.get('swarm_dir', ''),
+    '.tmux_session': data.get('tmux_session', ''),
+    '.agent_command // "copilot"': data.get('agent_command', 'copilot'),
+    '.worker_model // ""': data.get('worker_model', ''),
+    '.effort // "medium"': data.get('effort', 'medium'),
+    '.agent_flags // "--allow-all"': data.get('agent_flags', '--allow-all'),
+    '(.agent_flags_safe // []) | join(" ")': ' '.join(data.get('agent_flags_safe', [])),
+}}
+print(values.get(query, ''))
+""")
+        jq.chmod(0o755)
+
+        bd = bin_dir / "bd"
+        bd.write_text(f"""#!{sys.executable}
+import json
+import sys
+
+if len(sys.argv) > 1 and sys.argv[1] == 'show':
+    print(json.dumps({{'title': 'Run ordinary experiment worker'}}))
+sys.exit(0)
+""")
+        bd.chmod(0o755)
+
+        timeout = bin_dir / "timeout"
+        timeout.write_text(f"""#!{sys.executable}
+import os
+import sys
+
+os.execvp(sys.argv[2], sys.argv[2:])
+""")
+        timeout.chmod(0o755)
+
+        copilot = bin_dir / "copilot"
+        copilot.write_text("#!/bin/sh\nexit 0\n")
+        copilot.chmod(0o755)
+
+        script = Path(__file__).resolve().parents[1] / "src" / "voronoi" / "data" / "scripts" / "spawn-agent.sh"
+        env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+        result = subprocess.run(
+            ["bash", str(script), "bd-1", "worker-branch"],
+            cwd=project,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 1
+        assert "Pre-dispatch BLOCKED by sentinel directive" in result.stdout
 
     def test_has_experiment_tasks(self, dispatcher_setup):
         d, msgs, docs, tmp_path = dispatcher_setup
@@ -1501,6 +1582,7 @@ class TestContextPressure:
         assert directive_path.exists()
         data = json.loads(directive_path.read_text())
         assert data["directive"] == "context_advisory"
+        assert "action" not in data
         assert run.context_directive_level == "context_advisory"
 
     def test_warning_directive_escalates(self, dispatcher_setup):
@@ -4973,6 +5055,7 @@ class TestBug008DirectivePriority:
         d._write_directive(run, "sentinel_violation", "Contract violated")
         data1 = json.loads((swarm / "dispatcher-directive.json").read_text())
         assert data1["directive"] == "sentinel_violation"
+        assert data1["action"] == "stop_and_fix"
 
         # Context warning should NOT overwrite sentinel
         d._write_directive(run, "context_warning", "10h elapsed")
@@ -5988,3 +6071,335 @@ class TestSyncFindingsToLedger:
         from voronoi.science.claims import load_ledger
         ledger = load_ledger(inv.lineage_id, base_dir=d.config.base_dir)
         assert ledger.claims == []
+
+
+# ===========================================================================
+# Bug Fix Tests — regression prevention for proven dispatcher bugs
+# ===========================================================================
+
+class TestBugFix001_CompletionBypassesStaleSnapshot:
+    """BUG-001: Completion can bypass open DESIGN_INVALID when task_snapshot is stale.
+
+    Scenario: Orchestrator session dies with DESIGN_INVALID tasks open in Beads,
+    but task_snapshot is stale/empty (e.g., after dispatcher restart). The
+    cached _has_open_design_invalid() check passes, convergence.json exists,
+    and the run is incorrectly marked complete.
+
+    Fix: _is_complete() now performs a hard check against Beads source-of-truth
+    when session_dead=True, instead of trusting the cached snapshot.
+    """
+
+    def test_completion_blocked_when_beads_has_design_invalid_despite_empty_snapshot(
+        self, dispatcher_setup,
+    ):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "deliverable.md").write_text("# Done")
+        (swarm / "convergence.json").write_text(json.dumps({
+            "converged": True,
+            "status": "converged",
+        }))
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        # Stale/empty snapshot — no DESIGN_INVALID detected via cache
+        run.task_snapshot = {}
+
+        # Mock bd returning a DESIGN_INVALID task
+        def mock_bd_json(*args, **kwargs):
+            return 0, [
+                {"id": "bd-99", "status": "open", "title": "Experiment",
+                 "notes": "DESIGN_INVALID: control group missing"},
+            ]
+
+        with patch("voronoi.beads.run_bd_json", mock_bd_json):
+            # Hard check MUST prevent completion
+            assert d._is_complete(run, session_dead=True) is False
+
+    def test_completion_allowed_when_beads_reports_no_design_invalid(
+        self, dispatcher_setup,
+    ):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "deliverable.md").write_text("# Done")
+        (swarm / "convergence.json").write_text(json.dumps({
+            "converged": True,
+            "status": "converged",
+        }))
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+            rigor="adaptive",
+        )
+        run.task_snapshot = {}
+
+        # Mock bd returning no DESIGN_INVALID
+        def mock_bd_json(*args, **kwargs):
+            return 0, [
+                {"id": "bd-99", "status": "closed", "title": "Experiment",
+                 "notes": "Passed all checks"},
+            ]
+
+        with patch("voronoi.beads.run_bd_json", mock_bd_json):
+            # Hard check should allow completion
+            assert d._is_complete(run, session_dead=True) is True
+
+    def test_live_session_completion_blocked_by_beads_design_invalid_despite_empty_snapshot(
+        self, dispatcher_setup,
+    ):
+        """Live session path: hard check must still prevent completion.
+
+        When session_alive=True, _check_progress skips bd to avoid lock
+        contention, so task_snapshot can be stale/empty. The hard check
+        must still run when completion signals (deliverable + convergence)
+        exist, even though session_dead=False.
+        """
+        d, msgs, docs, tmp_path = dispatcher_setup
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "deliverable.md").write_text("# Done")
+        (swarm / "convergence.json").write_text(json.dumps({
+            "converged": True,
+            "status": "converged",
+        }))
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        # Empty snapshot — no DESIGN_INVALID detected via cache
+        run.task_snapshot = {}
+
+        # Mock bd returning a DESIGN_INVALID task
+        def mock_bd_json(*args, **kwargs):
+            return 0, [
+                {"id": "bd-100", "status": "open", "title": "Experiment",
+                 "notes": "DESIGN_INVALID: encoding inputs identical"},
+            ]
+
+        with patch("voronoi.beads.run_bd_json", mock_bd_json):
+            # Hard check MUST prevent completion (session_dead defaults to False)
+            assert d._is_complete(run) is False
+
+    def test_live_session_completion_allowed_when_beads_reports_no_design_invalid(
+        self, dispatcher_setup,
+    ):
+        """Live session path: completion allowed when Beads reports clean state."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "deliverable.md").write_text("# Done")
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+            rigor="adaptive",
+        )
+        run.task_snapshot = {}
+
+        # Mock bd returning no DESIGN_INVALID
+        def mock_bd_json(*args, **kwargs):
+            return 0, [
+                {"id": "bd-100", "status": "closed", "title": "Experiment",
+                 "notes": "Passed all checks"},
+            ]
+
+        with patch("voronoi.beads.run_bd_json", mock_bd_json):
+            # Hard check should allow completion
+            assert d._is_complete(run) is True
+
+
+class TestBugFix002_StallEscalationOnQuietPolls:
+    """BUG-002: Learning-stall escalation never runs on quiet polls.
+
+    Scenario: Investigation has an in-progress task, last_learning_activity_at
+    is older than strike threshold, but _check_progress and _check_event_log
+    both return []. poll_progress() does not call _send_progress_batch()
+    because events is empty, so _update_learning_activity() never runs and
+    stall escalation never fires.
+
+    Fix: poll_progress() now synthesizes claim deltas and calls
+    _update_learning_activity() EVERY due poll, not just when events are sent.
+    """
+
+    def test_stall_escalation_fires_on_quiet_poll(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        d.config.stall_strike1_minutes = 1  # 1 minute for fast test
+
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "orchestrator-checkpoint.json").write_text(json.dumps({
+            "cycle": 5,
+            "phase": "investigating",
+        }))
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+            phase="investigating",
+        )
+        # Stale activity: 2 minutes ago (exceeds strike1 threshold)
+        run.last_learning_activity_at = time.time() - 120
+        run.task_snapshot = {"bd-1": {"status": "in_progress", "title": "Task", "notes": ""}}
+
+        d.running[1] = run
+
+        with patch("subprocess.run") as mock_run, \
+             patch.object(d, "_check_progress", return_value=[]), \
+             patch.object(d, "_check_event_log", return_value=[]), \
+             patch.object(d, "_synthesize_claim_deltas", return_value=[]):
+            mock_run.return_value = MagicMock(returncode=0)
+            d.poll_progress()
+
+        # Strike 1 should have fired despite empty events
+        signal_path = tmp_path / ".swarm" / "stall-signal.json"
+        assert signal_path.exists()
+        data = json.loads(signal_path.read_text())
+        assert data["level"] == 1
+        assert data["directive"] == "diagnose_and_steer"
+        assert run.stall_strike_level == 1
+
+
+class TestBugFix003_ActiveWorkerWindowPaneTargeting:
+    """BUG-003: Beads active-worker reconciliation targets tmux panes by
+    short worker ID instead of full window name.
+
+    Scenario: active_workers contains "bd-66", list-windows returns
+    "agent-scribe-bd-66", the substring check passes, but list-panes targets
+    `:bd-66` instead of `:agent-scribe-bd-66` and fails.
+
+    Fix: _has_active_workers() now preserves the matched full window name and
+    uses tmux exact-match syntax `:=window` for list-panes targeting.
+    """
+
+    def test_has_active_workers_uses_full_window_name_for_pane_check(
+        self, dispatcher_setup,
+    ):
+        d, msgs, docs, tmp_path = dispatcher_setup
+
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+
+        # Checkpoint with short worker ID
+        (swarm / "orchestrator-checkpoint.json").write_text(json.dumps({
+            "active_workers": ["bd-66"],
+            "phase": "investigating",
+        }))
+
+        # Swarm config with tmux session name
+        (tmp_path / ".swarm-config.json").write_text(json.dumps({
+            "tmux_session": "test-swarm",
+        }))
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+
+        call_log = []
+
+        def mock_run(args, **kwargs):
+            call_log.append((" ".join(args), kwargs))
+            if "has-session" in args:
+                return MagicMock(returncode=0)
+            elif "list-windows" in args:
+                # Return full window name
+                return MagicMock(
+                    returncode=0,
+                    stdout="agent-scribe-bd-66\n",
+                    stderr="",
+                )
+            elif "list-panes" in args:
+                # Verify that the target uses full window name with exact-match
+                target = args[3]
+                if target == "test-swarm:=agent-scribe-bd-66":
+                    return MagicMock(
+                        returncode=0,
+                        stdout="copilot\n",
+                        stderr="",
+                    )
+                else:
+                    # Simulate tmux failure on short-name targeting
+                    return MagicMock(returncode=1, stdout="", stderr="window not found")
+            return MagicMock(returncode=1)
+
+        with patch("subprocess.run", side_effect=mock_run):
+            result = d._has_active_workers(run)
+
+        # Worker should be detected as alive
+        assert result is True
+
+        # Verify list-panes was called with exact-match syntax
+        pane_calls = [c for c in call_log if "list-panes" in c[0]]
+        assert len(pane_calls) == 1
+        assert "test-swarm:=agent-scribe-bd-66" in pane_calls[0][0]
+
+    def test_has_active_workers_returns_false_when_panes_are_shells(
+        self, dispatcher_setup,
+    ):
+        """Regression: workers with dead foreground process but live tmux
+        window should NOT count as active."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+
+        (swarm / "orchestrator-checkpoint.json").write_text(json.dumps({
+            "active_workers": ["bd-88"],
+        }))
+        (tmp_path / ".swarm-config.json").write_text(json.dumps({
+            "tmux_session": "test-swarm",
+        }))
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+
+        def mock_run(args, **kwargs):
+            if "has-session" in args:
+                return MagicMock(returncode=0)
+            elif "list-windows" in args:
+                return MagicMock(
+                    returncode=0,
+                    stdout="agent-pilot-bd-88\n",
+                )
+            elif "list-panes" in args:
+                # Pane exists but process is a shell (worker exited)
+                return MagicMock(
+                    returncode=0,
+                    stdout="bash\n",
+                )
+            return MagicMock(returncode=1)
+
+        with patch("subprocess.run", side_effect=mock_run):
+            result = d._has_active_workers(run)
+
+        # Should be False — pane is just a shell
+        assert result is False

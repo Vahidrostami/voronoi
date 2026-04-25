@@ -334,13 +334,21 @@ class TestPaperHandler:
     ):
         from voronoi.gateway.router import handle_paper
         from voronoi.server.queue import Investigation
+        from voronoi.science.claims import ClaimLedger, PROVENANCE_RUN_EVIDENCE, save_ledger
 
         parent = Investigation(
             id=42, chat_id="chat1", status="complete",
             question="Why is X slow?", slug="why-x", codename="Dopamine",
             mode="discover", rigor="adaptive",
         )
+        ledger = ClaimLedger()
+        ledger.add_claim("Encoding improves retrieval accuracy", PROVENANCE_RUN_EVIDENCE)
+        ledger.assert_claim("C1")
+        ledger.lock_claim("C1")
+        save_ledger(42, ledger, base_dir=tmp_path)
+
         mock_q = MagicMock()
+        mock_q.db_path = tmp_path / "queue.db"
         mock_q.find_by_codename.return_value = [parent]
         mock_q.get_queued.return_value = []
         mock_q.get_running.return_value = []
@@ -366,6 +374,77 @@ class TestPaperHandler:
         assert enqueued.parent_id == 42
         assert enqueued.question.startswith("[PAPER-TRACK]")
         assert "Dopamine" in enqueued.question
+        assert "locked or replicated Claim Ledger" in enqueued.question
+
+    @patch("voronoi.gateway.handlers_workflow.InvestigationQueue", autospec=True)
+    def test_paper_track_requires_locked_or_replicated_claim(
+        self, mock_queue_cls, tmp_path,
+    ):
+        from voronoi.gateway.router import handle_paper
+        from voronoi.server.queue import Investigation
+        from voronoi.science.claims import ClaimLedger, PROVENANCE_RUN_EVIDENCE, save_ledger
+
+        parent = Investigation(
+            id=42, chat_id="chat1", status="complete",
+            question="Why is X slow?", slug="why-x", codename="Dopamine",
+            mode="discover", rigor="adaptive",
+        )
+        ledger = ClaimLedger()
+        ledger.add_claim("Encoding improves retrieval accuracy", PROVENANCE_RUN_EVIDENCE)
+        save_ledger(42, ledger, base_dir=tmp_path)
+
+        mock_q = MagicMock()
+        mock_q.db_path = tmp_path / "queue.db"
+        mock_q.find_by_codename.return_value = [parent]
+        mock_q.get_queued.return_value = []
+        mock_q.get_running.return_value = []
+        mock_q.get_paused.return_value = []
+        mock_q.get_recent.return_value = []
+        mock_queue_cls.return_value = mock_q
+
+        result = handle_paper(str(tmp_path), "dopamine", "chat1")
+
+        assert "Reviewer Defense Brief" in result
+        assert "not paper-ready" in result
+        assert "Paper-worthy headline claims: 0" in result
+        assert "Fragile/provisional claims: 1" in result
+        assert "/voronoi review Dopamine" in result
+        mock_q.enqueue.assert_not_called()
+
+    @patch("voronoi.gateway.handlers_workflow.InvestigationQueue", autospec=True)
+    def test_paper_track_empty_ledger_falls_back_to_claim_evidence(
+        self, mock_queue_cls, tmp_path,
+    ):
+        from voronoi.gateway.router import handle_paper
+        from voronoi.server.queue import Investigation
+
+        workspace = tmp_path / "workspace"
+        (workspace / ".swarm").mkdir(parents=True)
+        (workspace / ".swarm" / "claim-evidence.json").write_text(json.dumps([
+            {"claim": "Encoding improves retrieval accuracy", "finding_ids": ["bd-1"]},
+            {"claim": "Latency stays flat", "finding_ids": ["bd-2"]},
+        ]))
+        parent = Investigation(
+            id=42, chat_id="chat1", status="complete",
+            question="Why is X slow?", slug="why-x", codename="Dopamine",
+            mode="discover", rigor="adaptive", workspace_path=str(workspace),
+        )
+        mock_q = MagicMock()
+        mock_q.db_path = tmp_path / "queue.db"
+        mock_q.find_by_codename.return_value = [parent]
+        mock_q.get_queued.return_value = []
+        mock_q.get_running.return_value = []
+        mock_q.get_paused.return_value = []
+        mock_q.get_recent.return_value = []
+        mock_queue_cls.return_value = mock_q
+
+        result = handle_paper(str(tmp_path), "dopamine", "chat1")
+
+        assert "Reviewer Defense Brief" in result
+        assert "claim-evidence.json` has 2 claim(s)" in result
+        assert "no Claim Ledger statuses" in result
+        assert "lock C<id>" in result
+        mock_q.enqueue.assert_not_called()
 
     @patch("voronoi.gateway.handlers_workflow.InvestigationQueue", autospec=True)
     def test_rejects_paper_for_running_investigation(self, mock_queue_cls, tmp_path):

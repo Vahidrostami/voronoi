@@ -586,10 +586,10 @@ To prevent log spam while the orchestrator iterates on a malformed contract, rep
 
 When the sentinel finds a critical failure:
 1. Writes `.swarm/sentinel-audit.json` (persisted for orchestrator to read)
-2. Writes `.swarm/dispatcher-directive.json` with `level: sentinel_violation` and `action: stop_and_fix` (forces orchestrator to act)
+2. Writes `.swarm/dispatcher-directive.json` with `directive: sentinel_violation` and `action: stop_and_fix` (forces orchestrator to act)
 3. Returns `design_invalid` event (triggers Telegram alert to PI)
 4. `_is_complete()` returns False while DESIGN_INVALID exists (hard gate — cannot be bypassed)
-5. **Structural dispatch block (INV-50).** `spawn-agent.sh` reads `.swarm/dispatcher-directive.json` before claiming any task. If `action == "stop_and_fix"`, it refuses to spawn any task whose title does not match the methodologist/post-mortem/revise/fix-contract/sentinel pattern, and marks the task BLOCKED in Beads. This catches orchestrators that ignore the sentinel directive in their prompt: no new workers can burn hours on invalid data.
+5. **Structural dispatch block (INV-50).** `spawn-agent.sh` reads `.swarm/dispatcher-directive.json` before claiming any task. If `action == "stop_and_fix"` (or a legacy directive has `directive == "sentinel_violation"`), it refuses to spawn any task whose title does not match the methodologist/post-mortem/revise/fix-contract/sentinel pattern, and marks the task BLOCKED in Beads. This catches orchestrators that ignore the sentinel directive in their prompt: no new workers can burn hours on invalid data.
 
 The directive explicitly states: "This IS a DESIGN_INVALID event — do NOT create a separate DESIGN_INVALID task." This prevents duplicate escalation.
 

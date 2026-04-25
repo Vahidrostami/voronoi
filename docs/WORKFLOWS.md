@@ -30,7 +30,8 @@ All 12 roles available. Orchestrator casts dynamically based on what it finds.
 
 ```
 Phase 1: Explore (analytical-level rigor)
-  → Scout + Builder + Explorer run in parallel
+     → Scout runs first and writes scout brief + novelty gate
+     → Once novelty gate is clear, Builder + Explorer may run in parallel
   → No pre-registration required
   → Critic reviews inline
 
@@ -50,18 +51,19 @@ Phase 3: Test (scientific-level rigor)
 1. **Classify** — Intent classifier returns `DISCOVER` + `ADAPTIVE`
 2. **Enqueue** — Investigation queued with mode=discover
 3. **Dispatch** — Workspace provisioned, orchestrator launched
-4. **Free Exploration** — Orchestrator reads question, dispatches Scout + any relevant initial agents in parallel. No rigid sequence.
-5. **Problem Positioning & Novelty Gate** — After Scout completes, orchestrator reads `.swarm/scout-brief.md` Problem Positioning and `.swarm/novelty-gate.json`. Based on assessment: REDUNDANT → halt and request human decision via `.swarm/human-gate.json` (approve/pivot/abort). INCREMENTAL → proceed but inject `framing_constraint` into workers' strategic context. NOVEL → proceed normally using `gap_statement`.
-6. **Hypothesis Formation** — As agents report back, orchestrator forms belief map. Results are framed as DELTA from the known frontier (cited in the scout brief). SERENDIPITY events can redirect exploration.
-7. **Plan Review** — At Analytical+ rigor, before dispatching structured investigation work, the orchestrator submits its task decomposition for review. Critic reviews the plan (at Scientific+: Critic + Theorist; at Experimental: + Methodologist). Reviewer writes verdict to `.swarm/plan-review.json`. Orchestrator revises if verdict is REVISE or RESTRUCTURE, then proceeds. One round only.
-8. **Rigor Escalation** — When hypotheses are testable, orchestrator engages Methodologist + Statistician. Pre-registration kicks in.
-9. **Parallel Investigation** — Multiple agents pursue different hypotheses simultaneously in **hypothesis tranches** (see *Hypothesis-Tranche Parallelism* below)
-10. **Inner Loop** — Each agent: execute → verify → retry (self-healing)
-11. **OODA Outer Loop** — Orchestrator observes findings, updates belief map, decides next actions
-12. **Review Gates** — Statistician + Critic review findings (activated when rigor escalated)
-13. **Synthesis** — Synthesizer assembles deliverable
-14. **Evaluation** — Evaluator scores output
-15. **Red Team Review (Scientific+ only)** — Before convergence, a cold-context Red Team reviewer reads only the deliverable + claim ledger + raw artifacts and writes `.swarm/red-team-verdict.json`. A `fatal_flaw` verdict blocks convergence until addressed. See INV-47.
+4. **Scout First** — Orchestrator reads question, dispatches Scout, and waits for both `.swarm/scout-brief.md` and `.swarm/novelty-gate.json` before dispatching other investigation agents.
+5. **Problem Positioning & Novelty Gate** — After Scout completes, orchestrator reads `.swarm/scout-brief.md` Problem Positioning and `.swarm/novelty-gate.json`. Missing `novelty-gate.json` after Scout completion is a BLOCKED setup error: dispatch Scout follow-up and do not proceed. Based on assessment: REDUNDANT → halt and request human decision via `.swarm/human-gate.json` (approve/pivot/abort). INCREMENTAL → proceed but inject `framing_constraint` into workers' strategic context. NOVEL → proceed normally using `gap_statement`.
+6. **Free Exploration** — After the novelty gate is clear, orchestrator casts relevant agents dynamically. Builder, Explorer, Investigator, and reviewers may pursue different hypotheses in parallel as evidence warrants.
+7. **Hypothesis Formation** — As agents report back, orchestrator forms belief map. Results are framed as DELTA from the known frontier (cited in the scout brief). SERENDIPITY events can redirect exploration.
+8. **Plan Review** — At Analytical+ rigor, before dispatching structured investigation work, the orchestrator submits its task decomposition for review. Critic reviews the plan (at Scientific+: Critic + Theorist; at Experimental: + Methodologist). Reviewer writes verdict to `.swarm/plan-review.json`. Orchestrator revises if verdict is REVISE or RESTRUCTURE, then proceeds. One round only.
+9. **Rigor Escalation** — When hypotheses are testable, orchestrator engages Methodologist + Statistician. Pre-registration kicks in.
+10. **Parallel Investigation** — Multiple agents pursue different hypotheses simultaneously in **hypothesis tranches** (see *Hypothesis-Tranche Parallelism* below)
+11. **Inner Loop** — Each agent: execute → verify → retry (self-healing)
+12. **OODA Outer Loop** — Orchestrator observes findings, updates belief map, decides next actions
+13. **Review Gates** — Statistician + Critic review findings (activated when rigor escalated)
+14. **Synthesis** — Synthesizer assembles deliverable
+15. **Evaluation** — Evaluator scores output
+16. **Red Team Review (Scientific+ only)** — Before convergence, a cold-context Red Team reviewer reads only the deliverable + claim ledger + raw artifacts and writes `.swarm/red-team-verdict.json`. A `fatal_flaw` verdict blocks convergence until addressed. See INV-47.
 
 ### Hypothesis-Tranche Parallelism
 
@@ -96,7 +98,7 @@ All 12 roles from the start.
 
 1. **Classify** — `PROVE` + `SCIENTIFIC` (or `EXPERIMENTAL` if replication signals detected)
 2. **Scout Phase** — Prior knowledge, SOTA anchoring, gap identification, problem positioning with deep methodology comparison of closest prior work
-3. **Novelty Gate** — Orchestrator reads `.swarm/novelty-gate.json`. REDUNDANT → halt for human decision. INCREMENTAL → proceed with `framing_constraint` injected into workers. NOVEL → proceed with `gap_statement`.
+3. **Novelty Gate** — Orchestrator reads `.swarm/novelty-gate.json`. Missing gate after Scout completion is a BLOCKED setup error requiring Scout follow-up. REDUNDANT → halt for human decision. INCREMENTAL → proceed with `framing_constraint` injected into workers. NOVEL → proceed with `gap_statement`.
 4. **Theory Phase** — Theorist proposes causal models and competing theories
 5. **Hypothesis Generation** — Orchestrator initializes belief map with hypotheses
 6. **Plan Review** — Orchestrator submits task decomposition for review before any experiments run. At Scientific rigor: Critic + Theorist review. At Experimental: Critic + Theorist + Methodologist. Reviewer(s) dispatched with `TYPE:plan-review` in task notes. Verdict written to `.swarm/plan-review.json`. Orchestrator revises plan if verdict is REVISE or RESTRUCTURE. One round only — no iterative loops.
@@ -429,6 +431,8 @@ Run 1: question → agents → findings → convergence → REVIEW
 Run 2: warm-start brief → agents → new findings → convergence → REVIEW
   ↓ PI feedback: "looks good"
 Run 2: REVIEW → COMPLETE
+     ↓ /voronoi paper <codename> only after at least one locked/replicated claim
+Paper-track manuscript production
 ```
 
 ### Key Mechanisms
@@ -443,6 +447,7 @@ Run 2: REVIEW → COMPLETE
 | Workspace reuse | dispatcher.py | Same git repo, archived `.swarm/`, git tags at boundaries |
 | Immutability | gates.py | Locked claims' artifacts can't be modified |
 | Self-critique | claims.py | Auto-identifies weaknesses before showing PI |
+| Reviewer Defense Brief | handlers_workflow.py | Blocks `/voronoi paper` until the lineage has at least one `locked` or `replicated` headline claim |
 
 ### Workspace Handoff Between Runs
 

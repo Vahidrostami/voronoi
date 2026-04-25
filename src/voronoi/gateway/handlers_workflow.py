@@ -5,14 +5,25 @@ Enqueue investigations: discover, prove, demo.
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from typing import Optional
 
+from voronoi.gateway.codename import codename_for_id
 from voronoi.gateway.progress import MODE_EMOJI, MODE_VERB
+from voronoi.science.claims import (
+    STATUS_ASSERTED,
+    STATUS_CHALLENGED,
+    STATUS_LOCKED,
+    STATUS_PROVISIONAL,
+    STATUS_REPLICATED,
+    STATUS_RETIRED,
+    Claim,
+    load_ledger,
+)
 from voronoi.server.queue import Investigation, InvestigationQueue
 from voronoi.server.runner import make_slug
-from voronoi.gateway.codename import codename_for_id
 
 logger = logging.getLogger("voronoi.router")
 
@@ -81,10 +92,17 @@ _PAPER_QUESTION_TEMPLATE = (
     "(Lit-Synthesizer ∥ Figure-Critic) → Scribe → Refiner. Use the "
     "completed investigation's `.swarm/deliverable.md`, "
     "`.swarm/claim-evidence.json`, `.swarm/belief-map.json`, and "
-    "`data/raw/` as inputs. Enforce the citation-coverage gate (≥0.90 "
-    "integration, zero orphan \\cite keys) and the Refiner safety halt "
-    "rules. Dual-rubric evaluator must report both CCSAN and MS_QUALITY."
+    "`data/raw/` as inputs. Treat only locked or replicated Claim Ledger "
+    "claims as headline manuscript claims; supported/provisional claims "
+    "belong in exploratory context or limitations, and challenged/retired "
+    "claims must be excluded from headline results. Enforce the "
+    "citation-coverage gate (≥0.90 integration, zero orphan \\cite keys) "
+    "and the Refiner safety halt rules. Dual-rubric evaluator must report "
+    "both CCSAN and MS_QUALITY."
 )
+
+_ACCEPTED_CLAIM_STATUSES = {STATUS_LOCKED, STATUS_REPLICATED}
+_FRAGILE_CLAIM_STATUSES = {STATUS_PROVISIONAL, STATUS_ASSERTED}
 
 
 def _find_completed_by_codename(q: InvestigationQueue, codename: str) -> Optional[Investigation]:
@@ -94,6 +112,107 @@ def _find_completed_by_codename(q: InvestigationQueue, codename: str) -> Optiona
         return None
     results = q.find_by_codename(target, statuses=("complete", "review"))
     return results[0] if results else None
+
+
+def _queue_base_dir(q: InvestigationQueue) -> Path:
+    """Return the Voronoi base directory associated with a queue."""
+    db_path = getattr(q, "db_path", None)
+    if isinstance(db_path, (str, Path)):
+        return Path(db_path).parent
+    return Path.home() / ".voronoi"
+
+
+def _fallback_claim_evidence_count(parent: Investigation) -> int:
+    """Count legacy claim-evidence entries when no Claim Ledger exists."""
+    if not parent.workspace_path:
+        return 0
+    path = Path(parent.workspace_path) / ".swarm" / "claim-evidence.json"
+    if not path.exists():
+        return 0
+    try:
+        data = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return 0
+    if isinstance(data, list):
+        return len([item for item in data if isinstance(item, dict) and item.get("claim")])
+    if isinstance(data, dict):
+        claims = data.get("claims")
+        if isinstance(claims, list):
+            return len([item for item in claims if isinstance(item, dict) and item.get("claim")])
+    return 0
+
+
+def _claim_line(claim: Claim) -> str:
+    statement = " ".join(claim.statement.split())
+    if len(statement) > 96:
+        statement = statement[:93].rstrip() + "..."
+    return f"• *{claim.id}* ({claim.status}): {statement}"
+
+
+def _reviewer_defense_brief(q: InvestigationQueue, parent: Investigation) -> str | None:
+    """Return a not-ready brief, or None when paper-track may proceed."""
+    lineage_id = parent.lineage_id or parent.id
+    ledger = load_ledger(lineage_id, base_dir=_queue_base_dir(q))
+    accepted = [c for c in ledger.claims if c.status in _ACCEPTED_CLAIM_STATUSES]
+    if accepted:
+        return None
+
+    fragile = [c for c in ledger.claims if c.status in _FRAGILE_CLAIM_STATUSES]
+    challenged = [c for c in ledger.claims if c.status == STATUS_CHALLENGED]
+    retired = [c for c in ledger.claims if c.status == STATUS_RETIRED]
+    fallback_count = _fallback_claim_evidence_count(parent) if not ledger.claims else 0
+    fragile_count = len(fragile) or fallback_count
+    label = parent.codename or f"#{parent.id}"
+
+    lines = [
+        f"🧪 *Reviewer Defense Brief — {label}*",
+        "",
+        "*Readiness verdict:* not paper-ready yet.",
+        "No `locked` or `replicated` Claim Ledger claim is available as a headline result.",
+        "",
+        "*Claim readiness*",
+        "• Paper-worthy headline claims: 0",
+        f"• Fragile/provisional claims: {fragile_count}",
+        f"• Challenged/retired claims: {len(challenged) + len(retired)}",
+    ]
+
+    if fragile:
+        lines.extend(["", "*Main claims needing PI acceptance*"])
+        lines.extend(_claim_line(claim) for claim in fragile[:3])
+    elif fallback_count:
+        lines.extend([
+            "",
+            f"`.swarm/claim-evidence.json` has {fallback_count} claim(s), but no Claim Ledger statuses.",
+            "Review and lock claims before turning them into a manuscript headline.",
+        ])
+    else:
+        lines.extend(["", "No claim ledger entries were found for this lineage."])
+
+    objections: list[str] = []
+    if fragile_count:
+        objections.append("Reviewer is likely to ask why the headline claim is not PI-accepted or replicated.")
+    if challenged:
+        ids = ", ".join(c.id for c in challenged[:5])
+        objections.append(f"Active challenged claim(s) need resolution or exclusion: {ids}.")
+    if retired:
+        objections.append("Retired claims must stay out of the headline results.")
+    if not objections:
+        objections.append("The paper needs at least one accepted claim before manuscript production.")
+
+    lines.extend(["", "*Likely reviewer objection*"])
+    lines.extend(f"• {item}" for item in objections[:3])
+    lines.extend([
+        "",
+        "*Likely next action*",
+        f"Run `/voronoi review {label}` and lock at least one defensible claim, or continue with a specific challenge.",
+        "",
+        "*Commands*",
+        f"• `/voronoi review {label}`",
+        f"• `/voronoi continue {label} lock C<id>`",
+        f"• `/voronoi continue {label} challenge C<id>: <reason>`",
+        f"• `/voronoi complete {label}` once the accepted claims are settled",
+    ])
+    return "\n".join(lines)
 
 
 def handle_paper(project_dir: str, codename: str, chat_id: str = "") -> str:
@@ -151,6 +270,10 @@ def handle_paper(project_dir: str, codename: str, chat_id: str = "") -> str:
             f"⚠️ Paper-track already {inv.status} for *{parent.codename}* "
             f"as *{label}*.\n\nUse `/voronoi status` to check progress."
         )
+
+    readiness_brief = _reviewer_defense_brief(q, parent)
+    if readiness_brief is not None:
+        return readiness_brief
 
     question = _PAPER_QUESTION_TEMPLATE.format(
         codename=parent.codename,

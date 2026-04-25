@@ -41,7 +41,7 @@ Paper-track (orthogonal — activated by `/voronoi paper <codename>`)
 
 The orchestrator selects roles based on the classified rigor level. Roles CANNOT be added after investigation start — only skipped.
 
-**Paper-track is orthogonal to rigor.** It is activated when the enqueued investigation's question begins with `[PAPER-TRACK]` (produced by `handle_paper()` in `handlers_workflow.py`). Paper-track presupposes a completed parent investigation whose `.swarm/deliverable.md` + `.swarm/claim-evidence.json` are the inputs. The Refiner only joins at Scientific+ because its simulated peer-review loop requires the full science-gate audit trail to enforce its halt rules safely.
+**Paper-track is orthogonal to rigor.** It is activated when the enqueued investigation's question begins with `[PAPER-TRACK]` (produced by `handle_paper()` in `handlers_workflow.py`). Paper-track presupposes a completed parent investigation whose Claim Ledger contains at least one `locked` or `replicated` headline claim; otherwise `/voronoi paper <codename>` returns a Reviewer Defense Brief and does not enqueue manuscript production. The completed investigation's `.swarm/deliverable.md` + `.swarm/claim-evidence.json` remain inputs, but provisional/asserted claims are exploratory or limitations only, while challenged/retired claims are excluded from headline results. The Refiner only joins at Scientific+ because its simulated peer-review loop requires the full science-gate audit trail to enforce its halt rules safely.
 
 ## 3. Role Details
 
@@ -88,17 +88,19 @@ The orchestrator selects roles based on the classified rigor level. Roles CANNOT
 **Analytical+ activation.** Researches existing knowledge, SOTA, and research landscape positioning before investigation begins.
 
 **Problem Positioning (Phase 0 — MANDATORY):**
-Before any other research, the Scout:
+Before hypothesis generation or other agents begin investigation work, the Scout:
 1. Extracts the FIELD and sub-problem from the prompt
-2. Runs `/research` queries to find the frontier, closest prior work, and specific gap
-3. Performs deep methodology comparison with the closest published paper
-4. Assesses novelty: NOVEL (proceed) / INCREMENTAL (proceed with framing) / REDUNDANT (halt)
-5. If REDUNDANT: writes `.swarm/novelty-gate.json` and flags `NOVELTY_BLOCKED`
+2. Performs Cross-Investigation Recall against prior Voronoi findings
+3. Runs `/research` queries to find the frontier, closest prior work, and specific gap
+4. Performs deep methodology comparison with the closest published paper, using both prior Voronoi recall and external literature
+5. Assesses novelty: NOVEL (proceed) / INCREMENTAL (proceed with framing) / REDUNDANT (halt)
+6. Always writes `.swarm/novelty-gate.json` with `status` and `assessment`; if REDUNDANT, also flags `NOVELTY_BLOCKED`
 
-**Cross-Investigation Recall:** Before external search, queries prior Voronoi investigation findings to avoid re-testing confirmed claims.
+**Cross-Investigation Recall:** Before external `/research`, queries prior Voronoi investigation findings to avoid re-testing confirmed claims.
 
 **Outputs**:
 - Knowledge brief with Problem Positioning section (field context, gap, closest work comparison)
+- `.swarm/novelty-gate.json` with `status: clear|blocked` and `assessment: novel|incremental|redundant`
 - SOTA anchoring (what's the current best?)
 - Identification of gaps in existing knowledge
 - Novelty assessment grounded in live `/research` results
@@ -106,7 +108,8 @@ Before any other research, the Scout:
 **Deep Research**: The scout uses the `deep-research` skill for literature review, prior-art search, and problem positioning queries. This skill leverages Copilot CLI's `/research` command to search GitHub repos + live web sources, providing citation-backed evidence instead of relying on LLM training data. See `.github/skills/deep-research/SKILL.md`.
 
 **Verify Loop**:
-- Knowledge brief written + Problem Positioning section complete + sources cited + novelty assessed
+- Knowledge brief written + `.swarm/novelty-gate.json` written + Problem Positioning section complete + sources cited + novelty assessed
+- `novelty-gate.json` must contain valid `status` (`clear` or `blocked`) and valid `assessment` (`novel`, `incremental`, or `redundant`) before the Scout may report `SCOUT_COMPLETE`
 - Max iterations: **3**
 - Completion promise: `SCOUT_COMPLETE`
 
@@ -383,7 +386,7 @@ Each iteration appends to `.swarm/verify-log-<task-id>.jsonl`:
 |------|-------------|---------|----------|
 | Builder | Tests + lint + PRODUCES | `BUILD_COMPLETE` | 5 |
 | Investigator | Experiment + metric + EVA + data | `EXPERIMENT_COMPLETE` | 3/variant |
-| Scout | Brief written + sources cited | `SCOUT_COMPLETE` | 3 |
+| Scout | Brief + novelty gate written, sources cited | `SCOUT_COMPLETE` | 3 |
 | Critic | 5-check list evaluated | `REVIEW_COMPLETE` | 2 |
 | Synthesizer | Registry complete + no orphans | `SYNTHESIS_COMPLETE` | 3 |
 

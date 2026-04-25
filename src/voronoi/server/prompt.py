@@ -251,6 +251,8 @@ def build_orchestrator_prompt(
                 sections.append(
                     "- If `.swarm/scout-brief.md` already exists, do NOT re-dispatch "
                     "the Scout — read the existing brief\n"
+                    "- If `.swarm/novelty-gate.json` is missing, treat Scout setup "
+                    "as BLOCKED and dispatch Scout follow-up before other work\n"
                     "- If `.swarm/belief-map.json` already exists, do NOT re-dispatch "
                     "Theorist — build on the existing belief map\n"
                     "- Only re-dispatch Methodologist if PI feedback requires design changes\n"
@@ -260,7 +262,8 @@ def build_orchestrator_prompt(
                 )
             else:
                 sections.append(
-                    "- Dispatch Scout first → wait for `.swarm/scout-brief.md`\n"
+                    "- Dispatch Scout first → wait for `.swarm/scout-brief.md` "
+                    "AND `.swarm/novelty-gate.json`\n"
                     "- Dispatch Theorist + Methodologist before investigators\n"
                     "- Every investigation task MUST have pre-registration\n"
                     "- Scientific rigor: Methodologist review is advisory; "
@@ -323,9 +326,13 @@ def build_orchestrator_prompt(
             "and gap statement\n"
             "- If a result matches a cited paper's finding, acknowledge it as "
             "replication, not discovery\n\n"
-            "**Novelty gate:** If `.swarm/novelty-gate.json` exists with "
-            '`status: blocked`, HALT. Write `.swarm/human-gate.json` with '
-            '`gate: novelty` and wait for human decision (approved / pivot / abort).\n'
+            "**Novelty gate:** After Scout completes, `.swarm/novelty-gate.json` "
+            "is REQUIRED. If it is missing, this is BLOCKED setup — dispatch "
+            "Scout follow-up and do not proceed to other agents. If it exists "
+            "with `status: blocked`, HALT. Write `.swarm/human-gate.json` "
+            "with `gate: novelty` and wait for human decision "
+            "(approved / pivot / abort). Only proceed when the gate exists "
+            "with `status: clear`.\n"
         )
 
     # -- Creative Freedom (DISCOVER mode) ------------------------------------
@@ -334,10 +341,13 @@ def build_orchestrator_prompt(
             "\n## Creative Freedom Protocol (DISCOVER Mode)\n\n"
             "This is free scientific exploration. You are NOT locked into a rigid sequence.\n\n"
             "**What to do:**\n"
+            "- Start with Scout only. Wait for `.swarm/scout-brief.md` and "
+            "a clear `.swarm/novelty-gate.json` before dispatching other "
+            "investigation agents\n"
             "- Cast roles DYNAMICALLY based on what you find — don't pre-commit to a fixed team\n"
-            "- Let multiple agents pursue different hypotheses simultaneously\n"
+            "- After the novelty gate is clear, let multiple agents pursue "
+            "different hypotheses simultaneously\n"
             "- When an agent finds something unexpected, consider pivoting the investigation\n"
-            "- Start with Scout + any agents that seem useful — no mandatory sequence\n\n"
             "**Adaptive rigor:** Start light (no pre-registration, no human gates). "
             "When testable hypotheses crystallize in the belief map, ESCALATE:\n"
             "- Engage Methodologist to review experimental design\n"
@@ -1203,7 +1213,19 @@ def build_worker_prompt(
             "NOT the paper itself\n"
         )
 
-    # 9b. Experiment worker: anti-polling guidance
+    # 9b. Scout: reinforce mandatory artifact contract from the role file.
+    if task_type == "scout":
+        sections.append(
+            "\n## Scout Output Contract — MANDATORY\n\n"
+            "Before closing this task, you MUST produce both files:\n"
+            "1. `.swarm/scout-brief.md`\n"
+            "2. `.swarm/novelty-gate.json`\n\n"
+            "Verify `novelty-gate.json` contains `status` (`clear` or `blocked`) "
+            "and `assessment` (`novel`, `incremental`, or `redundant`). A missing "
+            "or malformed novelty gate means the Scout task is NOT complete.\n"
+        )
+
+    # 9c. Experiment worker: anti-polling guidance
     if task_type in ("investigation", "experiment"):
         sections.append(
             "\n## Running Experiments — Block, Don't Poll\n\n"

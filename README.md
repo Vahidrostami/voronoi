@@ -170,6 +170,7 @@ graph TD
 | `/voronoi resume [id\|codename]` | Resume a paused or failed investigation |
 | `/voronoi review [codename]` | Show Claim Ledger — lock, challenge, or accept findings |
 | `/voronoi continue <codename> [feedback]` | Start a new round with PI feedback |
+| `/voronoi paper <codename>` | Start manuscript production after at least one locked or replicated claim; otherwise show a Reviewer Defense Brief |
 | `/voronoi claims [codename]` | Show current claim state for an investigation |
 | Free text in groups | Auto-detect intent and dispatch |
 
@@ -188,6 +189,7 @@ voronoi demo run emergent-ecosystem --safe
 | Demo | What it does |
 |------|-------------|
 | **computational-triage** | Evidence encoding as a scaling axis for multi-agent LLM reasoning |
+| **compilation-threshold-hunt** | Same hypothesis as `epistemic-trajectories`, but the swarm designs the experiment (surprise-budget protocol) |
 | **coupled-decisions** | 5 coupled levers, planted ground truth in 100K transactions |
 | **emergent-ecosystem** | 4 species on a 100×100 grid, each agent builds one in isolation |
 | **epistemic-trajectories** | Phase transitions in LLM multi-source reasoning across capability tiers |

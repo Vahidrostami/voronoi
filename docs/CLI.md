@@ -102,6 +102,7 @@ Updates framework files while preserving user edits.
 | Name | Description | Mode | Rigor |
 |------|-------------|------|-------|
 | `computational-triage` | Evidence encoding as a scaling axis for multi-agent LLM reasoning | PROVE | SCIENTIFIC |
+| `compilation-threshold-hunt` | Same hypothesis as `epistemic-trajectories` — swarm designs the experiment, surprise-budget protocol | PROVE | SCIENTIFIC |
 | `coupled-decisions` | 5 coupled levers, planted ground truth in 100K transactions | DISCOVER | SCIENTIFIC |
 | `emergent-ecosystem` | 4 species on 100×100 grid, each agent builds one | DISCOVER | ADAPTIVE |
 | `epistemic-trajectories` | Phase transitions in LLM multi-source reasoning across capability tiers | PROVE | SCIENTIFIC |

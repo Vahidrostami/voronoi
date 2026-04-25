@@ -97,7 +97,12 @@ if [ -f "$DIRECTIVE_PATH" ]; then
 import sys, json
 try:
     d = json.load(open('$DIRECTIVE_PATH'))
-    print((d.get('action') or '').strip())
+    action = (d.get('action') or '').strip()
+    if not action and d.get('directive') == 'sentinel_violation':
+        action = 'stop_and_fix'
+    if not action and d.get('level') == 'sentinel_violation':
+        action = 'stop_and_fix'
+    print(action)
 except Exception:
     print('')
 " 2>/dev/null || echo "")

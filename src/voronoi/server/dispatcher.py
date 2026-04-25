@@ -700,6 +700,15 @@ class InvestigationDispatcher:
 
             events = self._check_progress(run, session_alive=session_alive)
             events.extend(self._check_event_log(run))
+
+            # BUG-002 FIX: Stall escalation must run on EVERY due poll, not just
+            # when events are sent. Synthesize claim deltas and evaluate learning
+            # activity before the `if events:` check so quiet polls still advance
+            # the stall escalator.
+            claim_events = self._synthesize_claim_deltas(run)
+            all_events = list(events) + claim_events
+            self._update_learning_activity(run, all_events)
+
             if events:
                 # If orchestrator is parked, accumulate events for resume prompt
                 # and throttle Telegram digests to every 5 minutes
@@ -709,11 +718,11 @@ class InvestigationDispatcher:
                         run.last_parked_digest_at = now
                         logger.info("Investigation #%d: %d events while parked (phase=%s)",
                                     inv_id, len(events), run.phase)
-                        self._send_progress_batch(run, events)
+                        self._send_progress_batch(run, events, claim_events)
                 else:
                     logger.info("Investigation #%d: %d events (phase=%s)",
                                 inv_id, len(events), run.phase)
-                    self._send_progress_batch(run, events)
+                    self._send_progress_batch(run, events, claim_events)
 
             # Check for timeout (per-investigation override via .swarm/timeout_hours)
             elapsed_hours = (now - run.started_at) / 3600
@@ -1182,6 +1191,8 @@ class InvestigationDispatcher:
             "message": message,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
+        if level == "sentinel_violation":
+            data["action"] = "stop_and_fix"
         try:
             directive_path.write_text(json.dumps(data, indent=2))
             logger.info("Wrote %s directive for %s", level, run.label)
@@ -2719,14 +2730,13 @@ class InvestigationDispatcher:
                            run.label, e)
         self.running.pop(run.investigation_id, None)
 
-    def _send_progress_batch(self, run: RunningInvestigation, events: list[dict]) -> None:
-        # Synthesize claim-delta events from the persistent claim ledger
-        claim_events = self._synthesize_claim_deltas(run)
+    def _send_progress_batch(self, run: RunningInvestigation, events: list[dict], 
+                             claim_events: list[dict] | None = None) -> None:
+        # Claim deltas already synthesized and passed in from poll_progress
+        # (BUG-002 fix: moved synthesis upstream so stall evaluation happens
+        # every poll, not just when events are sent).
         if claim_events:
             events = list(events) + claim_events
-
-        # Track learning activity for LEARNING_STALLED detection
-        self._update_learning_activity(run, events)
 
         run.last_digest_events = events  # store for detail retrieval
         msg, msg_type = build_digest(
@@ -2790,6 +2800,31 @@ class InvestigationDispatcher:
                 return True
         return False
 
+    def _has_open_design_invalid_hard_check(self, run: RunningInvestigation) -> bool:
+        """Hard check for open DESIGN_INVALID tasks against Beads source-of-truth.
+
+        Called from completion gate when the orchestrator session is already
+        dead and task_snapshot may be stale/empty (BUG-001). Returns True if
+        Beads reports any non-closed task with DESIGN_INVALID in its notes.
+        """
+        from voronoi.beads import run_bd_json
+        code, tasks = run_bd_json("list", "--json", cwd=str(run.workspace_path))
+        if code != 0 or not isinstance(tasks, list):
+            # bd call failed — treat as no signal (allow completion)
+            return False
+        for task in tasks:
+            if not isinstance(task, dict):
+                continue
+            status = task.get("status", "")
+            notes = task.get("notes", "")
+            if status != "closed" and "DESIGN_INVALID" in notes:
+                logger.warning(
+                    "Completion blocked for %s: DESIGN_INVALID in task %s (hard check)",
+                    run.label, task.get("id", "?")
+                )
+                return True
+        return False
+
     _CONVERGED_STATUSES = frozenset({
         "converged", "exhausted", "diminishing_returns", "negative_result",
     })
@@ -2820,55 +2855,67 @@ class InvestigationDispatcher:
 
     def _is_complete(self, run: RunningInvestigation, *,
                      session_dead: bool = False) -> bool:
-        # HARD GATE: never complete while DESIGN_INVALID tasks are open
+        # HARD GATE: never complete while DESIGN_INVALID tasks are open.
+        # First, do a quick cached check to avoid expensive Beads calls when
+        # completion is not plausible.
         if self._has_open_design_invalid(run):
             return False
 
         effective_rigor = self._effective_rigor(run)
+        completion_plausible = False
 
         if (run.workspace_path / ".swarm" / "deliverable.md").exists():
             # For adaptive rigor (not yet escalated), deliverable is sufficient
             if effective_rigor == "adaptive":
-                return True
-            # For higher rigor, also need convergence signal
+                completion_plausible = True
+            else:
+                # For higher rigor, also need convergence signal
+                conv = run.workspace_path / ".swarm" / "convergence.json"
+                if conv.exists():
+                    try:
+                        data = json.loads(conv.read_text())
+                        if isinstance(data, dict) and self._convergence_status_ok(data):
+                            completion_plausible = True
+                    except (json.JSONDecodeError, OSError):
+                        pass
+                if not completion_plausible:
+                    # Deliverable exists but no convergence — try to generate one
+                    # Throttle to avoid running the gate every poll cycle (30s).
+                    # When session_dead=True, bypass cooldown.
+                    now = time.time()
+                    cooldown_ok = (now - run.last_convergence_attempt_at >= 300)
+                    if cooldown_ok or session_dead:
+                        run.last_convergence_attempt_at = now
+                        self._try_convergence_check(run)
+                    if conv.exists():
+                        try:
+                            data = json.loads(conv.read_text())
+                            if isinstance(data, dict) and self._convergence_status_ok(data):
+                                completion_plausible = True
+                        except (json.JSONDecodeError, OSError):
+                            pass
+        else:
+            # No deliverable — check if convergence.json alone signals completion
             conv = run.workspace_path / ".swarm" / "convergence.json"
             if conv.exists():
                 try:
                     data = json.loads(conv.read_text())
                     if isinstance(data, dict) and self._convergence_status_ok(data):
-                        return True
+                        completion_plausible = True
                 except (json.JSONDecodeError, OSError):
                     pass
-            # Deliverable exists but no convergence signal — attempt to
-            # generate one and re-check immediately (so we don't need to
-            # wait for the next poll cycle, which may never come if the
-            # agent already exited normally).
-            # Throttle to avoid running the convergence gate script every
-            # poll cycle (30s) when the gate consistently fails.
-            # When session_dead=True, bypass the cooldown — no more artifacts
-            # will be produced, so we must check now or never.
-            now = time.time()
-            cooldown_ok = (now - run.last_convergence_attempt_at >= 300)
-            if cooldown_ok or session_dead:
-                run.last_convergence_attempt_at = now
-                self._try_convergence_check(run)
-            if conv.exists():
-                try:
-                    data = json.loads(conv.read_text())
-                    if isinstance(data, dict) and self._convergence_status_ok(data):
-                        return True
-                except (json.JSONDecodeError, OSError):
-                    pass
+
+        if not completion_plausible:
             return False
-        conv = run.workspace_path / ".swarm" / "convergence.json"
-        if conv.exists():
-            try:
-                data = json.loads(conv.read_text())
-                if isinstance(data, dict) and self._convergence_status_ok(data):
-                    return True
-            except (json.JSONDecodeError, OSError):
-                pass
-        return False
+
+        # BUG-001 fix: completion signals exist, but task_snapshot may be stale
+        # (e.g., after dispatcher restart, or when session_alive=True and
+        # _check_progress skips bd to avoid lock contention). Do a final hard
+        # check against Beads source-of-truth before declaring completion.
+        if self._has_open_design_invalid_hard_check(run):
+            return False
+
+        return True
 
     def _try_convergence_check(self, run: RunningInvestigation) -> None:
         """Attempt to run a convergence check and write convergence.json.
@@ -3347,11 +3394,18 @@ class InvestigationDispatcher:
 
         for worker in workers:
             try:
-                # Check for a window matching this worker AND verify the
-                # process inside the pane is still a copilot/agent process,
-                # not a dead shell.  tmux windows survive after the foreground
-                # process exits, leaving an idle bash prompt — we must not
-                # treat those as "alive".
+                # BUG-003 FIX: Check for a window matching this worker AND
+                # verify the process inside the pane is still a copilot/agent
+                # process, not a dead shell. tmux windows survive after the
+                # foreground process exits, leaving an idle bash prompt — we
+                # must not treat those as "alive".
+                #
+                # Previous bug: `worker` is the short Beads ID like "bd-66",
+                # but `list-windows` returns the full window name like
+                # "agent-scribe-bd-66". The substring check `worker in w`
+                # finds a match, but then `list-panes -t :bd-66` fails
+                # because tmux needs the full window name. Fix: preserve the
+                # matched window name and use tmux exact-match syntax.
                 result = subprocess.run(
                     ["tmux", "list-windows", "-t", swarm_session, "-F",
                      "#{window_name}"],
@@ -3360,13 +3414,23 @@ class InvestigationDispatcher:
                 if result.returncode != 0:
                     continue
                 windows = result.stdout.strip().splitlines()
-                if not any(worker in w for w in windows):
+                
+                # Find the full window name that matches this worker
+                matched_window = None
+                for w in windows:
+                    if worker in w:
+                        matched_window = w
+                        break
+                
+                if not matched_window:
                     continue
+                
                 # Window exists — now check if the pane process is still
-                # an agent (not just a leftover shell)
+                # an agent (not just a leftover shell). Use tmux exact-match
+                # syntax to target the specific window by its full name.
                 pane_result = subprocess.run(
                     ["tmux", "list-panes", "-t",
-                     f"{swarm_session}:{worker}", "-F",
+                     f"{swarm_session}:={matched_window}", "-F",
                      "#{pane_current_command}"],
                     capture_output=True, text=True, timeout=5,
                 )
@@ -3379,14 +3443,14 @@ class InvestigationDispatcher:
                     if any(c.strip() and c.strip() not in shell_names
                            for c in cmds):
                         logger.debug("Worker %s still alive for %s "
-                                     "(pane_cmd=%s)",
-                                     worker, run.label,
+                                     "(window=%s, pane_cmd=%s)",
+                                     worker, run.label, matched_window,
                                      cmds[0] if cmds else "?")
                         return True
                     else:
                         logger.debug("Worker %s window exists but process "
-                                     "exited (pane_cmd=%s) for %s",
-                                     worker,
+                                     "exited (window=%s, pane_cmd=%s) for %s",
+                                     worker, matched_window,
                                      cmds[0] if cmds else "?",
                                      run.label)
             except (subprocess.TimeoutExpired, OSError):

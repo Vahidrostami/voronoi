@@ -195,6 +195,23 @@ class TestScienceSections:
         assert "scout-brief.md" in prompt
         assert "novelty-gate.json" in prompt
 
+    def test_discover_requires_scout_gate_before_other_agents(self):
+        prompt = build_orchestrator_prompt(
+            question="test", mode="discover", rigor="adaptive",
+        )
+        assert "Start with Scout only" in prompt
+        assert "clear `.swarm/novelty-gate.json`" in prompt
+        assert "Start with Scout + any agents" not in prompt
+        assert "no mandatory sequence" not in prompt
+
+    def test_missing_novelty_gate_after_scout_is_blocked(self):
+        prompt = build_orchestrator_prompt(
+            question="test", mode="discover", rigor="adaptive",
+        )
+        assert "After Scout completes, `.swarm/novelty-gate.json` is REQUIRED" in prompt
+        assert "If it is missing, this is BLOCKED setup" in prompt
+        assert "Only proceed when the gate exists with `status: clear`" in prompt
+
     def test_prove_has_positioning_rule(self):
         prompt = build_orchestrator_prompt(
             question="test", mode="prove", rigor="scientific",
@@ -788,6 +805,7 @@ class TestContinuationPromptConditionals:
             question="test", mode="prove", rigor="scientific",
         )
         assert "Dispatch Scout first" in prompt
+        assert "AND `.swarm/novelty-gate.json`" in prompt
 
     def test_continuation_preserves_success_criteria(self):
         """Continuation should read existing SC, not overwrite."""

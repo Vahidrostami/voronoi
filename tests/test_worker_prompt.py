@@ -195,6 +195,32 @@ class TestScoutResearch:
         )
         assert "deep-research/SKILL.md" in prompt
 
+    def test_scout_prompt_requires_novelty_gate_output(self):
+        """Scout worker prompt requires both brief and novelty gate artifacts."""
+        prompt = build_worker_prompt(
+            task_type="scout",
+            task_id="bd-1",
+            branch="agent-scout",
+            briefing="Research prior art for test investigation.",
+        )
+        assert "Scout Output Contract" in prompt
+        assert ".swarm/scout-brief.md" in prompt
+        assert ".swarm/novelty-gate.json" in prompt
+        assert "status` (`clear` or `blocked`)" in prompt
+        assert "assessment` (`novel`, `incremental`, or `redundant`)" in prompt
+
+    def test_scout_role_verify_loop_checks_novelty_gate(self):
+        """Scout role content must verify novelty-gate existence and shape."""
+        prompt = build_worker_prompt(
+            task_type="scout",
+            task_id="bd-1",
+            branch="agent-scout",
+            briefing="Research prior art for test investigation.",
+        )
+        assert "does .swarm/novelty-gate.json exist?" in prompt
+        assert "status clear|blocked" in prompt
+        assert "assessment novel|incremental|redundant" in prompt
+
     def test_non_scout_prompt_excludes_deep_research(self):
         """Non-scout tasks without deep-research in SKILL_MAP should not reference it."""
         prompt = build_worker_prompt(

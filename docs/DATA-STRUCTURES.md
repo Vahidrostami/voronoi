@@ -848,7 +848,11 @@ Human response options: `approved` (proceed as replication/extension), `pivot` (
 
 ### `.swarm/novelty-gate.json`
 
-Written by the Scout after Problem Positioning (Phase 0). Records the novelty assessment for all three states.
+Written by the Scout after Problem Positioning (Phase 0). This file is mandatory for every Scout completion and records the novelty assessment for all three states. If Scout has completed but this file is missing, the orchestrator treats the run as BLOCKED setup, dispatches Scout follow-up, and does not proceed to hypothesis or experiment work.
+
+Required fields for every assessment:
+- `status`: `clear` or `blocked`
+- `assessment`: `novel`, `incremental`, or `redundant`
 
 **NOVEL:**
 ```json
