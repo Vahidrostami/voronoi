@@ -127,6 +127,24 @@ On restart, the orchestrator reads the checkpoint and immediately knows:
 
 Without checkpoint: orchestrator re-reads all history → wastes context → may re-explore dead ends.
 
+### 4.4 PI-Facing Status Snapshot
+
+**Files**: `.swarm/run-status.json`, `.swarm/health.md`<br>
+**Code**: `src/voronoi/server/snapshot.py`
+
+The dispatcher regenerates a status snapshot during progress polling. The
+snapshot is a projection over checkpoint, Beads task counts, success criteria,
+sentinel audit, and key artifact presence. It is the first file a human or UI
+should read when asking "where is this investigation now?"
+
+This is deliberately separate from Beads: Beads remains the task ledger, while
+`run-status.json` and `health.md` explain the scientific/operator state in one
+place. The snapshot prevents status drift by preferring the dispatcher's Beads
+task cache when available, then falling back to checkpoint task counters when
+live-session database locks make a fresh Beads read unavailable. The operator
+view reports the freshest counts available to the dispatcher and labels pending
+gates explicitly.
+
 ## 5. Targeted Beads Queries
 
 ### 5.1 Problem

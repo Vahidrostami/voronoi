@@ -50,6 +50,16 @@ EFFORT_BY_RIGOR: dict[str, str] = {
 }
 
 
+def prompt_file_bootstrap(prompt_file: Path, role: str = "Voronoi agent") -> str:
+    """Return a short argv-safe prompt that points the agent at a prompt file."""
+    return (
+        f"You are the {role}. The full launch prompt is stored at "
+        f"{prompt_file}. Before doing anything else, read that file completely "
+        "and follow it exactly. Treat this bootstrap only as a pointer; the "
+        "file is authoritative."
+    )
+
+
 def launch_in_tmux(
     session: str,
     workspace_path: Path,
@@ -127,7 +137,9 @@ def launch_in_tmux(
     )
 
     safe_ws = shlex.quote(str(workspace_path))
-    safe_prompt = shlex.quote(str(prompt_file))
+    bootstrap_prompt = shlex.quote(
+        prompt_file_bootstrap(prompt_file, "Voronoi swarm orchestrator")
+    )
 
     # Inject auth/state env vars.
     #
@@ -170,7 +182,7 @@ def launch_in_tmux(
         ["tmux", "send-keys", "-t", session,
          f'cd {safe_ws} && {source_cmd}{agent_command} {agent_flags}{model_flag}'
          f'{effort_flag}{share_flag} '
-         f'-p "$(cat {safe_prompt})" ; exit',
+         f'-p {bootstrap_prompt} ; exit',
          "Enter"],
         capture_output=True, timeout=10,
     )

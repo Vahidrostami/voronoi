@@ -301,6 +301,8 @@ src/voronoi/
 
 Each agent is a **full Copilot CLI session** in its own **tmux window** with its own **git worktree**. No custom IPC — agents communicate through git + [Beads](https://github.com/steveyegge/beads).
 
+The dispatcher also regenerates `.swarm/run-status.json` and `.swarm/health.md` on progress polls. These files project Beads, checkpoint, and gate state into the PI/operator view used by humans and future UI surfaces.
+
 ```
 ~/.voronoi/              # server mode
   config.json  queue.db

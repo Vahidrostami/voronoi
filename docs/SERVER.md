@@ -214,6 +214,17 @@ class DispatcherConfig:
 
 ### Progress Event Synthesis
 
+Every progress poll writes an **investigation status snapshot** to
+`.swarm/run-status.json` and `.swarm/health.md` from the current
+`WorkspaceSnapshot`, dispatcher state, checkpoint, sentinel audit, and Beads
+task snapshot. This is the canonical PI/operator status surface: current phase,
+active/ready work, gate states, expected next action, and short human-readable
+summary. It does not replace Beads; it projects Beads plus `.swarm/` state into
+a single concise view. When a live agent session keeps the embedded Beads
+database locked and the dispatcher cannot refresh the task list, the snapshot
+uses the last dispatcher task cache or checkpoint task counters instead of
+publishing zero visible work.
+
 Beyond the worker-emitted event stream, the dispatcher synthesizes two classes of events on every poll:
 
 1. **Claim deltas** (`_synthesize_claim_deltas`) — diffs the persistent claim ledger at `~/.voronoi/ledgers/<lineage_id>/claim-ledger.json` against the last-seen state stored on `RunningInvestigation.last_ledger_map`. Emits synthetic `{"type": "claim_delta", "kind": "new"|"transition", "claim_id", "from_status", "to_status", "statement"}` events. The first call after dispatcher start seeds the baseline without emitting events (`_ledger_baseline_seeded`), so restarts do not re-announce the full ledger. Consumed by `build_digest` — see GATEWAY.md §8.
@@ -359,6 +370,7 @@ class InvestigationDispatcher:
 3. Call `queue.next_ready(max_concurrent)` to claim the next queued investigation
 4. Spawn a **background thread** (`_launch_investigation_safe`) for the potentially slow provisioning + launch — this prevents the 10-second scheduler tick from being blocked by `git clone` (which can take minutes for large repos)
 5. The background thread provisions workspace via `workspace_mgr`, copies demo files, builds prompt, launches in tmux, adds to `self.running`, and clears `_launching` when done
+    - The full orchestrator prompt is written to `.swarm/orchestrator-prompt.txt`; the Copilot CLI `-p` argument receives only a short bootstrap instruction telling the agent to read that file first. This keeps large prompts out of OS argv while preserving Copilot's documented `-p <text>` interface.
 6. `_recover_running()` skips investigations in `_launching` to avoid interfering with in-progress launches
 
 ### Progress Polling

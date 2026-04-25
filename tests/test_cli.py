@@ -1,5 +1,6 @@
 """Tests for voronoi CLI."""
 
+import argparse
 import json
 import subprocess
 import sys
@@ -10,6 +11,54 @@ import pytest
 
 from voronoi import __version__
 from voronoi.cli import find_data_dir
+
+
+def test_demo_run_uses_bootstrap_prompt_not_full_prompt(tmp_path, monkeypatch):
+    """Demo launch keeps the full orchestrator prompt out of subprocess argv."""
+    from voronoi import cli
+
+    data_dir = tmp_path / "data"
+    demo_dir = data_dir / "demos" / "large-demo"
+    demo_dir.mkdir(parents=True)
+    (demo_dir / "PROMPT.md").write_text("demo prompt")
+
+    target = tmp_path / "workspace"
+    target.mkdir()
+    (target / "scripts").mkdir()
+    monkeypatch.chdir(target)
+
+    captured_cmd = []
+
+    def fake_run(cmd, cwd=None):
+        captured_cmd.extend(cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(cli, "find_data_dir", lambda: data_dir)
+    monkeypatch.setattr(cli, "list_demos", lambda data: [{
+        "name": "large-demo",
+        "path": demo_dir,
+        "description": "Large",
+        "has_prompt": True,
+    }])
+    monkeypatch.setattr(cli.shutil, "which", lambda cmd: "/usr/bin/copilot")
+    monkeypatch.setattr(
+        cli, "_build_orchestrator_prompt",
+        lambda **kwargs: "FULL_DEMO_PROMPT_SENTINEL " * 5000,
+    )
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    cli.cmd_demo(argparse.Namespace(
+        demo_action="run", name="large-demo", safe=False, dry_run=False,
+    ))
+
+    assert captured_cmd
+    assert "-p" in captured_cmd
+    prompt_arg = captured_cmd[captured_cmd.index("-p") + 1]
+    assert "FULL_DEMO_PROMPT_SENTINEL" not in prompt_arg
+    assert ".swarm/orchestrator-prompt.txt" in prompt_arg
+    assert "FULL_DEMO_PROMPT_SENTINEL" in (
+        target / ".swarm" / "orchestrator-prompt.txt"
+    ).read_text()
 
 
 def test_version():

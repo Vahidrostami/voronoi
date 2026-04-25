@@ -170,6 +170,39 @@ class TestProgressMonitoring:
         assert run.phase == "planning"
         assert any("planning" in e["msg"].lower() for e in events)
 
+    def test_write_status_snapshot_uses_cached_task_state(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "orchestrator-checkpoint.json").write_text(json.dumps({
+            "phase": "phase1_study2",
+            "active_workers": ["agent-study2"],
+        }))
+        run = RunningInvestigation(
+            investigation_id=17,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test encoding",
+            mode="prove",
+            codename="triage",
+            rigor="scientific",
+        )
+        run.task_snapshot = {
+            "inv17-xl7": {"status": "in_progress", "title": "Phase 1 pilot", "notes": ""},
+            "inv17-gko": {"status": "open", "title": "Missing artifact", "notes": ""},
+        }
+
+        d._write_status_snapshot(run, session_alive=True)
+
+        status = json.loads((swarm / "run-status.json").read_text())
+        health = (swarm / "health.md").read_text()
+        assert status["investigation_id"] == 17
+        assert status["phase"] == "phase1_study2"
+        assert status["tasks"]["in_progress_items"][0]["id"] == "inv17-xl7"
+        assert status["tasks"]["ready_items"][0]["id"] == "inv17-gko"
+        assert status["science"]["active_workers"] == ["agent-study2"]
+        assert "Investigation Health: triage" in health
+
     def test_is_complete_with_deliverable(self, dispatcher_setup):
         d, msgs, docs, tmp_path = dispatcher_setup
         run = RunningInvestigation(
@@ -1275,8 +1308,10 @@ sys.exit(0)
 
         script = Path(__file__).resolve().parents[1] / "src" / "voronoi" / "data" / "scripts" / "spawn-agent.sh"
         env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+        prompt_src = tmp_path / "worker-prompt.txt"
+        prompt_src.write_text("WORKER_PROMPT_SENTINEL " * 5000)
         result = subprocess.run(
-            ["bash", str(script), "--safe", "bd-2", "agent-scout"],
+            ["bash", str(script), "--safe", "bd-2", "agent-scout", str(prompt_src)],
             cwd=project,
             env=env,
             capture_output=True,
@@ -1289,6 +1324,9 @@ sys.exit(0)
         assert "--disallow-tool mcp__ssh" in command
         assert "--deny-tool=write" in command
         assert "--allow-all" not in command
+        assert "WORKER_PROMPT_SENTINEL" not in command
+        assert "$(cat .agent-prompt.txt)" not in command
+        assert ".agent-prompt.txt" in command
 
     def test_has_experiment_tasks(self, dispatcher_setup):
         d, msgs, docs, tmp_path = dispatcher_setup
@@ -1478,6 +1516,28 @@ class TestLaunchInTmux:
         assert "source" in cmd
         assert ".tmux-env-test-session" in cmd
         assert "rm -f" in cmd
+
+    def test_launch_uses_bootstrap_prompt_not_prompt_file_contents(self, dispatcher_setup):
+        """Large prompt files must not be expanded into tmux argv."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir(parents=True, exist_ok=True)
+        prompt_file = swarm / "orchestrator-prompt.txt"
+        prompt_file.write_text("FULL_PROMPT_SENTINEL " * 5000)
+
+        with patch("voronoi.server.tmux.shutil.which", return_value="/bin/echo"), \
+             patch("voronoi.server.tmux.subprocess.run",
+                   return_value=MagicMock(returncode=0, stderr=b"")) as mock_run:
+            d._launch_in_tmux("test-session", tmp_path, prompt_file=prompt_file)
+
+        send_keys_calls = [c for c in mock_run.call_args_list
+                           if "send-keys" in str(c)]
+        assert send_keys_calls
+        cmd = str(send_keys_calls[-1])
+        assert "FULL_PROMPT_SENTINEL" not in cmd
+        assert "$(cat" not in cmd
+        assert "orchestrator-prompt.txt" in cmd
+        assert "read that file completely" in cmd
 
     def test_gh_token_written_to_env_file(self, dispatcher_setup, monkeypatch):
         """GH_TOKEN from .env reaches copilot via env file, not just set-environment."""

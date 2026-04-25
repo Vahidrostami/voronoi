@@ -379,7 +379,10 @@ def cmd_demo(args: argparse.Namespace) -> None:
         if args.dry_run:
             print(f"\n--dry-run: demo copied but not started.")
             print(f"To run manually:")
-            print(f"  copilot --allow-all -p \"$(cat .swarm/orchestrator-prompt.txt)\"")
+            print(
+                "  copilot --allow-all -p \"Read .swarm/orchestrator-prompt.txt "
+                "completely before acting.\""
+            )
             return
 
         # Read config for agent settings
@@ -410,14 +413,21 @@ def cmd_demo(args: argparse.Namespace) -> None:
         # Write prompt to file for reference/debugging
         swarm_dir = target / ".swarm"
         swarm_dir.mkdir(parents=True, exist_ok=True)
-        (swarm_dir / "orchestrator-prompt.txt").write_text(prompt)
+        prompt_file = swarm_dir / "orchestrator-prompt.txt"
+        prompt_file.write_text(prompt)
+        bootstrap_prompt = (
+            "You are the Voronoi demo orchestrator. The full launch prompt is "
+            "stored at .swarm/orchestrator-prompt.txt. Before doing anything "
+            "else, read that file completely and follow it exactly. Treat this "
+            "bootstrap only as a pointer; the file is authoritative."
+        )
 
         # Launch orchestrator — Copilot IS the autopilot now
         agent_flags = "--allow-all"
         cmd = [agent_cmd] + agent_flags.split()
         if orchestrator_model:
             cmd += ["--model", orchestrator_model]
-        cmd += ["-p", prompt]
+        cmd += ["-p", bootstrap_prompt]
 
         project_name = target.name
         print(f"\nLaunching orchestrator...\n")

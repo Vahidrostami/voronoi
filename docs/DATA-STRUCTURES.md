@@ -581,6 +581,61 @@ CREATE TABLE conversation_state (
 
 ## 7. File Formats
 
+### `.swarm/run-status.json` and `.swarm/health.md` — PI-facing status snapshot
+
+The dispatcher writes a concise investigation status snapshot during progress
+polling. It projects the existing task/checkpoint/artifact state into one
+human-readable authority so operators do not have to reconcile Beads,
+checkpoint files, git history, and output artifacts by hand.
+
+`run-status.json` is machine-readable and has this shape:
+
+```json
+{
+  "investigation_id": 17,
+  "codename": "computational-triage",
+  "mode": "prove",
+  "rigor": "scientific",
+  "question": "...",
+  "phase": "phase1_study2",
+  "status": "running",
+  "session_alive": true,
+  "orchestrator_parked": false,
+  "generated_at": "2026-04-25T12:00:00+00:00",
+  "tasks": {
+    "total": 18,
+    "closed": 14,
+    "in_progress": 1,
+    "ready": 3,
+    "in_progress_items": [{"id": "inv17-xl7", "title": "Phase 1 pilot"}],
+    "ready_items": [{"id": "inv17-gko", "title": "Missing artifact"}]
+  },
+  "science": {
+    "criteria_met": 0,
+    "criteria_total": 12,
+    "eval_score": 0.0,
+    "active_workers": ["agent-phase1-study2"],
+    "next_actions": ["finish Study 2"],
+    "recent_events": ["Study 1 merged"]
+  },
+  "gates": {
+    "deliverable": "pending",
+    "convergence": "pending",
+    "belief_map": "present",
+    "eval_score": "pending",
+    "success_criteria": "0/12",
+    "sentinel": "passed"
+  },
+  "operator_summary": "Running phase1_study2 with 14/18 tasks closed.",
+  "recommended_action": "wait_for_active_work"
+}
+```
+
+`health.md` is the companion PI-facing Markdown view. It summarizes current
+phase, task counts, active/ready work, gate state, and the recommended next
+operator action. Both files are regenerated from existing state and are not a
+replacement for Beads; Beads remains the durable task ledger.
+
 ### `.swarm/manuscript/` — Paper-track state (INV-04, manuscript sub-tree)
 
 All manuscript production artefacts live under `.swarm/manuscript/` so they

@@ -6,9 +6,12 @@ structured results.  Tools are registered with the MCP server in ``server.py``.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
+import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +33,8 @@ from voronoi.mcp.validators import (
 
 logger = logging.getLogger("voronoi.mcp.tools_beads")
 
+VALID_ROBUST_VALUES = frozenset({"yes", "no"})
+
 
 def _workspace() -> str:
     return os.environ.get("VORONOI_WORKSPACE", ".")
@@ -48,6 +53,27 @@ def _write_task_notes(task_id: str, notes: str, workspace: str) -> None:
     code, stdout = run_bd("update", task_id, "--notes", notes, cwd=workspace)
     if code != 0:
         raise ValidationError(f"bd update failed: {stdout}")
+
+
+@contextmanager
+def _task_notes_lock(workspace: str):
+    """Serialize read-modify-write updates to Beads notes within one workspace."""
+    try:
+        import fcntl  # Unix-only; Voronoi dispatch runs on Unix-like hosts.
+    except ImportError:
+        yield
+        return
+
+    lock_root = Path(tempfile.gettempdir()) / "voronoi-mcp-locks"
+    lock_root.mkdir(parents=True, exist_ok=True)
+    lock_key = str(Path(workspace).resolve()).encode("utf-8")
+    lock_path = lock_root / f"{hashlib.sha256(lock_key).hexdigest()}.notes.lock"
+    with lock_path.open("w") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def _upsert_line_field(notes: str, field: str, line: str) -> tuple[str, bool]:
@@ -86,25 +112,44 @@ def _upsert_task_fields(
     require_existing: bool = True,
 ) -> str:
     """Merge structured fields into existing Beads notes without clobbering other metadata."""
-    task = _task_data(task_id, workspace)
-    if task is None and require_existing:
-        raise ValidationError(f"Cannot read task {task_id}")
+    with _task_notes_lock(workspace):
+        task = _task_data(task_id, workspace)
+        if task is None and require_existing:
+            raise ValidationError(f"Cannot read task {task_id}")
 
-    notes = task.get("notes", "") if task else ""
-    line_fields = line_fields or set()
-    for field, value in field_updates:
-        if field in line_fields:
-            notes, _ = _upsert_line_field(notes, field, value)
-        else:
-            notes, _ = _upsert_token_field(notes, field, value)
+        notes = task.get("notes", "") if task else ""
+        line_fields = line_fields or set()
+        for field, value in field_updates:
+            if field in line_fields:
+                notes, _ = _upsert_line_field(notes, field, value)
+            else:
+                notes, _ = _upsert_token_field(notes, field, value)
 
-    _write_task_notes(task_id, notes, workspace)
-    return notes
+        _write_task_notes(task_id, notes, workspace)
+        return notes
 
 
 def _bracket_safe(value: str) -> str:
     """Normalize text used in bracket-parsed pre-registration fields."""
     return value.replace("[", "(").replace("]", ")").strip()
+
+
+def _workspace_relative_path(path: str, workspace: str, field: str) -> Path:
+    """Resolve a workspace-relative path and reject absolute/escaping paths."""
+    path = require_non_empty(path, field)
+    candidate = Path(path)
+    if candidate.is_absolute():
+        raise ValidationError(f"{field}: path must be relative to workspace: {path}")
+    ws = Path(workspace).resolve()
+    full = (ws / candidate).resolve()
+    if not full.is_relative_to(ws):
+        raise ValidationError(f"{field}: path escapes workspace: {path}")
+    return full
+
+
+def _iter_artifact_paths(paths: str) -> list[str]:
+    """Split a comma-separated artifact path list and drop empty entries."""
+    return [path.strip() for path in paths.split(",") if path.strip()]
 
 
 # ---------------------------------------------------------------------------
@@ -142,6 +187,9 @@ def create_task(
             req = req.strip()
             if req:
                 require_file_exists(req, ws, "requires")
+    if produces:
+        for artifact in _iter_artifact_paths(produces):
+            _workspace_relative_path(artifact, ws, "produces")
 
     # Build bd create command
     args = ["create", title]
@@ -207,7 +255,10 @@ def close_task(task_id: str, reason: str = "") -> dict[str, Any]:
         if line.startswith("PRODUCES:"):
             for artifact in line[len("PRODUCES:"):].split(","):
                 artifact = artifact.strip()
-                if artifact and not (Path(ws) / artifact).exists():
+                if not artifact:
+                    continue
+                artifact_path = _workspace_relative_path(artifact, ws, "produces")
+                if not artifact_path.exists():
                     raise ValidationError(
                         f"Cannot close task: PRODUCES artifact missing: {artifact}"
                     )
@@ -331,11 +382,13 @@ def record_finding(
     ]
     if p_value:
         field_updates.append(("P", f"P:{p_value}"))
-    if confidence:
+    if confidence is not None and confidence != "":
         conf = require_probability(confidence, "confidence")
         field_updates.append(("CONFIDENCE", f"CONFIDENCE:{conf}"))
     if robust:
-        field_updates.append(("ROBUST", f"ROBUST:{robust}"))
+        robust_value = require_enum(str(robust).strip().lower(),
+                                    VALID_ROBUST_VALUES, "robust")
+        field_updates.append(("ROBUST", f"ROBUST:{robust_value}"))
     if interpretation:
         field_updates.append(("INTERPRETATION", f"INTERPRETATION:{interpretation}"))
 

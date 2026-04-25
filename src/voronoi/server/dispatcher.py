@@ -708,6 +708,7 @@ class InvestigationDispatcher:
             claim_events = self._synthesize_claim_deltas(run)
             all_events = list(events) + claim_events
             self._update_learning_activity(run, all_events)
+            self._write_status_snapshot(run, session_alive=session_alive)
 
             if events:
                 # If orchestrator is parked, accumulate events for resume prompt
@@ -1536,6 +1537,46 @@ class InvestigationDispatcher:
                              run.investigation_id, e)
 
         return events
+
+    def _write_status_snapshot(self, run: RunningInvestigation, *,
+                               session_alive: bool) -> None:
+        """Write the PI-facing status snapshot for the current poll."""
+        try:
+            from voronoi.server.snapshot import (
+                WorkspaceSnapshot,
+                build_investigation_status,
+                write_investigation_status,
+            )
+            tasks = [
+                {
+                    "id": task_id,
+                    "status": task.get("status", ""),
+                    "title": task.get("title", ""),
+                    "notes": task.get("notes", ""),
+                }
+                for task_id, task in run.task_snapshot.items()
+                if isinstance(task, dict)
+            ] or None
+            snapshot = WorkspaceSnapshot.from_workspace(
+                run.workspace_path,
+                tasks=tasks,
+                old_phase=run.phase,
+            )
+            status = build_investigation_status(
+                run.workspace_path,
+                snapshot,
+                investigation_id=run.investigation_id,
+                codename=run.codename,
+                mode=run.mode,
+                rigor=run.rigor,
+                question=run.question,
+                session_alive=session_alive,
+                orchestrator_parked=run.orchestrator_parked,
+            )
+            write_investigation_status(run.workspace_path, status)
+        except Exception as exc:
+            logger.debug("Failed to write status snapshot for #%d: %s",
+                         run.investigation_id, exc)
 
     def _diff_tasks(self, run: RunningInvestigation, tasks: list[dict]) -> list[dict]:
         events: list[dict] = []

@@ -407,8 +407,10 @@ if [[ -d "${PROJECT_DIR}/.beads" ]]; then
 fi
 
 if [[ -f "$WORKTREE_PATH/.agent-prompt.txt" ]]; then
+    BOOTSTRAP_PROMPT="You are a Voronoi worker agent. The complete task prompt is stored at .agent-prompt.txt in this worktree. Before doing anything else, read .agent-prompt.txt completely and follow it exactly. Treat this bootstrap only as a pointer; the file is authoritative."
+    SAFE_BOOTSTRAP=$(printf '%s' "$BOOTSTRAP_PROMPT" | python3 -c 'import shlex, sys; print(shlex.quote(sys.stdin.read()))')
     tmux send-keys -t "$TMUX_SESSION:$BRANCH_NAME" \
-        "cd $SAFE_WP && $SAFE_CMD $SAFE_FLAGS$MODEL_FLAG$EFFORT_FLAG$SHARE_FLAG -p \"\$(cat .agent-prompt.txt)\"" Enter
+        "cd $SAFE_WP && $SAFE_CMD $SAFE_FLAGS$MODEL_FLAG$EFFORT_FLAG$SHARE_FLAG -p $SAFE_BOOTSTRAP" Enter
 else
     echo "⚠ No prompt file found — agent will start in interactive mode"
     tmux send-keys -t "$TMUX_SESSION:$BRANCH_NAME" \

@@ -259,6 +259,48 @@ class TestRecordFinding:
                     data_hash="sha256:0000",
                 )
 
+    def test_confidence_zero_is_preserved_and_robust_is_normalized(self, tmp_path):
+        from voronoi.mcp.tools_beads import record_finding
+
+        data_file = tmp_path / "data.csv"
+        data_file.write_text("x,y\n1,2\n")
+        written_notes = ""
+
+        def fake_run_bd(*args, cwd=None):
+            nonlocal written_notes
+            if "--notes" in args:
+                written_notes = args[args.index("--notes") + 1]
+            return 0, "ok"
+
+        with patch.dict(os.environ, {"VORONOI_WORKSPACE": str(tmp_path)}), \
+             patch("voronoi.mcp.tools_beads.run_bd", side_effect=fake_run_bd), \
+             patch("voronoi.mcp.tools_beads.run_bd_json", return_value=(0, {"notes": ""})):
+            record_finding(
+                task_id="bd-42", effect_size="d=0.5",
+                ci_95=[0.3, 0.7], n=100,
+                stat_test="t-test", valence="positive",
+                data_file="data.csv", confidence=0.0,
+                robust="YES",
+            )
+
+        assert "CONFIDENCE:0.0" in written_notes
+        assert "ROBUST:yes" in written_notes
+
+    def test_invalid_robust_value_rejected(self, tmp_path):
+        from voronoi.mcp.tools_beads import record_finding
+
+        data_file = tmp_path / "data.csv"
+        data_file.write_text("x,y\n1,2\n")
+
+        with patch.dict(os.environ, {"VORONOI_WORKSPACE": str(tmp_path)}):
+            with pytest.raises(ValidationError, match="robust must be one of"):
+                record_finding(
+                    task_id="bd-42", effect_size="d=0.5",
+                    ci_95=[0.3, 0.7], n=100,
+                    stat_test="t-test", valence="positive",
+                    data_file="data.csv", robust="maybe",
+                )
+
 
 class TestPreRegister:
     def test_valid_pre_registration(self, tmp_path):
@@ -293,8 +335,42 @@ class TestPreRegister:
                     effect_size="d=0.50",
                 )
 
+    def test_mcp_schema_includes_all_required_pre_registration_fields(self):
+        from voronoi.mcp.server import TOOLS, _build_registry
+
+        TOOLS.clear()
+        _build_registry()
+        tool = TOOLS["voronoi_pre_register"]
+
+        assert "expected_result" in tool["params"]
+        assert "effect_size" in tool["params"]
+        assert "expected_result" in tool["required"]
+        assert "effect_size" in tool["required"]
+
 
 class TestCloseTask:
+    def test_create_rejects_produces_path_escape(self, tmp_path):
+        from voronoi.mcp.tools_beads import create_task
+
+        with patch.dict(os.environ, {"VORONOI_WORKSPACE": str(tmp_path)}):
+            with pytest.raises(ValidationError, match="path escapes workspace"):
+                create_task("bad output", produces="../outside.json")
+
+    def test_close_rejects_absolute_produces_path(self, tmp_path):
+        from voronoi.mcp.tools_beads import close_task
+
+        outside = tmp_path.parent / "outside-results.json"
+        outside.write_text("{}")
+        task_data = {"notes": f"PRODUCES:{outside}"}
+
+        try:
+            with patch.dict(os.environ, {"VORONOI_WORKSPACE": str(tmp_path)}), \
+                 patch("voronoi.mcp.tools_beads.run_bd_json", return_value=(0, task_data)):
+                with pytest.raises(ValidationError, match="path must be relative"):
+                    close_task("bd-42", "done")
+        finally:
+            outside.unlink(missing_ok=True)
+
     def test_close_with_missing_produces(self, tmp_path):
         from voronoi.mcp.tools_beads import close_task
 

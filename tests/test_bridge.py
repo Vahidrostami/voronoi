@@ -8,6 +8,7 @@ to these modules — it is not tested directly here.
 import asyncio
 import importlib.util
 import json
+import subprocess
 import threading
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -41,6 +42,37 @@ from voronoi.gateway.router import (
     handle_deliberate,
     handle_ops,
 )
+
+
+def test_run_copilot_query_uses_temp_prompt_file_not_full_argv(tmp_path):
+    """Large ask prompts are stored in a temp file and referenced by bootstrap."""
+    from voronoi.gateway import handlers_query
+
+    full_prompt = "ASK_PROMPT_SENTINEL " * 5000
+    captured_cmd = []
+    prompt_path = ""
+
+    def fake_run(cmd, **kwargs):
+        nonlocal prompt_path
+        captured_cmd.extend(cmd)
+        prompt_arg = cmd[cmd.index("-p") + 1]
+        marker = "stored at "
+        start = prompt_arg.index(marker) + len(marker)
+        prompt_path = prompt_arg[start:].split(". Before", 1)[0]
+        assert Path(prompt_path).read_text() == full_prompt
+        return subprocess.CompletedProcess(cmd, 0, stdout="answer\n", stderr="")
+
+    with patch("shutil.which", return_value="/usr/bin/copilot"), \
+         patch("voronoi.gateway.handlers_query.subprocess.run", side_effect=fake_run):
+        result = handlers_query._run_copilot_query(full_prompt)
+
+    assert result == "answer"
+    assert "-p" in captured_cmd
+    prompt_arg = captured_cmd[captured_cmd.index("-p") + 1]
+    assert "ASK_PROMPT_SENTINEL" not in prompt_arg
+    assert "stored at" in prompt_arg
+    assert prompt_path
+    assert not Path(prompt_path).exists()
 
 
 def _load_bridge_module():

@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Optional
@@ -908,7 +909,25 @@ def _run_copilot_query(prompt: str) -> Optional[str]:
     cmd = [copilot]
     if model:
         cmd.extend(["--model", model])
-    cmd.extend(["-p", prompt, "-s", "--no-color"])
+
+    prompt_file_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", prefix="voronoi-copilot-prompt-", suffix=".txt",
+            delete=False,
+        ) as prompt_file:
+            prompt_file.write(prompt)
+            prompt_file_path = prompt_file.name
+        bootstrap_prompt = (
+            "You are answering a Voronoi operator question. The full prompt is "
+            f"stored at {prompt_file_path}. Before doing anything else, read "
+            "that file completely and answer according to it. Treat this "
+            "bootstrap only as a pointer; the file is authoritative."
+        )
+    except OSError:
+        return None
+
+    cmd.extend(["-p", bootstrap_prompt, "-s", "--no-color"])
 
     try:
         result = sp.run(
@@ -922,6 +941,12 @@ def _run_copilot_query(prompt: str) -> Optional[str]:
             return result.stdout.strip()
     except (sp.TimeoutExpired, OSError, FileNotFoundError):
         pass
+    finally:
+        if prompt_file_path:
+            try:
+                Path(prompt_file_path).unlink(missing_ok=True)
+            except OSError:
+                pass
     return None
 
 
@@ -984,13 +1009,8 @@ def handle_ask(project_dir: str, question: str) -> str:
     return result
 
 
-def _answer_from_context(label: str, ctx: dict, question: str) -> str:
-    """Keyword-based fallback: synthesize an answer from gathered context."""
-    from voronoi.gateway.progress import progress_bar
-
-    q_lower = question.lower()
-    parts: list[str] = [f"*{label}*\n"]
-
+def _ask_context_state(ctx: dict) -> dict:
+    """Normalize gathered ASK context for fallback renderers."""
     exp = ctx.get("experiments", {})
     exp_rows = exp.get("details", [])
     keep_count = exp.get("passed", 0)
@@ -1015,124 +1035,192 @@ def _answer_from_context(label: str, ctx: dict, question: str) -> str:
     task_items = tasks.get("items", [])
     failed_tasks = [t for t in task_items if "fail" in t.get("notes", "").lower() or "crash" in t.get("notes", "").lower()]
     findings: list[dict] = [t for t in task_items if "finding" in t.get("title", "").lower() or "FINDING" in t.get("notes", "")]
+    return {
+        "exp_rows": exp_rows,
+        "keep_count": keep_count,
+        "discard_count": discard_count,
+        "crash_count": crash_count,
+        "total_exp": total_exp,
+        "keep": keep,
+        "crash": crash,
+        "discard": discard,
+        "criteria_items": criteria_items,
+        "criteria_met": criteria_met,
+        "criteria_total": criteria_total,
+        "hypotheses": hypotheses,
+        "total_tasks": total_tasks,
+        "closed_tasks": closed_tasks,
+        "in_progress_tasks": in_progress_tasks,
+        "failed_tasks": failed_tasks,
+        "findings": findings,
+    }
+
+
+def _append_experiment_answer(parts: list[str], state: dict) -> None:
+    total_exp = state["total_exp"]
+    findings = state["findings"]
+    if not total_exp and not findings:
+        parts.append("No experiment results yet — agents are still working.")
+        return
+
+    if total_exp:
+        parts.append(f"{total_exp} experiments run so far:")
+        if state["keep_count"]:
+            parts.append(f"  ✓ {state['keep_count']} passed")
+            for r in state["keep"][:5]:
+                desc = r.get("description", r.get("metric_name", ""))
+                val = r.get("metric_value", "")
+                if desc:
+                    detail = f"    • {desc}"
+                    if val:
+                        detail += f" (value: {val})"
+                    parts.append(detail)
+        if state["discard_count"]:
+            parts.append(f"  ✗ {state['discard_count']} discarded")
+        if state["crash_count"]:
+            parts.append(f"  💥 {state['crash_count']} crashed")
+    for task in findings[:3]:
+        notes = task.get("notes", "")
+        title = task.get("title", "")
+        parts.append(f"\n★ {title}")
+        for line in notes.split("\n"):
+            line_s = line.strip()
+            if any(k in line_s.upper() for k in ["EFFECT_SIZE", "CI_95", "P_VALUE", "SAMPLE_SIZE"]):
+                parts.append(f"  {line_s}")
+
+
+def _append_failure_answer(parts: list[str], state: dict) -> None:
+    issues: list[str] = []
+    for row in state["crash"][:5]:
+        desc = row.get("description", "unknown experiment")
+        issues.append(f"  💥 {desc} crashed")
+    for row in state["discard"][:5]:
+        desc = row.get("description", "unknown experiment")
+        issues.append(f"  ✗ {desc} discarded")
+    for task in state["failed_tasks"][:5]:
+        title = task.get("title", "unknown task")
+        issues.append(f"  ⚠ {title}")
+    if issues:
+        parts.append("Issues found:\n" + "\n".join(issues))
+    else:
+        parts.append("No failures or crashes so far — everything is running smoothly.")
+
+
+def _append_method_answer(parts: list[str], state: dict, q_lower: str) -> None:
+    relevant: list[str] = []
+    for row in state["exp_rows"]:
+        desc = row.get("description", "").lower()
+        metric = row.get("metric_name", "")
+        val = row.get("metric_value", "")
+        status = row.get("status", "")
+        if any(term in desc for term in q_lower.split() if len(term) > 3):
+            relevant.append(f"  • {row.get('description', '')} — {metric}={val} [{status}]")
+    if relevant:
+        parts.append("Relevant experiment results:\n" + "\n".join(relevant[:10]))
+    else:
+        parts.append("No specific results matching your query yet. The agents may still be running those experiments.")
+
+
+def _append_hypothesis_answer(parts: list[str], state: dict) -> None:
+    hypotheses = state["hypotheses"]
+    if not hypotheses:
+        parts.append("No belief map yet — hypotheses haven't been formulated.")
+        return
+
+    parts.append("Current hypotheses:")
+    sorted_hyps = sorted(
+        hypotheses,
+        key=lambda h: _safe_float(h.get("posterior", h.get("prior", 0))),
+        reverse=True,
+    )
+    for hyp in sorted_hyps[:5]:
+        name = hyp.get("name", hyp.get("label", "?"))
+        prior = hyp.get("prior", "?")
+        posterior = hyp.get("posterior", "")
+        status = hyp.get("status", "")
+        line = f"  • {name}: P={posterior or prior}"
+        if status:
+            line += f" [{status}]"
+        parts.append(line)
+
+
+def _append_progress_answer(parts: list[str], state: dict) -> None:
+    from voronoi.gateway.progress import progress_bar
+
+    if state["criteria_items"]:
+        parts.append(f"Success criteria: {state['criteria_met']}/{state['criteria_total']} met")
+        for criterion in state["criteria_items"]:
+            check = "✓" if criterion.get("met") else "○"
+            desc = criterion.get("description", "")[:60]
+            cid = criterion.get("id", "?")
+            parts.append(f"  {check} {cid}: {desc}")
+    else:
+        parts.append("No success criteria defined yet.")
+
+    if state["total_tasks"] > 0:
+        bar = progress_bar(state["closed_tasks"], state["total_tasks"])
+        parts.append(f"\n{bar}  {state['closed_tasks']}/{state['total_tasks']} tasks")
+
+
+def _append_general_answer(parts: list[str], state: dict) -> None:
+    if state["total_exp"]:
+        parts.append(
+            f"{state['total_exp']} experiments run "
+            f"({state['keep_count']} passed, {state['discard_count']} discarded, "
+            f"{state['crash_count']} crashed)."
+        )
+    if state["criteria_items"]:
+        parts.append(f"Success criteria: {state['criteria_met']}/{state['criteria_total']} met.")
+    if state["hypotheses"]:
+        best = max(
+            state["hypotheses"],
+            key=lambda h: _safe_float(h.get("posterior", h.get("prior", 0))),
+        )
+        name = best.get("name", best.get("label", ""))
+        conf = best.get("posterior", best.get("prior", ""))
+        if name:
+            parts.append(f"Leading hypothesis: {name} (P={conf}).")
+    if state["total_tasks"] > 0:
+        parts.append(
+            f"Tasks: {state['closed_tasks']}/{state['total_tasks']} done, "
+            f"{state['in_progress_tasks']} in progress."
+        )
+    if not state["total_exp"] and not state["criteria_items"] and not state["hypotheses"] and state["total_tasks"] == 0:
+        parts.append("The investigation is still in early stages — not much data yet.")
+
+
+def _answer_from_context(label: str, ctx: dict, question: str) -> str:
+    """Keyword-based fallback: synthesize an answer from gathered context."""
+    q_lower = question.lower()
+    parts: list[str] = [f"*{label}*\n"]
+    state = _ask_context_state(ctx)
 
     # Questions about experiments or results
     if _q_about(q_lower, ["experiment", "result", "data", "show", "found", "finding"]):
-        if not total_exp and not findings:
-            parts.append("No experiment results yet — agents are still working.")
-        else:
-            if total_exp:
-                parts.append(f"{total_exp} experiments run so far:")
-                if keep_count:
-                    parts.append(f"  ✓ {keep_count} passed")
-                    for r in keep[:5]:
-                        desc = r.get("description", r.get("metric_name", ""))
-                        val = r.get("metric_value", "")
-                        if desc:
-                            detail = f"    • {desc}"
-                            if val:
-                                detail += f" (value: {val})"
-                            parts.append(detail)
-                if discard_count:
-                    parts.append(f"  ✗ {discard_count} discarded")
-                if crash_count:
-                    parts.append(f"  💥 {crash_count} crashed")
-            for t in findings[:3]:
-                notes = t.get("notes", "")
-                title = t.get("title", "")
-                parts.append(f"\n★ {title}")
-                for line in notes.split("\n"):
-                    line_s = line.strip()
-                    if any(k in line_s.upper() for k in ["EFFECT_SIZE", "CI_95", "P_VALUE", "SAMPLE_SIZE"]):
-                        parts.append(f"  {line_s}")
+        _append_experiment_answer(parts, state)
 
     # Questions about failures/crashes
     elif _q_about(q_lower, ["fail", "crash", "error", "wrong", "problem", "issue"]):
-        issues: list[str] = []
-        if crash:
-            for r in crash[:5]:
-                desc = r.get("description", "unknown experiment")
-                issues.append(f"  💥 {desc} crashed")
-        if discard:
-            for r in discard[:5]:
-                desc = r.get("description", "unknown experiment")
-                issues.append(f"  ✗ {desc} discarded")
-        if failed_tasks:
-            for t in failed_tasks[:5]:
-                title = t.get("title", "unknown task")
-                issues.append(f"  ⚠ {title}")
-        if issues:
-            parts.append("Issues found:\n" + "\n".join(issues))
-        else:
-            parts.append("No failures or crashes so far — everything is running smoothly.")
+        _append_failure_answer(parts, state)
 
     # Questions about specific classifiers/models/methods (before hypothesis
     # branch — "which"/"best"/"worst" are too generic to live in hypotheses)
     elif _q_about(q_lower, ["classifier", "model", "method", "algorithm", "knn", "k-nn",
                              "logistic", "decision tree", "random forest", "svm", "neural",
                              "threshold", "noise", "critical"]):
-        relevant: list[str] = []
-        for r in exp_rows:
-            desc = r.get("description", "").lower()
-            metric = r.get("metric_name", "")
-            val = r.get("metric_value", "")
-            status = r.get("status", "")
-            if any(term in desc for term in q_lower.split() if len(term) > 3):
-                relevant.append(f"  • {r.get('description', '')} — {metric}={val} [{status}]")
-        if relevant:
-            parts.append("Relevant experiment results:\n" + "\n".join(relevant[:10]))
-        else:
-            parts.append("No specific results matching your query yet. The agents may still be running those experiments.")
+        _append_method_answer(parts, state, q_lower)
 
     # Questions about hypotheses/beliefs
     elif _q_about(q_lower, ["hypothes", "belief", "theory", "leading"]):
-        if hypotheses:
-            parts.append("Current hypotheses:")
-            sorted_hyps = sorted(hypotheses, key=lambda h: _safe_float(h.get("posterior", h.get("prior", 0))), reverse=True)
-            for h in sorted_hyps[:5]:
-                name = h.get("name", h.get("label", "?"))
-                prior = h.get("prior", "?")
-                posterior = h.get("posterior", "")
-                status = h.get("status", "")
-                line = f"  • {name}: P={posterior or prior}"
-                if status:
-                    line += f" [{status}]"
-                parts.append(line)
-        else:
-            parts.append("No belief map yet — hypotheses haven't been formulated.")
+        _append_hypothesis_answer(parts, state)
 
     # Questions about criteria/success/progress
     elif _q_about(q_lower, ["criteri", "success", "progress", "track", "going", "on track"]):
-        if criteria_items:
-            parts.append(f"Success criteria: {criteria_met}/{criteria_total} met")
-            for c in criteria_items:
-                check = "✓" if c.get("met") else "○"
-                desc = c.get("description", "")[:60]
-                cid = c.get("id", "?")
-                parts.append(f"  {check} {cid}: {desc}")
-        else:
-            parts.append("No success criteria defined yet.")
-
-        if total_tasks > 0:
-            bar = progress_bar(closed_tasks, total_tasks)
-            parts.append(f"\n{bar}  {closed_tasks}/{total_tasks} tasks")
+        _append_progress_answer(parts, state)
 
     # General catch-all
     else:
-        if total_exp:
-            parts.append(f"{total_exp} experiments run ({keep_count} passed, {discard_count} discarded, {crash_count} crashed).")
-        if criteria_items:
-            parts.append(f"Success criteria: {criteria_met}/{criteria_total} met.")
-        if hypotheses:
-            best = max(hypotheses, key=lambda h: _safe_float(h.get("posterior", h.get("prior", 0))))
-            name = best.get("name", best.get("label", ""))
-            conf = best.get("posterior", best.get("prior", ""))
-            if name:
-                parts.append(f"Leading hypothesis: {name} (P={conf}).")
-        if total_tasks > 0:
-            parts.append(f"Tasks: {closed_tasks}/{total_tasks} done, {in_progress_tasks} in progress.")
-        if not total_exp and not criteria_items and not hypotheses and total_tasks == 0:
-            parts.append("The investigation is still in early stages — not much data yet.")
+        _append_general_answer(parts, state)
 
     return "\n".join(parts)
 

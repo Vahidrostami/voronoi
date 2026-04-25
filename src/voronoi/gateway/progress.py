@@ -590,6 +590,123 @@ def _stall_signal_warning(workspace: Path) -> str:
     return ""
 
 
+def _digest_event_groups(events_since_last: list[dict]) -> dict[str, list[dict]]:
+    """Group recent dispatcher events by digest category."""
+    return {
+        "completed": [e for e in events_since_last if e.get("type") == "task_done"],
+        "findings": [e for e in events_since_last if e.get("type") == "finding"],
+        "new_tasks": [e for e in events_since_last if e.get("type") == "task_new"],
+        "design_invalids": [e for e in events_since_last if e.get("type") == "design_invalid"],
+        "serendipities": [e for e in events_since_last if e.get("type") == "serendipity"],
+        "rigor_changes": [e for e in events_since_last if e.get("type") == "rigor_escalation"],
+        "claim_deltas": [e for e in events_since_last if e.get("type") == "claim_delta"],
+    }
+
+
+def _digest_has_milestone(groups: dict[str, list[dict]]) -> bool:
+    """Return whether grouped events deserve a new milestone message."""
+    significant_claim_delta = any(
+        delta.get("to_status") in ("locked", "replicated", "challenged", "retired")
+        for delta in groups["claim_deltas"]
+    )
+    return bool(
+        groups["findings"] or groups["design_invalids"] or groups["serendipities"]
+        or groups["rigor_changes"] or significant_claim_delta
+    )
+
+
+def _digest_milestone_lines(groups: dict[str, list[dict]], compact: bool) -> list[str]:
+    """Render achievements and noteworthy events since the last digest."""
+    milestones: list[str] = []
+    completed = groups["completed"]
+    findings = groups["findings"]
+
+    if completed:
+        titles = [_extract_task_title(event) for event in completed[:5]]
+        if len(completed) <= 3:
+            for title in titles:
+                milestones.append(f"✓ {title}")
+        else:
+            milestones.append(f"✓ Completed {len(completed)} tasks")
+    for finding in findings:
+        raw = finding.get("msg", "")
+        if compact:
+            title = _compact_finding_line(raw)
+        else:
+            title = raw.replace("🔬 *NEW FINDING*\n", "").strip()
+        milestones.append(f"★ {title}")
+    for invalid in groups["design_invalids"]:
+        milestones.append(f"⚠ {_extract_task_title(invalid)}")
+    for serendipity in groups["serendipities"]:
+        raw = serendipity.get("msg", "")
+        desc = raw.replace("🔮 *Unexpected observation*\n", "").split("\n")[0].strip()
+        milestones.append(f"🔮 {desc}")
+    for rigor_change in groups["rigor_changes"]:
+        raw = rigor_change.get("msg", "")
+        desc = raw.replace("📐 *Rigor escalated*", "").split("\n")[0].strip()
+        milestones.append(f"📐 Rigor escalated{desc}")
+    for claim_delta in groups["claim_deltas"]:
+        milestones.append(_format_claim_delta(claim_delta))
+    if groups["new_tasks"] and not completed and not findings:
+        milestones.append(f"Planned {len(groups['new_tasks'])} new tasks")
+    return milestones
+
+
+def _digest_footer_parts(
+    *,
+    workspace: Path,
+    total: int,
+    closed: int,
+    elapsed_sec: float,
+    phase: str,
+    is_early: bool,
+    compact: bool,
+    events_since_last: list[dict],
+    eval_score: float,
+) -> list[str]:
+    """Build compact progress, artifact, criteria, and quality footer lines."""
+    footer_parts: list[str] = []
+
+    if total > 0 and closed > 0:
+        bar = progress_bar(closed, total)
+        eta = estimate_remaining(elapsed_sec, closed, total)
+        eta_suffix = f" · {eta}" if eta else ""
+        footer_parts.append(f"{bar}  {closed}/{total} tasks{eta_suffix}")
+    elif total > 0 and is_early:
+        footer_parts.append(f"{total} tasks planned")
+    elif total > 0:
+        footer_parts.append(f"{total} tasks in pipeline")
+
+    exp_summary = _experiment_summary(workspace)
+    if exp_summary:
+        footer_parts.append(exp_summary)
+
+    if not compact:
+        artifact_summary = _artifact_progress_summary(workspace)
+        if artifact_summary:
+            footer_parts.append(artifact_summary)
+
+    criteria_summary_text = _criteria_summary(
+        workspace, compact=compact, phase=phase,
+        events_since_last=events_since_last,
+    )
+    if criteria_summary_text:
+        footer_parts.append(criteria_summary_text)
+
+    if eval_score > 0:
+        label = VOICE_QUALITY_LABELS["high"] if eval_score >= 0.75 else (
+            VOICE_QUALITY_LABELS["ok"] if eval_score >= 0.50
+            else VOICE_QUALITY_LABELS["low"]
+        )
+        footer_parts.append(f"Quality: {eval_score:.2f} — {label}")
+
+    epoch_display = _epoch_display(workspace)
+    if epoch_display:
+        footer_parts.append(epoch_display)
+
+    return footer_parts
+
+
 def build_digest(
     *,
     codename: str,
@@ -622,25 +739,8 @@ def build_digest(
     closed = sum(1 for t in task_snapshot.values() if t.get("status") == "closed")
     in_progress = sum(1 for t in task_snapshot.values() if t.get("status") == "in_progress")
 
-    # Categorize recent events
-    completed = [e for e in events_since_last if e.get("type") == "task_done"]
-    findings = [e for e in events_since_last if e.get("type") == "finding"]
-    new_tasks = [e for e in events_since_last if e.get("type") == "task_new"]
-    design_invalids = [e for e in events_since_last if e.get("type") == "design_invalid"]
-    serendipities = [e for e in events_since_last if e.get("type") == "serendipity"]
-    rigor_changes = [e for e in events_since_last if e.get("type") == "rigor_escalation"]
-    claim_deltas = [e for e in events_since_last if e.get("type") == "claim_delta"]
-
-    # Milestones worth a notification: findings, design invalids, serendipity,
-    # rigor escalation, OR a claim locked/replicated/challenged (paper-level move).
-    significant_claim_delta = any(
-        d.get("to_status") in ("locked", "replicated", "challenged", "retired")
-        for d in claim_deltas
-    )
-    has_milestone = bool(
-        findings or design_invalids or serendipities or rigor_changes
-        or significant_claim_delta
-    )
+    groups = _digest_event_groups(events_since_last)
+    has_milestone = _digest_has_milestone(groups)
 
     lines: list[str] = []
     is_early = phase in ("starting", "scouting", "planning")
@@ -662,91 +762,19 @@ def build_digest(
     lines.append(narrative)
 
     # ── What happened since last update (achievements, not raw events) ──
-    milestones: list[str] = []
-    if completed:
-        titles = [_extract_task_title(e) for e in completed[:5]]
-        if len(completed) <= 3:
-            for t in titles:
-                milestones.append(f"✓ {t}")
-        else:
-            milestones.append(f"✓ Completed {len(completed)} tasks")
-    if findings:
-        for f in findings:
-            raw = f.get("msg", "")
-            if compact:
-                title = _compact_finding_line(raw)
-            else:
-                title = raw.replace("🔬 *NEW FINDING*\n", "").strip()
-            milestones.append(f"★ {title}")
-    if design_invalids:
-        for d in design_invalids:
-            milestones.append(f"⚠ {_extract_task_title(d)}")
-    if serendipities:
-        for s in serendipities:
-            raw = s.get("msg", "")
-            desc = raw.replace("🔮 *Unexpected observation*\n", "").split("\n")[0].strip()
-            milestones.append(f"🔮 {desc}")
-    if rigor_changes:
-        for r in rigor_changes:
-            raw = r.get("msg", "")
-            desc = raw.replace("📐 *Rigor escalated*", "").split("\n")[0].strip()
-            milestones.append(f"📐 Rigor escalated{desc}")
-    if claim_deltas:
-        for d in claim_deltas:
-            milestones.append(_format_claim_delta(d))
-    if new_tasks and not completed and not findings:
-        milestones.append(f"Planned {len(new_tasks)} new tasks")
-
+    milestones = _digest_milestone_lines(groups, compact)
     if milestones:
         lines.append("")
         for m in milestones:
             lines.append(m)
 
     # ── Metrics footer: compact progress section ──
-    footer_parts: list[str] = []
-
-    if total > 0 and closed > 0:
-        bar = progress_bar(closed, total)
-        eta = estimate_remaining(elapsed_sec, closed, total)
-        eta_suffix = f" · {eta}" if eta else ""
-        footer_parts.append(f"{bar}  {closed}/{total} tasks{eta_suffix}")
-    elif total > 0 and is_early:
-        footer_parts.append(f"{total} tasks planned")
-    elif total > 0:
-        footer_parts.append(f"{total} tasks in pipeline")
-
-    # Experiments — only add if not already covered in narrative
-    exp_summary = _experiment_summary(workspace)
-    if exp_summary:
-        footer_parts.append(exp_summary)
-
-    # Artifacts (detail view only)
-    if not compact:
-        artifact_summary = _artifact_progress_summary(workspace)
-        if artifact_summary:
-            footer_parts.append(artifact_summary)
-
-    # Success criteria — compact inline
-    criteria_summary_text = _criteria_summary(
-        workspace, compact=compact, phase=phase,
-        events_since_last=events_since_last,
+    footer_parts = _digest_footer_parts(
+        workspace=workspace, total=total, closed=closed,
+        elapsed_sec=elapsed_sec, phase=phase, is_early=is_early,
+        compact=compact, events_since_last=events_since_last,
+        eval_score=eval_score,
     )
-    if criteria_summary_text:
-        footer_parts.append(criteria_summary_text)
-
-    # Quality score
-    if eval_score > 0:
-        label = VOICE_QUALITY_LABELS["high"] if eval_score >= 0.75 else (
-            VOICE_QUALITY_LABELS["ok"] if eval_score >= 0.50
-            else VOICE_QUALITY_LABELS["low"]
-        )
-        footer_parts.append(f"Quality: {eval_score:.2f} — {label}")
-
-    # Evidence-gated scaling: epoch + learning rate
-    epoch_display = _epoch_display(workspace)
-    if epoch_display:
-        footer_parts.append(epoch_display)
-
     if footer_parts:
         lines.append("")
         lines.extend(footer_parts)

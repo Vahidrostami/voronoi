@@ -812,7 +812,7 @@ voronoi/
     ├── queue.py            # Investigation queue (SQLite, atomic claiming)
     ├── dispatcher.py       # Progress poll · timeout · completion
     ├── tmux.py             # TMux session launch, auth, cleanup
-    ├── snapshot.py         # WorkspaceSnapshot — read-only .swarm/ state
+    ├── snapshot.py         # WorkspaceSnapshot + PI/operator status projection
     ├── workspace.py        # Provision lab/repo workspaces + .github/ fallback
     ├── runner.py           # Server config, slug generation
     ├── publisher.py        # GitHub repo publishing

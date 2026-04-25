@@ -117,7 +117,8 @@ Lists available demos with name, description, and whether a `PROMPT.md` exists.
 1. Copies demo files to target directory (or current dir)
 2. Reads `PROMPT.md` from demo
 3. Builds orchestrator prompt via `build_orchestrator_prompt()`
-4. Launches Copilot CLI with the prompt
+4. Writes the full orchestrator prompt to `.swarm/orchestrator-prompt.txt`
+5. Launches Copilot CLI with a short bootstrap prompt that tells the agent to read `.swarm/orchestrator-prompt.txt` first, avoiding OS argv limits for large demo prompts
 
 **Flags**:
 - `--safe` — Enables resource limits (passed to prompt builder)

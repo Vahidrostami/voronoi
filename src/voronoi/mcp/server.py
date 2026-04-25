@@ -105,13 +105,19 @@ def _build_registry() -> None:
             "hypothesis": {"type": "string", "description": "Expected outcome/prediction"},
             "method": {"type": "string", "description": "Experimental method/design"},
             "controls": {"type": "string", "description": "Control conditions"},
+            "expected_result": {"type": "string", "description": "Concrete expected outcome/prediction"},
             "sample_size": {"type": "integer", "description": "Planned sample size"},
             "stat_test": {"type": "string", "description": "Planned statistical test"},
+            "effect_size": {"type": "string", "description": "Planned effect size for power analysis"},
             "alpha": {"type": "number", "description": "Significance level (default 0.05)"},
             "power": {"type": "number", "description": "Power target (default 0.80)"},
+            "confounds": {"type": "string", "description": "Known confounds or threats to validity"},
             "sensitivity_plan": {"type": "string", "description": "Sensitivity analysis plan"},
         },
-        required=["task_id", "hypothesis", "method", "controls", "sample_size", "stat_test"],
+        required=[
+            "task_id", "hypothesis", "method", "controls",
+            "expected_result", "sample_size", "stat_test", "effect_size",
+        ],
     )
     _register_tool(
         "voronoi_write_checkpoint", tools_swarm.write_checkpoint,
