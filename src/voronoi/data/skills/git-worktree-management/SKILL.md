@@ -4,6 +4,8 @@ description: >
   Skill for creating, managing, and cleaning up git worktrees used as isolated
   working directories for parallel agent execution. Covers worktree lifecycle
   from creation through merge and teardown.
+user-invocable: true
+disable-model-invocation: false
 ---
 
 # Git Worktree Management

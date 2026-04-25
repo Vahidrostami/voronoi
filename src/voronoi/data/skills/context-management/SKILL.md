@@ -4,6 +4,8 @@ description: >
   Skill for context window management in long-running agent sessions. Prevents
   context exhaustion through proactive compression and delegation. Used by
   orchestrators and long-running worker agents.
+user-invocable: true
+disable-model-invocation: false
 ---
 
 # Context Management Skill

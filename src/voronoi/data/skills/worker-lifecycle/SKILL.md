@@ -5,6 +5,8 @@ description: >
   worker agents. Read this skill BEFORE dispatching any worker.
   Covers build_worker_prompt, spawn-agent.sh, merge-agent.sh, checkpoint
   updates, and common failure modes.
+user-invocable: true
+disable-model-invocation: false
 ---
 
 # Worker Lifecycle — Dispatch · Monitor · Merge · Cleanup

@@ -24,7 +24,7 @@ The intent classifier maps user input to one of two science modes:
 DISCOVER is free scientific exploration. The user gives an open question; agents explore creatively, form hypotheses, and pursue multiple paths in parallel. Rigor adapts dynamically — starts light, escalates when testable hypotheses crystallize.
 
 ### Roles Active
-All 12 roles available. Orchestrator casts dynamically based on what it finds.
+All 12 core roles are available; auxiliary gate/audit roles activate by mode, and the orchestrator casts dynamically based on what it finds.
 
 ### Adaptive Rigor Escalation
 
@@ -92,7 +92,7 @@ When an agent finds something unexpected:
 PROVE is structured hypothesis testing. The user provides a specific, testable hypothesis (or a detailed PROMPT.md). Full science gates from the start. No exploration phase — go straight to rigorous validation.
 
 ### Roles Active
-All 12 roles from the start.
+All 12 core roles from the start, plus the read-only Assumption Auditor after Scout.
 
 ### Steps
 

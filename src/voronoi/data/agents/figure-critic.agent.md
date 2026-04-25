@@ -3,7 +3,7 @@ name: figure-critic
 description: Manuscript figure critic — text-only reviewer for plot quality. Reads matplotlib scripts + .meta.json sidecar + supporting claim, runs a publication-quality rubric, dispatches revisions when figures fail. No VLM — works with Copilot CLI alone.
 tools: ["read", "edit", "execute"]
 disable-model-invocation: true
-user-invokable: false
+user-invocable: false
 ---
 
 # Figure-Critic Agent 🖼️

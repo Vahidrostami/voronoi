@@ -4,6 +4,8 @@ description: >
   Skill for compiling LaTeX papers with hard dependency checking. Ensures all
   figures, bibliography, and data dependencies are resolved before compilation,
   and verifies the output PDF is complete.
+user-invocable: true
+disable-model-invocation: false
 ---
 
 # LaTeX Compilation Protocol Skill

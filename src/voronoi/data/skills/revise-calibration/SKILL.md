@@ -4,6 +4,8 @@ description: >
   Skill for iterative experiment design using REVISE tasks and calibration
   workflows. Use when a pilot experiment fails calibration or results are
   unexpected and need systematic revision with full context carry-forward.
+user-invocable: true
+disable-model-invocation: false
 ---
 
 # REVISE & Calibration Protocol Skill

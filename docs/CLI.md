@@ -24,9 +24,9 @@ voronoi
 │   ├── list                   # List available demos
 │   ├── run <name>             # Run a demo
 │   │   ├── --safe             # Safe mode (resource limits)
-│   │   ├── --dry-run          # Show what would happen
-│   │   └── --all              # Run all demos
+│   │   └── --dry-run          # Show what would happen
 │   └── clean                  # Remove demo artifacts
+│       └── --all              # Remove the entire demo directory
 └── server
     ├── init                   # Initialize ~/.voronoi/
     ├── start                  # Start dispatcher + Telegram bridge
@@ -46,7 +46,7 @@ Scaffolds Voronoi framework into the current directory. Makes a project agent-re
 
 ```
 .github/
-├── agents/           # 12 role definitions
+├── agents/           # 19 role files
 ├── prompts/          # 6 invocable prompts
 ├── skills/           # Domain knowledge packages
 ├── instructions/     # Per-path instruction files
@@ -122,11 +122,13 @@ Lists available demos with name, description, and whether a `PROMPT.md` exists.
 **Flags**:
 - `--safe` — Enables resource limits (passed to prompt builder)
 - `--dry-run` — Prints the prompt that would be sent, doesn't execute
-- `--all` — Runs all demos sequentially
 
 ### `voronoi demo clean`
 
 Removes demo artifacts from the current directory.
+
+**Flags**:
+- `--all` — Removes the entire demo directory, not just output
 
 ---
 

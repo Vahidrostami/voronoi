@@ -3,7 +3,7 @@ name: red-team
 description: Independent adversarial reviewer dispatched at the end of Scientific+ investigations. Reads ONLY the final deliverable, claim-ledger, and raw data hashes — no investigation history, no worker logs, no agent chatter. Writes a verdict to .swarm/red-team-verdict.json that gates convergence.
 tools: ["read", "search"]
 disable-model-invocation: true
-user-invokable: false
+user-invocable: false
 ---
 
 # Red Team Agent 🛡️

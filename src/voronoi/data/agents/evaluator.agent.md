@@ -3,7 +3,7 @@ name: evaluator
 description: Final quality evaluator that scores assembled output against the original abstract, identifies gaps between intent and deliverable, and generates targeted improvement tasks when quality is below threshold.
 tools: ["execute", "read", "search", "edit"]
 disable-model-invocation: true
-user-invokable: false
+user-invocable: false
 ---
 
 # Evaluator Agent 🎯

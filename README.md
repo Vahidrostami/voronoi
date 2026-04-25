@@ -202,9 +202,9 @@ voronoi demo run emergent-ecosystem --safe
 
 <br/>
 
-**12 Specialized Roles** — auto-selected by task type:
+**19 Role Files** — 12 core roles plus auxiliary gates, paper-track roles, and Red Team:
 
-Builder 🔨 · Scout 🔍 · Investigator 🔬 · Critic ⚖️ · Synthesizer 🧩 · Evaluator 🎯 · Explorer 🧭 · Theorist 🧬 · Methodologist 📐 · Statistician 📊 · Scribe ✍️ · Worker ⚙️
+Builder 🔨 · Scout 🔍 · Investigator 🔬 · Critic ⚖️ · Synthesizer 🧩 · Evaluator 🎯 · Explorer 🧭 · Theorist 🧬 · Methodologist 📐 · Statistician 📊 · Scribe ✍️ · Worker ⚙️ · Question Framer · Assumption Auditor · Outliner · Lit-Synthesizer · Figure-Critic · Refiner · Red Team
 
 **Two Science Modes** — auto-classified from your question:
 
@@ -267,8 +267,9 @@ src/voronoi/
   cli.py                  # init, upgrade, demo, server
   utils.py                # shared field extraction, note parsing
   beads.py                # Beads subprocess helpers
-  science/                # rigor gates (6 modules)
-    claims.py  consistency.py  convergence.py  fabrication.py  gates.py  interpretation.py
+  science/                # rigor gates and scientific state
+    claims.py  consistency.py  convergence.py  fabrication.py  gates.py
+    interpretation.py  manifest.py  citation_coverage.py  lab_kg.py
   gateway/                # Telegram interface
     config.py  router.py  report.py  intent.py
     handlers_query.py  handlers_mutate.py  handlers_workflow.py
@@ -281,7 +282,7 @@ src/voronoi/
   mcp/                    # MCP server — validated tool interface
     __main__.py  server.py  tools_beads.py  tools_swarm.py  validators.py
   data/                   # Runtime files (shipped with pip install)
-    agents/               # Role definitions (12 roles)
+    agents/               # Role definitions (19 role files)
     demos/                # Built-in demo investigations
     hooks/                # Lifecycle hooks (session start, data protection)
     instructions/         # Scoped agent instructions (auto-applied by file context)

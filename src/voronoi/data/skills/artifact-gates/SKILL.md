@@ -4,6 +4,8 @@ description: >
   Skill for working with artifact contracts — the file-level dependency system that
   prevents pipeline failures by ensuring tasks produce expected outputs and only start
   when required inputs exist.
+user-invocable: true
+disable-model-invocation: false
 ---
 
 # Artifact Gates — File-Level Pipeline Enforcement

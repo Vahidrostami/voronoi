@@ -850,18 +850,28 @@ def build_warm_start_context(
 # Role file mapping: task type → .github/agents/ filename
 ROLE_MAP: dict[str, str] = {
     "build": "worker-agent.agent.md",
+    "worker": "worker-agent.agent.md",
+    "builder": "worker-agent.agent.md",
     "implementation": "worker-agent.agent.md",
     "scout": "scout.agent.md",
     "investigation": "investigator.agent.md",
+    "investigator": "investigator.agent.md",
     "experiment": "investigator.agent.md",
     "exploration": "explorer.agent.md",
+    "explorer": "explorer.agent.md",
     "comparison": "explorer.agent.md",
     "review_stats": "statistician.agent.md",
+    "statistician": "statistician.agent.md",
     "review_critic": "critic.agent.md",
+    "critic": "critic.agent.md",
     "review_method": "methodologist.agent.md",
+    "methodologist": "methodologist.agent.md",
     "theory": "theorist.agent.md",
+    "theorist": "theorist.agent.md",
     "synthesis": "synthesizer.agent.md",
+    "synthesizer": "synthesizer.agent.md",
     "evaluation": "evaluator.agent.md",
+    "evaluator": "evaluator.agent.md",
     "scribe": "scribe.agent.md",
     "paper": "worker-agent.agent.md",
     "compilation": "worker-agent.agent.md",
@@ -872,37 +882,50 @@ ROLE_MAP: dict[str, str] = {
     "refine": "refiner.agent.md",
 }
 
+TASK_TYPE_ALIASES: dict[str, str] = {
+    "worker": "build",
+    "builder": "build",
+    "investigator": "investigation",
+    "explorer": "exploration",
+    "critic": "review_critic",
+    "statistician": "review_stats",
+    "methodologist": "review_method",
+    "theorist": "theory",
+    "synthesizer": "synthesis",
+    "evaluator": "evaluation",
+}
+
+INVESTIGATION_SKILLS = [
+    ".github/skills/investigation-protocol/SKILL.md",
+    ".github/skills/evidence-system/SKILL.md",
+    ".github/skills/context-management/SKILL.md",
+]
+COMPILATION_SKILLS = [
+    ".github/skills/figure-generation/SKILL.md",
+    ".github/skills/compilation-protocol/SKILL.md",
+]
+EXPLORATION_SKILLS = [
+    ".github/skills/deep-research/SKILL.md",
+    ".github/skills/context-management/SKILL.md",
+]
+
 # Skills to reference by task type
 SKILL_MAP: dict[str, list[str]] = {
-    "investigation": [
-        ".github/skills/investigation-protocol/SKILL.md",
-        ".github/skills/evidence-system/SKILL.md",
-        ".github/skills/context-management/SKILL.md",
-    ],
-    "experiment": [
-        ".github/skills/investigation-protocol/SKILL.md",
-        ".github/skills/evidence-system/SKILL.md",
-        ".github/skills/context-management/SKILL.md",
-    ],
+    "investigation": INVESTIGATION_SKILLS,
+    "investigator": INVESTIGATION_SKILLS,
+    "experiment": INVESTIGATION_SKILLS,
     "scribe": [
         ".github/skills/compilation-protocol/SKILL.md",
         ".github/skills/figure-generation/SKILL.md",
     ],
-    "paper": [
-        ".github/skills/figure-generation/SKILL.md",
-        ".github/skills/compilation-protocol/SKILL.md",
-    ],
-    "compilation": [
-        ".github/skills/figure-generation/SKILL.md",
-        ".github/skills/compilation-protocol/SKILL.md",
-    ],
+    "paper": COMPILATION_SKILLS,
+    "compilation": COMPILATION_SKILLS,
     "scout": [
         ".github/skills/deep-research/SKILL.md",
     ],
-    "exploration": [
-        ".github/skills/deep-research/SKILL.md",
-        ".github/skills/context-management/SKILL.md",
-    ],
+    "exploration": EXPLORATION_SKILLS,
+    "explorer": EXPLORATION_SKILLS,
+    "comparison": EXPLORATION_SKILLS,
     # Paper-track skills
     "outline": [
         ".github/skills/context-management/SKILL.md",
@@ -917,6 +940,15 @@ SKILL_MAP: dict[str, list[str]] = {
         ".github/skills/compilation-protocol/SKILL.md",
     ],
 }
+
+
+def _normalize_task_type(task_type: str) -> str:
+    normalized = task_type.strip().lower().replace("-", "_")
+    canonical = TASK_TYPE_ALIASES.get(normalized, normalized)
+    if canonical not in ROLE_MAP:
+        known = ", ".join(sorted(ROLE_MAP))
+        raise ValueError(f"Unknown task_type '{task_type}'. Expected one of: {known}")
+    return canonical
 
 
 def build_red_team_prompt(
@@ -1144,8 +1176,10 @@ def build_worker_prompt(
     str
         The complete prompt text, ready to write to a file.
     """
+    canonical_task_type = _normalize_task_type(task_type)
+
     # 1. Read the role definition file
-    role_file = ROLE_MAP.get(task_type, "worker-agent.agent.md")
+    role_file = ROLE_MAP[canonical_task_type]
     role_content = _read_role_file(role_file, workspace_path)
 
     sections: list[str] = []
@@ -1186,7 +1220,7 @@ def build_worker_prompt(
         )
 
     # 8. Skills to read
-    skills = SKILL_MAP.get(task_type, [])
+    skills = SKILL_MAP.get(canonical_task_type, [])
     if skills:
         sections.append("\n## Skills to Read\n\nBefore starting, read these:\n")
         for s in skills:
@@ -1197,7 +1231,7 @@ def build_worker_prompt(
         sections.append(f"\n## Additional Instructions\n\n{extra_instructions}\n")
 
     # 9a. Scribe: LaTeX format enforcement (overrides any contradictory briefing)
-    if task_type == "scribe":
+    if canonical_task_type == "scribe":
         sections.append(
             "\n## Output Format — MANDATORY\n\n"
             "**Write LaTeX (`paper.tex`), NOT Markdown.**\n"
@@ -1214,7 +1248,7 @@ def build_worker_prompt(
         )
 
     # 9b. Scout: reinforce mandatory artifact contract from the role file.
-    if task_type == "scout":
+    if canonical_task_type == "scout":
         sections.append(
             "\n## Scout Output Contract — MANDATORY\n\n"
             "Before closing this task, you MUST produce both files:\n"
@@ -1226,7 +1260,7 @@ def build_worker_prompt(
         )
 
     # 9c. Experiment worker: anti-polling guidance
-    if task_type in ("investigation", "experiment"):
+    if canonical_task_type in ("investigation", "experiment"):
         sections.append(
             "\n## Running Experiments — Block, Don't Poll\n\n"
             "When running a long experiment script:\n"

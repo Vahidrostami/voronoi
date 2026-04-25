@@ -4,6 +4,8 @@ description: >
   Skill for maintaining the Strategic Context Document — a living document that
   preserves the original intent, decision rationale, dead ends, and remaining gaps
   across OODA cycles and sessions. Prevents context degradation in long-running tasks.
+user-invocable: true
+disable-model-invocation: false
 ---
 
 # Strategic Context Skill

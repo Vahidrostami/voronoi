@@ -294,6 +294,13 @@ Server runtime also reserves `~/.voronoi/tmp` as the shared temp root. `voronoi 
 | `review_method` | `--allow-all --deny-tool=write` |
 | All others | `--allow-all` (default) |
 
+When `spawn-agent.sh --safe` is used, safe deny-list flags from
+`agent_flags_safe` remain active and role permissions are composed on top of
+them. Role permissions MUST NOT replace the safe flag set; broadening flags
+such as `--allow-all` are ignored in safe mode while restrictive role flags
+such as `--deny-tool=write` are preserved. Without `--safe`, role permissions
+continue to replace the default worker permission profile.
+
 ### RunningInvestigation
 
 Tracks state for a running investigation:
@@ -679,6 +686,15 @@ The prompt **references** `.github/agents/*.agent.md` files in the target worksp
 | `exploration` | `deep-research`, `context-management` |
 
 Skills are referenced as paths (e.g., `.github/skills/deep-research/SKILL.md`) in the worker prompt. The agent reads them at task start.
+
+Task type selection is strict: `build_worker_prompt()` accepts the documented
+task types and natural role-name aliases, and raises `ValueError` for truly
+unknown values instead of silently falling back to the generic worker role.
+Aliases share the canonical role and skill behavior: `worker`/`builder` →
+`build`, `investigator` → `investigation`, `explorer` → `exploration`,
+`critic` → `review_critic`, `statistician` → `review_stats`, `methodologist`
+→ `review_method`, `theorist` → `theory`, `synthesizer` → `synthesis`, and
+`evaluator` → `evaluation`.
 
 ### Scribe Format Enforcement
 

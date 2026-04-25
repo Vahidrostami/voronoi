@@ -4,6 +4,8 @@ description: >
   Skill for managing the evidence knowledge store: creating and querying findings,
   maintaining belief maps and investigation journals, enforcing data integrity,
   and running consistency checks across validated findings.
+user-invocable: true
+disable-model-invocation: false
 ---
 
 # Evidence System Skill

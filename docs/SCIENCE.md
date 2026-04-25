@@ -10,11 +10,15 @@ The science layer (`src/voronoi/science/`) enforces the scientific rigor framewo
 
 | Submodule | Responsibility |
 |-----------|---------------|
-| `consistency.py` | Beads queries, consistency gate, paradigm stress, heartbeat stall, finding interpretation, claim-evidence I/O, success criteria I/O |
-| `convergence.py` | Belief map, orchestrator checkpoint, convergence detection |
-| `fabrication.py` | Anti-fabrication verification, simulation bypass detection |
-| `gates.py` | Dispatch/merge gates, pre-registration, invariants, calibration, replication |
-| `claims.py` | Cross-run claim ledger, provenance, objections, self-critique |
+| `consistency.py` | Consistency gates, paradigm stress, heartbeat stalls, claim-evidence and success-criteria I/O |
+| `convergence.py` | Belief maps, checkpoint-aware convergence detection, Red Team gate integration |
+| `fabrication.py` | Anti-fabrication verification, data hashes, simulation bypass detection |
+| `gates.py` | Rigor gates, pre-registration checks, dispatch/merge validation |
+| `claims.py` | Lineage-scoped Claim Ledger, provenance, objections, self-critique |
+| `interpretation.py` | Directional verification, triviality checks, tribunal verdicts, continuation proposals |
+| `manifest.py` | Run Manifest assembly and source-of-truth mapping |
+| `citation_coverage.py` | Paper-track citation integration and orphan-citation gate |
+| `lab_kg.py` | Per-PI Lab-KG for durable cross-lineage priors and dead ends |
 
 All public symbols are re-exported from `science/__init__.py`, so `from voronoi.science import X` works as before.
 

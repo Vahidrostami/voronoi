@@ -4,6 +4,8 @@ description: >
   Skill for using Beads (bd) as the single source of truth for task tracking,
   dependency management, and agent coordination. Covers all bd commands needed
   for multi-agent orchestration.
+user-invocable: true
+disable-model-invocation: false
 ---
 
 # Beads Task Tracking

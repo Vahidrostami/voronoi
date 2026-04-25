@@ -1157,6 +1157,139 @@ os.execvp(sys.argv[2], sys.argv[2:])
         assert result.returncode == 1
         assert "Pre-dispatch BLOCKED by sentinel directive" in result.stdout
 
+    def test_spawn_agent_safe_mode_composes_role_permissions(self, tmp_path):
+        """spawn-agent.sh --safe should keep safe denies and add read-only role denies."""
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".swarm").mkdir()
+        (project / "scripts").mkdir()
+        (project / "scripts" / "notify-telegram.sh").write_text(
+            "notify_telegram() { return 0; }\n"
+        )
+        (project / ".swarm-config.json").write_text(json.dumps({
+            "project_dir": str(project),
+            "swarm_dir": str(tmp_path / "worktrees"),
+            "tmux_session": "test-session",
+            "agent_command": "copilot",
+            "worker_model": "",
+            "effort": "medium",
+            "agent_flags": "--allow-all",
+            "agent_flags_safe": [
+                "--disallow-tool", "mcp__curl",
+                "--disallow-tool", "mcp__ssh",
+            ],
+            "role_permissions": {
+                "scout": "--allow-all --deny-tool=write",
+            },
+        }))
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        tmux_log = tmp_path / "tmux-send-keys.log"
+
+        jq = bin_dir / "jq"
+        jq.write_text(f"""#!{sys.executable}
+import json
+import re
+import sys
+
+query = sys.argv[-1]
+data = json.load(sys.stdin)
+values = {{
+    '.project_dir': data.get('project_dir', ''),
+    '.swarm_dir': data.get('swarm_dir', ''),
+    '.tmux_session': data.get('tmux_session', ''),
+    '.agent_command // "copilot"': data.get('agent_command', 'copilot'),
+    '.worker_model // ""': data.get('worker_model', ''),
+    '.effort // "medium"': data.get('effort', 'medium'),
+    '.agent_flags // "--allow-all"': data.get('agent_flags', '--allow-all'),
+    '(.agent_flags_safe // []) | join(" ")': ' '.join(data.get('agent_flags_safe', [])),
+}}
+match = re.match(r'\\.role_permissions\\."([^\"]+)" // ""', query)
+if match:
+    print(data.get('role_permissions', {{}}).get(match.group(1), ''))
+else:
+    print(values.get(query, ''))
+""")
+        jq.chmod(0o755)
+
+        bd = bin_dir / "bd"
+        bd.write_text(f"""#!{sys.executable}
+import json
+import sys
+
+if len(sys.argv) > 1 and sys.argv[1] == 'show':
+    print(json.dumps({{'title': 'Scout prior art', 'notes': 'TASK_TYPE:scout'}}))
+elif len(sys.argv) > 1 and sys.argv[1] == 'list':
+    print('[]')
+sys.exit(0)
+""")
+        bd.chmod(0o755)
+
+        timeout = bin_dir / "timeout"
+        timeout.write_text(f"""#!{sys.executable}
+import os
+import sys
+
+os.execvp(sys.argv[2], sys.argv[2:])
+""")
+        timeout.chmod(0o755)
+
+        copilot = bin_dir / "copilot"
+        copilot.write_text("#!/bin/sh\nexit 0\n")
+        copilot.chmod(0o755)
+
+        git = bin_dir / "git"
+        git.write_text(f"""#!{sys.executable}
+import pathlib
+import sys
+
+args = sys.argv[1:]
+if args[:2] == ['worktree', 'add']:
+    pathlib.Path(args[2]).mkdir(parents=True, exist_ok=True)
+    sys.exit(0)
+if args[:2] == ['worktree', 'prune']:
+    sys.exit(0)
+if args[:2] == ['rev-parse', '--abbrev-ref']:
+    print('main')
+    sys.exit(0)
+if args[:1] in (['symbolic-ref'], ['show-ref']):
+    sys.exit(1)
+sys.exit(0)
+""")
+        git.chmod(0o755)
+
+        tmux = bin_dir / "tmux"
+        tmux.write_text(f"""#!{sys.executable}
+import pathlib
+import sys
+
+args = sys.argv[1:]
+if args and args[0] == 'has-session':
+    sys.exit(1)
+if args and args[0] == 'send-keys':
+    pathlib.Path({str(tmux_log)!r}).write_text(' '.join(args))
+sys.exit(0)
+""")
+        tmux.chmod(0o755)
+
+        script = Path(__file__).resolve().parents[1] / "src" / "voronoi" / "data" / "scripts" / "spawn-agent.sh"
+        env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+        result = subprocess.run(
+            ["bash", str(script), "--safe", "bd-2", "agent-scout"],
+            cwd=project,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0, result.stderr
+        command = tmux_log.read_text()
+        assert "--disallow-tool mcp__curl" in command
+        assert "--disallow-tool mcp__ssh" in command
+        assert "--deny-tool=write" in command
+        assert "--allow-all" not in command
+
     def test_has_experiment_tasks(self, dispatcher_setup):
         d, msgs, docs, tmp_path = dispatcher_setup
         run = RunningInvestigation(

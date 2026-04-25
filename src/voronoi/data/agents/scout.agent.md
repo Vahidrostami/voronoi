@@ -3,7 +3,7 @@ name: scout
 description: Knowledge scout that researches existing literature, codebase history, and prior art before hypothesis generation. Produces a structured knowledge brief with known results, failed approaches, suggested hypotheses, and SOTA methodology.
 tools: ["execute", "read", "search"]
 disable-model-invocation: true
-user-invokable: false
+user-invocable: false
 ---
 
 # Scout Agent 🔍

@@ -282,7 +282,7 @@ def classify(text: str) -> ClassifiedIntent:
     if prove_score >= 2 or (prove_score >= 1 and discover_score == 0):
         rigor = RigorLevel.EXPERIMENTAL if prove_score >= 3 else RigorLevel.SCIENTIFIC
         confidence = min(0.6 + prove_score * 0.15, 0.95)
-        # PROVE locks the question (INV-10, INV-49).  Flag as ambiguous when
+        # PROVE locks the question (INV-10, INV-54).  Flag as ambiguous when
         # the signal is borderline so the router can surface a confirmation
         # gate.  Borderline means: confidence below threshold, OR the PROVE
         # signal count only narrowly beats the DISCOVER signal count.

@@ -44,7 +44,7 @@
 | Targeted Beads queries | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §5 |
 | Code-assembled worker prompts | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §6 |
 | Per-agent context budget | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §3 |
-| System rules, code review | [INVARIANTS.md](INVARIANTS.md) | All (47 invariants) |
+| System rules, code review | [INVARIANTS.md](INVARIANTS.md) | All (54 invariants) |
 | Worker self-verification protocol | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §8 |
 | Token budget tracking | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §9 |
 | Structured event log | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §10 |
@@ -126,6 +126,7 @@
 | `src/voronoi/science/interpretation.py` | SCIENCE.md | §18 | `test_interpretation.py` |
 | `src/voronoi/science/manifest.py` | SCIENCE.md / MANIFEST.md | §19 / all | `test_manifest.py` |
 | `src/voronoi/science/citation_coverage.py` | SCIENCE.md | §20 | `test_citation_coverage.py` |
+| `src/voronoi/science/lab_kg.py` | SCIENCE.md | §23 | `test_lab_kg.py` |
 | `src/voronoi/mcp/server.py` | ARCHITECTURE.md | §8 | `test_mcp.py` |
 | `src/voronoi/mcp/tools_beads.py` | ARCHITECTURE.md | §8 | `test_mcp.py` |
 | `src/voronoi/mcp/tools_swarm.py` | ARCHITECTURE.md | §8 | `test_mcp.py` |

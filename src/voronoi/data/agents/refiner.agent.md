@@ -3,7 +3,7 @@ name: refiner
 description: Manuscript refiner — simulates peer review on compiled paper.tex, proposes and applies revisions with strict safety halt rules that prevent gaming the evaluator. Scientific+ only.
 tools: ["read", "edit", "execute"]
 disable-model-invocation: true
-user-invokable: false
+user-invocable: false
 ---
 
 # Refiner Agent 🔬

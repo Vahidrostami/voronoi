@@ -16,7 +16,7 @@ Science is a superset of engineering — the system is designed for science and 
 |-----------|------------|
 | Science-first | Engineering = science with gates off. Zero overhead for build-only tasks. |
 | Single prompt builder | CLI and Telegram produce identical orchestrator behavior via `prompt.py`. |
-| `.github/` as source of truth | Agent roles live in files Copilot auto-discovers — never duplicated in Python code. |
+| Runtime content source of truth | Agent roles live in `src/voronoi/data/agents/` and are copied to `.github/agents/` in investigation workspaces — never duplicated in Python code. |
 | Prompt references, not duplicates | Orchestrator is told "read the file" — roles stay in sync automatically. |
 | Two science modes | DISCOVER (adaptive rigor, creative exploration) and PROVE (full gates, structured validation). |
 | Adaptive rigor | DISCOVER starts light and escalates when hypotheses crystallize. PROVE starts at full scientific rigor. |
@@ -74,9 +74,8 @@ The system is organized into four layers, each with clear responsibilities and b
 │                   Science Layer                      │
 │   science/ subpackage:                               │
 │   consistency · convergence · fabrication · gates     │
-│   claims (cross-run scientific state)                │
-│   interpretation (directional verification,          │
-│     triviality, tribunal, continuation proposals)    │
+│   claims · interpretation · manifest                 │
+│   citation_coverage · lab_kg                         │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -226,9 +225,11 @@ The canonical location for all runtime content is `src/voronoi/data/`. During `v
 
 ```
 src/voronoi/data/
-├── agents/                          # 12 role definitions (canonical)
+├── agents/                          # 19 role files (canonical)
 │   ├── swarm-orchestrator.agent.md
 │   ├── worker-agent.agent.md
+│   ├── question-framer.agent.md
+│   ├── assumption-auditor.agent.md
 │   ├── scout.agent.md
 │   ├── investigator.agent.md
 │   ├── explorer.agent.md
@@ -238,7 +239,12 @@ src/voronoi/data/
 │   ├── statistician.agent.md
 │   ├── synthesizer.agent.md
 │   ├── evaluator.agent.md
-│   └── scribe.agent.md
+│   ├── scribe.agent.md
+│   ├── outliner.agent.md
+│   ├── lit-synthesizer.agent.md
+│   ├── figure-critic.agent.md
+│   ├── refiner.agent.md
+│   └── red-team.agent.md
 ├── prompts/                         # Invocable prompts
 │   ├── spawn.prompt.md              # /spawn — single agent dispatch
 │   ├── merge.prompt.md              # /merge — branch integration

@@ -3,7 +3,7 @@ name: lit-synthesizer
 description: Manuscript literature synthesizer — fills every citation slot in the Outline with a verified Semantic Scholar entry. Enforces Levenshtein ≥70 fuzzy match. Writes .swarm/manuscript/citation-ledger.json.
 tools: ["read", "edit", "search", "execute"]
 disable-model-invocation: true
-user-invokable: false
+user-invocable: false
 ---
 
 # Lit-Synthesizer Agent 📚

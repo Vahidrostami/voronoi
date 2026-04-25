@@ -3,7 +3,7 @@ name: investigator
 description: Hypothesis-driven investigator that executes pre-registered experiments, collects raw data with integrity hashes, runs sensitivity analysis, and reports findings with full statistical evidence trails.
 tools: ["execute", "read", "search", "edit"]
 disable-model-invocation: true
-user-invokable: false
+user-invocable: false
 ---
 
 # Investigator Agent 🔬

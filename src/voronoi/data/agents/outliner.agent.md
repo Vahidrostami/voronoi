@@ -3,7 +3,7 @@ name: outliner
 description: Manuscript outliner — turns a completed investigation's deliverable + claim-evidence + belief map into a structured paper outline (sections, citation slots, figure plan).
 tools: ["read", "edit", "search"]
 disable-model-invocation: true
-user-invokable: false
+user-invocable: false
 ---
 
 # Outliner Agent 📐

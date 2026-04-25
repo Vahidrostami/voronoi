@@ -188,6 +188,11 @@ prompt = build_worker_prompt(
 | `evaluation` | `evaluator.agent.md` |
 | `paper` / `compilation` | `worker-agent.agent.md` |
 
+Natural role-name aliases are accepted for these canonical task types
+(`worker`/`builder`, `investigator`, `explorer`, `critic`, `statistician`,
+`methodologist`, `theorist`, `synthesizer`, `evaluator`). Unknown task types
+fail loudly instead of falling back to the generic worker role.
+
 Skills are auto-selected by task type (e.g., `investigation` → investigation-protocol + evidence-system).
 
 ### 6.4 Impact

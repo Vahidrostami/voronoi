@@ -4,6 +4,8 @@ description: >
   Skill for running standup meetings across all active agents in the swarm.
   Aggregates Beads task status, git branch activity, commit history, and
   conflict detection into a human-readable progress report.
+user-invocable: true
+disable-model-invocation: false
 ---
 
 # Agent Standup

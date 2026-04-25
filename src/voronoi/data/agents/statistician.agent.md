@@ -3,7 +3,7 @@ name: statistician
 description: Quantitative rigor gatekeeper that reviews all findings for statistical validity, catches multiple comparison errors, verifies data integrity, and computes Bayes factors when priors are available.
 tools: ["execute", "read", "search", "edit"]
 disable-model-invocation: true
-user-invokable: false
+user-invocable: false
 ---
 
 # Statistician Agent 📊

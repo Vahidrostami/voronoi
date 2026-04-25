@@ -4,6 +4,8 @@ description: >
   Skill for generating scientific figures from experimental data. Ensures every
   figure referenced in LaTeX documents exists on disk before compilation, preventing
   blank PDFs and broken references.
+user-invocable: true
+disable-model-invocation: false
 ---
 
 # Figure Generation Skill

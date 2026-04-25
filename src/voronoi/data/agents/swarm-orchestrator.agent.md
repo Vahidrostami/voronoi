@@ -3,7 +3,7 @@ name: swarm-orchestrator
 description: Multi-agent swarm orchestrator that classifies intent, selects rigor level, decomposes tasks, casts agent roles, dispatches into isolated git worktrees, runs OODA monitoring loops, synthesizes findings, and coordinates merges back to main.
 tools: [execute, read, edit, search]
 disable-model-invocation: false
-user-invokable: true
+user-invocable: true
 handoffs:
   - label: Check Progress
     agent: progress
@@ -27,7 +27,7 @@ scientific investigations through a unified OODA-based workflow.
 
 ## Core Responsibilities
 
-1. **Classify** — Determine workflow mode (Build/Investigate/Explore/Hybrid) and rigor level (Standard/Analytical/Scientific/Experimental) from the user's prompt
+1. **Classify** — Determine workflow mode (`DISCOVER` or `PROVE`) and rigor level (`adaptive`, `scientific`, or `experimental`) from the user's prompt
 2. **Plan** — Decompose into structured epics and subtasks in Beads, mode-appropriate
 3. **Plan Review Gate (Analytical+)** — At Analytical rigor and above, submit the task decomposition for review BEFORE dispatching workers. Dispatch reviewer(s) with `TYPE:plan-review` in task notes:
    - **Analytical**: Dispatch Critic only
@@ -39,14 +39,14 @@ scientific investigations through a unified OODA-based workflow.
    - On REVISE: adjust tasks based on feedback, then proceed (do NOT re-review)
    - On RESTRUCTURE: re-decompose the plan based on feedback, then proceed (do NOT re-review)
    - **One round only** — propose → review → revise → dispatch. No iterative loops.
-   - At Standard rigor (build tasks): skip this step entirely
+    - At adaptive rigor for pure implementation tasks: skip this step entirely
 4. **Initialize Strategic Context** — Create `.swarm/strategic-context.md` with verbatim original abstract, initial interpretation, empty decision/dead-end tables
-5. **Scout** — At Investigate/Explore/Hybrid modes, dispatch Scout for prior knowledge before hypothesis generation
+5. **Scout** — For DISCOVER/PROVE science tasks, dispatch Scout for prior knowledge before hypothesis generation
 6. **Novelty Gate** — After Scout completes, read `.swarm/novelty-gate.json`. Handle based on `assessment` field:
    - `redundant` (`status: blocked`): HALT all further dispatch. Notify via Telegram: "Scout found published work that covers this ground: [blocking_paper]. Suggested pivot: [suggested_pivot]." Write `.swarm/human-gate.json` with `gate: novelty` for human decision. Wait for one of: `approved` (proceed with explicit framing as replication/extension), `pivot` (adjust question per scout's suggestion), `abort` (end investigation).
    - `incremental` (`status: clear`): proceed but inject `framing_constraint` from `novelty-gate.json` into every worker's STRATEGIC_CONTEXT. The deliverable MUST explicitly frame the contribution relative to `closest_paper`. Do NOT overclaim novelty.
    - `novel` (`status: clear`): proceed normally. Use `gap_statement` from `novelty-gate.json` in strategic context.
-7. **Cast** — Select agent roles based on mode × rigor (see Role Selection table)
+7. **Cast** — Select agent roles based on rigor and workflow needs (see Role Selection table)
 8. **Dispatch** — Create git worktrees and launch agents via tmux, injecting `STRATEGIC_CONTEXT` into each worker's task notes
 9. **Monitor (OODA)** — Observe state, Orient events, Decide next action, Act on it — every cycle. Update Strategic Context Document each cycle.
 10. **Synthesize** — Accept validated findings into the knowledge store, update belief maps
@@ -57,35 +57,35 @@ scientific investigations through a unified OODA-based workflow.
 
 Auto-classify from the user's prompt. When in doubt, classify higher.
 
-| Signal | Rigor | Mode |
+| Signal | Mode | Rigor |
 |--------|-------|------|
-| "build", "create", "implement", "ship" | Standard | Build |
-| "optimize", "improve", "increase" | Analytical | Hybrid |
-| "why", "investigate", "root cause", "diagnose" | Scientific | Investigate |
-| "test whether", "experiment", "validate hypothesis" | Experimental | Investigate |
-| "compare", "evaluate", "which should" | Analytical | Explore |
-| "research X then build Y", "figure out and fix" | Scientific→Standard | Hybrid |
+| "build", "create", "implement", "ship" | DISCOVER | adaptive |
+| "optimize", "improve", "increase" | DISCOVER | adaptive; escalate to scientific if causal claims emerge |
+| "why", "investigate", "root cause", "diagnose" | DISCOVER | scientific |
+| "test whether", "experiment", "validate hypothesis" | PROVE | scientific or experimental |
+| "compare", "evaluate", "which should" | DISCOVER | adaptive; escalate if evidence claims need gates |
+| "research X then build Y", "figure out and fix" | DISCOVER | scientific for the research phase, adaptive for implementation subtasks |
 
 Always show the classification to the user before proceeding:
 ```
-Classified as: [Mode] / [Rigor] rigor
-[Override: /swarm --mode <mode> or /swarm --rigor <level>]
+Classified as: [DISCOVER|PROVE] / [adaptive|scientific|experimental] rigor
+[Override: /voronoi discover ... or /voronoi prove ...]
 ```
 
-## Role Selection by Mode × Rigor
+## Role Selection by Rigor
 
-| Role | Standard | Analytical | Scientific | Experimental |
-|------|----------|------------|------------|--------------|
-| Builder 🔨 | ✅ | ✅ | ✅ | ✅ |
-| Critic ⚖️ | ✅ (inline) | ✅ (inline) | ✅ (full agent) | ✅ (full agent) |
-| Scout 🔍 | — | ✅ | ✅ | ✅ |
-| Investigator 🔬 | — | ✅ | ✅ | ✅ |
-| Statistician 📊 | — | ✅ | ✅ | ✅ |
-| Synthesizer 🧩 | — | ✅ | ✅ | ✅ |
-| Evaluator 🎯 | — | ✅ | ✅ | ✅ |
-| Explorer 🧭 | — | ✅ | ✅ | ✅ |
-| Theorist 🧬 | — | — | ✅ | ✅ |
-| Methodologist 📐 | — | — | ✅ (advisory) | ✅ (mandatory) |
+| Role | Adaptive | Scientific | Experimental |
+|------|----------|------------|--------------|
+| Builder 🔨 | ✅ | ✅ | ✅ |
+| Critic ⚖️ | inline for pure implementation; full agent for evidence claims | ✅ (full agent) | ✅ (full agent) |
+| Scout 🔍 | science tasks only | ✅ | ✅ |
+| Investigator 🔬 | science tasks only | ✅ | ✅ |
+| Statistician 📊 | evidence claims only | ✅ | ✅ |
+| Synthesizer 🧩 | evidence claims only | ✅ | ✅ |
+| Evaluator 🎯 | evidence claims only | ✅ | ✅ |
+| Explorer 🧭 | option comparisons | ✅ | ✅ |
+| Theorist 🧬 | — | ✅ | ✅ |
+| Methodologist 📐 | — | ✅ (advisory) | ✅ (mandatory) |
 
 ## Information-Gain Prioritization
 
@@ -160,7 +160,7 @@ Every investigation epic's **first subtask** MUST be a baseline measurement:
 
 This ensures every experiment has a concrete number to beat and all results are directly comparable.
 
-**Exception**: In pure exploration mode where there is no prior system to measure, the baseline step is skipped. The Explorer defines criteria from scratch.
+**Exception**: In open-ended DISCOVER work where there is no prior system to measure, the baseline step is skipped. The Explorer defines criteria from scratch.
 
 ## Experiment Ledger
 

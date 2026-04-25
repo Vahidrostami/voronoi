@@ -45,6 +45,34 @@ else
     AGENT_FLAGS=$(echo "$CONFIG" | jq -r '.agent_flags // "--allow-all"')
 fi
 
+quote_flag_words() {
+    local input="$1"
+    local -a words=()
+    read -r -a words <<< "$input"
+    if [[ ${#words[@]} -eq 0 ]]; then
+        return
+    fi
+    printf '%q ' "${words[@]}"
+}
+
+safe_role_permissions() {
+    local input="$1"
+    local -a words=()
+    local -a restrictive=()
+    local word
+    read -r -a words <<< "$input"
+    for word in "${words[@]}"; do
+        if [[ "$word" == "--allow-all" ]]; then
+            continue
+        fi
+        restrictive+=("$word")
+    done
+    if [[ ${#restrictive[@]} -eq 0 ]]; then
+        return
+    fi
+    printf '%s ' "${restrictive[@]}"
+}
+
 # Pre-flight: verify agent CLI exists
 AGENT_BIN="${AGENT_CMD%% *}"
 if ! command -v "$AGENT_BIN" >/dev/null 2>&1; then
@@ -324,7 +352,7 @@ fi
 # 5. Launch agent CLI in the tmux pane
 # Quote config-derived values to prevent shell injection
 SAFE_CMD=$(printf '%q' "$AGENT_CMD")
-SAFE_FLAGS=$(printf '%q' "$AGENT_FLAGS")
+SAFE_FLAGS=$(quote_flag_words "$AGENT_FLAGS")
 SAFE_WP=$(printf '%q' "$WORKTREE_PATH")
 
 # Build --model flag for workers (if configured)
@@ -348,8 +376,15 @@ mkdir -p "$WORKTREE_PATH/.swarm"
 # that reviewers cannot modify code (belt + suspenders with .agent.md tools list).
 ROLE_PERMS=$(echo "$CONFIG" | jq -r ".role_permissions.\"$TASK_TYPE\" // \"\"" 2>/dev/null || true)
 if [[ -n "$ROLE_PERMS" && "$ROLE_PERMS" != "null" ]]; then
-    AGENT_FLAGS="$ROLE_PERMS"
-    SAFE_FLAGS=$(printf '%q' "$AGENT_FLAGS")
+    if [[ "$SAFE_MODE" == "true" ]]; then
+        ROLE_PERMS=$(safe_role_permissions "$ROLE_PERMS")
+        if [[ -n "$ROLE_PERMS" ]]; then
+            AGENT_FLAGS="$AGENT_FLAGS $ROLE_PERMS"
+        fi
+    else
+        AGENT_FLAGS="$ROLE_PERMS"
+    fi
+    SAFE_FLAGS=$(quote_flag_words "$AGENT_FLAGS")
 fi
 
 # 5c. Inject auth/state env via tmux set-environment (INV-31: no secrets in logs).

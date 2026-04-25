@@ -168,9 +168,11 @@ The canonical location for all runtime content is `src/voronoi/data/`. The promp
 
 ```
 src/voronoi/data/
-├── agents/                          # Role definitions (12 roles)
+├── agents/                          # Role definitions (19 role files)
 │   ├── swarm-orchestrator.agent.md  # OODA loop, convergence, paradigm checks
 │   ├── worker-agent.agent.md        # Build tasks, artifact contracts
+│   ├── question-framer.agent.md     # DISCOVER question framing gate
+│   ├── assumption-auditor.agent.md  # PROVE assumption transparency audit
 │   ├── scout.agent.md               # Prior knowledge research
 │   ├── investigator.agent.md        # Pre-registration, sensitivity analysis
 │   ├── explorer.agent.md            # Option evaluation, comparison matrices
@@ -180,7 +182,12 @@ src/voronoi/data/
 │   ├── statistician.agent.md        # CI, effect sizes, data integrity
 │   ├── synthesizer.agent.md         # Consistency checks, deliverable
 │   ├── evaluator.agent.md           # Final scoring (CCSAN formula)
-│   └── scribe.agent.md              # LaTeX compilation, figures
+│   ├── scribe.agent.md              # LaTeX compilation, figures
+│   ├── outliner.agent.md            # Paper outline and citation slots
+│   ├── lit-synthesizer.agent.md     # Paper literature synthesis
+│   ├── figure-critic.agent.md       # Figure quality rubric
+│   ├── refiner.agent.md             # Peer-review refinement loop
+│   └── red-team.agent.md            # Cold-context adversarial review
 ├── prompts/                         # Invocable prompts
 │   ├── spawn.prompt.md              # /spawn — single agent dispatch
 │   ├── merge.prompt.md              # /merge — branch integration
@@ -261,7 +268,7 @@ flowchart LR
 
 ## 5. Role Registry
 
-All 12 roles are available in both DISCOVER and PROVE modes. The difference is **when** they activate:
+The 12 core roles are available in both DISCOVER and PROVE modes, with auxiliary gate/audit roles and paper-track roles activated by context. The difference is **when** they activate:
 - **PROVE**: Full role set from the start (pre-registration, methodologist review, etc.)
 - **DISCOVER**: Orchestrator casts roles dynamically as the investigation evolves
 
@@ -269,6 +276,8 @@ All 12 roles are available in both DISCOVER and PROVE modes. The difference is *
 |------|------|----------|-------|-------------------|
 | Builder 🔨 | `worker-agent.agent.md` | On demand | On demand | Implements code in isolated worktree |
 | Scout 🔍 | `scout.agent.md` | Always first | Always first | Problem positioning, prior knowledge, SOTA anchoring, novelty assessment |
+| Question Framer | `question-framer.agent.md` | Before Scout | Never | Assumption-aware framing and optional reframe confirmation |
+| Assumption Auditor | `assumption-auditor.agent.md` | Never | After Scout | Read-only hidden-assumption audit for transparency |
 | Investigator 🔬 | `investigator.agent.md` | When hypotheses emerge | From start | Pre-registered experiments, raw data + SHA-256 |
 | Explorer 🧭 | `explorer.agent.md` | When comparing options | When comparing options | Option evaluation with comparison matrices |
 | Statistician 📊 | `statistician.agent.md` | When rigor escalates | From start | CI, effect sizes, data integrity, p-hacking flags |
@@ -749,7 +758,7 @@ timestamp	task_id	branch	metric_name	metric_value	status	description
 |----------|-----------|
 | Science-first | Engineering = science with gates off. Zero overhead for build-only. |
 | Single prompt builder (`prompt.py`) | CLI and Telegram produce identical orchestrator behavior. |
-| `.github/` as source of truth | Agent roles live in files copilot auto-discovers — not duplicated in code. |
+| `src/voronoi/data/` as source of truth | Runtime content lives in package data and is copied to `.github/` in investigation workspaces; roles are not duplicated in code. |
 | Prompt references not duplicates | Orchestrator told "read the file" — roles stay in sync automatically. |
 | Auto-classified rigor | Users don't configure. System infers and can escalate. |
 | OODA over linear pipeline | Investigations are iterative — hypothesis revision needs loops. |

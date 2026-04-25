@@ -1,5 +1,7 @@
 """Tests for code-assembled worker prompts — context management."""
 
+import pytest
+
 from voronoi.server.prompt import build_worker_prompt, ROLE_MAP, SKILL_MAP
 
 
@@ -148,6 +150,26 @@ class TestBuildWorkerPrompt:
 
         assert 'notes=PRE_REG AND notes!=METHODOLOGIST_REVIEW AND status!=closed' in prompt
 
+    def test_methodologist_alias_loads_methodologist_role(self):
+        prompt = build_worker_prompt(
+            task_type="methodologist",
+            task_id="bd-78",
+            branch="agent-methodologist",
+            briefing="Review pending experiment designs.",
+        )
+
+        assert "Methodologist" in prompt
+        assert 'notes=PRE_REG AND notes!=METHODOLOGIST_REVIEW AND status!=closed' in prompt
+
+    def test_unknown_task_type_fails_loudly(self):
+        with pytest.raises(ValueError, match="Unknown task_type 'not_a_role'"):
+            build_worker_prompt(
+                task_type="not_a_role",
+                task_id="bd-404",
+                branch="agent-unknown",
+                briefing="This should not silently become a generic worker.",
+            )
+
 
 class TestRoleMappings:
     def test_all_task_types_have_roles(self):
@@ -179,6 +201,11 @@ class TestSkillMappings:
         skills = SKILL_MAP["exploration"]
         assert any("deep-research" in s for s in skills)
         assert any("context-management" in s for s in skills)
+
+    def test_investigator_alias_has_investigation_skills(self):
+        skills = SKILL_MAP["investigator"]
+        assert any("investigation-protocol" in s for s in skills)
+        assert any("evidence-system" in s for s in skills)
 
     def test_build_has_no_skills(self):
         assert "build" not in SKILL_MAP
