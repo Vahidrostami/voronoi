@@ -199,6 +199,26 @@ class TestBuildDigest:
         assert "★" in msg
         assert msg_type == MSG_TYPE_MILESTONE
 
+    def test_synthesize_narrative_with_non_numeric_posterior(self, tmp_path):
+        """Bug fix: _synthesize_narrative should handle non-numeric posterior/prior without crashing."""
+        import json
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "belief-map.json").write_text(json.dumps({
+            "hypotheses": [
+                {"id": "H1", "name": "Valid hypothesis", "prior": 0.5, "posterior": "N/A"},
+                {"id": "H2", "name": "Another one", "prior": "TBD", "posterior": 0.7},
+            ]
+        }))
+        # Should not crash
+        narrative = _synthesize_narrative(
+            workspace=tmp_path,
+            phase="investigating",
+            task_snapshot={},
+            elapsed_sec=1800,
+        )
+        # Should return some valid output or empty string
+        assert isinstance(narrative, str)
+
     def test_digest_with_experiments_tsv(self, tmp_path):
         (tmp_path / ".swarm").mkdir()
         (tmp_path / ".swarm" / "experiments.tsv").write_text(

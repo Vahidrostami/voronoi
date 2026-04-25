@@ -146,7 +146,10 @@ def _build_registry() -> None:
             "name": {"type": "string", "description": "Hypothesis description"},
             "posterior": {"type": "number", "description": "Updated probability 0.0-1.0"},
             "evidence_ids": {"type": "array", "description": "Supporting/refuting finding IDs"},
-            "status": {"type": "string", "description": "Hypothesis status (testing, confirmed, refuted)"},
+            "status": {"type": "string", "description": "Hypothesis status: untested, testing, confirmed, refuted, refuted_reversed, inconclusive, merged"},
+            "confidence": {"type": "string", "description": "Ordinal confidence tier: unknown, hunch, supported, strong, resolved"},
+            "rationale": {"type": "string", "description": "Evidence-linked reasoning for current confidence"},
+            "next_test": {"type": "string", "description": "What experiment/analysis would change confidence"},
         },
         required=["hypothesis_id"],
     )

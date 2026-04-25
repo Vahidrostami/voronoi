@@ -413,7 +413,12 @@ def _synthesize_narrative(
             best_conf = -1.0
             for h in hyps:
                 if isinstance(h, dict):
-                    conf = float(h.get("posterior", h.get("prior", 0)))
+                    # Safe float conversion for legacy non-numeric posterior/prior
+                    raw_posterior = h.get("posterior", h.get("prior", 0))
+                    try:
+                        conf = float(raw_posterior) if raw_posterior not in ("", None) else 0.0
+                    except (ValueError, TypeError):
+                        conf = 0.0
                     if conf > best_conf:
                         best_conf = conf
                         best = h

@@ -240,6 +240,7 @@ def update_belief_map(
     from voronoi.science.convergence import (
         CONFIDENCE_TIERS,
         VALID_CONFIDENCE_TIERS,
+        VALID_HYPOTHESIS_STATUSES,
         Hypothesis,
         load_belief_map,
         save_belief_map,
@@ -253,6 +254,11 @@ def update_belief_map(
         raise ValidationError(
             f"confidence must be one of {sorted(VALID_CONFIDENCE_TIERS)}, "
             f"got '{confidence}'"
+        )
+    if status and status not in VALID_HYPOTHESIS_STATUSES:
+        raise ValidationError(
+            f"status must be one of {sorted(VALID_HYPOTHESIS_STATUSES)}, "
+            f"got '{status}'"
         )
     workspace = _workspace_path()
     validated_evidence: list[str] | None = None

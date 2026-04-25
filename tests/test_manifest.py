@@ -241,7 +241,7 @@ class TestBuildFromWorkspace:
                 {
                     "id": "H2", "name": "Z is a moderator",
                     "prior": 0.5, "posterior": 0.2,
-                    "status": "rejected", "evidence": ["bd-7"],
+                    "status": "refuted_reversed", "evidence": ["bd-7"],
                     "confidence": "supported",
                 },
             ],

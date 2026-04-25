@@ -318,7 +318,7 @@ class Hypothesis:
     name: str
     prior: float
     posterior: float
-    status: str                 # untested | testing | confirmed | refuted | merged
+    status: str                 # untested | testing | confirmed | refuted | inconclusive | merged
     evidence: list[str]
     testability: float
     impact: float
@@ -327,7 +327,7 @@ class Hypothesis:
     next_test: str              # What would change confidence
 ```
 
-**Hypothesis status values**: `untested | testing | confirmed | refuted | refuted_reversed | merged`
+**Hypothesis status values**: `untested | testing | confirmed | refuted | refuted_reversed | inconclusive | merged`
 
 `refuted_reversed` indicates a statistically significant result in the **opposite** direction of the prediction. This triggers the Judgment Tribunal.
 

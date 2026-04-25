@@ -570,6 +570,61 @@ class TestUpdateBeliefMap:
         h1 = next(h for h in bm["hypotheses"] if h["id"] == "H1")
         assert h1["confidence"] == "hunch"  # explicit wins over inferred
 
+    def test_invalid_status_rejected(self, tmp_path):
+        """Bug fix: update_belief_map should reject invalid status values."""
+        from voronoi.mcp.tools_swarm import update_belief_map
+
+        with patch.dict(os.environ, {"VORONOI_WORKSPACE": str(tmp_path)}):
+            with pytest.raises(ValidationError, match="status must be one of"):
+                update_belief_map(hypothesis_id="H1", name="Test", status="maybe_true")
+
+    def test_valid_statuses_accepted(self, tmp_path):
+        """All valid hypothesis statuses should be accepted."""
+        from voronoi.mcp.tools_swarm import update_belief_map
+
+        valid_statuses = ["untested", "testing", "confirmed", "refuted", "refuted_reversed", "inconclusive", "merged"]
+        for status in valid_statuses:
+            with patch.dict(os.environ, {"VORONOI_WORKSPACE": str(tmp_path)}):
+                update_belief_map(hypothesis_id=f"H_{status}", name="Test", status=status)
+
+            bm = json.loads((tmp_path / ".swarm" / "belief-map.json").read_text())
+            h = next(h for h in bm["hypotheses"] if h["id"] == f"H_{status}")
+            assert h["status"] == status
+
+    def test_invalid_confidence_rejected(self, tmp_path):
+        """Invalid confidence tier should be rejected."""
+        from voronoi.mcp.tools_swarm import update_belief_map
+
+        with patch.dict(os.environ, {"VORONOI_WORKSPACE": str(tmp_path)}):
+            with pytest.raises(ValidationError, match="confidence must be one of"):
+                update_belief_map(hypothesis_id="H1", name="Test", confidence="very_confident")
+
+    def test_mcp_schema_includes_confidence_rationale_next_test(self):
+        """Bug fix: tools/list schema should expose confidence, rationale, next_test fields."""
+        from voronoi.mcp.server import TOOLS, _build_registry
+
+        TOOLS.clear()
+        _build_registry()
+        tool = TOOLS["voronoi_update_belief_map"]
+
+        # Check that new fields are present
+        assert "confidence" in tool["params"]
+        assert "rationale" in tool["params"]
+        assert "next_test" in tool["params"]
+
+        # Check descriptions
+        assert "unknown" in tool["params"]["confidence"]["description"]
+        assert "hunch" in tool["params"]["confidence"]["description"]
+        assert "Evidence" in tool["params"]["rationale"]["description"] or "reasoning" in tool["params"]["rationale"]["description"]
+        assert "experiment" in tool["params"]["next_test"]["description"] or "analysis" in tool["params"]["next_test"]["description"]
+
+        # Status description should list all valid values
+        status_desc = tool["params"]["status"]["description"]
+        assert "untested" in status_desc
+        assert "confirmed" in status_desc
+        assert "refuted" in status_desc
+        assert "inconclusive" in status_desc
+
 
 class TestUpdateSuccessCriteria:
     def test_create_criterion(self, tmp_path):

@@ -31,6 +31,28 @@ CONFIDENCE_TIERS: dict[str, float] = {
 
 VALID_CONFIDENCE_TIERS = frozenset(CONFIDENCE_TIERS)
 
+# Valid hypothesis status values (docs/SCIENCE.md §4)
+VALID_HYPOTHESIS_STATUSES = frozenset([
+    "untested", "testing", "confirmed", "refuted", "refuted_reversed", "inconclusive", "merged"
+])
+
+
+def _safe_float(value: any, default: float = 0.5) -> float:
+    """Safely coerce value to float, returning default if conversion fails.
+
+    Handles legacy belief-map data with non-numeric posterior/prior values
+    like "TBD", "N/A", or empty strings.
+    """
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            logger.warning("Non-numeric value %r, using default %s", value, default)
+            return default
+    return default
+
 
 def _infer_confidence_from_posterior(posterior: float) -> str:
     """Infer a confidence tier from a legacy posterior value."""
@@ -106,7 +128,18 @@ class BeliefMap:
         return sorted(untested, key=lambda h: h.information_gain, reverse=True)
 
     def all_resolved(self) -> bool:
-        return all(h.status not in ("untested", "testing") for h in self.hypotheses)
+        """True if all hypotheses are resolved (no untested/testing).
+
+        Only considers hypotheses with valid known statuses — unknown
+        statuses default to unresolved to avoid false positives.
+        """
+        for h in self.hypotheses:
+            if h.status not in VALID_HYPOTHESIS_STATUSES:
+                # Unknown status — treat as unresolved to be safe
+                return False
+            if h.status in ("untested", "testing"):
+                return False
+        return True
 
     def summary(self) -> dict:
         by_status: dict[str, int] = {}
@@ -147,16 +180,29 @@ def load_belief_map(workspace: Path) -> BeliefMap:
         for h in raw_hyps:
             if not isinstance(h, dict):
                 continue
-            posterior = h.get("posterior", h.get("prior", 0.5))
+            # Safe numeric coercion for legacy data with "TBD", "N/A", etc.
+            raw_posterior = h.get("posterior", h.get("prior", 0.5))
+            raw_prior = h.get("prior", 0.5)
+            posterior = _safe_float(raw_posterior, 0.5)
+            prior = _safe_float(raw_prior, 0.5)
             confidence = h.get("confidence", "")
             # Infer confidence from posterior for legacy data missing the field
             if not confidence:
-                confidence = _infer_confidence_from_posterior(float(posterior))
+                confidence = _infer_confidence_from_posterior(posterior)
+            # Validate status against known set
+            status = h.get("status", "untested")
+            if status not in VALID_HYPOTHESIS_STATUSES:
+                logger.warning(
+                    "Unknown hypothesis status %r in %s, defaulting to 'untested'",
+                    status, workspace
+                )
+                status = "untested"
             bm.hypotheses.append(Hypothesis(
                 id=h.get("id", ""), name=h.get("name", ""),
-                prior=h.get("prior", 0.5), posterior=posterior,
-                status=h.get("status", "untested"), evidence=h.get("evidence", []),
-                testability=h.get("testability", 0.5), impact=h.get("impact", 0.5),
+                prior=prior, posterior=posterior,
+                status=status, evidence=h.get("evidence", []),
+                testability=_safe_float(h.get("testability", 0.5), 0.5),
+                impact=_safe_float(h.get("impact", 0.5), 0.5),
                 confidence=confidence,
                 rationale=h.get("rationale", ""),
                 next_test=h.get("next_test", ""),

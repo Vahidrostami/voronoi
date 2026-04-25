@@ -16,6 +16,7 @@ from voronoi.science.convergence import (
     CONFIDENCE_TIERS,
     EPOCH_AGENT_CAP,
     VALID_CONFIDENCE_TIERS,
+    VALID_HYPOTHESIS_STATUSES,
     BeliefMap,
     ConvergenceResult,
     EpochState,

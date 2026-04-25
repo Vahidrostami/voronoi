@@ -442,6 +442,68 @@ class TestBeliefMap:
         bm2 = load_belief_map(tmp_path)
         assert len(bm2.hypotheses) == 1
 
+    def test_load_non_numeric_posterior_legacy(self, tmp_path):
+        """Bug fix: load_belief_map crashes on non-numeric posterior/prior like 'TBD' or 'N/A'."""
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "belief-map.json").write_text(json.dumps({
+            "hypotheses": [
+                {"id": "H1", "name": "LLM wrote TBD", "prior": 0.5, "posterior": "TBD"},
+                {"id": "H2", "name": "empty string", "prior": "", "posterior": "N/A"},
+                {"id": "H3", "name": "numeric ok", "prior": 0.3, "posterior": 0.7},
+            ]
+        }))
+        bm = load_belief_map(tmp_path)
+        assert len(bm.hypotheses) == 3
+        # Non-numeric values default to 0.5
+        assert bm.hypotheses[0].posterior == 0.5
+        assert bm.hypotheses[0].confidence == "unknown"  # inferred from default 0.5
+        assert bm.hypotheses[1].posterior == 0.5
+        assert bm.hypotheses[1].prior == 0.5
+        # Numeric value preserved
+        assert bm.hypotheses[2].posterior == 0.7
+        assert bm.hypotheses[2].prior == 0.3
+
+    def test_load_invalid_status_defaults_to_untested(self, tmp_path):
+        """Bug fix: unknown hypothesis status should default to 'untested' with warning."""
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "belief-map.json").write_text(json.dumps({
+            "hypotheses": [
+                {"id": "H1", "name": "valid", "prior": 0.5, "posterior": 0.5, "status": "confirmed"},
+                {"id": "H2", "name": "invalid", "prior": 0.5, "posterior": 0.5, "status": "maybe_true"},
+                {"id": "H3", "name": "empty", "prior": 0.5, "posterior": 0.5, "status": ""},
+            ]
+        }))
+        bm = load_belief_map(tmp_path)
+        assert len(bm.hypotheses) == 3
+        assert bm.hypotheses[0].status == "confirmed"
+        assert bm.hypotheses[1].status == "untested"  # invalid status defaulted
+        assert bm.hypotheses[2].status == "untested"  # empty string defaulted
+
+    def test_all_resolved_rejects_unknown_status(self, tmp_path):
+        """Bug fix: all_resolved should return False for unknown statuses to avoid false positives."""
+        bm = BeliefMap()
+        bm.add_hypothesis(Hypothesis(id="H1", name="a", prior=0.5, posterior=0.9,
+                                      status="confirmed"))
+        # Manually set an unknown status (bypassing validation)
+        h2 = Hypothesis(id="H2", name="b", prior=0.5, posterior=0.5)
+        h2.status = "weird_status"
+        bm.add_hypothesis(h2)
+        # Should return False because H2 has unknown status
+        assert bm.all_resolved() is False
+
+    def test_all_resolved_valid_statuses(self):
+        """all_resolved should work correctly with all valid resolved statuses."""
+        bm = BeliefMap()
+        bm.add_hypothesis(Hypothesis(id="H1", name="a", prior=0.5, posterior=0.9,
+                                      status="confirmed"))
+        bm.add_hypothesis(Hypothesis(id="H2", name="b", prior=0.5, posterior=0.1,
+                                      status="refuted"))
+        bm.add_hypothesis(Hypothesis(id="H3", name="c", prior=0.5, posterior=0.5,
+                                      status="merged"))
+        bm.add_hypothesis(Hypothesis(id="H4", name="d", prior=0.5, posterior=0.5,
+                                      status="refuted_reversed"))
+        assert bm.all_resolved() is True
+
 
 # ---------------------------------------------------------------------------
 # Convergence
