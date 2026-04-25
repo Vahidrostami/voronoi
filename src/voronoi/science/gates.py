@@ -535,6 +535,11 @@ _CONTRACT_RECOGNIZED_KEYS = frozenset({
     "phase_gates",
 })
 
+# Per-(workspace, key-set) memo of unknown-schema warnings, so that polling
+# the sentinel every 30s does not spam the log with the same warning while
+# the orchestrator is fixing the contract. Demoted to DEBUG on repeats.
+_UNKNOWN_SCHEMA_WARNED: set[tuple[str, tuple[str, ...]]] = set()
+
 
 def load_experiment_contract(workspace: Path) -> ExperimentContract | None:
     """Load experiment contract from ``.swarm/experiment-contract.json``.
@@ -545,6 +550,10 @@ def load_experiment_contract(workspace: Path) -> ExperimentContract | None:
     a critical failure rather than silently treating the contract as empty —
     which would otherwise produce a false-positive "pass" audit (see
     SCIENCE.md §10, "Unknown-Schema Handling").
+
+    Repeated rejections of the same key-set in the same workspace are
+    demoted to DEBUG to avoid log spam: the dispatcher polls every 30s and
+    a stuck orchestrator would otherwise emit thousands of identical lines.
     """
     path = workspace / ".swarm" / "experiment-contract.json"
     if not path.exists():
@@ -561,12 +570,20 @@ def load_experiment_contract(workspace: Path) -> ExperimentContract | None:
         )
         return None
     if not (set(data.keys()) & _CONTRACT_RECOGNIZED_KEYS):
-        logger.warning(
-            "Experiment contract at %s has unknown schema "
-            "(no recognized top-level keys). Keys present: %s. "
-            "Expected any of: %s. Treating as invalid contract.",
-            path, sorted(data.keys()), sorted(_CONTRACT_RECOGNIZED_KEYS),
-        )
+        memo_key = (str(path), tuple(sorted(data.keys())))
+        if memo_key in _UNKNOWN_SCHEMA_WARNED:
+            logger.debug(
+                "Experiment contract at %s still has unknown schema "
+                "(keys: %s)", path, sorted(data.keys()),
+            )
+        else:
+            _UNKNOWN_SCHEMA_WARNED.add(memo_key)
+            logger.warning(
+                "Experiment contract at %s has unknown schema "
+                "(no recognized top-level keys). Keys present: %s. "
+                "Expected any of: %s. Treating as invalid contract.",
+                path, sorted(data.keys()), sorted(_CONTRACT_RECOGNIZED_KEYS),
+            )
         return None
     return ExperimentContract(
         experiment_id=data.get("experiment_id", ""),

@@ -465,8 +465,11 @@ def build_orchestrator_prompt(
         "When you see a `sentinel_violation` directive in `.swarm/dispatcher-directive.json`, "
         "this IS a DESIGN_INVALID event.  The sentinel has already detected and flagged it.  "
         "Do NOT create a separate DESIGN_INVALID task — the sentinel's alert is the flag.  "
-        "Your job: read `.swarm/sentinel-audit.json`, dispatch Methodologist, create REVISE task.  "
-        "Do NOT try to fix the code yourself — delegate to a worker agent.\n"
+        "Read `.swarm/sentinel-audit.json` first. If `critical_failures` contains "
+        "`CONTRACT_SCHEMA`, the contract file itself is malformed — rewrite it in the "
+        "schema documented in §Experiment Contract below. Do NOT dispatch Methodologist "
+        "for a schema error.  For any other failure: dispatch Methodologist, create "
+        "REVISE task, do NOT fix code yourself.\n"
     )
 
     # -- LLM calls (skill ref) --------------------------------------------
@@ -500,14 +503,45 @@ def build_orchestrator_prompt(
         "After experiment design, write `.swarm/experiment-contract.json` declaring "
         "structural validity checks. The dispatcher runs an autonomous Sentinel that "
         "verifies outputs against this contract.\n\n"
+        "**REQUIRED schema — top-level keys are FIXED.** The Sentinel parses ONLY "
+        "these keys; any other top-level shape (e.g. `studies`, `phases`, "
+        "`hard_gates`, `primary_metric`, `runner`) is rejected with "
+        "`CONTRACT_SCHEMA: unparseable or unknown shape` and writes a "
+        "`sentinel_violation` directive on every poll. Use this exact shape:\n\n"
+        "```json\n"
+        "{\n"
+        '  "experiment_id": "<id>",\n'
+        '  "independent_variable": "<name of the IV>",\n'
+        '  "conditions": ["<cond1>", "<cond2>", "..."],\n'
+        '  "manipulation_checks": [\n'
+        '    {"check_type": "hash_distinct", "target": "<file glob>", '
+        '"field": "<json path>", "conditions": ["<cond1>", "<cond2>"]}\n'
+        "  ],\n"
+        '  "required_outputs": [\n'
+        '    {"path": "<relative/path/to/output>", "description": "<what it is>"}\n'
+        "  ],\n"
+        '  "degeneracy_checks": [\n'
+        '    {"check_type": "min_variance", "target": "<file>", '
+        '"field": "<path>", "min_std": 0.01}\n'
+        "  ],\n"
+        '  "phase_gates": [\n'
+        '    {"from_phase": "<phase>", "to_phase": "<next>", "checks": [...]}\n'
+        "  ]\n"
+        "}\n"
+        "```\n\n"
+        "Encode multi-study or multi-phase designs by enumerating conditions and "
+        "using `phase_gates` — do NOT invent a nested `studies`/`phases` wrapper.\n\n"
         "Available check types: `hash_distinct`, `value_range`, `metric_range`, "
         "`not_identical`, `min_distinct_values`, `min_variance`.\n\n"
         "If the Sentinel detects a violation, it writes `.swarm/sentinel-audit.json` "
         "and a `sentinel_violation` directive. When you see this:\n"
         "1. STOP — do not dispatch new workers or cross phase gates\n"
         "2. Read `.swarm/sentinel-audit.json`\n"
-        "3. Dispatch Methodologist for post-mortem\n"
-        "4. Create a REVISE task — do NOT fix code yourself\n"
+        "3. If the failure is `CONTRACT_SCHEMA`, the contract itself is malformed "
+        "— rewrite `.swarm/experiment-contract.json` in the schema above. Do NOT "
+        "dispatch a Methodologist for a schema error; just fix the file.\n"
+        "4. For any other failure: dispatch Methodologist for post-mortem and "
+        "create a REVISE task — do NOT fix experiment code yourself.\n"
     )
 
     # -- Rules (compact) ---------------------------------------------------

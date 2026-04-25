@@ -578,6 +578,10 @@ This prevents silent false-passes when the contract's field paths don't match th
 
 When `validate_experiment_contract` then detects the on-disk file still exists, it produces a critical-failure audit (`CONTRACT_SCHEMA: experiment-contract.json unparseable or unknown shape`) rather than silently returning `passed=True` with zero checks. This closes a false-positive path where an orchestrator's off-schema contract produced consecutive passing audits while running no validation at all.
 
+The orchestrator prompt §Experiment Contract embeds the schema verbatim (top-level keys + a JSON skeleton) so that agents writing the contract for the first time cannot invent an off-schema shape (`studies`, `phases`, `hard_gates`, `primary_metric`, `runner` were observed in the wild). The dispatcher's `sentinel_violation` directive distinguishes `CONTRACT_SCHEMA` failures (instructs orchestrator to rewrite the file directly, no Methodologist) from genuine design failures (Methodologist + REVISE task).
+
+To prevent log spam while the orchestrator iterates on a malformed contract, repeated rejections of the same key-set in the same workspace are demoted to DEBUG after the first WARNING — the dispatcher polls every 30s and would otherwise emit thousands of identical lines.
+
 ### Escalation Path
 
 When the sentinel finds a critical failure:

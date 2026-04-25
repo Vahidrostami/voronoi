@@ -1751,13 +1751,34 @@ class InvestigationDispatcher:
 
             # Write a dispatcher directive so the orchestrator is FORCED to act
             # on its next OODA cycle (the orchestrator already obeys directives).
-            self._write_directive(run, "sentinel_violation",
-                "SENTINEL ALERT: Experiment contract violated. "
-                "Read .swarm/sentinel-audit.json for details. "
-                "This IS a DESIGN_INVALID event — do NOT create a separate "
-                "DESIGN_INVALID task. The sentinel has already flagged it. "
-                "Do NOT proceed to the next phase or dispatch new workers. "
-                "Dispatch Methodologist for post-mortem, then create a REVISE task.")
+            schema_failure = any("CONTRACT_SCHEMA" in f
+                                 for f in result.critical_failures)
+            if schema_failure:
+                directive_msg = (
+                    "SENTINEL ALERT: experiment-contract.json has an unknown "
+                    "schema and is being rejected on every audit. "
+                    "Read .swarm/sentinel-audit.json. "
+                    "Rewrite .swarm/experiment-contract.json using the schema "
+                    "documented in your prompt §Experiment Contract — top-level "
+                    "keys MUST be from: experiment_id, independent_variable, "
+                    "conditions, manipulation_checks, required_outputs, "
+                    "degeneracy_checks, phase_gates. Do NOT use 'studies', "
+                    "'phases', 'hard_gates', 'primary_metric', 'runner' as "
+                    "top-level keys — they are silently ignored. "
+                    "This is a SCHEMA error, not a design failure: do NOT "
+                    "dispatch Methodologist; just fix the file."
+                )
+            else:
+                directive_msg = (
+                    "SENTINEL ALERT: Experiment contract violated. "
+                    "Read .swarm/sentinel-audit.json for details. "
+                    "This IS a DESIGN_INVALID event — do NOT create a separate "
+                    "DESIGN_INVALID task. The sentinel has already flagged it. "
+                    "Do NOT proceed to the next phase or dispatch new workers. "
+                    "Dispatch Methodologist for post-mortem, then create a "
+                    "REVISE task."
+                )
+            self._write_directive(run, "sentinel_violation", directive_msg)
         else:
             logger.info(
                 "Sentinel audit PASSED for #%d (trigger=%s, %d checks)",
