@@ -149,7 +149,7 @@ graph TD
     style H fill:#161b22,stroke:#d29922
 ```
 
-<sup>**Baseline**, **EWC**, and **Replay** run in parallel. **Hybrid** is automatically blocked until all three finish — its experiment depends on their results. The orchestrator tracks this via [Beads](https://github.com/steveyegge/beads) dependency graph.</sup>
+<sup>**Baseline**, **EWC**, and **Replay** run in parallel. **Hybrid** is automatically blocked until all three finish — its experiment depends on their results. The orchestrator tracks this via the [Beads](https://github.com/gastownhall/beads) dependency graph.</sup>
 
 ---
 
@@ -279,7 +279,7 @@ src/voronoi/
   server/
     prompt.py  dispatcher.py  queue.py  workspace.py
     sandbox.py  publisher.py  runner.py  events.py
-    compact.py  repo_url.py  snapshot.py  tmux.py
+    compact.py  repo_url.py  snapshot.py  tmux.py  provenance.py
   mcp/                    # MCP server — validated tool interface
     __main__.py  server.py  tools_beads.py  tools_swarm.py  validators.py
   data/                   # Runtime files (shipped with pip install)
@@ -300,7 +300,7 @@ src/voronoi/
 - **Hooks** enforce invariants at agent lifecycle points — session start injects Beads status, and destructive commands on raw data are blocked before execution
 - **Skills** load domain knowledge on demand — Copilot CLI usage patterns, data hashing protocols, evidence management, and 19 other specialized workflows
 
-Each agent is a **full Copilot CLI session** in its own **tmux window** with its own **git worktree**. No custom IPC — agents communicate through git + [Beads](https://github.com/steveyegge/beads).
+Each agent is a **full Copilot CLI session** in its own **tmux window** with its own **git worktree**. No custom IPC — agents communicate through git + [Beads](https://github.com/gastownhall/beads). Voronoi initializes Beads with `bd init --quiet --server` so workers and the dispatcher share one task store instead of each worktree creating its own `.beads/` database.
 
 The dispatcher also regenerates `.swarm/run-status.json` and `.swarm/health.md` on progress polls. These files project Beads, checkpoint, and gate state into the PI/operator view used by humans and future UI surfaces.
 
@@ -350,7 +350,7 @@ Voronoi orchestrates coding agents for scientific investigation. Here's how it c
 
 <br/>
 
-**Prerequisites**: Python 3.10+ · [Beads](https://github.com/steveyegge/beads) · [tmux](https://github.com/tmux/tmux) · [GitHub Copilot CLI](https://docs.github.com/en/copilot/using-github-copilot/using-github-copilot-in-the-command-line) (or [Claude Code](https://docs.anthropic.com/en/docs/claude-code))
+**Prerequisites**: Python 3.10+ · [Beads](https://github.com/gastownhall/beads) with `bd init --server` support · [tmux](https://github.com/tmux/tmux) · [GitHub Copilot CLI](https://docs.github.com/en/copilot/using-github-copilot/using-github-copilot-in-the-command-line) (or [Claude Code](https://docs.anthropic.com/en/docs/claude-code))
 
 ```bash
 brew install beads tmux                        # macOS

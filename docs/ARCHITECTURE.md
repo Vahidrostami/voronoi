@@ -52,7 +52,7 @@ The system is organized into four layers, each with clear responsibilities and b
 │     auto-merge worker branches · throttle digests    │
 │   queue.py · prompt.py · workspace.py · sandbox.py  │
 │   runner.py · publisher.py · repo_url.py · events.py│
-│   tmux.py · snapshot.py · compact.py                │
+│   tmux.py · snapshot.py · compact.py · provenance.py│
 └──────────────────────┬──────────────────────────────┘
                        │
 ┌──────────────────────▼──────────────────────────────┐
@@ -290,7 +290,7 @@ Pure plumbing — no decision logic. The orchestrator makes all decisions.
 | `merge-agent.sh` | `git merge` → push → clean worktree → `bd close` | Orchestrator when merging completed work |
 | `convergence-gate.sh` | Multi-signal convergence validation + figure-lint | Orchestrator/dispatcher before declaring done |
 | `health-check.sh` | Agent health (tmux, git, process tree) | Monitoring, `/health` command |
-| `swarm-init.sh` | `git init` · `bd init` · tmux session · config | CLI `voronoi init`, dispatcher |
+| `swarm-init.sh` | `git init` · `bd init --server` · tmux session · config | CLI `voronoi init`, dispatcher |
 | `notify-telegram.sh` | Source + call `notify_telegram "event" "msg"` | merge-agent.sh, spawn-agent.sh |
 | `figure-lint.sh` | Verify all `\includegraphics` refs resolve | convergence-gate.sh, merge-agent.sh |
 | `teardown.sh` | Kill tmux, prune worktrees/branches | User or orchestrator at session end |

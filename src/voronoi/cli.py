@@ -235,7 +235,13 @@ def cmd_init(args: argparse.Namespace) -> None:
     init_script = target / "scripts" / "swarm-init.sh"
     if init_script.exists():
         print("\nRunning swarm-init.sh...")
-        subprocess.run(["bash", str(init_script)], cwd=str(target))
+        result = subprocess.run(["bash", str(init_script)], cwd=str(target))
+        if result.returncode != 0:
+            print(
+                "  Warning: swarm-init.sh did not complete. "
+                "Install/update Beads with server-mode support before running agents: "
+                "https://github.com/gastownhall/beads"
+            )
 
     # Re-copy AGENTS.md after swarm-init.sh — bd init overwrites it with
     # its own template that unconditionally mandates git push. The Voronoi
@@ -807,31 +813,87 @@ def _server_status(args: argparse.Namespace) -> None:
 
 
 def _server_prune(args: argparse.Namespace) -> None:
-    """Clean up old investigation workspaces."""
+    """Clean up old terminal investigation workspaces and orphaned swarms."""
     from voronoi.server.runner import ServerConfig
+    from voronoi.server.queue import InvestigationQueue
+    from voronoi.server.tmux import cleanup_tmux
     from voronoi.server.workspace import WorkspaceManager
 
     config = ServerConfig()
     wm = WorkspaceManager(config.base_dir)
-    active = wm.list_active()
+    active_dir = config.base_dir / "active"
+    queue_path = config.base_dir / "queue.db"
+    terminal_statuses = {"complete", "failed", "cancelled"}
+    cutoff = time.time() - (config.workspace_retention_days * 86400)
+    eligible = []
 
-    if not active:
+    if queue_path.exists():
+        queue = InvestigationQueue(queue_path)
+        investigations = queue.get_recent(limit=100000)
+        protected_paths = {
+            str(Path(inv.workspace_path))
+            for inv in investigations
+            if inv.workspace_path and inv.status not in terminal_statuses
+        }
+        for inv in investigations:
+            if inv.status not in terminal_statuses or not inv.workspace_path:
+                continue
+            if str(Path(inv.workspace_path)) in protected_paths:
+                continue
+            completed_at = inv.completed_at or inv.created_at
+            if completed_at <= cutoff:
+                eligible.append(inv)
+
+    orphan_swarms = []
+    if active_dir.exists():
+        for swarm_dir in sorted(active_dir.glob("inv-*-swarm")):
+            if not swarm_dir.is_dir():
+                continue
+            main_name = swarm_dir.name.removesuffix("-swarm")
+            if not (active_dir / main_name).exists():
+                orphan_swarms.append(swarm_dir)
+
+    if not eligible and not orphan_swarms:
         print("No workspaces to prune.")
         return
 
-    print(f"Active workspaces: {len(active)}")
-    for name in active:
-        print(f"  {name}")
+    print(f"Prunable terminal workspaces: {len(eligible)}")
+    for inv in eligible:
+        print(f"  #{inv.id} {Path(inv.workspace_path).name} ({inv.status})")
+    print(f"Orphan swarm directories: {len(orphan_swarms)}")
+    for swarm_dir in orphan_swarms:
+        print(f"  {swarm_dir.name}")
 
     if not getattr(args, "force", False):
-        print(f"\nRun with --force to remove all workspaces.")
+        print("\nRun with --force to remove these workspaces and swarm directories.")
         return
 
-    for name in active:
-        p = config.base_dir / "active" / name
-        if p.exists():
-            shutil.rmtree(p)
-            print(f"  ✓ Removed {name}")
+    for inv in eligible:
+        workspace_path = Path(inv.workspace_path)
+        cleanup_tmux(f"voronoi-inv-{inv.id}", workspace_path)
+        diagnostics: list[str] = []
+        removed = wm.cleanup_path(workspace_path, diagnostics=diagnostics)
+        if removed:
+            print(f"  Removed {workspace_path.name}")
+        else:
+            print(f"  Could not remove {workspace_path.name}")
+        for message in diagnostics:
+            print(f"    Warning: {message}")
+
+    for swarm_dir in orphan_swarms:
+        try:
+            shutil.rmtree(swarm_dir)
+            print(f"  Removed {swarm_dir.name}")
+        except OSError as exc:
+            from voronoi.server.workspace import describe_live_file_holders
+            holders = describe_live_file_holders([swarm_dir])
+            if holders:
+                print(
+                    f"  Could not remove {swarm_dir.name}; "
+                    f"live processes hold files: {', '.join(holders[:8])}"
+                )
+            else:
+                print(f"  Could not remove {swarm_dir.name}: {exc}")
 
     print("Done.")
 

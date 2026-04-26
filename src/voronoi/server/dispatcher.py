@@ -3436,9 +3436,20 @@ class InvestigationDispatcher:
                     swarm_dir.rmdir()
                 else:
                     # Force remove — worktrees are expendable after completion
-                    shutil.rmtree(swarm_dir, ignore_errors=True)
+                    shutil.rmtree(swarm_dir)
             except OSError:
-                pass
+                from voronoi.server.workspace import describe_live_file_holders
+                holders = describe_live_file_holders([swarm_dir])
+                if holders:
+                    logger.warning(
+                        "Could not remove %s; live processes hold files: %s",
+                        swarm_dir, ", ".join(holders[:8]),
+                    )
+                else:
+                    logger.warning(
+                        "Could not remove %s; it may contain open NFS lock files",
+                        swarm_dir,
+                    )
 
             logger.info("Cleaned up worktrees for %s", run.label)
 

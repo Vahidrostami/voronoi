@@ -337,7 +337,7 @@ Pure plumbing — no decision logic. The orchestrator (copilot) makes all decisi
 | `merge-agent.sh` | `git merge` → push → clean worktree → `bd close` |
 | `convergence-gate.sh` | Multi-signal convergence validation + figure-lint |
 | `health-check.sh` | Agent health monitoring (tmux + git + process tree) |
-| `swarm-init.sh` | `git init` · `bd init` · tmux session · config |
+| `swarm-init.sh` | `git init` · `bd init --server` · tmux session · config |
 | `notify-telegram.sh` | Source this, call `notify_telegram "event" "message"` |
 | `figure-lint.sh` | Verify all `\includegraphics` refs resolve |
 | `teardown.sh` | Kill tmux, prune worktrees/branches |
@@ -819,5 +819,6 @@ voronoi/
     ├── compact.py          # Workspace state compaction
     ├── events.py           # Structured event log
     ├── sandbox.py          # Docker sandbox config
+    ├── provenance.py       # LLM-call provenance writer/reader
     └── repo_url.py         # GitHub URL extraction
 ```

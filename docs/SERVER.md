@@ -2,7 +2,7 @@
 
 > Investigation queue, dispatcher, workspace provisioning, sandbox isolation, prompt building, publishing.
 
-**TL;DR**: `queue.py` = SQLite lifecycle (queued→running→complete). `dispatcher.py` polls queue, provisions workspaces, monitors progress; delegates tmux to `tmux.py`. `snapshot.py` = read-only workspace state capture (shared by dispatcher + gateway). `prompt.py` = single source of truth for all orchestrator prompts. `workspace.py` provisions with git clone/worktree. `sandbox.py` = optional Docker. All in `src/voronoi/server/`.
+**TL;DR**: `queue.py` = SQLite lifecycle (queued→running→complete). `dispatcher.py` polls queue, provisions workspaces, monitors progress; delegates tmux to `tmux.py`. `snapshot.py` = read-only workspace state capture (shared by dispatcher + gateway). `prompt.py` = single source of truth for all orchestrator prompts. `workspace.py` provisions with git clone/worktree. `provenance.py` writes LLM-call provenance records for experiment runners. `sandbox.py` = optional Docker. All in `src/voronoi/server/`.
 
 ## 1. Module Map
 
@@ -15,6 +15,7 @@ src/voronoi/server/
 ├── snapshot.py       # WorkspaceSnapshot — read-only .swarm/ state capture
 ├── prompt.py         # Unified orchestrator prompt builder
 ├── workspace.py      # Workspace provisioning (clone, worktree, init)
+├── provenance.py     # LLM-call provenance writer/reader
 ├── sandbox.py        # Docker sandbox isolation
 ├── runner.py         # Server config, queue runner, slug generation
 ├── publisher.py      # GitHub publishing of investigation results
@@ -546,6 +547,7 @@ The dispatcher syncs `criteria_status` from the orchestrator checkpoint into `su
 6. **Federated knowledge sync**: Sync findings to `~/.voronoi/knowledge.db` for cross-investigation search
 7. Try GitHub publish if `gh` CLI available
 8. Clean up agent worktrees — prune git worktrees, remove worktree directories, remove the `-swarm/` directory
+    - If removal is blocked, cleanup logs likely live lock holders using `lsof` (for example lingering `bd`, MCP, or agent processes) and leaves the main workspace intact for operator follow-up.
 9. Remove the per-session secrets env file (sibling of the workspace at `<base_dir>/active/.tmux-env-<session>`, outside the git repo — see INV-31). Also unlink any legacy `.swarm/.tmux-env` left over from prior dispatcher versions.
 10. Clean `~/.voronoi/tmp` if no other investigations are running
 
@@ -783,7 +785,10 @@ class WorkspaceManager:
     def provision_lab(self, investigation_id: int, slug: str,
                       question: str) -> WorkspaceInfo: ...
     def get_workspace_path(self, investigation_id: int, slug: str) -> Path | None: ...
-    def cleanup(self, investigation_id: int, slug: str) -> bool: ...
+    def cleanup(self, investigation_id: int, slug: str,
+                diagnostics: list[str] | None = None) -> bool: ...
+    def cleanup_path(self, workspace_path: str | Path,
+                     diagnostics: list[str] | None = None) -> bool: ...
     def list_active(self) -> list[str]: ...  # Excludes -swarm directories
 ```
 
@@ -799,7 +804,7 @@ class WorkspaceManager:
 2. Initialize git repo
 3. Write `PROMPT.md` with user question
 4. Run `voronoi init`
-5. Initialize Beads in **server mode** (`bd init --quiet --server`) so the dispatcher can query tasks concurrently while the agent's MCP server holds the database open
+5. Initialize Beads in **server mode** (`bd init --quiet --server`) so the dispatcher can query tasks concurrently while the agent's MCP server holds the database open. A Beads CLI without `--server` support is not a supported server-workspace dependency; provisioning fails with an upgrade message instead of launching an investigation with embedded-mode locks.
 
 ### Workspace Naming Convention
 

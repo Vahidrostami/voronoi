@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "src" / "voronoi" / "data"
 AGENTS_DIR = DATA_DIR / "agents"
 SKILLS_DIR = DATA_DIR / "skills"
+SCRIPTS_DIR = DATA_DIR / "scripts"
 
 
 REQUIRED_AGENT_KEYS = {
@@ -90,3 +91,12 @@ def test_runtime_customizations_do_not_use_stale_compatibility_terms():
         text = path.read_text()
         for stale_term in STALE_RUNTIME_TERMS:
             assert stale_term not in text, f"{path.name} contains stale term {stale_term!r}"
+
+
+def test_beads_runtime_guidance_uses_server_mode():
+    script = (SCRIPTS_DIR / "swarm-init.sh").read_text()
+    skill = (SKILLS_DIR / "beads-tracking" / "SKILL.md").read_text()
+
+    assert "bd init --quiet --server" in script
+    assert "bd init --quiet --server" in skill
+    assert "do not run `bd init` inside" in skill

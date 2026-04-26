@@ -1014,6 +1014,48 @@ Canonical, machine-readable summary of a completed run. **Derived** from other `
 
 Validated by `validate_manifest(m, rigor)` against rigor-tiered requirements (standard < adaptive < analytical < scientific < experimental).
 
+### `.swarm/llm_provenance/manifest.json`
+
+Index of LLM-call provenance records written by external experiment runners or
+agent-side tooling. The directory is append-only from Voronoi's perspective:
+each call record lives in its own `.swarm/llm_provenance/<uuid>.json` file, and
+the manifest lists the records for discovery.
+
+```json
+{
+  "schema_version": "1.0",
+  "updated_at_utc": "2026-04-26T12:20:00+00:00",
+  "records": [{
+    "path": ".swarm/llm_provenance/9f4c....json",
+    "source_id": "K4_seed102__L4-A__run03__discovery",
+    "content_sha256": "...",
+    "recorded_at_utc": "2026-04-26T12:19:57+00:00"
+  }]
+}
+```
+
+Each record file uses the minimal schema:
+
+```json
+{
+  "schema_version": "1.0",
+  "recorded_at_utc": "2026-04-26T12:19:57+00:00",
+  "source_id": "K4_seed102__L4-A__run03__discovery",
+  "content_sha256": "...",
+  "metadata": {
+    "model_id": "gpt-5-mini",
+    "prompt_sha256": "...",
+    "response_sha256": "...",
+    "response_text": "..."
+  }
+}
+```
+
+`content_sha256` is the SHA-256 of the caller-provided metadata object encoded
+as canonical JSON. Voronoi does not automatically capture prompts in this
+slice; external runners decide whether metadata includes full prompt text,
+redacted prompt text, or a prompt-reconstruction recipe.
+
 ---
 
 ## 8. Configuration Files

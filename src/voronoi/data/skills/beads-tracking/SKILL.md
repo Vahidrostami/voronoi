@@ -16,9 +16,14 @@ system — never use markdown files for planning.
 ## Initialization
 
 ```bash
-bd init --quiet           # First-time setup (creates .beads/)
+bd init --quiet --server  # First-time setup (creates shared .beads/)
 bd prime                  # Load context (run at every session start)
 ```
+
+Voronoi investigation workspaces require Beads server mode so the dispatcher,
+orchestrator, and worker MCP sidecars can access the same `.beads/` store. Worker
+worktrees inherit `BEADS_DIR` from `spawn-agent.sh`; do not run `bd init` inside
+an individual worker worktree.
 
 ## Creating Tasks
 

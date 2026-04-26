@@ -24,7 +24,7 @@ RUN pip install --no-cache-dir \
     scikit-learn
 
 # Beads (task tracking)
-RUN pip install --no-cache-dir beads || true
+RUN pip install --no-cache-dir "beads>=1.0.0" || true
 
 WORKDIR /workspace
 

@@ -147,6 +147,31 @@ class TestWorkspaceManagement:
         assert wm.cleanup(1, "test") is True
         assert wm.list_active() == []
 
+    def test_cleanup_removes_swarm_without_workspace(self, wm):
+        swarm = wm.active_dir / "inv-1-test-swarm"
+        (swarm / "agent-worker").mkdir(parents=True)
+
+        assert wm.cleanup(1, "test") is True
+        assert not swarm.exists()
+
+    def test_cleanup_reports_live_lock_holders(self, wm):
+        workspace = wm.active_dir / "inv-1-test"
+        swarm = wm.active_dir / "inv-1-test-swarm"
+        workspace.mkdir(parents=True)
+        swarm.mkdir()
+        diagnostics: list[str] = []
+
+        def fake_rmtree(path, *args, **kwargs):
+            if ".locks" in Path(path).parts:
+                return None
+            raise OSError("busy")
+
+        with patch("voronoi.server.workspace.shutil.rmtree", side_effect=fake_rmtree), \
+             patch("voronoi.server.workspace.describe_live_file_holders", return_value=["123 (bd)"]):
+            assert wm.cleanup(1, "test", diagnostics=diagnostics) is False
+
+        assert any("123 (bd)" in message for message in diagnostics)
+
     def test_cleanup_nonexistent(self, wm):
         assert wm.cleanup(999, "nope") is False
 
@@ -174,15 +199,43 @@ class TestEnsureBeads:
         ws = tmp_path / "workspace"
         ws.mkdir()
 
+        def fake_run(*args, **kwargs):
+            (ws / ".beads").mkdir()
+            return MagicMock(returncode=0, stdout="", stderr="")
+
         with patch("shutil.which", return_value="/usr/local/bin/bd"), \
              patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0)
+            mock_run.side_effect = fake_run
             wm._ensure_beads(ws)
 
         mock_run.assert_called_once()
         cmd = mock_run.call_args[0][0]
         assert "--server" in cmd
         assert "--quiet" in cmd
+
+    def test_ensure_beads_requires_server_mode_success(self, tmp_path):
+        wm = WorkspaceManager(tmp_path / "voronoi")
+        ws = tmp_path / "workspace"
+        ws.mkdir()
+
+        with patch("shutil.which", return_value="/usr/local/bin/bd"), \
+             patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=1,
+                stdout="",
+                stderr="unknown flag: --server",
+            )
+            with pytest.raises(RuntimeError, match="bd init --server"):
+                wm._ensure_beads(ws)
+
+    def test_ensure_beads_requires_bd_cli(self, tmp_path):
+        wm = WorkspaceManager(tmp_path / "voronoi")
+        ws = tmp_path / "workspace"
+        ws.mkdir()
+
+        with patch("shutil.which", return_value=None):
+            with pytest.raises(RuntimeError, match="Beads CLI"):
+                wm._ensure_beads(ws)
 
     def test_ensure_beads_skips_when_dir_exists(self, tmp_path):
         wm = WorkspaceManager(tmp_path / "voronoi")

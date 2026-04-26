@@ -844,6 +844,33 @@ During progress polling, the dispatcher syncs Beads findings to the Claim Ledger
 - Investigator findings → `run_evidence` provenance
 - On convergence: provisional claims promoted to `asserted`, self-critique generated
 
+### LLM Call Provenance
+
+Experiment runners or agent-side tooling may preserve LLM calls by writing one
+JSON record per call under `.swarm/llm_provenance/`. Voronoi provides
+`src/voronoi/server/provenance.py` as a small stdlib writer/reader for this
+directory. The writer records caller-provided metadata, a stable
+`content_sha256`, and an index at `.swarm/llm_provenance/manifest.json` so later
+reviewers can discover which prompt/response records supported an experiment.
+
+The first slice is infrastructure only: the prompt builder remains pure, the
+dispatcher does not intercept Copilot output, and agents are not required to
+write provenance automatically. External experiment code decides which calls
+are important enough to preserve and whether metadata contains full prompt text
+or a reconstructable prompt recipe.
+
+Public API:
+
+```python
+def write_provenance(workspace_path: str | Path, record: dict[str, Any]) -> Path: ...
+def discover_provenance(workspace_path: str | Path) -> list[Path]: ...
+```
+
+`write_provenance()` creates `.swarm/llm_provenance/<uuid>.json`, updates
+`.swarm/llm_provenance/manifest.json`, and returns the absolute path to the
+record file. `discover_provenance()` returns record paths from the manifest when
+valid, falling back to listing per-call JSON files in the provenance directory.
+
 A task is treated as a finding ONLY when its title **starts with** `FINDING:`, `FINDING -`, or `FINDING —` (case-insensitive). Substring matches on "findings" in arbitrary titles (e.g. "Analyze pricing dataset for five action-changing findings") are explicitly rejected — otherwise task titles launder into provisional claims, inflating the ledger with verb-phrase ghost-claims that satisfy success criteria and mask genuine learning stalls. See INV-47.
 
 The Beads-to-Ledger gate is defence-in-depth. The **first line of defence** is at task creation: `voronoi.mcp.tools_beads.create_task` rejects laundered titles up-front (INV-55), refuses experiment-type tasks without `PRODUCES:` and namespaced output paths (INV-56), and stamps `CREATED_BY:` provenance for accountability. The **second line of defence** is at task closure: `close_task` refuses to close `experiment` / `investigation` / `evaluation` tasks that have no `FINDING_TASK_IDS:` link (resolved via `bd show` against sibling `FINDING:`-prefixed tasks) or honest `FINDING:NULL` rationale (INV-57). The **third line of defence** is the dispatcher's per-cycle graph-health audit (INV-58), which writes `.swarm/graph-health.json` and emits a `swarm_degenerate` directive (with `action: stop_and_fix`, structurally enforced by `spawn-agent.sh` per INV-50) when orphan ratio or sibling-cluster size cross thresholds. The Claim-Ledger title-prefix check is the **fourth and final** layer.
@@ -1003,6 +1030,11 @@ The **Run Manifest** (`.swarm/run-manifest.json`) is a consolidated, machine-rea
 | `artifacts` | Filesystem scan + finding `DATA_FILE` notes |
 | `caveats` | Derived: convergence blockers + `ROBUST=no` + non-APPROVED stat review |
 | `answer` | Derived: strongest-status claim (`replicated > locked > asserted > provisional`) |
+
+LLM-call provenance records in `.swarm/llm_provenance/` are supporting audit
+artifacts. They are indexed by `.swarm/llm_provenance/manifest.json` and can be
+referenced by downstream reports or external graders without changing the run
+manifest's convergence semantics.
 
 ### Rigor-Tiered Validation
 

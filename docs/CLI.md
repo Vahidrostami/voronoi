@@ -67,6 +67,7 @@ AGENTS.md             # Compatibility alias
 4. Copies `CLAUDE.md` and `AGENTS.md` (skips if already exist — user-owned)
 5. Copies `.env.example`
 6. Initializes git repo if not already initialized
+7. Runs `swarm-init.sh`, which initializes Beads with `bd init --quiet --server`; if the installed `bd` CLI does not support server mode, the command prints an upgrade warning because worker and dispatcher processes must share one `.beads/` store
 
 ### User-Owned Files
 
@@ -168,8 +169,11 @@ Shows:
 
 Cleans up:
 - Completed investigations older than `workspace_retention_days`
-- Orphaned worktrees
+- Their sibling `*-swarm/` worktree directories
+- Orphaned `*-swarm/` directories whose main workspace has already gone away
 - Stale tmux sessions
+
+`--force` is required before anything is removed. Running, queued, paused, and review-state investigations are preserved; prune only removes terminal investigations (`complete`, `failed`, or `cancelled`) past the retention window. If cleanup is blocked by live `bd`, MCP, or agent processes, prune reports the likely locking PIDs instead of silently leaving the directory behind.
 
 ### `voronoi server config`
 

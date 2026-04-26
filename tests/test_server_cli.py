@@ -3,8 +3,11 @@
 import argparse
 import subprocess
 import sys
+import time
 
 import pytest
+
+from voronoi.server.queue import Investigation, InvestigationQueue
 
 
 def test_server_help():
@@ -85,3 +88,86 @@ def test_server_start_passes_temp_env_to_bridge(tmp_path, monkeypatch):
     assert env["TMPDIR"] == str(temp_dir)
     assert env["TMP"] == str(temp_dir)
     assert env["TEMP"] == str(temp_dir)
+
+
+def test_server_prune_removes_terminal_workspace_and_swarm(tmp_path, monkeypatch):
+    """server prune should preserve active work and remove eligible swarms."""
+    from voronoi import cli
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    base_dir = tmp_path / ".voronoi"
+    active_dir = base_dir / "active"
+    active_dir.mkdir(parents=True)
+    (base_dir / "config.json").write_text(
+        '{"server": {"workspace_retention_days": 0}}'
+    )
+
+    queue = InvestigationQueue(base_dir / "queue.db")
+
+    done_id = queue.enqueue(Investigation(
+        chat_id="c", question="done", slug="done",
+        created_at=time.time() - 60,
+    ))
+    done_ws = active_dir / f"inv-{done_id}-done"
+    done_swarm = active_dir / f"inv-{done_id}-done-swarm"
+    done_ws.mkdir()
+    done_swarm.mkdir()
+    queue.start(done_id, str(done_ws))
+    queue.complete(done_id)
+
+    running_id = queue.enqueue(Investigation(
+        chat_id="c", question="running", slug="running",
+        created_at=time.time() - 60,
+    ))
+    running_ws = active_dir / f"inv-{running_id}-running"
+    running_swarm = active_dir / f"inv-{running_id}-running-swarm"
+    running_ws.mkdir()
+    running_swarm.mkdir()
+    queue.start(running_id, str(running_ws))
+
+    orphan_swarm = active_dir / "inv-999-orphan-swarm"
+    orphan_swarm.mkdir()
+
+    cli._server_prune(argparse.Namespace(force=True))
+
+    assert not done_ws.exists()
+    assert not done_swarm.exists()
+    assert running_ws.exists()
+    assert running_swarm.exists()
+    assert not orphan_swarm.exists()
+
+
+def test_server_prune_preserves_workspace_reused_by_active_round(tmp_path, monkeypatch):
+    """A completed parent must not be pruned while a child reuses its workspace."""
+    from voronoi import cli
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    base_dir = tmp_path / ".voronoi"
+    active_dir = base_dir / "active"
+    active_dir.mkdir(parents=True)
+    (base_dir / "config.json").write_text(
+        '{"server": {"workspace_retention_days": 0}}'
+    )
+
+    queue = InvestigationQueue(base_dir / "queue.db")
+    parent_id = queue.enqueue(Investigation(
+        chat_id="c", question="parent", slug="parent",
+        created_at=time.time() - 60,
+    ))
+    parent_ws = active_dir / f"inv-{parent_id}-parent"
+    parent_swarm = active_dir / f"inv-{parent_id}-parent-swarm"
+    parent_ws.mkdir()
+    parent_swarm.mkdir()
+    queue.start(parent_id, str(parent_ws))
+    queue.complete(parent_id)
+
+    child_id = queue.enqueue(Investigation(
+        chat_id="c", question="child", slug="child",
+        created_at=time.time() - 30,
+    ))
+    queue.start(child_id, str(parent_ws))
+
+    cli._server_prune(argparse.Namespace(force=True))
+
+    assert parent_ws.exists()
+    assert parent_swarm.exists()

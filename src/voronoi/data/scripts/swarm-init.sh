@@ -14,7 +14,7 @@ else
     PKG_HINT="apt install"  # or your distro's package manager
 fi
 
-command -v bd   >/dev/null 2>&1 || { echo "Install beads: $PKG_HINT beads"; exit 1; }
+command -v bd   >/dev/null 2>&1 || { echo "Install/update the Beads CLI with server-mode support: https://github.com/gastownhall/beads"; exit 1; }
 command -v tmux >/dev/null 2>&1 || { echo "Install tmux: $PKG_HINT tmux"; exit 1; }
 command -v gh   >/dev/null 2>&1 && echo "✓ GitHub CLI found" || echo "⚠ GitHub CLI (gh) not found — optional, needed for PR workflows"
 command -v docker >/dev/null 2>&1 && echo "✓ Docker found" || echo "⚠ Docker not found — agent code will run on host (no sandbox)"
@@ -65,27 +65,43 @@ if ! git rev-parse HEAD >/dev/null 2>&1; then
 fi
 
 # 3. Initialize Beads
-if [ ! -d ".beads" ]; then
-    # Use timeout if available (Linux), gtimeout (Homebrew coreutils on macOS),
-    # or fall back to a background-process timeout for vanilla macOS.
+run_bd_init_server() {
+    local status=0
+    set +e
     if command -v timeout >/dev/null 2>&1; then
-        echo "Y" | timeout 30 bd init --quiet 2>/dev/null || true
+        echo "Y" | timeout 30 bd init --quiet --server
+        status=$?
     elif command -v gtimeout >/dev/null 2>&1; then
-        echo "Y" | gtimeout 30 bd init --quiet 2>/dev/null || true
+        echo "Y" | gtimeout 30 bd init --quiet --server
+        status=$?
     else
         # Portable timeout: run bd init in background, kill after 30s
-        echo "Y" | bd init --quiet 2>/dev/null &
+        echo "Y" | bd init --quiet --server &
         _bd_pid=$!
         ( sleep 30 && kill "$_bd_pid" 2>/dev/null ) &
         _timer_pid=$!
-        wait "$_bd_pid" 2>/dev/null || true
-        kill "$_timer_pid" 2>/dev/null || true
-        wait "$_timer_pid" 2>/dev/null || true
+        wait "$_bd_pid" 2>/dev/null
+        status=$?
+        kill "$_timer_pid" 2>/dev/null
+        wait "$_timer_pid" 2>/dev/null
     fi
-    if [ -d ".beads" ]; then
-        echo "✓ Beads initialized"
+    set -e
+    return "$status"
+}
+
+if [ ! -d ".beads" ]; then
+    # Use timeout if available (Linux), gtimeout (Homebrew coreutils on macOS),
+    # or fall back to a background-process timeout for vanilla macOS.
+    BD_INIT_OK=false
+    if run_bd_init_server; then
+        BD_INIT_OK=true
+    fi
+    if [ "$BD_INIT_OK" = "true" ] && [ -d ".beads" ]; then
+        echo "✓ Beads initialized in server mode"
     else
-        echo "⚠ Beads init failed or timed out (non-fatal)"
+        echo "⚠ Beads server-mode init failed or timed out"
+        echo "  Voronoi requires a Beads CLI with 'bd init --server' support."
+        echo "  Update Beads before dispatching worker agents: https://github.com/gastownhall/beads"
     fi
 else
     echo "✓ Beads already initialized"

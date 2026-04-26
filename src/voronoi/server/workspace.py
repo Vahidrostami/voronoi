@@ -16,12 +16,45 @@ import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 logger = logging.getLogger("voronoi.workspace")
 
 from voronoi.server.repo_url import RepoRef
 from voronoi.utils import git_init_main
+
+
+BEADS_SERVER_MODE_HINT = (
+    "Voronoi requires a Beads CLI with 'bd init --server' support. "
+    "Install or update Beads from https://github.com/gastownhall/beads."
+)
+
+
+def describe_live_file_holders(paths: Sequence[Path]) -> list[str]:
+    """Return short descriptions of processes holding files under paths."""
+    if not shutil.which("lsof"):
+        return []
+
+    holders: dict[tuple[str, str], str] = {}
+    for path in paths:
+        if not path.exists():
+            continue
+        try:
+            result = subprocess.run(
+                ["lsof", "-w", "-nP", "+D", str(path)],
+                capture_output=True, text=True, timeout=10,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            continue
+        if not result.stdout:
+            continue
+        for line in result.stdout.splitlines()[1:]:
+            parts = line.split(None, 8)
+            if len(parts) < 2:
+                continue
+            command, pid = parts[0], parts[1]
+            holders[(pid, command)] = f"{pid} ({command})"
+    return sorted(holders.values())
 
 
 @dataclass
@@ -150,10 +183,17 @@ class WorkspaceManager:
             return workspace_path
         return None
 
-    def cleanup(self, investigation_id: int, slug: str) -> bool:
+    def cleanup(self, investigation_id: int, slug: str,
+                diagnostics: list[str] | None = None) -> bool:
         """Remove a workspace and its worktrees."""
         workspace_path = self.active_dir / f"inv-{investigation_id}-{slug}"
-        swarm_path = self.active_dir / f"inv-{investigation_id}-{slug}-swarm"
+        return self.cleanup_path(workspace_path, diagnostics=diagnostics)
+
+    def cleanup_path(self, workspace_path: str | Path,
+                     diagnostics: list[str] | None = None) -> bool:
+        """Remove a workspace path and its sibling swarm worktree directory."""
+        workspace_path = Path(workspace_path)
+        swarm_path = workspace_path.parent / f"{workspace_path.name}-swarm"
         workspace_lock = self._lock_name("workspace", workspace_path.name)
 
         removed = False
@@ -173,13 +213,53 @@ class WorkspaceManager:
                     capture_output=True,
                     text=True,
                 )
-                shutil.rmtree(swarm_path, ignore_errors=True)
-                removed = True
+                removed = self._remove_tree_with_diagnostics(
+                    swarm_path, diagnostics,
+                ) or removed
 
             if workspace_path.exists():
-                shutil.rmtree(workspace_path)
-                removed = True
+                removed = self._remove_tree_with_diagnostics(
+                    workspace_path, diagnostics,
+                ) or removed
         return removed
+
+    def _remove_tree_with_diagnostics(
+        self,
+        path: Path,
+        diagnostics: list[str] | None = None,
+    ) -> bool:
+        """Remove a directory tree and report likely lock holders on failure."""
+        if not path.exists():
+            return False
+        try:
+            shutil.rmtree(path)
+        except OSError as exc:
+            self._record_cleanup_blocker(path, exc, diagnostics)
+            return False
+        if path.exists():
+            self._record_cleanup_blocker(path, None, diagnostics)
+            return False
+        return True
+
+    def _record_cleanup_blocker(
+        self,
+        path: Path,
+        exc: OSError | None,
+        diagnostics: list[str] | None,
+    ) -> None:
+        holders = describe_live_file_holders([path])
+        if holders:
+            detail = ", ".join(holders[:8])
+            if len(holders) > 8:
+                detail += f", +{len(holders) - 8} more"
+            message = f"Could not remove {path}; live processes hold files: {detail}"
+        elif exc is not None:
+            message = f"Could not remove {path}: {exc}"
+        else:
+            message = f"Could not remove {path}; it may contain open NFS lock files"
+        logger.warning(message)
+        if diagnostics is not None:
+            diagnostics.append(message)
 
     def list_active(self) -> list[str]:
         """List active investigation directories (excludes -swarm worktree dirs)."""
@@ -252,9 +332,9 @@ class WorkspaceManager:
         if beads_dir.is_dir():
             return
         if not shutil.which("bd"):
-            return
+            raise RuntimeError(BEADS_SERVER_MODE_HINT)
         try:
-            subprocess.run(
+            result = subprocess.run(
                 ["bd", "init", "--quiet", "--server"],
                 cwd=str(workspace_path),
                 capture_output=True, text=True, timeout=30,
@@ -262,6 +342,11 @@ class WorkspaceManager:
             )
         except (FileNotFoundError, subprocess.TimeoutExpired):
             logger.debug("bd init failed in %s", workspace_path, exc_info=True)
+            raise RuntimeError(BEADS_SERVER_MODE_HINT) from None
+        if result.returncode != 0 or not beads_dir.is_dir():
+            detail = (result.stderr or result.stdout or "").strip()
+            suffix = f" bd output: {detail[:300]}" if detail else ""
+            raise RuntimeError(f"{BEADS_SERVER_MODE_HINT}{suffix}")
 
     def _ensure_github_files(self, workspace_path: Path) -> None:
         """Copy runtime agents/prompts/skills/instructions/hooks to .github/ in the workspace, plus scripts/ and templates."""
