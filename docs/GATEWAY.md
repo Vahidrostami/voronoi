@@ -139,14 +139,14 @@ Central dispatch point for all user actions. Every Telegram command and programm
 | `handle_reprioritize(project_dir, task_id, priority) -> str` | Changes task priority |
 | `handle_pause(project_dir, task_id) -> str` | Pauses a task |
 | `handle_resume(project_dir, task_id) -> str` | Resumes a paused task |
-| `handle_resume_investigation(project_dir, inv_id_or_codename) -> str` | Resumes a paused/failed investigation |
+| `handle_resume_investigation(project_dir, inv_id_or_codename) -> str` | Resumes a paused/failed investigation; review/partial-review investigations use `continue` or `complete` |
 | `handle_add(project_dir, task_desc) -> str` | Creates new task |
 | `handle_complete(project_dir, task_id, reason) -> str` | Closes a Beads task (bd-xxx) |
 | `handle_complete_investigation(project_dir, id_or_codename) -> str` | Accepts and closes a reviewed investigation |
 | `handle_abort(project_dir, inv_id) -> str` | Aborts investigation |
 | `handle_pivot(project_dir, inv_id, new_question) -> str` | Pivots investigation question |
 | `handle_guide(project_dir, message) -> str` | Writes operator guidance to active workspaces |
-| `handle_extend(project_dir, codename, minutes) -> str` | Grants additional stall budget — clears `.swarm/stall-signal.json`, pushes `last_learning_activity_at` forward, resets strike level. Surfaced by the strike-2 Telegram notification. Default 60 minutes. See SERVER.md §3. |
+| `handle_extend(project_dir, codename, minutes) -> str` | Grants additional stall budget — clears `.swarm/stall-signal.json`, resets the learning timer, and resets strike level. Surfaced by strike Telegram notifications, but missed notifications remain recoverable because strike 4 parks to `review`. Default 60 minutes. See SERVER.md §3. |
 
 ### Iterative Science Handlers
 
@@ -159,7 +159,7 @@ Central dispatch point for all user actions. Every Telegram command and programm
 
 These handlers interact with the Claim Ledger (`~/.voronoi/ledgers/<lineage_id>/claim-ledger.json`). The `continue` handler parses natural-language feedback for `lock C1`, `challenge C2: reason` patterns and updates the ledger before creating the continuation investigation. PI feedback is stored in the `pi_feedback` field on `Investigation` — it is NOT appended to the question text. The dispatcher reads `pi_feedback` to build the warm-start prompt context.
 
-**No-info guard (INV-48):** `handle_continue_investigation` refuses to enqueue a new round when the prior run already converged (`.swarm/convergence.json` has `gate_passed=true`), a manuscript exists, feedback is empty, and the ledger has no pending objections. The refusal surfaces `/voronoi deliberate`, explicit `challenge Cn: <reason>`, scope-change feedback, or `/voronoi complete` as the legitimate next moves. This prevents the zero-information rerun that would otherwise just replay the Scribe/Evaluator finisher chain on identical data.
+**No-info guard (INV-48):** `handle_continue_investigation` refuses to enqueue a new round when the prior run already converged (`.swarm/convergence.json` has `gate_passed=true`), a manuscript exists, feedback is empty, and the ledger has no pending objections. Partial-review runs are not blocked by this guard: `.swarm/failure-diagnosis.json`, `.swarm/deliverable-partial.md`, or unconverged `convergence.json` are treated as continuation signal. The refusal surfaces `/voronoi deliberate`, explicit `challenge Cn: <reason>`, scope-change feedback, or `/voronoi complete` as the legitimate next moves. This prevents the zero-information rerun that would otherwise just replay the Scribe/Evaluator finisher chain on identical data.
 
 ### Workflow Handlers
 
@@ -557,7 +557,7 @@ Transitions into `locked`, `replicated`, `challenged`, or `retired` escalate the
 
 `format_learning_stalled(codename, elapsed_min)` produces a stand-alone notification sent when the dispatcher detects that no new findings and no claim-status transitions have arrived for `DispatcherConfig.stall_strike1_minutes` (default 30). The message lists the PI's options: `pivot`, `ask`, `deliberate`, or `complete`. New-provisional claims alone do NOT reset the stall timer — a claim that never becomes asserted/locked is not learning.
 
-The alert is the **first of three escalation strikes**. If the stall persists through `stall_strike2_minutes` (default 60), the dispatcher sends a strike-2 notification and switches the orchestrator's directive to `experiments_only`; at `stall_strike3_minutes` (default 90) it writes a partial deliverable, sends a strike-3 notification, and auto-parks the run. Each strike fires at most once per sequence; a real finding or claim transition resets the level to 0, removes `.swarm/stall-signal.json`, and allows a later stall to escalate again. See SERVER.md §3 for the detection loop and `.swarm/stall-signal.json` shape.
+The alert is the **first of four escalation strikes**. If the stall persists through `stall_strike2_minutes` (default 60), the dispatcher sends a strike-2 notification and switches the orchestrator's directive to `pivot_or_declare`; at `stall_strike3_minutes` (default 90), it sends the `final_steer` directive and gives the run one final grace window to produce a negative finding, a BLOCKED declaration, or a partial deliverable. If no learning arrives after that grace window, strike 4 writes partial artifacts and parks the row to `review`. Each strike fires at most once per sequence; a real finding or claim transition resets the level to 0, removes `.swarm/stall-signal.json`, and allows a later stall to escalate again. See SERVER.md §3 for the detection loop and `.swarm/stall-signal.json` shape.
 
 ---
 
@@ -821,7 +821,7 @@ This eliminates the old regex-based ASK classification, which missed natural phr
 
 ### Inline Button Callbacks
 
-Handles button presses from previous messages. Routes to appropriate handler (status, health, tasks, abort, belief, results, guide).
+Handles button presses from previous messages. Routes to appropriate handler (status, health, tasks, abort, belief, results, guide) and codename-scoped durable actions (`review:<codename>`, `continue:<codename>`, `complete:<codename>`, `resume:<codename>`, `extend:<codename>`). Callback data is stateless and replay-safe; the same commands are also printed in `/voronoi status` so a missed Telegram alert does not strand the run.
 
 ### Contextual Inline Buttons
 
@@ -832,6 +832,9 @@ Buttons change based on message content:
 | Workflow launch | [📊 Status] [🛑 Abort] |
 | Status command | [📋 Tasks] [⚡ Ready] [🩺 Health] |
 | Digest update | [Progress] [Guide] [Abort] |
+| Stall warning | [Extend 60m] [Details] [Abort] |
+| Partial review / review | [Review] [Continue] [Complete] |
+| Paused / failed | [Resume] [Details] [Status] |
 | Completion | [Details] [Belief Map] |
 
 ### Dispatcher Integration

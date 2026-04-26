@@ -2,7 +2,32 @@
 
 import pytest
 
-from voronoi.utils import clean_finding_title, extract_field, find_checkpoint, parse_finding_notes
+from voronoi.utils import clean_finding_title, extract_field, find_checkpoint, is_finding_title, parse_finding_notes
+
+
+class TestIsFindingTitle:
+    """Canonical FINDING-title detector — INV-47 / BUG-001 regression."""
+
+    @pytest.mark.parametrize("title", [
+        "FINDING: EWC beats replay",
+        "finding: lowercase still counts",
+        "  FINDING: leading whitespace ok",
+        "FINDING - dash form",
+        "FINDING \u2014 em-dash form",
+    ])
+    def test_canonical_prefixes_accepted(self, title):
+        assert is_finding_title(title) is True
+
+    @pytest.mark.parametrize("title", [
+        "Analyze pricing dataset for five action-changing findings",
+        "Investigate finding the cheapest path",
+        "Findings summary",       # no separator
+        "FINDING",                # bare, no separator
+        "Some FINDING: in middle",
+        "",
+    ])
+    def test_ghost_titles_rejected(self, title):
+        assert is_finding_title(title) is False
 
 
 class TestExtractField:

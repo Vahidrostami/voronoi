@@ -246,7 +246,7 @@ class TestEvalScorePropagation:
 
 
 # ---------------------------------------------------------------------------
-# Fix 4: Timeout detection
+# Fix 4: Review budget detection
 # ---------------------------------------------------------------------------
 
 class TestTimeoutDetection:
@@ -275,8 +275,9 @@ class TestTimeoutDetection:
         conv = tmp_path / ".swarm" / "convergence.json"
         assert conv.exists()
         data = json.loads(conv.read_text())
-        assert data["status"] == "exhausted"
-        assert "timeout" in data["blockers"]
+        assert data["status"] == "partial"
+        assert data["gate_passed"] is False
+        assert "time_budget" in data["blockers"]
 
     def test_timeout_triggers_completion(self, dispatcher_setup):
         d, msgs, tmp_path = dispatcher_setup
@@ -314,8 +315,7 @@ class TestTimeoutDetection:
              patch("voronoi.server.dispatcher.subprocess.run", side_effect=_mock_run):
             d.poll_progress()
 
-        # Should have been completed via timeout — science investigations
-        # go to review status, not directly to complete
+        # Should have been parked for partial review, not directly completed.
         assert 1 not in d.running
         d._queue.review.assert_called_once_with(1)
 

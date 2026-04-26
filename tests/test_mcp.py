@@ -374,7 +374,7 @@ class TestCloseTask:
     def test_close_with_missing_produces(self, tmp_path):
         from voronoi.mcp.tools_beads import close_task
 
-        task_data = {"notes": "PRODUCES:output/results.json"}
+        task_data = {"notes": "PRODUCES:output/bd-42/experiment_metrics.json"}
         with patch.dict(os.environ, {"VORONOI_WORKSPACE": str(tmp_path)}), \
              patch("voronoi.mcp.tools_beads.run_bd_json",
                    return_value=(0, task_data)):
@@ -384,16 +384,283 @@ class TestCloseTask:
     def test_close_with_produces_present(self, tmp_path):
         from voronoi.mcp.tools_beads import close_task
 
-        (tmp_path / "output").mkdir()
-        (tmp_path / "output" / "results.json").write_text("{}")
+        metrics_dir = tmp_path / "output" / "bd-42"
+        metrics_dir.mkdir(parents=True)
+        (metrics_dir / "experiment_metrics.json").write_text("{}")
 
-        task_data = {"notes": "PRODUCES:output/results.json"}
+        task_data = {"notes": "PRODUCES:output/bd-42/experiment_metrics.json"}
         with patch.dict(os.environ, {"VORONOI_WORKSPACE": str(tmp_path)}), \
              patch("voronoi.mcp.tools_beads.run_bd_json",
                    return_value=(0, task_data)), \
              patch("voronoi.mcp.tools_beads.run_bd",
                    return_value=(0, "closed")):
             result = close_task("bd-42", "done")
+        assert result["status"] == "closed"
+
+
+class TestCreateTaskGuards:
+    """INV-55/56: title gate, PRODUCES contract, CREATED_BY provenance."""
+
+    def test_rejects_laundered_imperative_title(self, tmp_path):
+        from voronoi.mcp.tools_beads import create_task
+        with patch.dict(os.environ, {"VORONOI_WORKSPACE": str(tmp_path)}):
+            with pytest.raises(ValidationError, match="imperative verb"):
+                create_task("Analyze business prompt findings")
+
+    def test_rejects_laundered_title_with_findings_substring(self, tmp_path):
+        from voronoi.mcp.tools_beads import create_task
+        with patch.dict(os.environ, {"VORONOI_WORKSPACE": str(tmp_path)}):
+            with pytest.raises(ValidationError, match="imperative verb"):
+                create_task("Analyze pricing dataset for five action-changing findings")
+
+    def test_accepts_imperative_with_relational_marker(self, tmp_path):
+        from voronoi.mcp.tools_beads import create_task
+        with patch.dict(os.environ, {"VORONOI_WORKSPACE": str(tmp_path)}), \
+             patch("voronoi.mcp.tools_beads.run_bd", return_value=(0, "Created task bd-1")), \
+             patch("voronoi.mcp.tools_beads.run_bd_json", return_value=(0, {"notes": ""})):
+            result = create_task("Test whether L4 > L1 in coverage")
+            assert result["status"] == "created"
+
+    def test_accepts_finding_prefixed_title(self, tmp_path):
+        from voronoi.mcp.tools_beads import create_task
+        with patch.dict(os.environ, {"VORONOI_WORKSPACE": str(tmp_path)}), \
+             patch("voronoi.mcp.tools_beads.run_bd", return_value=(0, "Created task bd-1")), \
+             patch("voronoi.mcp.tools_beads.run_bd_json", return_value=(0, {"notes": ""})):
+            result = create_task("FINDING: encoding reduces regret (d=-0.40)")
+            assert result["status"] == "created"
+
+    def test_experiment_type_requires_produces(self, tmp_path):
+        from voronoi.mcp.tools_beads import create_task
+        with patch.dict(os.environ, {"VORONOI_WORKSPACE": str(tmp_path)}):
+            with pytest.raises(ValidationError, match="MUST declare PRODUCES"):
+                create_task("Phase 1 pilot", task_type="experiment")
+
+    @pytest.mark.parametrize(
+        "task_type",
+        ["build", "experiment", "investigation", "evaluation", "paper"],
+    )
+    def test_required_task_types_require_produces(self, tmp_path, task_type):
+        from voronoi.mcp.tools_beads import create_task
+        with patch.dict(os.environ, {"VORONOI_WORKSPACE": str(tmp_path)}):
+            with pytest.raises(ValidationError, match="MUST declare PRODUCES"):
+                create_task("Phase 1 pilot", task_type=task_type)
+
+    def test_produces_rejects_shared_namespace_basename(self, tmp_path):
+        from voronoi.mcp.tools_beads import create_task
+        with patch.dict(os.environ, {"VORONOI_WORKSPACE": str(tmp_path)}):
+            with pytest.raises(ValidationError, match="shared artifact basename"):
+                create_task(
+                    "Phase 1 pilot",
+                    task_type="experiment",
+                    produces="answer.json",
+                )
+
+    def test_produces_rejects_shared_namespace_in_subdir_basename(self, tmp_path):
+        from voronoi.mcp.tools_beads import create_task
+        with patch.dict(os.environ, {"VORONOI_WORKSPACE": str(tmp_path)}):
+            # Even within a subdir, the shared basename is forbidden.
+            with pytest.raises(ValidationError, match="shared artifact basename"):
+                create_task(
+                    "Phase 1 pilot",
+                    task_type="experiment",
+                    produces="output/results.json",
+                )
+
+    def test_produces_rejects_denylisted_basename_when_task_scoped(self, tmp_path):
+        from voronoi.mcp.tools_beads import create_task
+        with patch.dict(os.environ, {"VORONOI_WORKSPACE": str(tmp_path)}):
+            with pytest.raises(ValidationError, match="shared artifact basename"):
+                create_task(
+                    "Phase 1 pilot",
+                    task_type="experiment",
+                    produces="output/bd-1/results.json",
+                )
+
+    def test_namespaced_produces_under_task_id_dir_accepted(self, tmp_path):
+        from voronoi.mcp.tools_beads import create_task
+        with patch.dict(os.environ, {"VORONOI_WORKSPACE": str(tmp_path)}), \
+             patch("voronoi.mcp.tools_beads.run_bd", return_value=(0, "Created task bd-1")), \
+             patch("voronoi.mcp.tools_beads.run_bd_json", return_value=(0, {"notes": ""})):
+            result = create_task(
+                "Phase 1 pilot",
+                task_type="experiment",
+                produces="output/bd-1/pilot.json",
+            )
+            assert result["status"] == "created"
+
+    def test_create_task_schema_exposes_created_by(self):
+        from voronoi.mcp.server import TOOLS, _build_registry
+
+        TOOLS.clear()
+        _build_registry()
+        tool = TOOLS["voronoi_create_task"]
+
+        assert "created_by" in tool["params"]
+        assert "created_by" not in tool["required"]
+
+    def test_stamps_created_by_from_env(self, tmp_path):
+        """CREATED_BY provenance stamped from VORONOI_AGENT_ROLE."""
+        from voronoi.mcp.tools_beads import create_task
+
+        captured: dict[str, str] = {}
+
+        def fake_run_bd(*args, cwd=None):
+            if args and args[0] == "update":
+                # args = ("update", task_id, "--notes", notes)
+                captured["notes"] = args[3]
+                return 0, ""
+            return 0, "Created task bd-1"
+
+        with patch.dict(os.environ, {
+                "VORONOI_WORKSPACE": str(tmp_path),
+                "VORONOI_AGENT_ROLE": "orchestrator",
+                }), \
+             patch("voronoi.mcp.tools_beads.run_bd", side_effect=fake_run_bd), \
+             patch("voronoi.mcp.tools_beads.run_bd_json",
+                   return_value=(0, {"notes": ""})):
+            create_task("FINDING: x is greater than y")
+        assert "CREATED_BY:orchestrator" in captured.get("notes", "")
+
+    def test_explicit_created_by_overrides_env(self, tmp_path):
+        from voronoi.mcp.tools_beads import create_task
+        captured: dict[str, str] = {}
+
+        def fake_run_bd(*args, cwd=None):
+            if args and args[0] == "update":
+                captured["notes"] = args[3]
+                return 0, ""
+            return 0, "Created task bd-1"
+
+        with patch.dict(os.environ, {
+                "VORONOI_WORKSPACE": str(tmp_path),
+                "VORONOI_AGENT_ROLE": "worker:bd-99",
+                }), \
+             patch("voronoi.mcp.tools_beads.run_bd", side_effect=fake_run_bd), \
+             patch("voronoi.mcp.tools_beads.run_bd_json",
+                   return_value=(0, {"notes": ""})):
+            create_task("FINDING: x is greater than y", created_by="orchestrator")
+        assert "CREATED_BY:orchestrator" in captured.get("notes", "")
+
+
+class TestCloseTaskFindingGate:
+    """INV-57: experiment-type tasks need FINDING linkage to close."""
+
+    def _task_data(self, notes: str) -> dict:
+        return {"notes": notes}
+
+    def test_experiment_close_without_finding_link_rejected(self, tmp_path):
+        from voronoi.mcp.tools_beads import close_task
+        (tmp_path / "out").mkdir()
+        (tmp_path / "out" / "r.json").write_text("{}")
+        notes = "TASK_TYPE:experiment\nPRODUCES:out/r.json"
+        with patch.dict(os.environ, {"VORONOI_WORKSPACE": str(tmp_path)}), \
+             patch("voronoi.mcp.tools_beads.run_bd_json",
+                   return_value=(0, self._task_data(notes))):
+            with pytest.raises(ValidationError,
+                               match="FINDING_TASK_IDS|FINDING:NULL"):
+                close_task("bd-42", "done")
+
+    def test_experiment_close_with_finding_link_accepted(self, tmp_path):
+        from voronoi.mcp.tools_beads import close_task
+        (tmp_path / "out").mkdir()
+        (tmp_path / "out" / "r.json").write_text("{}")
+        notes = ("TASK_TYPE:experiment\nPRODUCES:out/r.json\n"
+                 "FINDING_TASK_IDS:bd-50")
+
+        def fake_run_bd_json(*args, cwd=None):
+            task_id = args[1]
+            records = {
+                "bd-42": self._task_data(notes),
+                "bd-50": {"title": "FINDING: phase 1 improves recall"},
+            }
+            return 0, records[task_id]
+
+        with patch.dict(os.environ, {"VORONOI_WORKSPACE": str(tmp_path)}), \
+             patch("voronoi.mcp.tools_beads.run_bd_json",
+                   side_effect=fake_run_bd_json), \
+             patch("voronoi.mcp.tools_beads.run_bd",
+                   return_value=(0, "closed")):
+            result = close_task("bd-42", "done")
+        assert result["status"] == "closed"
+
+    def test_experiment_close_rejects_missing_finding_task_id(self, tmp_path):
+        from voronoi.mcp.tools_beads import close_task
+        (tmp_path / "out").mkdir()
+        (tmp_path / "out" / "r.json").write_text("{}")
+        notes = ("TASK_TYPE:experiment\nPRODUCES:out/r.json\n"
+                 "FINDING_TASK_IDS:bd-404")
+
+        def fake_run_bd_json(*args, cwd=None):
+            task_id = args[1]
+            if task_id == "bd-42":
+                return 0, self._task_data(notes)
+            return 1, {}
+
+        with patch.dict(os.environ, {"VORONOI_WORKSPACE": str(tmp_path)}), \
+             patch("voronoi.mcp.tools_beads.run_bd_json",
+                   side_effect=fake_run_bd_json):
+            with pytest.raises(ValidationError, match="missing task bd-404"):
+                close_task("bd-42", "done")
+
+    def test_experiment_close_rejects_non_finding_task_id(self, tmp_path):
+        from voronoi.mcp.tools_beads import close_task
+        (tmp_path / "out").mkdir()
+        (tmp_path / "out" / "r.json").write_text("{}")
+        notes = ("TASK_TYPE:experiment\nPRODUCES:out/r.json\n"
+                 "FINDING_TASK_IDS:bd-50")
+
+        def fake_run_bd_json(*args, cwd=None):
+            task_id = args[1]
+            records = {
+                "bd-42": self._task_data(notes),
+                "bd-50": {"title": "Analyze business prompt findings"},
+            }
+            return 0, records[task_id]
+
+        with patch.dict(os.environ, {"VORONOI_WORKSPACE": str(tmp_path)}), \
+             patch("voronoi.mcp.tools_beads.run_bd_json",
+                   side_effect=fake_run_bd_json):
+            with pytest.raises(ValidationError, match="does not start with FINDING"):
+                close_task("bd-42", "done")
+
+    def test_experiment_close_with_finding_null_rationale_accepted(self, tmp_path):
+        from voronoi.mcp.tools_beads import close_task
+        (tmp_path / "out").mkdir()
+        (tmp_path / "out" / "r.json").write_text("{}")
+        rationale = "interaction p=0.86 contradicts pilot; no claim-grade effect"
+        notes = (f"TASK_TYPE:experiment\nPRODUCES:out/r.json\n"
+                 f"FINDING:NULL {rationale}")
+        with patch.dict(os.environ, {"VORONOI_WORKSPACE": str(tmp_path)}), \
+             patch("voronoi.mcp.tools_beads.run_bd_json",
+                   return_value=(0, self._task_data(notes))), \
+             patch("voronoi.mcp.tools_beads.run_bd",
+                   return_value=(0, "closed")):
+            result = close_task("bd-42", "null result")
+        assert result["status"] == "closed"
+
+    def test_experiment_close_with_short_null_rationale_rejected(self, tmp_path):
+        from voronoi.mcp.tools_beads import close_task
+        (tmp_path / "out").mkdir()
+        (tmp_path / "out" / "r.json").write_text("{}")
+        notes = ("TASK_TYPE:experiment\nPRODUCES:out/r.json\n"
+                 "FINDING:NULL too short")
+        with patch.dict(os.environ, {"VORONOI_WORKSPACE": str(tmp_path)}), \
+             patch("voronoi.mcp.tools_beads.run_bd_json",
+                   return_value=(0, self._task_data(notes))):
+            with pytest.raises(ValidationError, match="rationale"):
+                close_task("bd-42", "done")
+
+    def test_non_experiment_close_unaffected(self, tmp_path):
+        from voronoi.mcp.tools_beads import close_task
+        (tmp_path / "out").mkdir()
+        (tmp_path / "out" / "r.json").write_text("{}")
+        notes = "TASK_TYPE:build\nPRODUCES:out/r.json"
+        with patch.dict(os.environ, {"VORONOI_WORKSPACE": str(tmp_path)}), \
+             patch("voronoi.mcp.tools_beads.run_bd_json",
+                   return_value=(0, self._task_data(notes))), \
+             patch("voronoi.mcp.tools_beads.run_bd",
+                   return_value=(0, "closed")):
+            result = close_task("bd-42", "build done")
         assert result["status"] == "closed"
 
 

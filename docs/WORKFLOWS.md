@@ -263,6 +263,9 @@ The Telegram bridge adds contextual buttons to messages:
 | Workflow launch | [📊 Status] [🛑 Abort] |
 | Status response | [📋 Tasks] [⚡ Ready] [🩺 Health] |
 | Digest update | [Progress] [Guide] [Abort] |
+| Stall warning | [Extend 60m] [Details] [Abort] |
+| Partial review / review | [Review] [Continue] [Complete] |
+| Paused / failed | [Resume] [Details] [Status] |
 | Completion | [Details] [Belief Map] |
 
 ### Conversational Handlers
@@ -497,5 +500,5 @@ New runs add experiments, code, and data to the workspace. They never regenerate
 | Command | When | Effect |
 |---------|------|--------|
 | `/voronoi review [codename]` | During or after run | Show Claim Ledger |
-| `/voronoi continue <codename> [feedback]` | After review | Start new round with feedback |
+| `/voronoi continue <codename> [feedback]` | After review or partial review | Start new round with feedback; partial-review diagnosis is injected into the warm-start prompt |
 | `/voronoi claims [codename]` | Any time | Show claim state |

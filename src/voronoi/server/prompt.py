@@ -491,8 +491,9 @@ def build_orchestrator_prompt(
         "LLM calls. NEVER hardcode detection probabilities or effect sizes the "
         "experiment is supposed to measure.  If real results are disappointing, "
         "report them honestly — do NOT simulate better numbers.\n\n"
-        "**Provenance:** Every `results.json` MUST include a `runner` field "
-        "naming the script that produced it.\n"
+        "**Provenance:** Every declared experiment metrics artifact "
+        "(for example `output/<task_id>/experiment_metrics.json`) MUST "
+        "include a `runner` field naming the script that produced it.\n"
     )
 
     # -- Delegation rules (compact) ----------------------------------------
@@ -825,13 +826,32 @@ def build_warm_start_context(
                     )
 
         # -- Failure diagnosis from prior round ---
-        diag_path = swarm / "failure-diagnosis.json"
-        if diag_path.exists():
+        # Continuation prep archives and removes active run-state files so the
+        # next orchestrator does not inherit stale terminal directives. Read
+        # the active diagnosis first for pre-cleanup callers, then fall back to
+        # the most recent archived run.
+        diag_candidates = [swarm / "failure-diagnosis.json"]
+        archive_root = swarm / "archive"
+        if archive_root.is_dir():
+            run_dirs = [p for p in archive_root.iterdir() if p.is_dir()]
+
+            def _run_num(path: Path) -> int:
+                try:
+                    return int(path.name.rsplit("-", 1)[1])
+                except (IndexError, ValueError):
+                    return -1
+
+            for run_dir in sorted(run_dirs, key=_run_num, reverse=True):
+                diag_candidates.append(run_dir / "failure-diagnosis.json")
+        for diag_path in diag_candidates:
+            if not diag_path.exists():
+                continue
             try:
                 import json
                 diag = json.loads(diag_path.read_text())
                 if isinstance(diag, dict):
                     context["failure_diagnosis"] = diag
+                    break
             except (OSError, json.JSONDecodeError):
                 pass
 

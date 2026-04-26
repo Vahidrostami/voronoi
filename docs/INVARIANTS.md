@@ -2,7 +2,7 @@
 
 > Rules that MUST never be violated. Reference during code review, debugging, and development.
 
-This document lists 54 invariants. Key ones: prompt.py is sole prompt builder (INV-01). Roles only in `src/voronoi/data/agents/*.agent.md` (copied to `.github/agents/` in investigation workspaces) (INV-02). Orchestrator never enters worktrees (INV-03). Atomic queue claiming (INV-06). Rigor only escalates (INV-08). Baseline-first (INV-09). EVA before finding (INV-12). No simulation bypass (INV-16). Push before session end (INV-25). Plan review before dispatch at Analytical+ (INV-35b). Experiment contract before workers (INV-39). Sentinel audit cannot be bypassed (INV-40). Missing contract warning (INV-41). Tribunal clear before convergence (INV-42). Directional verification on findings (INV-43). Every completion writes a run manifest (INV-44). Paper-track citation integrity (INV-45). Hypothesis-tranche parallelism (INV-46). Red Team verdict before Scientific+ convergence (INV-47). Lab-KG priors preserve provenance and durability (INV-53). PROVE question immutability is protected by confirmation/framing gates (INV-54).
+This document lists 58 invariants. Key ones: prompt.py is sole prompt builder (INV-01). Roles only in `src/voronoi/data/agents/*.agent.md` (copied to `.github/agents/` in investigation workspaces) (INV-02). Orchestrator never enters worktrees (INV-03). Atomic queue claiming (INV-06). Rigor only escalates (INV-08). Baseline-first (INV-09). EVA before finding (INV-12). No simulation bypass (INV-16). Push before session end (INV-25). Plan review before dispatch at Analytical+ (INV-35b). Experiment contract before workers (INV-39). Sentinel audit cannot be bypassed (INV-40). Missing contract warning (INV-41). Tribunal clear before convergence (INV-42). Directional verification on findings (INV-43). Every completion writes a run manifest (INV-44). Paper-track citation integrity (INV-45). Hypothesis-tranche parallelism (INV-46). Red Team verdict before Scientific+ convergence (INV-47). Lab-KG priors preserve provenance and durability (INV-53). PROVE question immutability is protected by confirmation/framing gates (INV-54). Title laundering rejected at create-time (INV-55). PRODUCES required and namespaced for experiment-type tasks (INV-56). FINDING linkage required to close experiment tasks (INV-57). Graph-health audit per OODA cycle (INV-58).
 
 ## 1. Architectural Invariants
 
@@ -37,6 +37,7 @@ Investigations MUST follow the state machine defined in SERVER.md §2:
 - `paused | failed → running` (via `resume()`)
 - `review → complete` (via `accept()`)
 - `review | complete → new queued` (via `continue_investigation()`, creates a NEW investigation)
+- `failed → new queued` only when durable partial-review artifacts exist (`failure-diagnosis.json`, `deliverable-partial.md`, or partial/failed manifest); this is a continuation, not a direct retry
 
 A `complete` investigation MUST NOT be re-queued directly. Continuation creates a new investigation with `parent_id` linking to the original (same `lineage_id`, incremented `cycle_number`).
 
@@ -246,3 +247,21 @@ Lab-wide Knowledge Graph entries MUST preserve Claim Ledger provenance (`model_p
 
 ### INV-54: PROVE Question Immutability and Ambiguity Confirmation
 PROVE investigations treat the user's question and pre-registered design as the contract. Once accepted as PROVE, the question MUST NOT be reframed by Question Framer or Assumption Auditor. Borderline PROVE classifications MUST be surfaced to the user for confirmation before enqueueing so they can choose fixed-question PROVE or switch to DISCOVER question refinement. Question Framer runs only before DISCOVER; Assumption Auditor may surface PROVE assumptions for transparency but MUST NOT block, halt, pivot, or revise the question.
+
+### INV-55: Title Laundering Rejected at Create-Time
+`voronoi.mcp.tools_beads.create_task` MUST reject any title whose first non-whitespace token matches the bare-imperative set (`Analyze`, `Analyse`, `Investigate`, `Run`, `Check`, `Explore`, `Examine`, `Study`, `Review`, `Assess`, `Evaluate`, `Test`, `Verify`, `Look`, `Find`, `Identify`, `Determine`, `Survey`) AND that contains no relational marker (`>`, `<`, `=`, `vs`, `causes`, `predicts`, `increases`, `decreases`, `is`, `are`, …). This mirrors the Claim Ledger's `validate_claim_statement` (INV-47, claim shape) but enforces it at the *task creation* boundary instead of at the post-hoc claim sync. Without this gate, ghost tasks like `"Analyze business prompt findings"` are dispatchable, burn worker time, and silently disappear at the ledger layer. The dispatcher's substring guard remains as a defence-in-depth layer.
+
+### INV-56: PRODUCES Required and Namespaced for Experiment-Type Tasks
+For tasks created via `voronoi_create_task` with `task_type ∈ {build, experiment, investigation, evaluation, paper}`, `PRODUCES:` MUST be non-empty. PRODUCES paths MUST NOT use any basename in the shared-name denylist (`answer.json`, `FINAL_ANSWER.json`, `output.json`, `result.json`, `results.json`, `findings.json`) anywhere in the workspace — these are global namespace collisions that let one worker overwrite another's deliverable. Workers MUST namespace experiment outputs under `output/<task_id>/…` or `findings/<task_id>/…` and use task-specific basenames such as `experiment_metrics.json`, `validation_report.json`, or `manuscript_draft.pdf`. Enforced in `voronoi.mcp.tools_beads.create_task`.
+
+### INV-57: FINDING Linkage Required to Close Experiment Tasks
+`voronoi.mcp.tools_beads.close_task` MUST refuse to close any task whose notes carry `TASK_TYPE:{experiment, investigation, evaluation}` unless the notes also contain either:
+  (a) `FINDING_TASK_IDS:bd-X[,bd-Y…]` — at least one Beads task ID that resolves to a sibling task whose title starts with `FINDING:` / `FINDING -` / `FINDING —`, OR
+  (b) `FINDING:NULL` followed by a non-empty rationale of ≥40 characters explaining why the experiment produced no claim-grade result (e.g. an honest negative).
+Without this gate, experiment tasks close green while the Claim Ledger stays empty and the user is told `0/N criteria met` despite real work having happened. This is the structural counterpart to INV-15 (claim-evidence traceability) at the per-task closure boundary.
+
+### INV-58: Graph-Health Audit per OODA Cycle
+`InvestigationDispatcher._check_graph_health` MUST run during each progress poll for any investigation in `mode == "prove"` or `rigor ∈ {analytical, scientific, experimental}`. It MUST persist `.swarm/graph-health.json` with `{generated_at, total_closed, auditable_closed, orphan_count, orphan_ratio, sibling_cluster_max, sibling_cluster_titles, verdict, reasons}` and MUST emit a `swarm_degenerate` directive (with `action: stop_and_fix`, see INV-50) when any of:
+  - `orphan_ratio > 0.4` (closed tasks with no parent and no inbound dependency edges, excluding `epic`/`scout`/`finding`/`theory`/`baseline`/`methodologist`/`review_stats`/`review_critic`/`synthesis` types),
+  - `sibling_cluster_max ≥ 5` (≥5 closed tasks share the same normalized first-3-word title prefix).
+The `swarm_degenerate` event MUST fire only on transitions into the degenerate verdict (idempotent across polls). The directive instructs the orchestrator to attach orphan tasks to a parent epic, restate laundered titles, or escalate to Methodologist; `spawn-agent.sh` blocks all non-methodologist/post-mortem/revise/restate dispatches until the verdict flips back to `healthy`. This catches the swarm-degenerate failure mode where Beads silently devolves from a DAG orchestrator into a flat work queue.

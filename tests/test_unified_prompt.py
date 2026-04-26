@@ -964,7 +964,7 @@ class TestStallDirectiveInjection:
         swarm.mkdir()
         (swarm / "stall-signal.json").write_text(json.dumps({
             "level": 2,
-            "directive": "experiments_only",
+            "directive": "pivot_or_declare",
             "instruction": "Planning tasks are FORBIDDEN until the stall clears.",
             "elapsed_minutes": 65.0,
         }))
@@ -976,7 +976,7 @@ class TestStallDirectiveInjection:
         )
         assert "STALL DIRECTIVE" in prompt
         assert "LEVEL 2" in prompt
-        assert "experiments_only" in prompt
+        assert "pivot_or_declare" in prompt
         assert "Planning tasks are FORBIDDEN" in prompt
 
     def test_malformed_signal_is_ignored(self, tmp_path):
@@ -1106,3 +1106,27 @@ class TestWarmStartFailureDiagnosis:
         )
         assert "failure_diagnosis" in ctx
         assert ctx["failure_diagnosis"]["proposed_action"] == "Run MVE first"
+
+    def test_picks_up_latest_archived_failure_diagnosis(self, tmp_path):
+        import json
+        from voronoi.server.prompt import build_warm_start_context
+
+        archive = tmp_path / ".swarm" / "archive"
+        old_run = archive / "run-1"
+        latest_run = archive / "run-2"
+        old_run.mkdir(parents=True)
+        latest_run.mkdir(parents=True)
+        (old_run / "failure-diagnosis.json").write_text(json.dumps({
+            "proposed_action": "old action",
+        }))
+        (latest_run / "failure-diagnosis.json").write_text(json.dumps({
+            "proposed_action": "latest action",
+        }))
+
+        ctx = build_warm_start_context(
+            lineage_id=1, cycle_number=3,
+            workspace=tmp_path,
+        )
+
+        assert "failure_diagnosis" in ctx
+        assert ctx["failure_diagnosis"]["proposed_action"] == "latest action"

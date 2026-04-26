@@ -67,7 +67,8 @@ Phase 3: Paper + webapp (gated on Phase 2)
 ```
 demos/coupled-decisions/
   output/
-    results.json            # Per-scenario per-cell per-run Decision Regret + Constraint Violation Rate + ANOVA
+    runner/
+      experiment_metrics.json # Per-scenario per-cell per-run Decision Regret + Constraint Violation Rate + ANOVA
     deterministic_metrics.json  # Variable Recall, Direction Accuracy, Rule Match, Scope Precision, Edge Recovery F1
     reliability_metrics.json    # Cross-run σ, failure rate per cell
     pipeline_scores.json    # Quality gate 5-dimension scores + random baseline

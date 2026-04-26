@@ -43,13 +43,13 @@ If your figures depend on data files, declare those too:
 
 ```bash
 # Declare inputs
-bd update <task-id> --notes "REQUIRES:output/results.json,output/data/experiment_results.csv"
+bd update <task-id> --notes "REQUIRES:output/bd-42/experiment_metrics.json,output/data/experiment_results.csv"
 ```
 
 ### Phase 2: Data Dependency Check
 
 For each figure, answer:
-1. **What data file does it need?** (results.json, experiment_data.csv, etc.)
+1. **What data file does it need?** (experiment_metrics.json, experiment_data.csv, etc.)
 2. **Does that data file exist?** Run `ls -la <path>` to verify
 3. If missing: your task has an unsatisfied REQUIRES — report BLOCKED:
    ```bash
@@ -67,7 +67,7 @@ import json
 import matplotlib.pyplot as plt
 
 # Load data
-with open('output/results.json') as f:
+with open('output/bd-42/experiment_metrics.json') as f:
     data = json.load(f)
 
 # Generate figure
@@ -143,9 +143,9 @@ meta = {
                     if hasattr(ax, "containers") else False,
     "caption_draft": "Ablation over condition C. N=120 per arm. "
                      "Error bars = 95% CI bootstrap. d=0.42 (medium).",
-    "data_file": "output/results.json",
+    "data_file": "output/bd-42/experiment_metrics.json",
     "data_sha256": hashlib.sha256(
-        pathlib.Path("output/results.json").read_bytes()
+        pathlib.Path("output/bd-42/experiment_metrics.json").read_bytes()
     ).hexdigest(),
     "n_samples": 120,
     "palette": "viridis",              # colour-blind-safe

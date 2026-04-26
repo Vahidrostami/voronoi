@@ -63,7 +63,8 @@ Phase 3:  Paper + webapp (gated on Phase 2 hard gates)
 ```
 demos/epistemic-trajectories/
   output/
-    results.json              # Per-scenario per-encoding per-model per-run: regret, CVR, tokens
+    runner/
+      experiment_metrics.json # Per-scenario per-encoding per-model per-run: regret, CVR, tokens
     token_efficiency.json     # Compression ratios, cost per correct decision, matched-budget accuracy
     deterministic_metrics.json
     reliability_metrics.json

@@ -28,7 +28,7 @@ with a fresh Copilot instance and its own context budget.
 bd create "Task title" --priority 1
 # Note the task ID (e.g., bd-42)
 bd update bd-42 --notes "TASK_TYPE:investigation
-PRODUCES: data/results.json, data/analysis.csv
+PRODUCES: output/bd-42/experiment_metrics.json, output/bd-42/analysis.csv
 REQUIRES: data/raw/input.csv
 BRIEFING: <detailed instructions for the worker>"
 ```
@@ -47,11 +47,11 @@ prompt = build_worker_prompt(
     branch='agent-phase2',
     briefing='''
     Run the factorial experiment across 3 models x 3 positions.
-    Write results to data/results.json with SHA-256 hashes.
+    Write metrics to output/bd-42/experiment_metrics.json with SHA-256 hashes.
     Expected runtime: ~30 minutes.
     ''',
     workspace_path='$(pwd)',
-    produces='data/results.json, data/analysis.csv',
+    produces='output/bd-42/experiment_metrics.json, output/bd-42/analysis.csv',
     requires='data/raw/input.csv',
 )
 open('/tmp/prompt-agent-phase2.txt', 'w').write(prompt)

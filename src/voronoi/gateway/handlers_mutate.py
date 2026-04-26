@@ -204,10 +204,12 @@ def handle_continue_investigation(project_dir: str, identifier: str,
     if inv is None:
         return f"❌ Investigation *{identifier}* not found."
 
-    if inv.status not in ("review", "complete"):
+    failed_partial = inv.status == "failed" and _has_partial_artifacts(inv)
+    if inv.status not in ("review", "complete") and not failed_partial:
         return (
             f"❌ *{inv.codename or f'#{inv.id}'}* is {inv.status} — "
-            f"can only continue from review or complete."
+            f"can only continue from review, complete, or a diagnosed partial run. "
+            f"Use `/voronoi resume {inv.codename or f'#{inv.id}'}` to retry."
         )
 
     lineage_id = inv.lineage_id or inv.id
@@ -323,7 +325,7 @@ def handle_extend(
         return (
             "Usage: `/voronoi extend <codename> [minutes]`\n\n"
             "Example: `/voronoi extend Serotonin 60` — grants 60 extra "
-            "minutes before auto-park and clears the stall directive."
+            "minutes before partial review and clears the stall directive."
         )
     minutes = 60
     if minutes_str:
@@ -366,6 +368,9 @@ def _has_continuation_signal(inv, feedback: str, lineage_id: int,
     if feedback:
         return True
 
+    if _has_partial_artifacts(inv):
+        return True
+
     try:
         from voronoi.science.claims import load_ledger
         ledger = load_ledger(lineage_id, base_dir=base_dir)
@@ -394,6 +399,12 @@ def _has_continuation_signal(inv, feedback: str, lineage_id: int,
         return True
 
     return False
+
+
+def _has_partial_artifacts(inv) -> bool:
+    """Return True when prior run has durable partial-review context."""
+    from voronoi.server.queue import has_partial_continuation_artifact
+    return has_partial_continuation_artifact(inv)
 
 
 def _find_investigation(q, identifier: str):

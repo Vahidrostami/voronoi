@@ -863,15 +863,16 @@ class TestMergeGates:
         assert ok is True
 
     def test_produces_missing(self, tmp_path):
-        task = {"notes": "PRODUCES:output/results.json", "title": "Run experiments"}
+        task = {"notes": "PRODUCES:output/bd-42/experiment_metrics.json", "title": "Run experiments"}
         ok, blockers = check_merge_gates(task, tmp_path, "adaptive")
         assert ok is False
         assert any("PRODUCES missing" in b for b in blockers)
 
     def test_produces_present(self, tmp_path):
-        (tmp_path / "output").mkdir()
-        (tmp_path / "output" / "results.json").write_text("{}")
-        task = {"notes": "PRODUCES:output/results.json", "title": "Run experiments"}
+        metrics_dir = tmp_path / "output" / "bd-42"
+        metrics_dir.mkdir(parents=True)
+        (metrics_dir / "experiment_metrics.json").write_text("{}")
+        task = {"notes": "PRODUCES:output/bd-42/experiment_metrics.json", "title": "Run experiments"}
         ok, blockers = check_merge_gates(task, tmp_path, "adaptive")
         assert ok is True
 

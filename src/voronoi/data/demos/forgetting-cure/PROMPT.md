@@ -155,7 +155,7 @@ Each directory also has an `__init__.py` that exports the strategy class.
      - Did any hybrid beat all individuals?
      - What's the optimal "brain recipe"?
      - Specific surprising findings (e.g., "Replay alone preserved 73% of Task 1 accuracy while Naive preserved only 12%")
-  6. **JSON data**: `output/results.json` — Machine-readable experiment data for the webapp. Structure:
+  6. **JSON data**: `output/runner/experiment_metrics.json` — Machine-readable experiment data for the webapp. Structure:
      ```json
      {
        "strategies": {
@@ -186,7 +186,7 @@ Each directory also has an `__init__.py` that exports the strategy class.
 
 ### Interactive Webapp (output/index.html) — BUILD IN PARALLEL with runner
 
-A single self-contained HTML file that visualizes the experiment results. Opens in any browser, no server needed. Reads `output/results.json` for data.
+A single self-contained HTML file that visualizes the experiment metrics. Opens in any browser, no server needed. Reads `output/runner/experiment_metrics.json` for data.
 
 **Tech stack**: Vanilla HTML/CSS/JS + Chart.js via CDN (`<script src="https://cdn.jsdelivr.net/npm/chart.js">`). No React, no build step, no npm. Everything in ONE file.
 
@@ -232,14 +232,14 @@ A single self-contained HTML file that visualizes the experiment results. Opens 
 - Highlight the winning combination with a subtle glow
 
 #### Section 6: Conclusion — "What We Discovered"
-- Auto-generated text from `discovery_text` in results.json
+- Auto-generated text from `discovery_text` in `experiment_metrics.json`
 - Key findings as numbered bullet points with bold stats
 - Final comparison: "Best Single Strategy" card vs "Best Hybrid" card, side by side
 - If hybrid beat all singles: celebratory visual (confetti animation or glowing border)
 - Call to action: *"Built by [N] AI agents in [M] minutes. Run it yourself: `voronoi demo run forgetting-cure`"*
 
 #### Fallback behavior
-- If `results.json` is not found (hasn't been generated yet), show a placeholder page explaining how to run the experiment
+- If `experiment_metrics.json` is not found (hasn't been generated yet), show a placeholder page explaining how to run the experiment
 - All Chart.js charts degrade to static `<img>` tags loading the matplotlib PNGs if JS is disabled
 
 ## File Scope per Agent
@@ -251,8 +251,8 @@ A single self-contained HTML file that visualizes the experiment results. Opens 
 - **Agent replay**: src/strategies/replay/__init__.py, src/strategies/replay/replay.py
 - **Agent cls**: src/strategies/cls/__init__.py, src/strategies/cls/cls.py
 - **Agent hybrid**: src/hybrid/__init__.py, src/hybrid/combiner.py
-- **Agent runner**: src/main.py, src/report.py, src/__init__.py, output/results.csv, output/results.json, output/*.png, output/discovery.md
-- **Agent webapp**: output/index.html (single file, reads results.json)
+- **Agent runner**: src/main.py, src/report.py, src/__init__.py, output/results.csv, output/runner/experiment_metrics.json, output/*.png, output/discovery.md
+- **Agent webapp**: output/index.html (single file, reads experiment_metrics.json)
 
 ## Technical Requirements
 
@@ -270,7 +270,7 @@ A single self-contained HTML file that visualizes the experiment results. Opens 
 Wave 1: core (foundation)
 Wave 2: naive + ewc + neurogenesis + replay + cls (5 strategies in parallel)
 Wave 3: hybrid (needs all strategies)
-Wave 4: runner + webapp (parallel — runner generates results.json, webapp reads it)
+Wave 4: runner + webapp (parallel — runner generates experiment_metrics.json, webapp reads it)
 ```
 
 ## Success Criteria

@@ -45,7 +45,7 @@ Wave 4: experiment runner + interactive webapp (parallel)
 Open `output/index.html` in any browser — no server needed.
 
 - `output/index.html` — **interactive webapp** ("The Forgetting Lab")
-- `output/results.json` — machine-readable experiment data
+- `output/runner/experiment_metrics.json` — machine-readable experiment data
 - `output/results.csv` — accuracy table for all strategies
 - `output/accuracy_matrix.png` — heatmap of who forgot what
 - `output/learning_curves.png` — forgetting cliffs visualized

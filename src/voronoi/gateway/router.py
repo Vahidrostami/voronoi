@@ -157,7 +157,7 @@ _HELP_MESSAGE = (
     "`/voronoi deliberate [codename]` — reason about results interactively\n\n"
     "*Steer*\n"
     "`/voronoi guide <msg>` · `pivot <msg>` · `abort`\n"
-    "`/voronoi extend <codename> [minutes]` — grant +N min before auto-park\n\n"
+    "`/voronoi extend <codename> [minutes]` — grant +N min before partial review\n\n"
     "*Ops*\n"
     "`/voronoi ops` — server diagnostics (tmux, disk, logs)\n\n"
     "_In groups, @mention me or reply to my messages._"

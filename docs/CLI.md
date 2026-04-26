@@ -33,7 +33,7 @@ voronoi
     ├── status                 # Show server status
     ├── prune                  # Clean stale investigations
     ├── config                 # View/edit server config
-    └── extend-timeout         # Extend timeout for a running investigation
+    └── extend-timeout         # Set review budget for a running investigation
 ```
 
 ## 3. `voronoi init`
@@ -177,18 +177,18 @@ View and edit `~/.voronoi/config.json`.
 
 ### `voronoi server extend-timeout`
 
-Extend (or set) the timeout for a running investigation **without restarting** the server.
+Set an explicit wall-clock review budget for a running investigation **without restarting** the server. Investigations have no default wall-clock kill; this command is an operator opt-in budget. When the budget is reached, the dispatcher parks the run for partial review rather than marking it failed.
 
 ```bash
 voronoi server extend-timeout <investigation> <hours>
 ```
 
 - `<investigation>`: Investigation ID (e.g. `3` or `#3`) or workspace name substring.
-- `<hours>`: New **total** timeout in hours (not additional hours).
+- `<hours>`: Total review budget in hours (not additional hours).
 
-Writes `<workspace>/.swarm/timeout_hours` which the dispatcher reads on the next poll cycle.
+Writes `<workspace>/.swarm/timeout_hours` which the dispatcher reads on the next poll cycle. Writing `0`, `off`, `none`, or `disabled` manually disables the budget for that run.
 
-**Example:** Extend a 48h investigation to 72h while it's running:
+**Example:** Set a 72h review budget while an investigation is running:
 ```bash
 voronoi server extend-timeout coupled-decisions 72
 ```

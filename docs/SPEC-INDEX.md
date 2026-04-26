@@ -44,7 +44,7 @@
 | Targeted Beads queries | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §5 |
 | Code-assembled worker prompts | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §6 |
 | Per-agent context budget | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §3 |
-| System rules, code review | [INVARIANTS.md](INVARIANTS.md) | All (54 invariants) |
+| System rules, code review | [INVARIANTS.md](INVARIANTS.md) | All (58 invariants) |
 | Worker self-verification protocol | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §8 |
 | Token budget tracking | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §9 |
 | Structured event log | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §10 |
@@ -57,7 +57,7 @@
 | Run Manifest source-of-truth map, validation | [SCIENCE.md](SCIENCE.md) | §19 (Run Manifest) |
 | `.swarm/run-manifest.json` format | [DATA-STRUCTURES.md](DATA-STRUCTURES.md) | §7 |
 | Deliberation mode | [GATEWAY.md](GATEWAY.md) | §14 (Deliberation) |
-| Iterative science, review/continue | [WORKFLOWS.md](WORKFLOWS.md) | §9 (Multi-Run Iteration) |
+| Iterative science, review/continue | [WORKFLOWS.md](WORKFLOWS.md) | §10 (Multi-Run Iteration) |
 | Structured evaluator feedback | [SCIENCE.md](SCIENCE.md) | §5 (Convergence) |
 | Hybrid BM25+keyword search | [GATEWAY.md](GATEWAY.md) | §6 (Knowledge) |
 | Term definitions | [GLOSSARY.md](GLOSSARY.md) | — |

@@ -22,7 +22,7 @@ applyTo: 'experiments/**'
 - Every experiment MUST declare its metric contract at pre-registration.
 - Results MUST include: effect size, CI, N, statistical test, p-value.
 - Data file MUST have SHA-256 hash recorded in the finding.
-- The `results.json` file MUST include `"runner": "<script>"` field pointing to the script that produced it.
+- The declared experiment metrics JSON artifact (for example `output/<task_id>/experiment_metrics.json`) MUST include `"runner": "<script>"` field pointing to the script that produced it.
 
 ## Merge Gate Checks
 - `verify_finding_against_data()` cross-checks reported N against data file rows, verifies data hashes, and flags suspiciously clean patterns.

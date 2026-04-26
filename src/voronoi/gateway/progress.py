@@ -572,14 +572,14 @@ def _stall_signal_warning(workspace: Path) -> str:
     elapsed_int = int(round(elapsed))
     if level >= 4:
         return (
-            f"🪫🪫🪫🪫 Auto-parked after ~{elapsed_int}min with no findings "
-            "— see .swarm/deliverable-partial.md."
+            f"🪫🪫🪫🪫 Parked for partial review after ~{elapsed_int}min "
+            "with no findings — review or continue when ready."
         )
     if level == 3:
         return (
             f"🪫🪫🪫 Stall strike 3 at ~{elapsed_int}min — final self-steer "
             "directive issued. Reply `/voronoi extend` to grant more time "
-            "before auto-park."
+            "before partial review."
         )
     if level == 2:
         return (
@@ -1062,9 +1062,8 @@ def format_learning_stalled(codename: str, elapsed_min: float) -> str:
     """Format a LEARNING_STALLED alert.
 
     Fires when the swarm has run for a substantial window without a new
-    finding or a claim-status transition — i.e. tokens are burning without
-    new evidence accumulating.  The PI should consider pivoting, adding
-    compute, summoning a Red Team review, or ending with current confidence.
+    finding or a claim-status transition. The PI can intervene, but missed
+    messages are recoverable because later escalation parks to review.
     """
     minutes = int(round(elapsed_min))
     return (
@@ -1074,7 +1073,8 @@ def format_learning_stalled(codename: str, elapsed_min: float) -> str:
         "• `/voronoi pivot <new angle>` — redirect the investigation\n"
         "• `/voronoi ask <question>` — interrogate the agents\n"
         "• `/voronoi deliberate` — reason about what's next\n"
-        "• `/voronoi complete <id>` — ship with current confidence"
+        f"• `/voronoi extend {codename} 60` — give the run more time\n"
+        "• `/voronoi status` — show durable resume/review actions"
     )
 
 
@@ -1110,7 +1110,7 @@ def format_pause(codename: str, reason: str, elapsed_sec: float,
     if total > 0:
         lines.append(f"Progress: {closed}/{total} tasks completed.")
     lines.append(
-        "\nFix the issue, then send `/voronoi resume` to continue."
+        f"\nFix the issue, then send `/voronoi resume {codename}` to continue."
     )
     return "\n".join(lines)
 

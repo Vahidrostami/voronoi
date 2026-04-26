@@ -41,22 +41,22 @@ Each task can have these properties stored in Beads notes:
 The orchestrator creates tasks with artifact contracts in Beads notes:
 
 ```bash
-bd update <task-id> --notes "PRODUCES:output/results.json, output/figures/"
+bd update <task-id> --notes "PRODUCES:output/<task-id>/experiment_metrics.json, output/<task-id>/figures/"
 bd update <task-id> --notes "REQUIRES:output/data.csv"
-bd update <task-id> --notes "GATE:output/validation_report.json"
+bd update <task-id> --notes "GATE:output/<task-id>/validation_report.json"
 ```
 
 ### Manually (for existing tasks)
 
 ```bash
 # Add output contract
-bd update bd-42 --notes "PRODUCES:demos/coupled-decisions/output/results.json"
+bd update bd-42 --notes "PRODUCES:demos/coupled-decisions/output/bd-42/experiment_metrics.json"
 
 # Add input requirement
-bd update bd-43 --notes "REQUIRES:demos/coupled-decisions/output/results.json"
+bd update bd-43 --notes "REQUIRES:demos/coupled-decisions/output/bd-42/experiment_metrics.json"
 
 # Add validation gate
-bd update bd-44 --notes "GATE:demos/coupled-decisions/output/validation_report.json"
+bd update bd-44 --notes "GATE:demos/coupled-decisions/output/bd-42/validation_report.json"
 ```
 
 ## Enforcement Points
@@ -146,21 +146,21 @@ Task 1: Generate Data
   REQUIRES: (none)
 
 Task 2: Run Experiments
-  PRODUCES: output/results.json
+  PRODUCES: output/bd-42/experiment_metrics.json
   REQUIRES: output/data.csv
 
 Task 3: Validate Results
-  PRODUCES: output/validation_report.json
-  REQUIRES: output/results.json
+  PRODUCES: output/bd-43/validation_report.json
+  REQUIRES: output/bd-42/experiment_metrics.json
 
 Task 4: Write Paper            ← This is the common failure point!
-  PRODUCES: output/paper.pdf
-  REQUIRES: output/results.json
-  GATE: output/validation_report.json
+  PRODUCES: output/bd-44/paper.pdf
+  REQUIRES: output/bd-42/experiment_metrics.json
+  GATE: output/bd-43/validation_report.json
 
 Task 5: Build Webapp
-  PRODUCES: output/webapp.html
-  REQUIRES: output/results.json
+  PRODUCES: output/bd-45/webapp.html
+  REQUIRES: output/bd-42/experiment_metrics.json
 ```
 
 Without artifact contracts, Task 4 would start as soon as Task 3 closes in Beads —

@@ -118,6 +118,32 @@ class TestConfig:
 
 
 class TestBridgeSupervision:
+    def test_action_buttons_for_partial_review(self):
+        module = _load_bridge_module()
+
+        buttons = module._action_buttons_for_text(
+            "🔬 *Synapse* is ready for partial review."
+        )
+
+        assert buttons == [[
+            ("🔬 Review", "review:Synapse"),
+            ("🔄 Continue", "continue:Synapse"),
+            ("✅ Complete", "complete:Synapse"),
+        ]]
+
+    def test_action_buttons_skip_action_heading(self):
+        module = _load_bridge_module()
+
+        buttons = module._action_buttons_for_text(
+            "*Action needed*\n• *Synapse* is paused — `/voronoi resume Synapse`"
+        )
+
+        assert buttons == [[
+            ("▶️ Resume", "resume:Synapse"),
+            ("📋 Details", "details"),
+            ("📊 Status", "status"),
+        ]]
+
     def test_run_coro_threadsafe_returns_result_without_worker_event_loop(self):
         module = _load_bridge_module()
         loop = asyncio.new_event_loop()
@@ -238,6 +264,26 @@ class TestHandlers:
         # Either nothing or queued items — both are valid
         assert isinstance(result, str)
         assert len(result) > 0
+
+    def test_handle_whatsup_surfaces_durable_actions(self, tmp_path):
+        from types import SimpleNamespace
+
+        mock_q = MagicMock()
+        mock_q.get_running.return_value = []
+        mock_q.get_queued.return_value = []
+        mock_q.get_recent.return_value = [
+            SimpleNamespace(id=1, codename="Synapse", status="review"),
+            SimpleNamespace(id=2, codename="Cortex", status="paused"),
+            SimpleNamespace(id=3, codename="Axon", status="failed"),
+        ]
+        with patch("voronoi.gateway.handlers_query._get_queue", return_value=mock_q):
+            result = handle_whatsup(str(tmp_path))
+
+        assert "Action needed" in result
+        assert "/voronoi review Synapse" in result
+        assert "/voronoi continue Synapse" in result
+        assert "/voronoi resume Cortex" in result
+        assert "/voronoi resume Axon" in result
 
     def test_handle_howsitgoing_no_running(self, tmp_path):
         with patch("voronoi.gateway.handlers_query._get_active_workspaces", return_value=[]):
@@ -1260,6 +1306,26 @@ class TestReviewContinueClaims:
         with patch("voronoi.gateway.handlers_mutate._get_queue", return_value=q):
             result = handle_continue_investigation(str(tmp_path), "Test")
         assert "running" in result.lower()
+
+    def test_continue_failed_with_partial_artifact(self, tmp_path):
+        from voronoi.server.queue import InvestigationQueue, Investigation
+
+        q = InvestigationQueue(tmp_path / "queue.db")
+        workspace = tmp_path / "workspace"
+        swarm = workspace / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "deliverable-partial.md").write_text("# Partial review")
+        inv_id = q.enqueue(Investigation(
+            chat_id="c1", question="Q", slug="q", codename="Test", mode="discover",
+        ))
+        q.start(inv_id, str(workspace))
+        q.fail(inv_id, "parked for partial review")
+
+        with patch("voronoi.gateway.handlers_mutate._get_queue", return_value=q):
+            result = handle_continue_investigation(str(tmp_path), "Test", "keep going")
+
+        assert "Round 2" in result
+        assert "queued" in result.lower()
 
     def test_router_dispatches_review(self, tmp_path):
         router = CommandRouter(str(tmp_path))

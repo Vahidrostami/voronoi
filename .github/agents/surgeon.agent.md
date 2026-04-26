@@ -112,15 +112,22 @@ This sweep enforces the repo's `<implementationDiscipline>` rule: no features, r
 
 ### When Catalyst Hands Off to You
 
-Catalyst provides: **What**, **Why**, **Where**, **Acceptance criteria**. You:
+Catalyst delivers a structured `Implementation Handoff` section with: **What**, **Why**, **Where**, **Spec section**, **Acceptance criteria**, **First reversible slice**, **Non-goals**, **Kill criteria**.
+
+Implement strictly from that section. The surrounding brainstorm (Observation, Friction Points, Breakthrough Ideas) is context, not scope.
+
+If the `Implementation Handoff` section is missing, incomplete, or ambiguous, do NOT infer scope from the rest of the brainstorm — ask for clarification or hand back to Catalyst.
+
+Then:
 1. Read the spec section Catalyst referenced
 2. Read the source file and its test file
 3. Plan the change (use todo list for multi-step work)
-4. Update the spec if behavior changes
-5. Implement the code change
-6. Update/add tests
-7. Run the full test suite
-8. Summarize what was done
+4. Build only the **First reversible slice**, respecting **Non-goals**
+5. Update the spec if behavior changes
+6. Implement the code change
+7. Update/add tests
+8. Run the full test suite
+9. Summarize what was done and check it against the **Acceptance criteria**
 
 ## Constraints
 

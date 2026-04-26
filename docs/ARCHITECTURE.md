@@ -156,7 +156,7 @@ User message → telegram-bridge.py → CommandRouter.route() or .handle_free_te
 | `.github/` agents/skills | YES — `voronoi init` | YES — `_ensure_github_files()` fallback |
 | Prompt builder | YES — `prompt.py` | YES — `prompt.py` (same function) |
 | Progress updates | stdout | Telegram messages every 30s |
-| Timeout detection | KeyboardInterrupt | Configurable (default 8h) |
+| Review budget | KeyboardInterrupt | Optional explicit wall-clock budget |
 | Completion signal | Agent exits | tmux dies OR deliverable.md + convergence.json |
 | Queue management | N/A | SQLite queue with atomic claiming |
 | Sandbox isolation | N/A | Docker optional, fallback to host |
@@ -380,7 +380,7 @@ The server communicates over stdio (no network, no ports). It reads `VORONOI_WOR
 
 | Category | Tools | Validation |
 |----------|-------|-----------|
-| **Task lifecycle** | `voronoi_create_task`, `voronoi_close_task`, `voronoi_query_tasks` | PRODUCES/REQUIRES path existence, task status transitions |
+| **Task lifecycle** | `voronoi_create_task`, `voronoi_close_task`, `voronoi_query_tasks` | title laundering rejection, `created_by` provenance, PRODUCES/REQUIRES path validation, task status transitions, finding-linkage close gates |
 | **Findings** | `voronoi_record_finding`, `voronoi_stat_review` | Required fields, data file existence, SHA-256 hash verification |
 | **Pre-registration** | `voronoi_pre_register` | Canonical `PRE_REG`/`PRE_REG_POWER`/`PRE_REG_SENSITIVITY` note formats consumed by science gates |
 | **State files** | `voronoi_write_checkpoint`, `voronoi_update_belief_map`, `voronoi_update_success_criteria`, `voronoi_log_experiment` | Canonical checkpoint/belief-map schemas, enum values, reference integrity |
@@ -388,7 +388,10 @@ The server communicates over stdio (no network, no ports). It reads `VORONOI_WOR
 ### Integration Rules
 
 - Beads MCP tools MUST upsert only the fields they own and preserve unrelated task notes.
+- `voronoi_create_task` exposes `created_by` in the public tool schema and stamps it into task notes as `CREATED_BY:<value>`; when omitted it falls back to `$VORONOI_AGENT_ROLE` and then `unknown`.
+- `voronoi_create_task` MUST reject title-laundered task names at create-time, MUST require non-empty `PRODUCES` for `build`, `experiment`, `investigation`, `evaluation`, and `paper` task types, and MUST reject any `PRODUCES` artifact whose basename is a shared collision name (`answer.json`, `FINAL_ANSWER.json`, `output.json`, `result.json`, `results.json`, `findings.json`) anywhere in the workspace. Valid outputs are task-scoped and task-specific, for example `output/bd-42/experiment_metrics.json` or `output/bd-42/validation_report.json`.
 - Artifact contract paths accepted by Beads MCP tools MUST be workspace-relative and MUST NOT resolve outside the workspace. `voronoi_close_task` verifies every declared `PRODUCES` file exists after that containment check.
+- `voronoi_close_task` MUST refuse to close `experiment`, `investigation`, or `evaluation` tasks unless `FINDING_TASK_IDS` resolves to sibling tasks whose titles start with `FINDING:` / `FINDING -` / `FINDING —`, or the task carries `FINDING:NULL` plus a rationale of at least 40 characters.
 - `voronoi_record_finding` MUST reject malformed finding metadata at the tool boundary, including invalid enum values such as `ROBUST` values outside `yes|no`; numeric values such as `CONFIDENCE:0.0` are valid and must be preserved.
 - `voronoi_pre_register` tool schemas MUST expose all required fields consumed by `pre_register()`, including `expected_result` and `effect_size`, so schema-valid MCP calls cannot fail with hidden missing-argument errors.
 - State-file MCP tools MUST read/write the same schemas used by the core convergence and dispatcher code paths.
@@ -404,6 +407,9 @@ The MCP server reinforces invariants at the tool boundary and writes canonical f
 | INV-11: Raw data SHA-256 | Agent told to compute hash | `voronoi_record_finding` computes and verifies hash |
 | INV-15: Claim-evidence trace | Agent told to link findings | `voronoi_update_belief_map` validates evidence IDs and writes canonical evidence links |
 | INV-19: PRODUCES verified | merge-agent.sh checks | `voronoi_close_task` checks PRODUCES before allowing close |
+| INV-55: Title laundering rejected | Prompt + ledger backstop | `voronoi_create_task` rejects bare imperative titles before dispatch |
+| INV-56: PRODUCES namespaced | Agent told to namespace outputs | `voronoi_create_task` rejects missing contracts and shared artifact basenames |
+| INV-57: Finding linkage before close | Agent told to create findings | `voronoi_close_task` resolves `FINDING_TASK_IDS` or requires `FINDING:NULL` rationale |
 
 ## 9. Dependency Graph
 
@@ -491,7 +497,7 @@ User question
 | tmux `; exit` pattern | Session dies when agent finishes — dispatcher detects completion. |
 | Atomic queue claiming | `next_ready()` marks as running in same transaction — no double-dispatch. |
 | `.github/` fallback copy | `_ensure_github_files()` copies even if `voronoi init` subprocess fails. |
-| Timeout (8h default) | Prevents zombie investigations; writes exhaustion convergence. |
+| Optional review budget | Lets operators park long-running investigations for review without failing them by default. |
 | Orchestrator never enters worktrees | Dispatches and monitors; never fixes code in a worker's worktree. |
 | File-mediated orchestrator state | Externalizes state to `.swarm/` files between OODA cycles; prevents context loss. |
 | Log-redirect + grep for metrics | Workers redirect output to files and extract with grep, preserving context window. |

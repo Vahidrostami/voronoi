@@ -201,9 +201,10 @@ class DispatcherConfig:
     orchestrator_model: str     # ""
     worker_model: str           # ""
     progress_interval: int      # 30 (seconds)
-    timeout_hours: int          # 8
+    timeout_hours: int | None   # None; positive values are explicit review budgets
     max_retries: int            # 2
     stall_minutes: int          # 45
+    pause_timeout_hours: int | None  # None; no default missed-message expiry
     park_timeout_hours: int     # 4 (force-wake parked orchestrator after this)
 ```
 
@@ -635,6 +636,36 @@ checkpoint files, git history, and output artifacts by hand.
 phase, task counts, active/ready work, gate state, and the recommended next
 operator action. Both files are regenerated from existing state and are not a
 replacement for Beads; Beads remains the durable task ledger.
+
+### `.swarm/graph-health.json` — Beads DAG health snapshot (INV-58)
+
+Written by `InvestigationDispatcher._check_graph_health` once per OODA poll
+for PROVE / Analytical+ runs. Detects the swarm-degenerate failure mode where
+Beads becomes a flat work queue: many root-ready sibling tasks with shared
+output paths, no DAG topology, no link to hypotheses.
+
+```json
+{
+  "generated_at": "2026-04-26T12:00:00+00:00",
+  "total_closed": 46,
+  "orphan_count": 33,
+  "orphan_ratio": 0.717,
+  "sibling_cluster_max": 33,
+  "sibling_cluster_titles": ["analyze business prompt"],
+  "verdict": "degenerate",
+  "reasons": [
+    "orphan_ratio 0.72 > 0.4",
+    "sibling cluster of 33 tasks with normalized prefix 'analyze business prompt'"
+  ]
+}
+```
+
+A `verdict` of `degenerate` triggers a `swarm_degenerate` dispatcher directive
+with `action: stop_and_fix` (INV-50): `spawn-agent.sh` then refuses any new
+worker dispatch except for methodologist / post-mortem / revise / restate
+tasks. A `verdict` of `healthy` is written without a directive. The dispatcher
+emits the `swarm_degenerate` event only on transitions into the degenerate
+verdict (idempotent across polls).
 
 ### `.swarm/manuscript/` — Paper-track state (INV-04, manuscript sub-tree)
 
@@ -1072,9 +1103,9 @@ Structured note writers MUST upsert only the fields they own and preserve unrela
 ### Artifact Contracts
 
 ```
-PRODUCES: src/encoder.py, output/results.json
+PRODUCES: src/encoder.py, output/bd-42/experiment_metrics.json
 REQUIRES: data/raw/transactions.csv
-GATE: output/validation_report.json
+GATE: output/bd-42/validation_report.json
 ```
 
 ### Finding Metadata
@@ -1144,7 +1175,7 @@ See SCIENCE.md §21 for epoch advancement rules and agent cap tiers.
 
 ### `.swarm/failure-diagnosis.json`
 
-Structured failure diagnosis written on investigation failure or auto-park. Consumed by `build_warm_start_context()` for continuation prompts.
+Structured failure diagnosis written on investigation failure or partial-review parking. Consumed by `build_warm_start_context()` for continuation prompts.
 
 ```json
 {

@@ -849,9 +849,9 @@ def _server_config(args: argparse.Namespace) -> None:
 
 
 def _server_extend_timeout(args: argparse.Namespace) -> None:
-    """Extend (or set) the timeout for a running investigation.
+    """Set the review budget for a running investigation.
 
-    Writes the new total timeout to <workspace>/.swarm/timeout_hours so the
+    Writes the total review budget to <workspace>/.swarm/timeout_hours so the
     dispatcher picks it up on the next poll cycle — no restart required.
     """
     from voronoi.server.runner import ServerConfig
@@ -907,8 +907,8 @@ def _server_extend_timeout(args: argparse.Namespace) -> None:
     swarm_dir.mkdir(parents=True, exist_ok=True)
     override_file = swarm_dir / "timeout_hours"
     override_file.write_text(str(hours))
-    print(f"Timeout for {ws_path.name} set to {hours}h (was {config.sandbox.timeout_hours}h default).")
-    print("The dispatcher will pick this up on the next poll cycle.")
+    print(f"Review budget for {ws_path.name} set to {hours}h.")
+    print("The dispatcher will park the run for review if the budget is reached.")
 
 
 def main() -> None:
@@ -952,9 +952,13 @@ def main() -> None:
     server_prune = server_sub.add_parser("prune", help="Clean up old workspaces")
     server_prune.add_argument("--force", action="store_true", help="Actually remove workspaces")
     server_sub.add_parser("config", help="Show server configuration")
-    ext_parser = server_sub.add_parser("extend-timeout", help="Extend timeout for a running investigation")
+    ext_parser = server_sub.add_parser(
+        "extend-timeout",
+        help="Set review budget for a running investigation",
+        description="Set review budget for a running investigation",
+    )
     ext_parser.add_argument("investigation", help="Investigation ID or workspace name")
-    ext_parser.add_argument("hours", type=int, help="New total timeout in hours")
+    ext_parser.add_argument("hours", type=int, help="Total review budget in hours")
 
     args = parser.parse_args()
 

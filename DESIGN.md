@@ -106,7 +106,7 @@ flowchart LR
 | Runtime agents/skills | ✅ `voronoi init` | ✅ `_ensure_github_files()` fallback |
 | Prompt builder | ✅ `prompt.py` | ✅ `prompt.py` (same function) |
 | Progress updates | stdout | Telegram messages every 30s |
-| Timeout detection | KeyboardInterrupt | Configurable (default 48h) |
+| Review budget | KeyboardInterrupt | Optional explicit wall-clock budget |
 | Completion | Agent exits | tmux dies OR deliverable.md + convergence.json |
 
 ---
@@ -391,9 +391,9 @@ stateDiagram-v2
     Running --> Complete : deliverable + convergence
     Running --> Complete : tmux exits
     Running --> Failed : launch error
-    Running --> Exhausted : timeout 48h
+    Running --> Review : explicit budget reached
     Complete --> [*] : teaser + PDF to Telegram
-    Exhausted --> [*] : partial results delivered
+    Review --> [*] : partial results delivered or continued
 ```
 
 **Dispatcher responsibilities:**
@@ -406,7 +406,7 @@ stateDiagram-v2
 - Reads `.swarm/experiments.tsv` and `.swarm/success-criteria.json` for track assessment
 - Reads `.swarm/eval-score.json` for evaluator score propagation
 - Detects completion: `deliverable.md` (standard) or `+ convergence.json` (analytical+)
-- Enforces timeout (configurable, default 48h)
+- Parks runs for review when an explicit wall-clock budget is configured and reached
 
 ### Telegram Notifications
 
@@ -526,9 +526,9 @@ The report generator uses these fields to produce interpreted findings (not just
 Tasks declare file-level dependencies in Beads notes:
 
 ```
-PRODUCES: src/encoder.py, output/results.json
+PRODUCES: src/encoder.py, output/bd-42/experiment_metrics.json
 REQUIRES: data/raw/transactions.csv
-GATE: output/validation_report.json
+GATE: output/bd-43/validation_report.json
 ```
 
 **Enforcement:** Dispatch blocked until REQUIRES/GATE exist. Merge rejected if PRODUCES missing. Worker agents check these at startup per `worker-agent.agent.md`.
@@ -767,7 +767,7 @@ timestamp	task_id	branch	metric_name	metric_value	status	description
 | tmux `; exit` | Session dies when agent finishes — dispatcher detects completion. |
 | Atomic queue claiming | `next_ready()` marks as running in same transaction — no double-dispatch. |
 | `.github/` fallback copy | `_ensure_github_files()` copies even if `voronoi init` subprocess fails. |
-| Timeout (48h default) | Prevents zombie investigations; writes exhaustion convergence. |
+| Optional review budget | Gives operators a wall-clock stop point without making long investigations fail by default. |
 | Inner verify loop before escalation | Workers retry against own errors (Ralph pattern) before bothering orchestrator. |
 | **Experimental Validity Audit (EVA)** | Catches experiments that run but don't test what they claim (truncation, caching, collapsed conditions). Prevents meaningless results from entering the evidence store. |
 | Metric contracts (shape at dispatch, fill at pre-reg) | Bridges open-ended investigations with comparable cross-agent metrics. |

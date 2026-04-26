@@ -289,7 +289,7 @@ doing (see docs/SERVER.md §3):
 
 **Be honest.** Declaring `"setup"` to dodge stall pressure while actually
 running experiments will mask real stalls. Declaring `"test"` while
-building infra will get you auto-parked. Recompute the label each cycle.
+building infra will get you parked for partial review. Recompute the label each cycle.
 
 ### Context Budget Per Cycle
 | Action | Tokens |

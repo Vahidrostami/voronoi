@@ -846,6 +846,8 @@ During progress polling, the dispatcher syncs Beads findings to the Claim Ledger
 
 A task is treated as a finding ONLY when its title **starts with** `FINDING:`, `FINDING -`, or `FINDING —` (case-insensitive). Substring matches on "findings" in arbitrary titles (e.g. "Analyze pricing dataset for five action-changing findings") are explicitly rejected — otherwise task titles launder into provisional claims, inflating the ledger with verb-phrase ghost-claims that satisfy success criteria and mask genuine learning stalls. See INV-47.
 
+The Beads-to-Ledger gate is defence-in-depth. The **first line of defence** is at task creation: `voronoi.mcp.tools_beads.create_task` rejects laundered titles up-front (INV-55), refuses experiment-type tasks without `PRODUCES:` and namespaced output paths (INV-56), and stamps `CREATED_BY:` provenance for accountability. The **second line of defence** is at task closure: `close_task` refuses to close `experiment` / `investigation` / `evaluation` tasks that have no `FINDING_TASK_IDS:` link (resolved via `bd show` against sibling `FINDING:`-prefixed tasks) or honest `FINDING:NULL` rationale (INV-57). The **third line of defence** is the dispatcher's per-cycle graph-health audit (INV-58), which writes `.swarm/graph-health.json` and emits a `swarm_degenerate` directive (with `action: stop_and_fix`, structurally enforced by `spawn-agent.sh` per INV-50) when orphan ratio or sibling-cluster size cross thresholds. The Claim-Ledger title-prefix check is the **fourth and final** layer.
+
 ### Claim Statement Shape
 
 A claim is a *proposition* about the world — a statement that can be true or false given evidence. It is NOT a task directive. `ClaimLedger.add_claim` validates each incoming statement via `validate_claim_statement` and raises `ValueError` on:
@@ -1139,7 +1141,7 @@ The orchestrator prompt mandates that in epoch 1, the FIRST dispatch must be a s
 
 ### Purpose
 
-When an investigation stalls or fails, produces a structured machine-readable diagnosis that tells the continuation round exactly what failed and why — enabling targeted remediation instead of blind re-execution.
+When an investigation stalls, reaches an explicit review budget, or fails, produces a structured machine-readable diagnosis that tells the continuation round exactly what stopped and why — enabling targeted remediation instead of blind re-execution.
 
 ### Function
 
@@ -1172,12 +1174,12 @@ def save_failure_diagnosis(workspace: Path, diagnosis: dict) -> None
 
 ### When Written
 
-- Auto-park (stall strike 3)
+- Partial review from stall strike 4 or explicit wall-clock review budget
 - `_handle_completion(failed=True)` — any failed investigation
 
 ### Consumed By
 
-`build_warm_start_context()` reads `.swarm/failure-diagnosis.json` and injects it into the continuation prompt under a "Failure Diagnosis from Prior Round" heading.
+`build_warm_start_context()` reads `.swarm/failure-diagnosis.json` or the latest archived prior-run diagnosis and injects it into the continuation prompt under a "Failure Diagnosis from Prior Round" heading. Continuation prep archives and clears stale active stall directives so the new round does not inherit a terminated-session instruction.
 
 ---
 

@@ -89,6 +89,20 @@ def test_cli_help():
     assert "voronoi" in result.stdout.lower()
 
 
+def test_server_extend_timeout_help_uses_review_budget_wording():
+    """extend-timeout is retained, but the help describes review budgets."""
+    result = subprocess.run(
+        [sys.executable, "-m", "voronoi.cli", "server", "extend-timeout", "--help"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert "Set review budget" in result.stdout
+    assert "Total review budget in hours" in result.stdout
+    assert "Extend timeout" not in result.stdout
+    assert "New total timeout" not in result.stdout
+
+
 def testfind_data_dir():
     """find_data_dir locates the data directory with agents."""
     data_dir = find_data_dir()

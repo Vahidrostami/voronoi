@@ -168,6 +168,26 @@ CREATE INDEX IF NOT EXISTS idx_inv_repo ON investigations(repo);
 """
 
 
+def has_partial_continuation_artifact(inv: Investigation) -> bool:
+    """Return True when a run has durable partial-review continuation state."""
+    if not inv.workspace_path:
+        return False
+    swarm = Path(inv.workspace_path) / ".swarm"
+    if (swarm / "failure-diagnosis.json").exists():
+        return True
+    if (swarm / "deliverable-partial.md").exists():
+        return True
+    manifest = swarm / "run-manifest.json"
+    if manifest.exists():
+        try:
+            data = json.loads(manifest.read_text())
+            status = str(data.get("status", "")).lower()
+            return status in {"partial", "failed", "exhausted"}
+        except (OSError, json.JSONDecodeError):
+            return False
+    return False
+
+
 class InvestigationQueue:
     """SQLite-backed investigation queue with concurrency control."""
 
@@ -484,7 +504,7 @@ class InvestigationQueue:
 
     def continue_investigation(self, investigation_id: int,
                                feedback: str = "") -> Optional[int]:
-        """Create a continuation investigation from a completed or reviewed one.
+        """Create a continuation investigation from a reviewable source.
 
         Creates a new investigation with:
         - Same question (original, never mutated)
@@ -503,7 +523,11 @@ class InvestigationQueue:
         inv = self.get(investigation_id)
         if inv is None:
             return None
-        if inv.status not in ("review", "complete"):
+        failed_partial = (
+            inv.status == "failed"
+            and has_partial_continuation_artifact(inv)
+        )
+        if inv.status not in ("review", "complete") and not failed_partial:
             return None
 
         # Use the original question — feedback goes in pi_feedback, not

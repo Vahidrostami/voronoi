@@ -9,6 +9,7 @@ from pathlib import Path
 from voronoi.gateway.progress import (
     format_launch, format_complete, format_failure, format_alert,
     format_negative_result, format_restart, format_wake, format_pause,
+    format_learning_stalled,
     format_duration, progress_bar, estimate_remaining,
     build_digest, build_digest_whatsup, assess_track_status,
     phase_description, phase_position, _synthesize_narrative,
@@ -81,6 +82,11 @@ class TestBuddyFormatters:
         assert "Synapse" in msg
         assert "paused" in msg.lower()
         assert "0/0" not in msg  # should skip progress when total=0
+
+    def test_format_learning_stalled_uses_actual_codename(self):
+        msg = format_learning_stalled("Synapse", 62.4)
+        assert "/voronoi extend Synapse 60" in msg
+        assert "/voronoi extend <codename> 60" not in msg
 
     def test_format_duration(self):
         assert format_duration(300) == "5min"
@@ -365,11 +371,11 @@ class TestBuildDigest:
 
         Regression test: previously the digest told the PI "Still setting up
         — nothing to worry about yet." minutes before the stall escalator
-        auto-parked the run. Digest and escalator must now agree.
+        parked the run for partial review. Digest and escalator must now agree.
         """
         (tmp_path / ".swarm").mkdir()
         (tmp_path / ".swarm" / "stall-signal.json").write_text(
-            '{"level": 2, "directive": "experiments_only", '
+            '{"level": 2, "directive": "pivot_or_declare", '
             '"instruction": "Planning forbidden", '
             '"elapsed_minutes": 65.0, "timestamp": "2026-04-24T00:00:00Z"}'
         )

@@ -236,6 +236,29 @@ class TestProgressMonitoring:
         assert "FINDING" in events[0]["msg"]
         assert "bd-5" in run.notified_findings
 
+    def test_ghost_finding_titles_ignored(self, dispatcher_setup):
+        """Substring 'finding/findings' in a title MUST NOT emit a finding event.
+
+        Regression for INV-47 / BUG-001: titles like
+        ``"Analyze pricing dataset for five action-changing findings"``
+        were laundered into finding events, masking learning stalls and
+        misleading the PI while the Claim Ledger stayed empty.
+        """
+        d, _msgs, _docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1, workspace_path=tmp_path,
+            tmux_session="test", question="test", mode="discover",
+        )
+        tasks = [
+            {"id": "bd-9", "title": "Analyze pricing dataset for five action-changing findings",
+             "notes": ""},
+            {"id": "bd-10", "title": "Investigate finding the cheapest path", "notes": ""},
+        ]
+        events = d._check_findings(run, tasks)
+        assert [e for e in events if e["type"] == "finding"] == []
+        assert "bd-9" not in run.notified_findings
+        assert "bd-10" not in run.notified_findings
+
     def test_serendipity_detection_from_notes(self, dispatcher_setup):
         d, msgs, docs, tmp_path = dispatcher_setup
         run = RunningInvestigation(
@@ -812,6 +835,158 @@ class TestDesignInvalidDetection:
         assert len(events2) == 0  # Already notified
 
 
+class TestGraphHealth:
+    """INV-58: per-cycle Beads DAG health audit."""
+
+    def _make_run(self, tmp_path, **overrides):
+        kwargs = dict(
+            investigation_id=17,
+            workspace_path=tmp_path,
+            tmux_session="t",
+            question="q",
+            mode="prove",
+            rigor="scientific",
+        )
+        kwargs.update(overrides)
+        return RunningInvestigation(**kwargs)
+
+    def test_skips_when_below_min_closed(self, dispatcher_setup):
+        d, _, _, tmp_path = dispatcher_setup
+        run = self._make_run(tmp_path)
+        tasks = [{"id": f"bd-{i}", "title": "x", "status": "closed",
+                  "notes": "TASK_TYPE:experiment"} for i in range(3)]
+        events = d._check_graph_health(run, tasks)
+        assert events == []
+        assert not (tmp_path / ".swarm" / "graph-health.json").exists()
+
+    def test_skips_for_discover_low_rigor(self, dispatcher_setup):
+        d, _, _, tmp_path = dispatcher_setup
+        run = self._make_run(tmp_path, mode="discover", rigor="adaptive")
+        tasks = [{"id": f"bd-{i}", "title": "Analyze x y", "status": "closed",
+                  "notes": "TASK_TYPE:experiment"} for i in range(10)]
+        events = d._check_graph_health(run, tasks)
+        assert events == []
+
+    def test_healthy_graph_writes_no_directive(self, dispatcher_setup):
+        d, _, _, tmp_path = dispatcher_setup
+        run = self._make_run(tmp_path)
+        tasks = [
+            {"id": f"bd-{i}", "title": f"FINDING: result {i}",
+             "status": "closed", "parent_id": "bd-epic",
+             "notes": "TASK_TYPE:investigation\nPRODUCES:output/bd-x/r.json"}
+            for i in range(8)
+        ]
+        events = d._check_graph_health(run, tasks)
+        assert events == []
+        report = json.loads(
+            (tmp_path / ".swarm" / "graph-health.json").read_text()
+        )
+        assert report["verdict"] == "healthy"
+        directive = tmp_path / ".swarm" / "dispatcher-directive.json"
+        assert not directive.exists()
+
+    def test_orphan_ratio_triggers_directive(self, dispatcher_setup):
+        d, _, _, tmp_path = dispatcher_setup
+        run = self._make_run(tmp_path)
+        # 8 closed experiment tasks, all orphans (no parent / no deps).
+        tasks = [
+            {"id": f"bd-{i}", "title": f"distinct title number {i}",
+             "status": "closed",
+             "notes": "TASK_TYPE:experiment\nPRODUCES:output/bd-x/r.json"}
+            for i in range(8)
+        ]
+        events = d._check_graph_health(run, tasks)
+        assert len(events) == 1
+        assert events[0]["type"] == "swarm_degenerate"
+        report = json.loads(
+            (tmp_path / ".swarm" / "graph-health.json").read_text()
+        )
+        assert report["verdict"] == "degenerate"
+        assert report["orphan_ratio"] > 0.4
+        directive = json.loads(
+            (tmp_path / ".swarm" / "dispatcher-directive.json").read_text()
+        )
+        assert directive["directive"] == "swarm_degenerate"
+
+    def test_sibling_cluster_triggers_directive(self, dispatcher_setup):
+        d, _, _, tmp_path = dispatcher_setup
+        run = self._make_run(tmp_path)
+        # 6 closed tasks sharing the laundering pattern; all attached to a
+        # parent so orphan_ratio alone wouldn't fire.
+        tasks = [
+            {"id": f"bd-{i}", "title": "Analyze business prompt findings",
+             "status": "closed", "parent_id": "bd-epic",
+             "notes": "TASK_TYPE:investigation\nPRODUCES:output/bd-x/r.json"}
+            for i in range(6)
+        ]
+        events = d._check_graph_health(run, tasks)
+        assert len(events) == 1
+        assert events[0]["type"] == "swarm_degenerate"
+        report = json.loads(
+            (tmp_path / ".swarm" / "graph-health.json").read_text()
+        )
+        assert report["sibling_cluster_max"] >= 5
+        assert report["sibling_cluster_titles"]
+
+    def test_degenerate_event_only_fires_on_transition(self, dispatcher_setup):
+        """INV-58 idempotency: re-running while still degenerate emits no event."""
+        d, _, _, tmp_path = dispatcher_setup
+        run = self._make_run(tmp_path)
+        tasks = [
+            {"id": f"bd-{i}", "title": f"distinct title number {i}",
+             "status": "closed",
+             "notes": "TASK_TYPE:experiment\nPRODUCES:output/bd-x/r.json"}
+            for i in range(8)
+        ]
+        first = d._check_graph_health(run, tasks)
+        second = d._check_graph_health(run, tasks)
+        assert len(first) == 1
+        assert second == []
+
+    def test_degenerate_directive_uses_stop_and_fix(self, dispatcher_setup):
+        """INV-58 + INV-50: swarm_degenerate must carry action=stop_and_fix."""
+        d, _, _, tmp_path = dispatcher_setup
+        run = self._make_run(tmp_path)
+        tasks = [
+            {"id": f"bd-{i}", "title": f"distinct title number {i}",
+             "status": "closed",
+             "notes": "TASK_TYPE:experiment\nPRODUCES:output/bd-x/r.json"}
+            for i in range(8)
+        ]
+        d._check_graph_health(run, tasks)
+        directive = json.loads(
+            (tmp_path / ".swarm" / "dispatcher-directive.json").read_text()
+        )
+        assert directive["directive"] == "swarm_degenerate"
+        assert directive["action"] == "stop_and_fix"
+
+    def test_check_progress_runs_graph_health_for_analytical_run(
+        self, dispatcher_setup,
+    ):
+        d, _, _, tmp_path = dispatcher_setup
+        run = self._make_run(tmp_path, mode="discover", rigor="analytical")
+        tasks = [
+            {"id": f"bd-{i}", "title": f"distinct title number {i}",
+             "status": "closed",
+             "notes": "TASK_TYPE:experiment\nPRODUCES:output/bd-x/r.json"}
+            for i in range(8)
+        ]
+
+        with patch("voronoi.beads.run_bd_json", return_value=(0, tasks)), \
+             patch.object(d, "_check_findings", return_value=[]), \
+             patch.object(d, "_check_design_invalid", return_value=[]), \
+             patch.object(d, "_check_sentinel", return_value=[]), \
+             patch.object(d, "_detect_phase", return_value=[]):
+            events = d._check_progress(run, session_alive=False)
+
+        assert any(event["type"] == "swarm_degenerate" for event in events)
+        report = json.loads(
+            (tmp_path / ".swarm" / "graph-health.json").read_text()
+        )
+        assert report["verdict"] == "degenerate"
+        assert report["total_closed"] == 8
+
+
 # ---------------------------------------------------------------------------
 # DESIGN_INVALID hard gate (structural enforcement)
 # ---------------------------------------------------------------------------
@@ -1188,7 +1363,7 @@ os.execvp(sys.argv[2], sys.argv[2:])
         )
 
         assert result.returncode == 1
-        assert "Pre-dispatch BLOCKED by sentinel directive" in result.stdout
+        assert "Pre-dispatch BLOCKED by stop_and_fix directive" in result.stdout
 
     def test_spawn_agent_safe_mode_composes_role_permissions(self, tmp_path):
         """spawn-agent.sh --safe should keep safe denies and add read-only role denies."""
@@ -1343,6 +1518,26 @@ sys.exit(0)
             "bd-1": {"status": "open", "title": "Write README", "notes": ""},
         }
         assert d._has_experiment_tasks(run) is False
+
+    def test_has_experiment_tasks_colon_task_type(self, dispatcher_setup):
+        """`TASK_TYPE:experiment` (colon form) MUST be detected.
+
+        Regression for BUG-002: the prior `TASK_TYPE=experiment` (equals)
+        check missed every task written by `voronoi_create_task`, which
+        uses the colon form, so sentinel missing-contract warnings were
+        suppressed.
+        """
+        d, _msgs, _docs, tmp_path = dispatcher_setup
+        run = RunningInvestigation(
+            investigation_id=1, workspace_path=tmp_path,
+            tmux_session="test", question="test", mode="prove",
+        )
+        for task_type in ("experiment", "investigation", "replication", "evaluation"):
+            run.task_snapshot = {
+                "bd-1": {"status": "open", "title": "Analyze business prompt",
+                         "notes": f"TASK_TYPE:{task_type}\nPRODUCES:foo.json"},
+            }
+            assert d._has_experiment_tasks(run) is True, task_type
 
 
 # ---------------------------------------------------------------------------
@@ -4958,10 +5153,10 @@ class TestReversedHypothesisDetection:
         assert len(events) == 0
 
 
-class TestTimeoutCap:
-    """Tests for BUG-005 — timeout override capped at _MAX_TIMEOUT_HOURS."""
+class TestReviewBudget:
+    """Tests for optional explicit wall-clock review budgets."""
 
-    def test_timeout_override_capped(self, dispatcher_setup):
+    def test_timeout_override_not_capped(self, dispatcher_setup):
         d, msgs, docs, tmp_path = dispatcher_setup
         run = RunningInvestigation(
             investigation_id=1,
@@ -4973,7 +5168,7 @@ class TestTimeoutCap:
         (tmp_path / ".swarm").mkdir(exist_ok=True)
         (tmp_path / ".swarm" / "timeout_hours").write_text("99999")
         result = d._effective_timeout(run)
-        assert result == d._MAX_TIMEOUT_HOURS
+        assert result == 99999
 
     def test_timeout_override_within_cap(self, dispatcher_setup):
         d, msgs, docs, tmp_path = dispatcher_setup
@@ -4999,7 +5194,32 @@ class TestTimeoutCap:
             mode="discover",
         )
         result = d._effective_timeout(run)
-        assert result == d.config.timeout_hours
+        assert result is None
+
+    def test_timeout_can_be_disabled_by_override(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        d.config.timeout_hours = 72
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=tmp_path,
+            tmux_session="test",
+            question="test",
+            mode="discover",
+        )
+        (tmp_path / ".swarm").mkdir(exist_ok=True)
+        (tmp_path / ".swarm" / "timeout_hours").write_text("off")
+        result = d._effective_timeout(run)
+        assert result is None
+
+    def test_check_paused_timeouts_default_noop(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+
+        mock_queue = MagicMock()
+        d._queue = mock_queue
+
+        d._check_paused_timeouts()
+
+        mock_queue.get_paused.assert_not_called()
 
 
 class TestNotificationStatePersistence:
@@ -5633,7 +5853,7 @@ class TestLearningStalled:
             1: d.config.stall_strike1_minutes,
             2: d.config.stall_strike2_minutes,
             3: d.config.stall_strike3_minutes,
-            # Strike 4 (auto-park) = strike3 + final grace window.
+            # Strike 4 (partial review) = strike3 + final grace window.
             4: d.config.stall_strike3_minutes + d.config.stall_final_grace_minutes,
         }[strike]
         return time.time() - (minutes * 60 + 120)
@@ -5735,7 +5955,7 @@ class TestLearningStalled:
     def test_strike3_issues_final_steer_without_killing(
         self, dispatcher_setup,
     ):
-        """Strike 3 is the final self-steer, NOT an auto-park.
+        """Strike 3 is the final self-steer, not partial review.
 
         The dispatcher must give the orchestrator one more cycle (the
         ``stall_final_grace_minutes`` window) to emit a negative finding,
@@ -5764,8 +5984,8 @@ class TestLearningStalled:
         # prompt has state to reason about.
         assert "diagnosis" in data and data["diagnosis"].get("phase")
 
-    def test_strike4_auto_parks_after_grace(self, dispatcher_setup):
-        """Strike 4 fires only after strike 3 + grace and IS terminal."""
+    def test_strike4_parks_for_partial_review_after_grace(self, dispatcher_setup):
+        """Strike 4 fires only after strike 3 + grace and parks for review."""
         d, msgs, _, base = dispatcher_setup
         mock_queue = MagicMock()
         mock_queue.get.return_value = SimpleNamespace(
@@ -5784,20 +6004,24 @@ class TestLearningStalled:
         assert run.stall_strike_level == 4
         data = json.loads((base / ".swarm" / "stall-signal.json").read_text())
         assert data["level"] == 4
-        assert data["directive"] == "auto_park"
+        assert data["directive"] == "partial_review"
         partial = base / ".swarm" / "deliverable-partial.md"
         assert partial.exists()
-        assert "auto-parked" in partial.read_text().lower()
-        mock_queue.fail.assert_called_once()
-        # Run removed from dispatcher after auto-park.
+        assert "partial review" in partial.read_text().lower()
+        mock_queue.review.assert_called_once()
+        mock_queue.fail.assert_not_called()
+        convergence = json.loads((base / ".swarm" / "convergence.json").read_text())
+        assert convergence["status"] == "partial"
+        assert convergence["gate_passed"] is False
+        # Run removed from dispatcher after parking.
         assert run.investigation_id not in d.running
 
     def test_strike3_then_grace_escalates_to_strike4(self, dispatcher_setup):
-        """Strike 3 followed by additional silence escalates to auto-park.
+        """Strike 3 followed by additional silence escalates to partial review.
 
         Models the real flow: dispatcher polls, fires strike 3 self-steer,
         orchestrator still produces nothing, next poll sees elapsed past
-        strike3 + grace and terminates.
+        strike3 + grace and parks the run.
         """
         d, msgs, _, base = dispatcher_setup
         mock_queue = MagicMock()
@@ -5821,7 +6045,8 @@ class TestLearningStalled:
             d._update_learning_activity(run, [])
 
         assert run.stall_strike_level == 4
-        mock_queue.fail.assert_called_once()
+        mock_queue.review.assert_called_once()
+        mock_queue.fail.assert_not_called()
         assert run.investigation_id not in d.running
 
     def test_recovery_resets_level_and_clears_signal(self, dispatcher_setup):
@@ -5968,7 +6193,7 @@ class TestLearningStalled:
         assert any("/voronoi extend" in m for m in msgs)
 
     def test_partial_deliverable_includes_next_actions(self, dispatcher_setup):
-        """Auto-park (strike 4) must include the checkpoint's next_actions + workers."""
+        """Partial review (strike 4) must include checkpoint next_actions + workers."""
         d, _, _, base = dispatcher_setup
         mock_queue = MagicMock()
         mock_queue.get.return_value = SimpleNamespace(
@@ -5982,7 +6207,7 @@ class TestLearningStalled:
             active_workers=["agent-runner"],
             next_actions=["Dispatch agent-runner to build run_experiments.py"],
         )
-        # Past strike 3 + final grace window triggers auto-park at level 4.
+        # Past strike 3 + final grace window triggers partial review at level 4.
         run.last_learning_activity_at = self._stale_past_strike(d, 4)
 
         with patch("subprocess.run"):

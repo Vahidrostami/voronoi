@@ -48,12 +48,13 @@ def _build_registry() -> None:
             "parent": {"type": "string", "description": "Parent task/epic ID"},
             "produces": {"type": "string", "description": "Comma-separated output files the task MUST create"},
             "requires": {"type": "string", "description": "Comma-separated input files that must exist"},
+            "created_by": {"type": "string", "description": "Provenance tag (orchestrator | worker:<id> | gateway:<chat_id>); defaults to $VORONOI_AGENT_ROLE"},
         },
         required=["title"],
     )
     _register_tool(
         "voronoi_close_task", tools_beads.close_task,
-        "Close a task after validating PRODUCES artifacts exist.",
+        "Close a task after validating PRODUCES artifacts exist; for experiment/investigation/evaluation tasks, also requires FINDING_TASK_IDS or FINDING:NULL rationale (INV-57).",
         {
             "task_id": {"type": "string", "description": "Beads task ID to close"},
             "reason": {"type": "string", "description": "Closing reason/summary"},

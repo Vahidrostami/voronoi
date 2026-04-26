@@ -375,7 +375,7 @@ Report:
 15. **Token counts are mandatory.** Every run records input_tokens, output_tokens, token costs.
 16. **Parallelize LLM calls.** ≥4 concurrent calls during Phase 2.
 17. **Validate planted effects at scenario generation time.** Simpson's: aggregate vs within-group slopes differ. Interactions: main effects p>0.10, joint p<0.05. Constraints: CVR > 0 for data-optimal action.
-18. **No LLM call may generate results.json.** All statistics computed by deterministic Python code.
+18. **No LLM call may generate experiment_metrics.json.** All statistics computed by deterministic Python code.
 19. **Replace zero-information scenarios** (identical regret across all cells, within ε=0.001).
 20. **Failure handling (pre-registered):**
     - JSON-parse failure → one retry with identical prompt. Still fails → record `regret = max_feasible_regret`, `cvr = 1.0`, flag as `parse_fail`. Included in all primary analyses.
@@ -446,7 +446,8 @@ For $M=4$: ~1700 discovery + ~3800 judge ≈ **~5500 total** (with batching/cach
 ```
 demos/epistemic-trajectories/
   output/
-    results.json              # Per-scenario per-encoding per-model per-run: regret, CVR, tokens
+    runner/
+      experiment_metrics.json # Per-scenario per-encoding per-model per-run: regret, CVR, tokens
     token_efficiency.json     # Compression ratios, cost per correct decision, matched-budget accuracy
     deterministic_metrics.json
     reliability_metrics.json
@@ -481,7 +482,7 @@ When complete: delete agent branches, remove worktrees, kill tmux sessions.
 1. Phase 2 HARD GATE passed (Encoding×$K$ interaction + null-encoder contrast; decomposition pass or explicit reframing)
 2. Pipeline results in `output/pipeline_scores.json`
 3. Paper compiles with all figures from actual data, including the pinned encoder prompt in the appendix
-4. `output/results.json` complete
+4. `output/runner/experiment_metrics.json` complete
 5. `output/token_efficiency.json` complete (matched-budget accuracy included)
 6. `output/phase_transitions.json` complete (includes changepoint vs sigmoid AIC/BIC)
 7. `output/null_encoder_contrast.json` complete

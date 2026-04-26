@@ -23,6 +23,7 @@ import asyncio
 import logging
 import logging.handlers
 import os
+import re
 import socket
 import sys
 import time
@@ -98,6 +99,55 @@ def format_human_gate_command_reply(action: str, args: list[str], dispatcher) ->
     )
 
 
+def _extract_action_label(text: str) -> str:
+    """Best-effort codename/id extraction from Telegram Markdown text."""
+    skip = {"action needed", "review", "options", "main claims needing pi acceptance"}
+    for match in re.finditer(r"\*([^*\n]+)\*", text or ""):
+        label = match.group(1).strip()
+        if not label or label.lower() in skip:
+            continue
+        if len(label) <= 40:
+            return label
+    return ""
+
+
+def _action_buttons_for_text(
+    text: str, *, default: list[list[tuple[str, str]]] | None = None,
+) -> list[list[tuple[str, str]]] | None:
+    """Return contextual, replay-safe buttons for a message body."""
+    lower = (text or "").lower()
+    label = _extract_action_label(text)
+    if label:
+        if "stall" in lower or "self-steer" in lower:
+            return [[
+                ("⏱ Extend 60m", f"extend:{label}"),
+                ("📋 Details", "details"),
+                ("🛑 Abort", "abort"),
+            ]]
+        if (
+            "partial review" in lower
+            or "ready for review" in lower
+            or "waiting for pi review" in lower
+            or ("round" in lower and "complete" in lower and "continue" in lower)
+        ):
+            return [[
+                ("🔬 Review", f"review:{label}"),
+                ("🔄 Continue", f"continue:{label}"),
+                ("✅ Complete", f"complete:{label}"),
+            ]]
+        if "paused" in lower or "failed" in lower or "didn't make it" in lower:
+            return [[
+                ("▶️ Resume", f"resume:{label}"),
+                ("📋 Details", "details"),
+                ("📊 Status", "status"),
+            ]]
+        if "is live" in lower:
+            return [[("📊 Status", "status"), ("🛑 Abort", "abort")]]
+        if "is done" in lower or "accepted and closed" in lower:
+            return [[("📋 Details", "details"), ("🧠 Belief Map", "belief")]]
+    return default
+
+
 # ---------------------------------------------------------------------------
 # Bot
 # ---------------------------------------------------------------------------
@@ -166,6 +216,8 @@ def run_bot(config: dict) -> None:
             logger.warning("_reply called but no message available on update")
             return
         reply_markup = None
+        if buttons is None:
+            buttons = _action_buttons_for_text(text)
         if buttons:
             keyboard = [
                 [InlineKeyboardButton(label, callback_data=data) for label, data in row]
@@ -209,10 +261,11 @@ def run_bot(config: dict) -> None:
 
         # Contextual inline buttons for command responses
         buttons = None
-        if subcommand in ("investigate", "explore", "build", "experiment") and sub_args:
+        if subcommand in ("investigate", "explore", "build", "experiment", "discover", "prove") and sub_args:
             buttons = [[("📊 Status", "status"), ("🛑 Abort", "abort")]]
         elif subcommand == "status":
             buttons = [[("📋 Tasks", "tasks"), ("⚡ Ready", "status"), ("🩺 Health", "health")]]
+        buttons = _action_buttons_for_text(reply_text, default=buttons)
 
         await _reply(update, reply_text, reply_file, buttons=buttons)
 
@@ -275,8 +328,9 @@ def run_bot(config: dict) -> None:
     app = Application.builder().token(bot_token).build()
 
     async def _post_init(application: Application) -> None:
-        # Clear any stale polling sessions from a previous unclean shutdown.
-        await application.bot.delete_webhook(drop_pending_updates=True)
+        # Clear stale webhook state without dropping operator commands that
+        # arrived while the bridge was down.
+        await application.bot.delete_webhook(drop_pending_updates=False)
         me = await application.bot.get_me()
         _bot_username[0] = me.username
         logger.info("Bot username: @%s", me.username)
@@ -334,6 +388,16 @@ def run_bot(config: dict) -> None:
             reply_text, _ = router.route("results", [inv_id], chat_id)
         elif data == "guide_prompt":
             reply_text = "_Send a message and I'll record it as guidance for the agents._"
+        elif data.startswith("review:"):
+            reply_text, _ = router.route("review", [data.split(":", 1)[1]], chat_id)
+        elif data.startswith("continue:"):
+            reply_text, _ = router.route("continue", [data.split(":", 1)[1]], chat_id)
+        elif data.startswith("complete:"):
+            reply_text, _ = router.route("complete", [data.split(":", 1)[1]], chat_id)
+        elif data.startswith("resume:"):
+            reply_text, _ = router.route("resume", [data.split(":", 1)[1]], chat_id)
+        elif data.startswith("extend:"):
+            reply_text, _ = router.route("extend", [data.split(":", 1)[1], "60"], chat_id)
         else:
             reply_text = f"Unknown action: {data}"
 
@@ -437,7 +501,13 @@ def run_bot(config: dict) -> None:
                 # Select inline buttons based on content
                 reply_markup = None
                 try:
-                    if "is live" in text.lower():
+                    action_buttons = _action_buttons_for_text(text)
+                    if action_buttons:
+                        reply_markup = InlineKeyboardMarkup([
+                            [InlineKeyboardButton(label, callback_data=data) for label, data in row]
+                            for row in action_buttons
+                        ])
+                    elif "is live" in text.lower():
                         reply_markup = InlineKeyboardMarkup([
                             [InlineKeyboardButton("📊 Status", callback_data="status"),
                              InlineKeyboardButton("🛑 Abort", callback_data="abort")],
@@ -567,7 +637,7 @@ def run_bot(config: dict) -> None:
     logger.info("  Allowed users: %s", allowlist_str)
     logger.info("  Project: %s", project_dir)
     logger.info("  Dispatcher: polling every 10s (dispatch) / 30s (progress)")
-    app.run_polling(drop_pending_updates=True)
+    app.run_polling(drop_pending_updates=False)
 
 
 def _is_fatal_bridge_error(exc: BaseException) -> bool:

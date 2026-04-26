@@ -94,10 +94,49 @@ def handle_whatsup(project_dir: str) -> str:
             "question": question,
         })
 
-    return build_digest_whatsup(
+    status_text = build_digest_whatsup(
         running_investigations=inv_data,
         queued=queued,
     )
+
+    actions = _reviewable_action_lines(q)
+    if actions:
+        status_text = status_text + "\n\n" + "\n".join(actions)
+    return status_text
+
+
+def _reviewable_action_lines(q) -> list[str]:
+    """Return durable action hints for non-running investigations."""
+    try:
+        recent = q.get_recent(limit=20)
+    except Exception:
+        return []
+    if not isinstance(recent, list):
+        return []
+    lines: list[str] = []
+    for inv in recent:
+        status = getattr(inv, "status", "")
+        if status not in {"review", "paused", "failed"}:
+            continue
+        label = getattr(inv, "codename", "") or f"#{getattr(inv, 'id', '?')}"
+        if not lines:
+            lines.append("*Action needed*")
+        if status == "review":
+            lines.append(
+                f"• *{label}* is waiting for PI review — "
+                f"`/voronoi review {label}`, `/voronoi continue {label} <feedback>`, "
+                f"or `/voronoi complete {label}`"
+            )
+        elif status == "paused":
+            lines.append(
+                f"• *{label}* is paused — `/voronoi resume {label}`"
+            )
+        else:
+            lines.append(
+                f"• *{label}* failed — `/voronoi resume {label}`; "
+                f"if diagnosis artifacts exist, `/voronoi continue {label} <feedback>`"
+            )
+    return lines
 
 
 def handle_howsitgoing(project_dir: str) -> str:

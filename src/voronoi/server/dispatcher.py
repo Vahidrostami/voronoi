@@ -55,6 +55,9 @@ def _find_checkpoint(workspace: Path) -> Path | None:
     return find_checkpoint(workspace)
 
 
+from voronoi.utils import extract_field, is_finding_title  # noqa: E402
+
+
 @dataclass
 class DispatcherConfig:
     """Configuration for the dispatcher."""
@@ -66,10 +69,10 @@ class DispatcherConfig:
     orchestrator_model: str = ""  # e.g. "claude-opus-4.6", "" = CLI default
     worker_model: str = ""        # e.g. "claude-sonnet-4.6", "" = CLI default
     progress_interval: int = 30  # seconds between progress updates
-    timeout_hours: int = 48      # max hours before marking investigation exhausted
+    timeout_hours: int | None = None  # no default wall-clock kill; positive values are review budgets
     max_retries: int = 2         # max times to restart a dead agent
     stall_minutes: int = 45      # warn/restart if 0 tasks after this long
-    pause_timeout_hours: int = 24  # auto-fail paused investigations after this
+    pause_timeout_hours: int | None = None  # no default missed-message expiry
     context_advisory_hours: int = 6    # "prioritize convergence" directive
     context_warning_hours: int = 10    # "delegate remaining work" directive
     context_critical_hours: int = 14   # "dispatch Scribe NOW" directive
@@ -82,8 +85,8 @@ class DispatcherConfig:
     # .swarm/stall-signal.json which the next orchestrator prompt injects.
     # Strike 1: directive = "diagnose_and_steer" (self-steer prompt #1)
     # Strike 2: directive = "pivot_or_declare" (self-steer prompt #2)
-    # Strike 3: directive = "final_steer" (last self-steer, grace before auto-park)
-    # Strike 4: directive = "auto_park" (terminal, fires after strike3 + grace)
+    # Strike 3: directive = "final_steer" (last self-steer, grace before partial review)
+    # Strike 4: directive = "partial_review" (durable PI decision point)
     stall_strike1_minutes: int = 30
     stall_strike2_minutes: int = 60
     stall_strike3_minutes: int = 90
@@ -126,13 +129,14 @@ class RunningInvestigation:
     last_parked_digest_at: float = 0  # Last Telegram digest while parked (throttle to 5min)
     polling_strike_count: int = 0  # Consecutive polls where orchestrator pane was sleeping (BUG-003 watchdog)
     _criteria_alerts: set = field(default_factory=set)  # Track which criteria-progress alerts have fired
+    _last_graph_health_verdict: str = ""  # Last graph-health verdict (INV-58); fire event only on transition
     _sentinel_missing_contract_warned: bool = False  # Track sentinel missing-contract warning
     notified_reversed_hypotheses: set = field(default_factory=set)  # Track which reversed hypotheses have been alerted
     last_convergence_attempt_at: float = 0  # Throttle _try_convergence_check() calls
     last_ledger_map: dict[str, str] = field(default_factory=dict)  # claim_id → status for delta detection
     _ledger_baseline_seeded: bool = False  # First poll seeds baseline without emitting deltas
     last_learning_activity_at: float = 0  # Last time a new finding/claim transition was observed
-    stall_strike_level: int = 0  # Self-steer escalation: 0/1/2/3/4 (4 = auto-parked)
+    stall_strike_level: int = 0  # Self-steer escalation: 0/1/2/3/4 (4 = partial review)
     stall_extension_expires_at: float = 0  # /extend grants stall immunity until this timestamp
     # Evidence-gated scaling: belief-map snapshot for detecting moves
     _prior_belief_snapshot: dict[str, str] = field(default_factory=dict)  # hypothesis_id → confidence tier
@@ -725,10 +729,18 @@ class InvestigationDispatcher:
                                 inv_id, len(events), run.phase)
                     self._send_progress_batch(run, events, claim_events)
 
-            # Check for timeout (per-investigation override via .swarm/timeout_hours)
+            if inv_id not in self.running:
+                # A stall escalation may have parked the run into review.
+                continue
+
+            # Check for explicit wall-clock review budget (disabled by default;
+            # per-investigation override via .swarm/timeout_hours)
             elapsed_hours = (now - run.started_at) / 3600
             effective_timeout = self._effective_timeout(run)
-            timed_out = elapsed_hours >= effective_timeout
+            timed_out = (
+                effective_timeout is not None
+                and elapsed_hours >= effective_timeout
+            )
 
             # Stall detection: use checkpoint + event log + branches, not just task_snapshot
             if (session_alive and not run.stall_warned
@@ -764,19 +776,29 @@ class InvestigationDispatcher:
 
             if not session_alive or self._is_complete(run) or timed_out:
                 if timed_out and not self._is_complete(run):
-                    reason = f"timeout ({effective_timeout}h)"
-                    logger.warning("Investigation #%d timed out after %.1fh",
-                                   inv_id, elapsed_hours)
-                    # Kill tmux session if still alive
-                    if session_alive:
-                        subprocess.run(
-                            ["tmux", "kill-session", "-t", run.tmux_session],
-                            capture_output=True, timeout=10,
-                        )
-                    # Write exhaustion convergence
-                    self._write_timeout_convergence(run)
-                    self._handle_completion(run, failed=True,
-                                            failure_reason="Timed out")
+                    budget = effective_timeout or 0
+                    reason = f"time budget reached ({budget}h)"
+                    logger.warning(
+                        "Investigation #%d reached explicit time budget after %.1fh",
+                        inv_id, elapsed_hours,
+                    )
+                    self.send_message(
+                        f"⏱ *{run.label}* — explicit time budget reached "
+                        f"after ~{elapsed_hours:.1f}h. Parked for review; "
+                        f"use `/voronoi review {run.label}` or "
+                        f"`/voronoi continue {run.label} <feedback>` when ready."
+                    )
+                    self._park_for_partial_review(
+                        run,
+                        reason=(
+                            f"Explicit time budget reached after "
+                            f"{elapsed_hours:.1f}h"
+                        ),
+                        blocker="time_budget",
+                        elapsed_min=elapsed_hours * 60,
+                    )
+                    logger.info("Investigation #%d finished (%s)", inv_id, reason)
+                    continue
                 elif not session_alive and not self._is_complete(run, session_dead=True):
                     # Check if a human gate is pending — do NOT crash-retry
                     if self._has_pending_human_gate(run):
@@ -891,51 +913,61 @@ class InvestigationDispatcher:
                 logger.warning("Failed to read eval-score.json for #%d: %s",
                                run.investigation_id, e)
 
-    # Hard upper bound for timeout overrides (1 week)
-    _MAX_TIMEOUT_HOURS: int = 168
-
-    def _effective_timeout(self, run: RunningInvestigation) -> int:
-        """Return the effective timeout for an investigation.
+    def _effective_timeout(self, run: RunningInvestigation) -> int | None:
+        """Return the explicit wall-clock review budget for an investigation.
 
         Checks for a per-investigation override file at
         ``<workspace>/.swarm/timeout_hours``.  The file should contain a
-        single integer (the new total timeout in hours).  If the file is
+        single positive integer (the total review budget in hours).  Values
+        ``0``, ``off``, ``none``, and ``disabled`` turn the budget off for
+        the run. If the file is
         missing or unreadable, falls back to ``self.config.timeout_hours``.
-
-        Capped at ``_MAX_TIMEOUT_HOURS`` to prevent runaway investigations.
         """
         override_path = run.workspace_path / ".swarm" / "timeout_hours"
         if override_path.exists():
             try:
                 raw = override_path.read_text().strip()
+                if raw.lower() in {"", "0", "off", "none", "disabled"}:
+                    return None
                 value = int(raw)
                 if value > 0:
-                    return min(value, self._MAX_TIMEOUT_HOURS)
+                    return value
                 logger.warning(
                     "Invalid timeout override for #%d: value %r must be positive; "
-                    "falling back to config default %dh",
+                    "falling back to config default %s",
                     run.investigation_id, value, self.config.timeout_hours,
                 )
             except (ValueError, OSError) as e:
                 logger.warning(
                     "Failed to read timeout override at %s for #%d (%s); "
-                    "falling back to config default %dh",
+                    "falling back to config default %s",
                     override_path, run.investigation_id, e,
                     self.config.timeout_hours,
                 )
         return self.config.timeout_hours
 
     def _write_timeout_convergence(self, run: RunningInvestigation) -> None:
-        """Write convergence.json indicating timeout exhaustion."""
+        """Write partial-review convergence for an explicit time budget."""
+        effective = self._effective_timeout(run)
+        self._write_partial_convergence(
+            run,
+            reason=f"Explicit time budget reached after {effective}h",
+            blocker="time_budget",
+        )
+
+    def _write_partial_convergence(
+        self, run: RunningInvestigation, *, reason: str, blocker: str,
+    ) -> None:
+        """Write convergence.json for a durable partial-review state."""
         conv_path = run.workspace_path / ".swarm" / "convergence.json"
         conv_path.parent.mkdir(parents=True, exist_ok=True)
-        effective = self._effective_timeout(run)
         data = {
-            "status": "exhausted",
+            "status": "partial",
             "converged": False,
-            "reason": f"Timed out after {effective}h",
+            "reason": reason,
             "score": run.eval_score,
-            "blockers": ["timeout"],
+            "blockers": [blocker],
+            "gate_passed": False,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
         conv_path.write_text(json.dumps(data, indent=2))
@@ -1154,6 +1186,7 @@ class InvestigationDispatcher:
         "context_advisory": 1,
         "context_warning": 2,
         "context_critical": 3,
+        "swarm_degenerate": 3,
         "sentinel_violation": 4,
     }
 
@@ -1192,7 +1225,7 @@ class InvestigationDispatcher:
             "message": message,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
-        if level == "sentinel_violation":
+        if level in ("sentinel_violation", "swarm_degenerate"):
             data["action"] = "stop_and_fix"
         try:
             directive_path.write_text(json.dumps(data, indent=2))
@@ -1526,6 +1559,7 @@ class InvestigationDispatcher:
         events.extend(self._check_findings(run, tasks))
         events.extend(self._check_design_invalid(run, tasks))
         events.extend(self._check_sentinel(run))
+        events.extend(self._check_graph_health(run, tasks))
         events.extend(self._detect_phase(run))
 
         # Sync findings to cross-run Claim Ledger
@@ -1617,7 +1651,10 @@ class InvestigationDispatcher:
             tid = task.get("id", "")
             title = task.get("title", "")
             notes = task.get("notes", "")
-            if "FINDING" in title.upper() and tid not in run.notified_findings:
+            # Prefix-only check: a substring match would surface ghost
+            # titles like "Analyze ... findings" as real findings, reset
+            # learning-stall timers, and mislead the PI. See INV-47.
+            if is_finding_title(title) and tid not in run.notified_findings:
                 run.notified_findings.add(tid)
                 effect = ""
                 for line in notes.split("\n"):
@@ -1841,13 +1878,18 @@ class InvestigationDispatcher:
 
     def _has_experiment_tasks(self, run: RunningInvestigation) -> bool:
         """Check if task_snapshot contains experiment-type tasks."""
+        experiment_types = {"investigation", "experiment", "replication", "evaluation"}
         for t in run.task_snapshot.values():
             notes = t.get("notes", "")
             title = t.get("title", "").lower()
             if any(kw in title for kw in ("experiment", "phase", "baseline", "pilot",
                                            "factorial", "ablation", "benchmark")):
                 return True
-            if "TASK_TYPE=investigation" in notes or "TASK_TYPE=experiment" in notes:
+            # ``extract_field`` accepts both ``KEY:value`` and ``KEY=value``;
+            # the prior hand-rolled ``KEY=value`` check missed every task
+            # written by ``voronoi_create_task`` (which uses the colon form).
+            task_type = extract_field(notes, "TASK_TYPE").lower()
+            if task_type in experiment_types:
                 return True
         return False
 
@@ -1874,6 +1916,149 @@ class InvestigationDispatcher:
                     "type": "design_invalid",
                     "msg": f"🚨 *DESIGN INVALID* — {title}\n  {diagnosis}",
                 })
+        return events
+
+    # Task types whose closure should be linked to a parent epic / hypothesis
+    # tranche. Orphaned closures of these types are the smoking gun of the
+    # swarm-degenerate failure mode (see INV-58).
+    _GRAPH_HEALTH_AUDITED_TYPES = frozenset({
+        "investigation", "experiment", "evaluation", "exploration", "build", "paper",
+    })
+    # Task types that are legitimately root-ready (no parent expected).
+    _GRAPH_HEALTH_EXEMPT_TYPES = frozenset({
+        "epic", "scout", "theory", "methodologist", "baseline", "finding",
+        "review_stats", "review_critic", "synthesis",
+    })
+    _GRAPH_ORPHAN_RATIO_THRESHOLD = 0.4
+    _GRAPH_SIBLING_CLUSTER_THRESHOLD = 5
+    _GRAPH_HEALTH_MIN_CLOSED = 5  # below this, signal is too noisy
+
+    def _check_graph_health(
+        self, run: RunningInvestigation, tasks: list[dict] | None,
+    ) -> list[dict]:
+        """Audit Beads DAG topology each OODA cycle (INV-58).
+
+        Detects the swarm-degenerate failure mode where Beads becomes a
+        flat work queue: many root-ready sibling tasks with shared
+        normalized title prefixes and no parent edges. Persists
+        ``.swarm/graph-health.json`` and emits a ``swarm-degenerate``
+        directive when the orphan ratio or sibling-cluster size cross
+        thresholds.
+        """
+        events: list[dict] = []
+        if tasks is None:
+            return events
+
+        # Only audit PROVE / Analytical+ runs — DISCOVER mode at low rigor
+        # legitimately produces many flat exploration tasks.
+        if run.mode != "prove" and run.rigor not in (
+            "analytical", "scientific", "experimental",
+        ):
+            return events
+
+        closed = [t for t in tasks if (t.get("status") or "") == "closed"]
+        if len(closed) < self._GRAPH_HEALTH_MIN_CLOSED:
+            return events
+
+        def _task_type(task: dict) -> str:
+            notes = task.get("notes", "") or ""
+            m = re.search(r"(?im)^\s*TASK_TYPE\s*[:=]\s*([A-Za-z_]+)", notes)
+            if m:
+                return m.group(1).strip().lower()
+            return (task.get("type") or "").strip().lower()
+
+        def _has_parent(task: dict) -> bool:
+            if task.get("parent_id") or task.get("parent"):
+                return True
+            deps = task.get("dependencies") or task.get("depends_on") or []
+            return bool(deps)
+
+        orphan_count = 0
+        auditable = 0
+        for t in closed:
+            ttype = _task_type(t)
+            if ttype in self._GRAPH_HEALTH_EXEMPT_TYPES:
+                continue
+            if self._GRAPH_HEALTH_AUDITED_TYPES and ttype and ttype not in self._GRAPH_HEALTH_AUDITED_TYPES:
+                # Unknown / scout-adjacent types — skip rather than over-audit.
+                continue
+            auditable += 1
+            if not _has_parent(t):
+                orphan_count += 1
+
+        orphan_ratio = (orphan_count / auditable) if auditable else 0.0
+
+        # Sibling-cluster detection: normalize the first 3 words of each
+        # closed title and count buckets. ≥5 tasks in one bucket indicates
+        # a laundering loop ("Analyze business prompt …").
+        clusters: dict[str, list[str]] = {}
+        for t in closed:
+            title = (t.get("title") or "").strip().lower()
+            if not title:
+                continue
+            words = re.findall(r"[a-z0-9]+", title)
+            if len(words) < 3:
+                continue
+            key = " ".join(words[:3])
+            clusters.setdefault(key, []).append(t.get("id", ""))
+        cluster_max = max((len(v) for v in clusters.values()), default=0)
+        cluster_titles = [k for k, v in clusters.items()
+                          if len(v) >= self._GRAPH_SIBLING_CLUSTER_THRESHOLD]
+
+        reasons: list[str] = []
+        if orphan_ratio > self._GRAPH_ORPHAN_RATIO_THRESHOLD:
+            reasons.append(
+                f"orphan_ratio {orphan_ratio:.2f} > "
+                f"{self._GRAPH_ORPHAN_RATIO_THRESHOLD}"
+            )
+        if cluster_max >= self._GRAPH_SIBLING_CLUSTER_THRESHOLD:
+            reasons.append(
+                f"sibling cluster of {cluster_max} tasks "
+                f"with normalized prefix {cluster_titles[0]!r}"
+            )
+
+        verdict = "degenerate" if reasons else "healthy"
+        report = {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "total_closed": len(closed),
+            "auditable_closed": auditable,
+            "orphan_count": orphan_count,
+            "orphan_ratio": round(orphan_ratio, 3),
+            "sibling_cluster_max": cluster_max,
+            "sibling_cluster_titles": cluster_titles,
+            "verdict": verdict,
+            "reasons": reasons,
+        }
+
+        try:
+            health_path = run.workspace_path / ".swarm" / "graph-health.json"
+            health_path.parent.mkdir(parents=True, exist_ok=True)
+            health_path.write_text(json.dumps(report, indent=2))
+        except OSError as exc:
+            logger.debug("Failed to write graph-health.json for #%d: %s",
+                         run.investigation_id, exc)
+
+        prior_verdict = run._last_graph_health_verdict
+        run._last_graph_health_verdict = verdict
+        if verdict == "degenerate" and prior_verdict != "degenerate":
+            msg = (
+                "🕸️ *SWARM DEGENERATE* — Beads DAG looks flat\n  "
+                + "; ".join(reasons)
+                + ". Restate laundered task titles, attach orphans to a "
+                "parent epic, or escalate to Methodologist before dispatching new workers."
+            )
+            events.append({"type": "swarm_degenerate", "msg": msg})
+            self._write_directive(
+                run, "swarm_degenerate",
+                "SWARM DEGENERATE: Beads DAG audit failed (INV-58). "
+                + "; ".join(reasons)
+                + ". Read .swarm/graph-health.json. "
+                "Do NOT dispatch additional analysis workers. Either "
+                "restate ghost tasks with concrete propositions / "
+                "FINDING: prefixes, attach orphan tasks to a parent "
+                "epic, or dispatch Methodologist for a plan audit."
+            )
+
         return events
 
     def _detect_phase(self, run: RunningInvestigation) -> list[dict]:
@@ -2258,19 +2443,15 @@ class InvestigationDispatcher:
         injects an escalating **self-steer directive** into the next
         orchestrator prompt (via ``.swarm/stall-signal.json``). Each strike
         adds a richer belief-snapshot and a concrete set of alternatives
-        the orchestrator must choose between. Auto-park only fires at a
+        the orchestrator must choose between. Partial review only fires at a
         fourth, internal level that requires an additional
         ``stall_final_grace_minutes`` window of silence past strike 3 —
         i.e. three explicit self-steer prompts had no effect.
 
-          * Strike 1 (``stall_strike1_minutes``): directive
-            ``diagnose_and_steer``. Telegram: LEARNING_STALLED.
-          * Strike 2 (``stall_strike2_minutes``): directive
-            ``pivot_or_declare``. Telegram: strike-2 with extend hint.
-          * Strike 3 (``stall_strike3_minutes``): directive
-            ``final_steer`` — final self-steer; run NOT killed yet.
-          * Strike 4 (``stall_strike3_minutes + stall_final_grace_minutes``):
-            directive ``auto_park`` — write partial deliverable, kill run.
+        Strike 1 is ``diagnose_and_steer``. Strike 2 is
+        ``pivot_or_declare``. Strike 3 is ``final_steer`` and the run is not
+        killed yet. Strike 4 is ``partial_review``: write partial deliverable
+        and diagnosis, then park into review instead of failing.
 
         Each strike fires at most once per escalation sequence. Recovery
         (a real finding / claim transition) drops the level back to 0, so
@@ -2299,7 +2480,7 @@ class InvestigationDispatcher:
         # task closed) is productive work — reset the activity timer so the
         # stall clock restarts, but keep ``stall_strike_level`` intact so a
         # run that's been escalated still needs real learning to fully
-        # recover. This prevents auto-park during hours-long build-out work
+        # recover. This prevents premature partial review during hours-long build-out work
         # (encoder + evaluator + runner merges) where findings legitimately
         # cannot exist yet. See docs/SERVER.md §3.
         if has_task_done:
@@ -2325,7 +2506,7 @@ class InvestigationDispatcher:
         strike1 = self.config.stall_strike1_minutes * multiplier
         strike2 = self.config.stall_strike2_minutes * multiplier
         strike3 = self.config.stall_strike3_minutes * multiplier
-        # Strike 4 (auto-park) fires only after an additional grace window
+        # Strike 4 (partial review) fires only after an additional grace window
         # past strike 3 — i.e. the orchestrator has had the final self-steer
         # prompt and still produced no learning. Grace is NOT scaled by the
         # phase multiplier: once in final-steer, every phase gets the same
@@ -2345,12 +2526,12 @@ class InvestigationDispatcher:
             target_level = 0
 
         # Escalate one step at a time so each strike's side-effects
-        # (signal file write, Telegram notification, auto-park) fire.
+        # (signal file write, Telegram notification, partial-review parking) fire.
         while run.stall_strike_level < target_level:
             run.stall_strike_level += 1
             self._fire_stall_strike(run, run.stall_strike_level, elapsed_min)
             if run.stall_strike_level >= 4:
-                # Auto-park is terminal; do not escalate further.
+                # Partial-review parking removes the run; do not escalate further.
                 break
 
     # Phase-aware stall multipliers — applied to stall_strikeN_minutes at
@@ -2427,15 +2608,17 @@ class InvestigationDispatcher:
                 "  • A partial deliverable written to "
                 "`.swarm/deliverable-partial.md` summarising what IS known.\n"
                 "If no learning event is observed within the grace window "
-                "that follows, the dispatcher will auto-park the run."
+                "that follows, the dispatcher will park the run for partial review."
             ),
         },
         4: {
-            "directive": "auto_park",
+            "directive": "partial_review",
             "instruction": (
-                "Auto-parked by dispatcher after strike 3 + grace window: "
-                "zero learning despite three self-steer directives. Run is "
-                "terminated. See .swarm/deliverable-partial.md."
+                "Parked for partial review by dispatcher after strike 3 + "
+                "grace window: zero learning despite three self-steer "
+                "directives. See .swarm/deliverable-partial.md and "
+                ".swarm/failure-diagnosis.json. The PI may review, "
+                "continue, or complete the reviewed partial state later."
             ),
         },
     }
@@ -2445,8 +2628,8 @@ class InvestigationDispatcher:
     ) -> dict:
         """Assemble the belief-snapshot injected into every strike signal.
 
-        Mirrors what ``_write_partial_deliverable`` captures at terminal
-        auto-park, but cheap enough to emit on every strike so the
+        Mirrors what ``_write_partial_deliverable`` captures at partial-review
+        parking, but cheap enough to emit on every strike so the
         orchestrator always has concrete state to reason about when it
         reads the stall directive in its next prompt.
         """
@@ -2485,12 +2668,12 @@ class InvestigationDispatcher:
     def _fire_stall_strike(
         self, run: RunningInvestigation, level: int, elapsed_min: float,
     ) -> None:
-        """Write stall-signal.json, notify, and (at level 4) auto-park.
+        """Write stall-signal.json, notify, and (at level 4) partial-review.
 
         Levels 1–3 are self-steer directives: they inject a belief snapshot
         + concrete alternatives into the next orchestrator prompt. The run
         keeps going. Only level 4 — strike 3 threshold plus the final grace
-        window — actually terminates the run.
+        window — parks the run into review without marking it failed.
         """
         spec = self._STALL_STRIKE_DIRECTIVE.get(level)
         if spec is None:
@@ -2508,7 +2691,7 @@ class InvestigationDispatcher:
                 ),
             }
             # Belief snapshot: only meaningful for self-steer levels (1–3).
-            # At level 4 the run is terminating; the partial deliverable
+            # At level 4 the run is being parked; the partial deliverable
             # captures final state instead.
             if level < 4:
                 payload["diagnosis"] = self._build_stall_diagnosis(
@@ -2538,26 +2721,22 @@ class InvestigationDispatcher:
                 f"(strike 3, ~{int(round(elapsed_min))}min). "
                 f"Orchestrator must emit a negative finding, a BLOCKED "
                 f"declaration, or a partial deliverable this cycle. "
-                f"Auto-park in ~{grace}min if no learning.\n\n"
+                f"Partial review in ~{grace}min if no learning.\n\n"
                 f"Reply `/voronoi extend {run.label} 60` to grant more "
                 f"time."
             )
         elif level == 4:
             self.send_message(
-                f"🪫🪫🪫🪫 *{run.label}* — NO_LEARNING auto-parked after "
+                f"🪫🪫🪫🪫 *{run.label}* — no-learning partial review after "
                 f"~{int(round(elapsed_min))}min with zero findings despite "
-                f"three self-steer directives. Writing partial deliverable "
-                f"and terminating run."
+                f"three self-steer directives. Writing diagnosis and parking "
+                f"for PI review. Use `/voronoi review {run.label}` or "
+                f"`/voronoi continue {run.label} <feedback>` when ready."
             )
             try:
-                self._write_partial_deliverable(run, elapsed_min)
+                self._park_stalled_run_for_partial_review(run, elapsed_min)
             except Exception as e:  # pragma: no cover - defensive
-                logger.warning("Failed to write partial deliverable for %s: %s",
-                               run.label, e)
-            try:
-                self._auto_park_stalled_run(run, elapsed_min)
-            except Exception as e:  # pragma: no cover - defensive
-                logger.warning("Failed to auto-park stalled run %s: %s",
+                logger.warning("Failed to park stalled run for partial review %s: %s",
                                run.label, e)
 
     def _clear_stall_signal(self, run: RunningInvestigation) -> None:
@@ -2630,9 +2809,9 @@ class InvestigationDispatcher:
                            run.label, e)
 
     def _write_partial_deliverable(
-        self, run: RunningInvestigation, elapsed_min: float,
+        self, run: RunningInvestigation, elapsed_min: float, *, reason: str = "",
     ) -> None:
-        """Emit ``.swarm/deliverable-partial.md`` on auto-park.
+        """Emit ``.swarm/deliverable-partial.md`` for partial review.
 
         Best-effort: list current claims from the ledger (if any) and the
         success-criteria state so the PI has a record of what the run knew.
@@ -2641,11 +2820,14 @@ class InvestigationDispatcher:
         path.parent.mkdir(parents=True, exist_ok=True)
 
         lines: list[str] = []
-        lines.append(f"# {run.label} — Partial Deliverable (auto-parked)\n")
-        lines.append(
-            f"**Reason:** No new findings or claim transitions for "
+        lines.append(f"# {run.label} — Partial Review Deliverable\n")
+        reason_text = reason or (
+            f"No new findings or claim transitions for "
             f"~{int(round(elapsed_min))} minutes "
-            f"(stall_strike3_minutes={self.config.stall_strike3_minutes}).\n"
+            f"(stall_strike3_minutes={self.config.stall_strike3_minutes})."
+        )
+        lines.append(
+            f"**Reason:** {reason_text}\n"
         )
         lines.append(f"**Mode:** {run.mode}  |  **Phase:** {run.phase}\n")
 
@@ -2747,12 +2929,46 @@ class InvestigationDispatcher:
             f"clean prompt on the next build."
         )
 
-    def _auto_park_stalled_run(
+    def _park_stalled_run_for_partial_review(
         self, run: RunningInvestigation, elapsed_min: float,
     ) -> None:
-        """Kill the tmux session and mark the investigation failed on strike 3."""
-        # Write structured diagnosis before killing the session
+        reason = (
+            f"No learning for ~{int(round(elapsed_min))} minutes "
+            f"after three self-steer directives"
+        )
+        self._park_for_partial_review(
+            run,
+            reason=reason,
+            blocker="learning_stall",
+            elapsed_min=elapsed_min,
+        )
+
+    def _park_for_partial_review(
+        self,
+        run: RunningInvestigation,
+        *,
+        reason: str,
+        blocker: str,
+        elapsed_min: float,
+    ) -> None:
+        """Persist partial-review artifacts and transition running → review.
+
+        This is deliberately separate from ``_transition_to_review`` because
+        normal review means successful convergence and may promote provisional
+        claims. Partial review is a durable decision point: preserve evidence,
+        write diagnosis, but do not harden weak claims.
+        """
+        try:
+            self._sync_findings_to_ledger(run)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.debug("Partial-review ledger sync failed for %s: %s", run.label, e)
+        self._write_partial_convergence(run, reason=reason, blocker=blocker)
         self._write_failure_diagnosis(run)
+        try:
+            self._write_partial_deliverable(run, elapsed_min, reason=reason)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("Failed to write partial deliverable for %s: %s",
+                           run.label, e)
         try:
             subprocess.run(
                 ["tmux", "kill-session", "-t", run.tmux_session],
@@ -2760,14 +2976,16 @@ class InvestigationDispatcher:
             )
         except Exception:
             pass
-        reason = (
-            f"Auto-parked: no learning for ~{int(round(elapsed_min))} minutes "
-            f"(stall strike 3)."
-        )
         try:
-            self.queue.fail(run.investigation_id, reason)
+            if self.queue.review(run.investigation_id):
+                self._write_run_manifest(run)
+            else:
+                logger.warning(
+                    "queue.review() did not transition partial-review run %s",
+                    run.label,
+                )
         except Exception as e:  # pragma: no cover - defensive
-            logger.warning("queue.fail() raised for auto-parked %s: %s",
+            logger.warning("Partial-review transition failed for %s: %s",
                            run.label, e)
         self.running.pop(run.investigation_id, None)
 
@@ -2883,6 +3101,17 @@ class InvestigationDispatcher:
             return status.lower() in InvestigationDispatcher._CONVERGED_STATUSES
         return False
 
+    def _convergence_signals_completion(self, run: RunningInvestigation) -> bool:
+        """Return True iff .swarm/convergence.json exists and signals completion."""
+        conv = run.workspace_path / ".swarm" / "convergence.json"
+        if not conv.exists():
+            return False
+        try:
+            data = json.loads(conv.read_text())
+        except (json.JSONDecodeError, OSError):
+            return False
+        return isinstance(data, dict) and self._convergence_status_ok(data)
+
     def _effective_rigor(self, run: RunningInvestigation) -> str:
         """Return the effective rigor for an investigation.
 
@@ -2911,14 +3140,7 @@ class InvestigationDispatcher:
                 completion_plausible = True
             else:
                 # For higher rigor, also need convergence signal
-                conv = run.workspace_path / ".swarm" / "convergence.json"
-                if conv.exists():
-                    try:
-                        data = json.loads(conv.read_text())
-                        if isinstance(data, dict) and self._convergence_status_ok(data):
-                            completion_plausible = True
-                    except (json.JSONDecodeError, OSError):
-                        pass
+                completion_plausible = self._convergence_signals_completion(run)
                 if not completion_plausible:
                     # Deliverable exists but no convergence — try to generate one
                     # Throttle to avoid running the gate every poll cycle (30s).
@@ -2928,23 +3150,10 @@ class InvestigationDispatcher:
                     if cooldown_ok or session_dead:
                         run.last_convergence_attempt_at = now
                         self._try_convergence_check(run)
-                    if conv.exists():
-                        try:
-                            data = json.loads(conv.read_text())
-                            if isinstance(data, dict) and self._convergence_status_ok(data):
-                                completion_plausible = True
-                        except (json.JSONDecodeError, OSError):
-                            pass
+                    completion_plausible = self._convergence_signals_completion(run)
         else:
             # No deliverable — check if convergence.json alone signals completion
-            conv = run.workspace_path / ".swarm" / "convergence.json"
-            if conv.exists():
-                try:
-                    data = json.loads(conv.read_text())
-                    if isinstance(data, dict) and self._convergence_status_ok(data):
-                        completion_plausible = True
-                except (json.JSONDecodeError, OSError):
-                    pass
+            completion_plausible = self._convergence_signals_completion(run)
 
         if not completion_plausible:
             return False
@@ -3954,7 +4163,9 @@ class InvestigationDispatcher:
         return f"▶️ *{label}* resumed."
 
     def _check_paused_timeouts(self) -> None:
-        """Auto-fail paused investigations that exceeded pause_timeout_hours."""
+        """Auto-fail paused investigations only when explicitly configured."""
+        if not self.config.pause_timeout_hours or self.config.pause_timeout_hours <= 0:
+            return
         try:
             paused = self.queue.get_paused()
         except Exception:
@@ -4418,7 +4629,7 @@ class InvestigationDispatcher:
             load_ledger,
             save_ledger,
         )
-        from voronoi.utils import extract_field
+        from voronoi.utils import extract_field, is_finding_title
 
         ledger = load_ledger(inv.lineage_id, base_dir=self.config.base_dir)
         synced_ids = {f_id for c in ledger.claims for f_id in c.supporting_findings}
@@ -4434,12 +4645,7 @@ class InvestigationDispatcher:
             # (e.g. "Analyze pricing dataset for five action-changing
             # findings"), which laundered task titles into provisional
             # claims.  See docs/SCIENCE.md §17 and docs/INVARIANTS.md INV-47.
-            title_upper = title.upper().lstrip()
-            if not (
-                title_upper.startswith("FINDING:")
-                or title_upper.startswith("FINDING -")
-                or title_upper.startswith("FINDING —")
-            ):
+            if not is_finding_title(title):
                 continue
             if tid in synced_ids:
                 continue
@@ -4680,6 +4886,8 @@ class InvestigationDispatcher:
             "success-criteria.json", "experiments.tsv", "eval-score.json",
             "convergence.json", "claim-evidence.json", "report.pdf",
             "state-digest.md", "scout-brief.md", "events.jsonl",
+            "stall-signal.json", "deliverable-partial.md",
+            "failure-diagnosis.json", "run-manifest.json",
         ]
         for fname in files_to_archive:
             src = swarm / fname
@@ -4696,7 +4904,8 @@ class InvestigationDispatcher:
             "deliverable.md", "events.jsonl", "orchestrator-checkpoint.json",
             "checkpoint.json",
             "convergence.json", "eval-score.json", "dispatcher-directive.json",
-            "human-gate.json",
+            "human-gate.json", "stall-signal.json", "deliverable-partial.md",
+            "failure-diagnosis.json",
         ]
         for fname in files_to_remove:
             p = swarm / fname

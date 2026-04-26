@@ -144,14 +144,14 @@ try:
 except Exception:
     print('')
 " 2>/dev/null || echo "")
-        if ! echo "$TASK_TITLE_LOWER" | grep -qiE "methodologist|post.?mortem|revise|fix.*contract|sentinel"; then
-            echo "✗ Pre-dispatch BLOCKED by sentinel directive (stop_and_fix)"
-            echo "  See $DIRECTIVE_PATH and .swarm/sentinel-audit.json"
-            echo "  Only methodologist/post-mortem/revise tasks may run until cleared."
-            timeout 10s bd update "$TASK_ID" --notes "BLOCKED: sentinel stop_and_fix directive active" 2>/dev/null || true
+        if ! echo "$TASK_TITLE_LOWER" | grep -qiE "methodologist|post.?mortem|revise|fix.*contract|sentinel|restate|graph.health"; then
+            echo "✗ Pre-dispatch BLOCKED by stop_and_fix directive"
+            echo "  See $DIRECTIVE_PATH (sentinel-audit.json or graph-health.json)"
+            echo "  Only methodologist/post-mortem/revise/restate tasks may run until cleared."
+            timeout 10s bd update "$TASK_ID" --notes "BLOCKED: stop_and_fix directive active" 2>/dev/null || true
             exit 1
         fi
-        echo "⚠ Sentinel directive active — allowing $TASK_ID (methodologist/post-mortem)"
+        echo "⚠ stop_and_fix directive active — allowing $TASK_ID (methodologist/post-mortem/restate)"
     fi
 fi
 

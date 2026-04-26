@@ -170,6 +170,7 @@ graph TD
 | `/voronoi resume [id\|codename]` | Resume a paused or failed investigation |
 | `/voronoi review [codename]` | Show Claim Ledger — lock, challenge, or accept findings |
 | `/voronoi continue <codename> [feedback]` | Start a new round with PI feedback |
+| `/voronoi extend <codename> [minutes]` | Grant extra stall budget while a run is still active |
 | `/voronoi paper <codename>` | Start manuscript production after at least one locked or replicated claim; otherwise show a Reviewer Defense Brief |
 | `/voronoi claims [codename]` | Show current claim state for an investigation |
 | Free text in groups | Auto-detect intent and dispatch |
