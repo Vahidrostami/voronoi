@@ -289,9 +289,11 @@ class TestLedgerFormatting:
 
     def test_format_for_review(self):
         ledger = ClaimLedger()
-        ledger.add_claim("x", PROVENANCE_RUN_EVIDENCE)
+        ledger.add_claim("x", PROVENANCE_RUN_EVIDENCE,
+                         supporting_findings=["bd-1"])
         text = ledger.format_for_review()
         assert "C1" in text
+        assert "Evidence refs: bd-1" in text
 
     def test_format_review_empty(self):
         ledger = ClaimLedger()

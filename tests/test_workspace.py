@@ -147,6 +147,36 @@ class TestWorkspaceManagement:
         assert wm.cleanup(1, "test") is True
         assert wm.list_active() == []
 
+    def test_cleanup_path_rejects_outside_active_dir(self, wm, tmp_path):
+        outside = tmp_path / "outside-workspace"
+        outside.mkdir()
+        diagnostics: list[str] = []
+
+        assert wm.cleanup_path(outside, diagnostics=diagnostics) is False
+
+        assert outside.exists()
+        assert any("Refusing cleanup" in message for message in diagnostics)
+
+    def test_cleanup_path_rejects_nested_inv_path(self, wm):
+        nested = wm.active_dir / "some-parent" / "inv-1-nested"
+        nested.mkdir(parents=True)
+        diagnostics: list[str] = []
+
+        assert wm.cleanup_path(nested, diagnostics=diagnostics) is False
+
+        assert nested.exists()
+        assert any("Refusing cleanup" in message for message in diagnostics)
+
+    def test_cleanup_path_rejects_direct_swarm_target(self, wm):
+        swarm = wm.active_dir / "inv-1-test-swarm"
+        swarm.mkdir(parents=True)
+        diagnostics: list[str] = []
+
+        assert wm.cleanup_path(swarm, diagnostics=diagnostics) is False
+
+        assert swarm.exists()
+        assert any("Refusing cleanup" in message for message in diagnostics)
+
     def test_cleanup_removes_swarm_without_workspace(self, wm):
         swarm = wm.active_dir / "inv-1-test-swarm"
         (swarm / "agent-worker").mkdir(parents=True)

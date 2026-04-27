@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 from voronoi.beads import has_beads_dir
+from voronoi.gateway.config import get_gateway_base_dir
 from voronoi.gateway.progress import (
     build_digest_whatsup, build_digest, phase_description, format_duration,
     assess_track_status, _criteria_summary, _experiment_summary,
@@ -32,8 +33,7 @@ def _run_bd(*args: str, cwd: str | None = None) -> tuple[int, str]:
 
 def _get_queue(project_dir: str):
     from voronoi.server.queue import InvestigationQueue
-    base = Path.home() / ".voronoi"
-    return InvestigationQueue(base / "queue.db")
+    return InvestigationQueue(get_gateway_base_dir() / "queue.db")
 
 
 def _get_active_workspaces(project_dir: str) -> list[tuple[str, str]]:
@@ -1312,7 +1312,7 @@ def _ops_agents() -> str:
 
 def _ops_disk() -> str:
     """Show disk usage per investigation workspace."""
-    active = Path.home() / ".voronoi" / "active"
+    active = get_gateway_base_dir() / "active"
     if not active.exists():
         return "No active workspaces found."
     try:
@@ -1327,7 +1327,7 @@ def _ops_disk() -> str:
 
 def _ops_logs() -> str:
     """Tail the most recent agent.log."""
-    active = Path.home() / ".voronoi" / "active"
+    active = get_gateway_base_dir() / "active"
     if not active.exists():
         return "No active workspaces found."
     logs = sorted(active.glob("*/.swarm/agent.log"), key=lambda p: p.stat().st_mtime, reverse=True)

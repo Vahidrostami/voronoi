@@ -794,15 +794,38 @@ def _discover_artifacts(
     from voronoi.utils import extract_field
     for f in findings or []:
         df = extract_field(f.get("notes", ""), "DATA_FILE")
-        if df and df not in seen:
-            p = workspace / df
-            if p.exists() and p.is_file():
-                seen.add(df)
-                out.append(_make_artifact(
-                    p, df, "data",
-                    description=f"data for {f.get('id', '?')}",
-                ))
+        if not df:
+            continue
+        resolved = _resolve_workspace_artifact(workspace, df)
+        if resolved is None:
+            continue
+        p, rel = resolved
+        if rel not in seen:
+            seen.add(rel)
+            out.append(_make_artifact(
+                p, rel, "data",
+                description=f"data for {f.get('id', '?')}",
+            ))
     return out
+
+
+def _resolve_workspace_artifact(workspace: Path, raw_path: str) -> tuple[Path, str] | None:
+    """Resolve a DATA_FILE reference and return a workspace-relative path."""
+    raw = str(raw_path or "").strip()
+    if not raw:
+        return None
+    workspace_root = workspace.resolve()
+    candidate = Path(raw)
+    full = candidate.resolve() if candidate.is_absolute() else (workspace_root / candidate).resolve()
+    try:
+        rel = full.relative_to(workspace_root).as_posix()
+    except ValueError:
+        logger.debug("Ignoring DATA_FILE outside workspace: %s", raw)
+        return None
+    if not full.is_file():
+        logger.debug("Ignoring DATA_FILE that is not a file: %s", raw)
+        return None
+    return full, rel
 
 
 def _make_artifact(path: Path, rel: str, kind: str, *,

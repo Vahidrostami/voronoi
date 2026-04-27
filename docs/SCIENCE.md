@@ -909,6 +909,10 @@ Locked claims' supporting artifacts become immutable in subsequent runs. The dis
 - Immutable artifact paths
 - PI feedback
 
+### Negative Result Review
+
+Negative or falsifying outcomes are recorded as ordinary `run_evidence` claims rather than a separate ledger schema. `record_negative_result()` creates an idempotent review claim with `model_basis="negative_result_review"`, source claim IDs in `supporting_findings`, and a concise reason in `effect_summary`. The gateway records lockable negative-result reviews only for retired/falsified source claims. Challenged-only claims remain non-durable review context until the PI resolves or retires them. The PI can then lock that review claim with `/voronoi lock-negative <codename> <claim-id>`, making the negative result durable without locking the retired source claims themselves.
+
 ---
 
 ## 18. Scientific Interpretation Layer
@@ -992,6 +996,10 @@ def generate_continuation_proposals(ledger: ClaimLedger, tribunal_results: list[
 
 Proposals are ranked by information gain and saved to `.swarm/continuation-proposals.json` for PI review during `/deliberate` or `/review`.
 
+#### 18.5 Negative Result Recording
+
+`record_negative_result(ledger, summary_sentence, codename="", primary_claim_ids=None, reason_summary="", source_cycle=1)` records a negative-result review as a reversible Claim Ledger entry. It does not dispatch agents or change convergence; it stores source claim IDs in `supporting_findings`. Gateway-created reviews are lockable only when those source claims are retired/falsified; challenged-only claims should be resolved or retired before being turned into durable negative evidence.
+
 ### Evaluator Scoring: CCSAN
 
 The evaluator formula gains a fifth dimension **N (Non-triviality)**:
@@ -1027,7 +1035,7 @@ The **Run Manifest** (`.swarm/run-manifest.json`) is a consolidated, machine-rea
 | `primary_claims` | Claim Ledger (preferred) → `.swarm/claim-evidence.json` (fallback) |
 | `experiments` | Beads `FINDING` tasks |
 | `pending_objections` | `ClaimLedger.objections` (pending/investigating/surfaced) |
-| `artifacts` | Filesystem scan + finding `DATA_FILE` notes |
+| `artifacts` | Filesystem scan + finding `DATA_FILE` notes, normalized to workspace-relative paths |
 | `caveats` | Derived: convergence blockers + `ROBUST=no` + non-APPROVED stat review |
 | `answer` | Derived: strongest-status claim (`replicated > locked > asserted > provisional`) |
 

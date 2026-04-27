@@ -28,7 +28,7 @@ voronoi
 │   └── clean                  # Remove demo artifacts
 │       └── --all              # Remove the entire demo directory
 └── server
-    ├── init                   # Initialize ~/.voronoi/
+    ├── init                   # Initialize server base directory
     ├── start                  # Start dispatcher + Telegram bridge
     ├── status                 # Show server status
     ├── prune                  # Clean stale investigations
@@ -136,33 +136,39 @@ Removes demo artifacts from the current directory.
 
 ## 6. `voronoi server`
 
+All server subcommands accept `--base-dir <path>`. When omitted, the server uses `VORONOI_BASE_DIR` if set, otherwise `~/.voronoi`.
+
 ### `voronoi server init`
 
-1. Creates `~/.voronoi/` directory
+1. Creates the server base directory (`~/.voronoi/` by default)
 2. Creates `config.json` with defaults
-3. Copies `.env.example` to `~/.voronoi/.env`
+3. Copies `.env.example` to the base directory
 4. Creates `objects/`, `active/`, and `tmp/` directories
 
 Beads is **not** initialized at the server level — each investigation workspace gets its own `.beads/` directory when provisioned (see §5 Workspace in SERVER.md).
 
 ### `voronoi server start`
 
-1. Loads config from `~/.voronoi/config.json`
+1. Loads config from `<base-dir>/config.json`
 2. Loads `.env` for bot token
-3. Exports `TMPDIR`, `TMP`, and `TEMP` to `~/.voronoi/tmp`
+3. Exports `TMPDIR`, `TMP`, and `TEMP` to `<base-dir>/tmp`
 4. Starts Telegram bridge (`telegram-bridge.py`) if token present
 5. Starts dispatcher loop (10s poll interval)
 
-By default this runs in the foreground. Use `voronoi server start --daemon` on remote hosts or SSH sessions to detach the bridge and write logs to `~/.voronoi/logs/telegram-bridge.log`.
+By default this runs in the foreground. Use `voronoi server start --daemon` on remote hosts or SSH sessions to detach the bridge and write logs to `<base-dir>/logs/telegram-bridge.log` (default `~/.voronoi/logs/telegram-bridge.log`).
 
 The bridge now auto-restarts after unexpected transient polling failures with exponential backoff. Fatal configuration errors such as invalid bot tokens still fail fast.
+
+### Telegram Review Commands
+
+When `voronoi server start` runs the Telegram bridge, the `/voronoi` command surface includes iterative-science review commands: `/voronoi review [codename]`, `/voronoi review-negative <codename>`, `/voronoi lock-negative <codename> <claim-id>`, `/voronoi deliberate [codename]`, and `/voronoi continue <codename> [feedback]`. `review-negative` is PI-driven: it records a lockable negative-result review claim only after the ledger already contains retired/falsified claims, then points the PI to lock, deliberate, or continue actions. Challenged-only claims must be resolved or retired before they can become durable negative evidence.
 
 ### `voronoi server status`
 
 Shows:
 - Running investigations (count, names)
 - Queued investigations
-- Disk usage in `~/.voronoi/`
+- Disk usage in the server base directory
 - tmux sessions
 
 ### `voronoi server prune`
@@ -177,7 +183,7 @@ Cleans up:
 
 ### `voronoi server config`
 
-View and edit `~/.voronoi/config.json`.
+View and edit `<base-dir>/config.json`.
 
 ### `voronoi server extend-timeout`
 
@@ -199,8 +205,10 @@ voronoi server extend-timeout coupled-decisions 72
 
 You can also write the file manually:
 ```bash
-echo 72 > ~/.voronoi/active/<workspace-name>/.swarm/timeout_hours
+echo 72 > <base-dir>/active/<workspace-name>/.swarm/timeout_hours
 ```
+
+The default `<base-dir>` is `~/.voronoi`.
 
 ---
 

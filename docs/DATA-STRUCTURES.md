@@ -193,7 +193,7 @@ class FixSpec:
 ```python
 @dataclass
 class DispatcherConfig:
-    base_dir: Path              # ~/.voronoi
+    base_dir: Path              # ~/.voronoi unless overridden
     max_concurrent: int         # 2
     max_agents: int             # 4
     agent_command: str          # "copilot"
@@ -425,7 +425,7 @@ class Claim:
     statement: str                # Paper-level assertion
     provenance: str               # model_prior | retrieved_prior | run_evidence
     status: str                   # provisional | asserted | locked | challenged | replicated | retired
-    supporting_findings: list[str]  # Beads finding IDs
+    supporting_findings: list[str]  # Evidence refs: Beads finding IDs; source claim IDs for negative-result reviews
     source_cycle: int             # Which run produced this
     effect_summary: str | None    # e.g. "d=0.8, p=0.003"
     sample_summary: str | None    # e.g. "N=200 across 3 experiments"
@@ -477,7 +477,9 @@ class ClaimLedger:
     #          format_for_review, summary
 ```
 
-**Storage**: `~/.voronoi/ledgers/<lineage_id>/claim-ledger.json`
+`supporting_findings` stores evidence references, usually Beads finding IDs (`bd-*`). For claims with `model_basis="negative_result_review"`, it stores source Claim IDs (`C*`) for the claims the negative review summarizes. Gateway-created lockable negative reviews only use retired/falsified source claim IDs.
+
+**Storage**: `<base-dir>/ledgers/<lineage_id>/claim-ledger.json` (default `~/.voronoi/ledgers/...`)
 
 ### ConsistencyConflict (`science/_helpers.py`)
 
@@ -522,7 +524,7 @@ class AntiFabricationResult:
 
 ## 6. Database Schemas
 
-### Investigation Queue (`~/.voronoi/queue.db`)
+### Investigation Queue (`<base-dir>/queue.db`, default `~/.voronoi/queue.db`)
 
 ```sql
 CREATE TABLE investigations (
@@ -1060,7 +1062,7 @@ redacted prompt text, or a prompt-reconstruction recipe.
 
 ## 8. Configuration Files
 
-### `~/.voronoi/config.json`
+### `<base-dir>/config.json` (default `~/.voronoi/config.json`)
 
 ```json
 {

@@ -10,6 +10,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
+from voronoi.gateway.config import get_gateway_base_dir
 from voronoi.gateway.codename import codename_for_id
 from voronoi.gateway.progress import MODE_EMOJI, MODE_VERB
 from voronoi.science.claims import (
@@ -29,8 +30,7 @@ logger = logging.getLogger("voronoi.router")
 
 
 def _get_queue(project_dir: str) -> InvestigationQueue:
-    base = Path.home() / ".voronoi"
-    return InvestigationQueue(base / "queue.db")
+    return InvestigationQueue(get_gateway_base_dir() / "queue.db")
 
 
 def _enqueue(project_dir: str, question: str, mode: str,
@@ -119,7 +119,7 @@ def _queue_base_dir(q: InvestigationQueue) -> Path:
     db_path = getattr(q, "db_path", None)
     if isinstance(db_path, (str, Path)):
         return Path(db_path).parent
-    return Path.home() / ".voronoi"
+    return get_gateway_base_dir()
 
 
 def _fallback_claim_evidence_count(parent: Investigation) -> int:

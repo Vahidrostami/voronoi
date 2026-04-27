@@ -78,7 +78,7 @@ def _build_registry() -> None:
             "n": {"type": "integer", "description": "Sample size (positive)"},
             "stat_test": {"type": "string", "description": "Statistical test used"},
             "valence": {"type": "string", "description": "positive | negative | inconclusive"},
-            "data_file": {"type": "string", "description": "Path to raw data file"},
+            "data_file": {"type": "string", "description": "Workspace-relative path to raw data file; absolute paths and .. escapes are rejected"},
             "data_hash": {"type": "string", "description": "SHA-256 hash (computed if omitted)"},
             "p_value": {"type": "string", "description": "P-value (optional)"},
             "confidence": {"type": "number", "description": "Subjective confidence 0.0-1.0 (optional)"},

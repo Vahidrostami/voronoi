@@ -10,9 +10,10 @@ import json
 import re
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from voronoi.beads import has_beads_dir
+from voronoi.gateway.config import get_gateway_base_dir
 
 
 def _run_bd(*args: str, cwd: str | None = None) -> tuple[int, str]:
@@ -24,8 +25,7 @@ def _run_bd(*args: str, cwd: str | None = None) -> tuple[int, str]:
 
 def _get_queue(project_dir: str):
     from voronoi.server.queue import InvestigationQueue
-    base = Path.home() / ".voronoi"
-    return InvestigationQueue(base / "queue.db")
+    return InvestigationQueue(get_gateway_base_dir() / "queue.db")
 
 
 def _get_active_workspaces(project_dir: str) -> list[tuple[str, str]]:
@@ -80,7 +80,7 @@ def handle_resume_investigation(project_dir: str, identifier: str) -> str:
     """Resume a paused or failed investigation by ID or codename."""
     from voronoi.server.queue import InvestigationQueue
 
-    db_path = Path.home() / ".voronoi" / "queue.db"
+    db_path = get_gateway_base_dir() / "queue.db"
     if not db_path.exists():
         return "❌ No investigation queue found."
 
@@ -178,10 +178,7 @@ def handle_review_investigation(project_dir: str, identifier: str) -> str:
     if inv is None:
         return f"❌ Investigation *{identifier}* not found."
 
-    lineage_id = inv.lineage_id or inv.id
-    from voronoi.science.claims import load_ledger
-    base_dir = q.db_path.parent
-    ledger = load_ledger(lineage_id, base_dir=base_dir)
+    _, _, ledger = _load_ledger_for_investigation(q, inv)
 
     if not ledger.claims:
         return (
@@ -194,6 +191,119 @@ def handle_review_investigation(project_dir: str, identifier: str) -> str:
         f"Round {inv.cycle_number} | {inv.status}\n\n"
     )
     return header + ledger.format_for_review()
+
+
+def handle_review_negative(project_dir: str, identifier: str) -> str:
+    """Show and record a negative-result review for an investigation."""
+    identifier = (identifier or "").strip()
+    if not identifier:
+        return "Usage: `/voronoi review-negative <codename>`"
+
+    q = _get_queue(project_dir)
+    inv = _find_investigation(q, identifier)
+    if inv is None:
+        return f"❌ Investigation *{identifier}* not found."
+
+    from voronoi.science.claims import save_ledger
+    from voronoi.science.interpretation import record_negative_result
+
+    lineage_id, base_dir, ledger = _load_ledger_for_investigation(q, inv)
+    retired = ledger.get_retired()
+    challenged = ledger.get_challenged()
+    label = inv.codename or f"#{inv.id}"
+
+    if not retired:
+        if challenged:
+            challenged_ids = ", ".join(c.id for c in challenged)
+            return (
+                f"🧭 *{label}* — Negative Result Review\n\n"
+                f"Only challenged claim(s) are recorded: {challenged_ids}. "
+                "Challenged claims are unresolved review context, not durable "
+                "negative evidence. Resolve or retire/falsify the challenged "
+                f"claim(s) first, then run `/voronoi review-negative {label}` again.\n\n"
+                f"Useful next steps: `/voronoi deliberate {label}` or "
+                f"`/voronoi continue {label} challenge C<id>: <reason>`."
+            )
+        return (
+            f"🧭 *{label}* — Negative Result Review\n\n"
+            "No retired/falsified claims are recorded yet. Use "
+            f"`/voronoi review {label}` to inspect the Claim Ledger, or "
+            f"`/voronoi deliberate {label}` to decide whether a claim should "
+            "be challenged or retired before locking a negative result."
+        )
+
+    summary = _negative_result_summary(label, retired)
+    reason = _negative_result_reason(retired)
+    claim = record_negative_result(
+        ledger,
+        summary,
+        codename=label,
+        primary_claim_ids=[c.id for c in retired],
+        reason_summary=reason,
+        source_cycle=inv.cycle_number,
+    )
+    save_ledger(lineage_id, ledger, base_dir=base_dir)
+    return _format_negative_review_message(label, claim, reason, retired, challenged)
+
+
+def handle_lock_negative(project_dir: str, identifier: str, claim_id: str) -> str:
+    """Lock a recorded negative-result review claim."""
+    identifier = (identifier or "").strip()
+    claim_id = (claim_id or "").strip().upper()
+    if not identifier or not claim_id:
+        return "Usage: `/voronoi lock-negative <codename> <claim-id>`"
+
+    q = _get_queue(project_dir)
+    inv = _find_investigation(q, identifier)
+    if inv is None:
+        return f"❌ Investigation *{identifier}* not found."
+
+    from voronoi.science.claims import save_ledger
+    from voronoi.science.interpretation import NEGATIVE_RESULT_MODEL_BASIS
+
+    lineage_id, base_dir, ledger = _load_ledger_for_investigation(q, inv)
+    claim = ledger.get_claim(claim_id)
+    label = inv.codename or f"#{inv.id}"
+    if claim is None:
+        return f"❌ Claim `{claim_id}` not found for *{label}*."
+    if claim.model_basis != NEGATIVE_RESULT_MODEL_BASIS:
+        return (
+            f"❌ `{claim_id}` is not a recorded negative-result review claim.\n"
+            f"Run `/voronoi review-negative {label}` first, or use "
+            f"`/voronoi continue {label} lock {claim_id}` for ordinary claims."
+        )
+    if claim.status in ("locked", "replicated"):
+        return f"🔒 *{claim_id}* is already locked as a negative result."
+    if claim.status == "retired":
+        return f"❌ `{claim_id}` is retired and cannot be locked."
+    if claim.status == "challenged":
+        return f"❌ `{claim_id}` is challenged — resolve the objection before locking."
+    retired_sources, unresolved_sources = _negative_review_source_statuses(ledger, claim)
+    if unresolved_sources:
+        return (
+            f"❌ `{claim_id}` still references unresolved source claim(s): "
+            f"{', '.join(unresolved_sources)}. Retire/falsify those claims or "
+            f"regenerate the review with `/voronoi review-negative {label}` before locking."
+        )
+    if not retired_sources:
+        return (
+            f"❌ `{claim_id}` has no retired/falsified source claims, so it "
+            "cannot be locked as durable negative evidence. Resolve or retire "
+            f"the source claims first, then run `/voronoi review-negative {label}` again."
+        )
+
+    try:
+        if claim.status == "provisional":
+            ledger.assert_claim(claim_id)
+        ledger.lock_claim(claim_id)
+    except (KeyError, ValueError) as exc:
+        return f"❌ Could not lock `{claim_id}`: {exc}"
+
+    save_ledger(lineage_id, ledger, base_dir=base_dir)
+    return (
+        f"🔒 *{claim_id}* locked as a negative result for *{label}*.\n"
+        f"Next: `/voronoi deliberate {label}` or `/voronoi paper {label}`."
+    )
 
 
 def handle_continue_investigation(project_dir: str, identifier: str,
@@ -262,7 +372,7 @@ def handle_abort(project_dir: str) -> str:
         signal_dir = Path(ws_path) / ".swarm"
         signal_dir.mkdir(parents=True, exist_ok=True)
         (signal_dir / "abort-signal").write_text("abort\n")
-    global_signal = Path.home() / ".voronoi" / ".swarm"
+    global_signal = get_gateway_base_dir() / ".swarm"
     global_signal.mkdir(parents=True, exist_ok=True)
     (global_signal / "abort-signal").write_text("abort\n")
 
@@ -419,6 +529,74 @@ def _find_investigation(q, identifier: str):
         if inv.codename and inv.codename.lower() == identifier.lower():
             return inv
     return None
+
+
+def _load_ledger_for_investigation(q, inv) -> tuple[int, Path, Any]:
+    """Return ``(lineage_id, base_dir, ledger)`` for an investigation."""
+    from voronoi.science.claims import load_ledger
+
+    lineage_id = inv.lineage_id or inv.id
+    base_dir = q.db_path.parent
+    return lineage_id, base_dir, load_ledger(lineage_id, base_dir=base_dir)
+
+
+def _negative_result_summary(label: str, retired: list) -> str:
+    retired_ids = ", ".join(c.id for c in retired)
+    return f"{label} produced a negative result by retiring/falsifying {retired_ids}."
+
+
+def _negative_result_reason(retired: list) -> str:
+    return "retired/falsified: " + ", ".join(c.id for c in retired)
+
+
+def _negative_review_source_statuses(
+    ledger: Any, claim: Any,
+) -> tuple[list[str], list[str]]:
+    retired_sources: list[str] = []
+    unresolved_sources: list[str] = []
+    for ref in claim.supporting_findings:
+        source = ledger.get_claim(ref)
+        if source is None or source.id == claim.id:
+            unresolved_sources.append(ref)
+        elif source.status == "retired":
+            retired_sources.append(source.id)
+        else:
+            unresolved_sources.append(f"{source.id} ({source.status})")
+    return retired_sources, unresolved_sources
+
+
+def _format_negative_sources(title: str, claims: list) -> list[str]:
+    if not claims:
+        return []
+    lines = [f"*{title}*"]
+    for claim in claims:
+        ev = f" ({claim.effect_summary})" if claim.effect_summary else ""
+        lines.append(f"• {claim.id}: {claim.statement}{ev}")
+    lines.append("")
+    return lines
+
+
+def _format_negative_review_message(label: str, claim: Any, reason: str,
+                                    retired: list, challenged: list) -> str:
+    lines = [
+        f"🧭 *{label}* — Negative Result Review",
+        "",
+        f"Recorded review claim: *{claim.id}*: {claim.statement}",
+    ]
+    if reason:
+        lines.append(f"Reason: {reason}")
+    lines.append("")
+    lines.extend(_format_negative_sources("Retired / falsified", retired))
+    lines.extend(_format_negative_sources(
+        "Not lockable yet — still under challenge", challenged,
+    ))
+    lines.extend([
+        "*Actions*",
+        f"• Lock as negative result: `/voronoi lock-negative {label} {claim.id}`",
+        f"• Deliberate next theory: `/voronoi deliberate {label}`",
+        f"• Continue with feedback: `/voronoi continue {label} challenge C<id>: <reason>`",
+    ])
+    return "\n".join(lines)
 
 
 def _process_feedback(lineage_id: int, feedback: str, base_dir: Path) -> None:

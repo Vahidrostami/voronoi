@@ -153,11 +153,15 @@ Central dispatch point for all user actions. Every Telegram command and programm
 | Function | Effect |
 |----------|--------|
 | `handle_review_investigation(project_dir, id_or_codename) -> str` | Show Claim Ledger in review format |
+| `handle_review_negative(project_dir, id_or_codename) -> str` | Record and show a lockable Negative Result Review for retired/falsified claims |
+| `handle_lock_negative(project_dir, id_or_codename, claim_id) -> str` | Lock a generated negative-result review claim |
 | `handle_continue_investigation(project_dir, id_or_codename, feedback) -> str` | Create continuation run with PI feedback |
 | `handle_complete_investigation(project_dir, id_or_codename) -> str` | Accept and close a reviewed investigation |
 | `handle_claims(project_dir, id_or_codename) -> str` | Show current claim ledger state |
 
-These handlers interact with the Claim Ledger (`~/.voronoi/ledgers/<lineage_id>/claim-ledger.json`). The `continue` handler parses natural-language feedback for `lock C1`, `challenge C2: reason` patterns and updates the ledger before creating the continuation investigation. PI feedback is stored in the `pi_feedback` field on `Investigation` — it is NOT appended to the question text. The dispatcher reads `pi_feedback` to build the warm-start prompt context.
+These handlers interact with the Claim Ledger (`<base-dir>/ledgers/<lineage_id>/claim-ledger.json`, default `~/.voronoi/ledgers/...`). The gateway resolves `<base-dir>` from `VORONOI_BASE_DIR` with fallback to `~/.voronoi`, matching `voronoi server --base-dir` once the CLI exports the environment variable to the bridge. The same base directory is used for `queue.db`, `active/`, global abort state, and federated knowledge. The `continue` handler parses natural-language feedback for `lock C1`, `challenge C2: reason` patterns and updates the ledger before creating the continuation investigation. PI feedback is stored in the `pi_feedback` field on `Investigation` — it is NOT appended to the question text. The dispatcher reads `pi_feedback` to build the warm-start prompt context.
+
+`review-negative` is PI-driven and never launches agents. It creates an idempotent `run_evidence` review claim only when the ledger already contains retired/falsified source claims, then returns three explicit actions: `lock-negative` for durability, `deliberate` for successor-theory discussion, and `continue` with concrete feedback for a new round. Challenged-only claims are not durable negative evidence: the handler asks the PI to resolve or retire them before a lockable negative-result review can be recorded. `lock-negative` only locks generated negative-result review claims whose source claim references are retired, not arbitrary ledger claims.
 
 **No-info guard (INV-48):** `handle_continue_investigation` refuses to enqueue a new round when the prior run already converged (`.swarm/convergence.json` has `gate_passed=true`), a manuscript exists, feedback is empty, and the ledger has no pending objections. Partial-review runs are not blocked by this guard: `.swarm/failure-diagnosis.json`, `.swarm/deliverable-partial.md`, or unconverged `convergence.json` are treated as continuation signal. The refusal surfaces `/voronoi deliberate`, explicit `challenge Cn: <reason>`, scope-change feedback, or `/voronoi complete` as the legitimate next moves. This prevents the zero-information rerun that would otherwise just replay the Scribe/Evaluator finisher chain on identical data.
 
@@ -207,8 +211,8 @@ Duplicate paper-track runs for the same parent are blocked with a user-visible w
 ### Loading Hierarchy (lowest to highest priority)
 
 1. `.env` in current directory
-2. `~/.voronoi/.env`
-3. `.swarm-config.json` in current dir / repo root / `~/.voronoi/`
+2. `<base-dir>/.env` (default `~/.voronoi/.env`; `<base-dir>` comes from `VORONOI_BASE_DIR`)
+3. `.swarm-config.json` in current dir / repo root / `<base-dir>/`
 4. Environment variables (highest priority — always win)
 
 ### Config Keys
@@ -347,7 +351,7 @@ class FederatedKnowledge:
     def format_search_response(self, query: str, max_results: int = 5) -> str: ...
 ```
 
-**Cross-investigation search**: Persistent SQLite index at `~/.voronoi/knowledge.db`. The dispatcher syncs findings from every completed investigation via `sync_findings()`. `/recall` first searches the active workspace, then appends non-duplicate cross-investigation findings from the federated index. Search queries return findings with `codename:task_id` composite IDs. The index prefers FTS5 when available and falls back to `LIKE` search on SQLite builds without FTS5. This enables:
+**Cross-investigation search**: Persistent SQLite index at `<base-dir>/knowledge.db` (default `~/.voronoi/knowledge.db`). The dispatcher syncs findings from every completed investigation via `sync_findings()`. `/recall` first searches the active workspace, then appends non-duplicate cross-investigation findings from the federated index. Search queries return findings with `codename:task_id` composite IDs. The index prefers FTS5 when available and falls back to `LIKE` search on SQLite builds without FTS5. This enables:
 - Detecting redundant work across investigations
 - Surfacing prior findings when starting new investigations
 - Building a cumulative knowledge base that grows with each completed study
@@ -872,7 +876,7 @@ Read-only server diagnostics exposed via `/voronoi ops <command>`. Gives operato
 |------------|------------|-------------|
 | `tmux` | `tmux list-sessions` | List active tmux sessions |
 | `agents` | `ps aux \| grep -E 'copilot\|claude'` | Show agent-related processes |
-| `disk` | `du -sh ~/.voronoi/active/*` | Disk usage per investigation workspace |
+| `disk` | `du -sh <base-dir>/active/*` | Disk usage per investigation workspace |
 | `logs` | `tail -30 <latest agent.log>` | Last 30 lines of most recent agent log |
 | *(no args)* | — | Show available ops subcommands |
 

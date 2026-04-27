@@ -35,6 +35,8 @@ from voronoi.gateway.router import (
     handle_complete,
     handle_complete_investigation,
     handle_review_investigation,
+    handle_review_negative,
+    handle_lock_negative,
     handle_continue_investigation,
     handle_claims,
     handle_dead_ends,
@@ -323,21 +325,22 @@ class TestHandlers:
             result = handle_pivot(str(tmp_path), "new direction")
         assert "Pivot recorded" in result
 
-    def test_handle_abort(self, tmp_path):
+    def test_handle_abort(self, tmp_path, monkeypatch):
+        base_dir = tmp_path / "server-base"
+        monkeypatch.setenv("VORONOI_BASE_DIR", str(base_dir))
         mock_q = MagicMock()
         mock_q.get_queued.return_value = []
         with patch("voronoi.gateway.handlers_mutate._get_queue", return_value=mock_q), \
              patch("voronoi.gateway.handlers_mutate._get_active_workspaces", return_value=[]):
             result = handle_abort(str(tmp_path))
         assert "Abort requested" in result
-        # Should write abort signal to global fallback
-        assert (Path.home() / ".voronoi" / ".swarm" / "abort-signal").exists()
-        # Clean up
-        (Path.home() / ".voronoi" / ".swarm" / "abort-signal").unlink(missing_ok=True)
+        assert (base_dir / ".swarm" / "abort-signal").exists()
 
-    def test_handle_abort_cancels_queued(self, tmp_path):
+    def test_handle_abort_cancels_queued(self, tmp_path, monkeypatch):
         """Abort should cancel queued investigations via the queue."""
         from voronoi.server.queue import InvestigationQueue, Investigation
+        base_dir = tmp_path / "server-base"
+        monkeypatch.setenv("VORONOI_BASE_DIR", str(base_dir))
         q = InvestigationQueue(tmp_path / "test-queue.db")
         inv = Investigation(chat_id="test", question="test q", slug="abort-test",
                             mode="discover", rigor="adaptive")
@@ -347,8 +350,37 @@ class TestHandlers:
             result = handle_abort(str(tmp_path))
         assert "Abort requested" in result
         assert "Cancelled 1" in result
-        # Clean up global abort signal
-        (Path.home() / ".voronoi" / ".swarm" / "abort-signal").unlink(missing_ok=True)
+        assert (base_dir / ".swarm" / "abort-signal").exists()
+
+    def test_gateway_workflow_uses_voronoi_base_dir_env(self, tmp_path, monkeypatch):
+        from voronoi.server.queue import InvestigationQueue
+
+        base_dir = tmp_path / "custom-server"
+        monkeypatch.setenv("VORONOI_BASE_DIR", str(base_dir))
+
+        result = handle_discover(str(tmp_path / "project"), "Why does latency rise?", "chat1")
+
+        assert "is live" in result
+        assert (base_dir / "queue.db").exists()
+        queue = InvestigationQueue(base_dir / "queue.db")
+        queued = queue.get_queued()
+        assert len(queued) == 1
+        assert queued[0].question == "Why does latency rise?"
+
+    def test_router_running_check_uses_voronoi_base_dir_env(self, tmp_path, monkeypatch):
+        from voronoi.server.queue import Investigation, InvestigationQueue
+
+        base_dir = tmp_path / "custom-server"
+        monkeypatch.setenv("VORONOI_BASE_DIR", str(base_dir))
+        queue = InvestigationQueue(base_dir / "queue.db")
+        inv_id = queue.enqueue(Investigation(
+            chat_id="chat1", question="Q", slug="q", mode="discover",
+        ))
+        queue.start(inv_id, str(tmp_path / "workspace"))
+
+        router = CommandRouter(str(tmp_path / "project"))
+
+        assert router._has_running_investigations() is True
 
 
 # ---------------------------------------------------------------------------
@@ -1239,6 +1271,107 @@ class TestReviewContinueClaims:
             result = handle_review_investigation(str(tmp_path), "Nonexistent")
         assert "not found" in result
 
+    def test_review_negative_records_negative_result_claim(self, tmp_path):
+        from voronoi.science.claims import load_ledger, save_ledger
+
+        q, inv_id = self._setup_investigation(tmp_path)
+        ledger = load_ledger(inv_id, base_dir=tmp_path)
+        ledger.retire_claim("C2")
+        ledger.challenge_claim("C1", "replication failed", raised_by="PI")
+        save_ledger(inv_id, ledger, base_dir=tmp_path)
+
+        with patch("voronoi.gateway.handlers_mutate._get_queue", return_value=q):
+            result = handle_review_negative(str(tmp_path), "Synapse")
+
+        updated = load_ledger(inv_id, base_dir=tmp_path)
+        negative = updated.get_claim("C3")
+        assert negative is not None
+        assert "Negative Result Review" in result
+        assert "lock-negative Synapse C3" in result
+        assert "deliberate Synapse" in result
+        assert "continue Synapse" in result
+        assert negative.model_basis == "negative_result_review"
+        assert negative.supporting_findings == ["C2"]
+        assert "Not lockable yet" in result
+
+    def test_review_negative_challenged_only_does_not_record(self, tmp_path):
+        from voronoi.science.claims import load_ledger, save_ledger
+
+        q, inv_id = self._setup_investigation(tmp_path)
+        ledger = load_ledger(inv_id, base_dir=tmp_path)
+        ledger.challenge_claim("C1", "replication failed", raised_by="PI")
+        save_ledger(inv_id, ledger, base_dir=tmp_path)
+
+        with patch("voronoi.gateway.handlers_mutate._get_queue", return_value=q):
+            result = handle_review_negative(str(tmp_path), "Synapse")
+
+        updated = load_ledger(inv_id, base_dir=tmp_path)
+        assert "Only challenged claim" in result
+        assert "Resolve or retire" in result
+        assert len(updated.claims) == 2
+
+    def test_review_negative_without_negative_sources_does_not_record(self, tmp_path):
+        from voronoi.science.claims import load_ledger
+
+        q, inv_id = self._setup_investigation(tmp_path)
+        with patch("voronoi.gateway.handlers_mutate._get_queue", return_value=q):
+            result = handle_review_negative(str(tmp_path), "Synapse")
+
+        ledger = load_ledger(inv_id, base_dir=tmp_path)
+        assert "No retired/falsified claims" in result
+        assert len(ledger.claims) == 2
+
+    def test_lock_negative_locks_recorded_negative_result(self, tmp_path):
+        from voronoi.science.claims import load_ledger, save_ledger
+
+        q, inv_id = self._setup_investigation(tmp_path)
+        ledger = load_ledger(inv_id, base_dir=tmp_path)
+        ledger.retire_claim("C2")
+        save_ledger(inv_id, ledger, base_dir=tmp_path)
+
+        with patch("voronoi.gateway.handlers_mutate._get_queue", return_value=q):
+            handle_review_negative(str(tmp_path), "Synapse")
+            result = handle_lock_negative(str(tmp_path), "Synapse", "C3")
+
+        updated = load_ledger(inv_id, base_dir=tmp_path)
+        assert "locked as a negative result" in result
+        assert updated.get_claim("C3").status == "locked"
+
+    def test_lock_negative_rejects_ordinary_claim(self, tmp_path):
+        from voronoi.science.claims import load_ledger
+
+        q, inv_id = self._setup_investigation(tmp_path)
+        with patch("voronoi.gateway.handlers_mutate._get_queue", return_value=q):
+            result = handle_lock_negative(str(tmp_path), "Synapse", "C1")
+
+        ledger = load_ledger(inv_id, base_dir=tmp_path)
+        assert "not a recorded negative-result" in result
+        assert ledger.get_claim("C1").status == "asserted"
+
+    def test_lock_negative_rejects_review_with_unresolved_source_claim(self, tmp_path):
+        from voronoi.science.claims import load_ledger, save_ledger
+        from voronoi.science.interpretation import record_negative_result
+
+        q, inv_id = self._setup_investigation(tmp_path)
+        ledger = load_ledger(inv_id, base_dir=tmp_path)
+        ledger.challenge_claim("C1", "replication failed", raised_by="PI")
+        record_negative_result(
+            ledger,
+            "Synapse produced a negative result by unresolved challenge.",
+            codename="Synapse",
+            primary_claim_ids=["C1"],
+            reason_summary="challenged: C1",
+            source_cycle=1,
+        )
+        save_ledger(inv_id, ledger, base_dir=tmp_path)
+
+        with patch("voronoi.gateway.handlers_mutate._get_queue", return_value=q):
+            result = handle_lock_negative(str(tmp_path), "Synapse", "C3")
+
+        updated = load_ledger(inv_id, base_dir=tmp_path)
+        assert "unresolved source claim" in result
+        assert updated.get_claim("C3").status == "provisional"
+
     def test_claims_shows_ledger(self, tmp_path):
         q, inv_id = self._setup_investigation(tmp_path)
         with patch("voronoi.gateway.handlers_query._get_queue", return_value=q):
@@ -1334,6 +1467,22 @@ class TestReviewContinueClaims:
             text, _ = router.route("review", ["Synapse"], "c1")
         assert text == "review result"
         mock.assert_called_once_with(str(tmp_path), "Synapse")
+
+    def test_router_dispatches_review_negative(self, tmp_path):
+        router = CommandRouter(str(tmp_path))
+        with patch("voronoi.gateway.router.handle_review_negative",
+                    return_value="negative result") as mock:
+            text, _ = router.route("review-negative", ["Synapse"], "c1")
+        assert text == "negative result"
+        mock.assert_called_once_with(str(tmp_path), "Synapse")
+
+    def test_router_dispatches_lock_negative(self, tmp_path):
+        router = CommandRouter(str(tmp_path))
+        with patch("voronoi.gateway.router.handle_lock_negative",
+                    return_value="locked") as mock:
+            text, _ = router.route("lock-negative", ["Synapse", "C3"], "c1")
+        assert text == "locked"
+        mock.assert_called_once_with(str(tmp_path), "Synapse", "C3")
 
     def test_router_dispatches_continue(self, tmp_path):
         router = CommandRouter(str(tmp_path))
@@ -1483,12 +1632,11 @@ class TestOpsHandler:
         # grep line should be filtered out
         assert "grep" not in result
 
-    def test_ops_disk(self, tmp_path):
-        active = Path.home() / ".voronoi" / "active"
-        with patch("voronoi.gateway.handlers_query.subprocess.run") as mock_run, \
-             patch("voronoi.gateway.handlers_query.Path.home") as mock_home:
-            mock_home.return_value = tmp_path
-            active_dir = tmp_path / ".voronoi" / "active"
+    def test_ops_disk(self, tmp_path, monkeypatch):
+        base_dir = tmp_path / "server-base"
+        monkeypatch.setenv("VORONOI_BASE_DIR", str(base_dir))
+        with patch("voronoi.gateway.handlers_query.subprocess.run") as mock_run:
+            active_dir = base_dir / "active"
             active_dir.mkdir(parents=True)
             (active_dir / "inv-1").mkdir()
             mock_run.return_value = MagicMock(
@@ -1497,18 +1645,18 @@ class TestOpsHandler:
             result = handle_ops(str(tmp_path), "disk")
         assert "ops disk" in result
 
-    def test_ops_logs(self, tmp_path):
-        with patch("voronoi.gateway.handlers_query.Path.home") as mock_home:
-            mock_home.return_value = tmp_path
-            active_dir = tmp_path / ".voronoi" / "active"
-            swarm_dir = active_dir / "inv-1" / ".swarm"
-            swarm_dir.mkdir(parents=True)
-            (swarm_dir / "agent.log").write_text("line1\nline2\nline3\n")
-            with patch("voronoi.gateway.handlers_query.subprocess.run") as mock_run:
-                mock_run.return_value = MagicMock(
-                    returncode=0, stdout="line1\nline2\nline3", stderr="",
-                )
-                result = handle_ops(str(tmp_path), "logs")
+    def test_ops_logs(self, tmp_path, monkeypatch):
+        base_dir = tmp_path / "server-base"
+        monkeypatch.setenv("VORONOI_BASE_DIR", str(base_dir))
+        active_dir = base_dir / "active"
+        swarm_dir = active_dir / "inv-1" / ".swarm"
+        swarm_dir.mkdir(parents=True)
+        (swarm_dir / "agent.log").write_text("line1\nline2\nline3\n")
+        with patch("voronoi.gateway.handlers_query.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0, stdout="line1\nline2\nline3", stderr="",
+            )
+            result = handle_ops(str(tmp_path), "logs")
         assert "inv-1" in result
         assert "ops logs" in result
 

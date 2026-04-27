@@ -150,6 +150,12 @@ class TestFileValidation:
         with pytest.raises(ValidationError, match="path escapes workspace"):
             require_file_exists("../outside.txt", str(workspace))
 
+    def test_absolute_in_workspace_path_rejected(self, tmp_path):
+        f = tmp_path / "data.csv"
+        f.write_text("col1,col2\n1,2\n")
+        with pytest.raises(ValidationError, match="path must be relative"):
+            require_file_exists(str(f), str(tmp_path))
+
 
 class TestRequireNonEmpty:
     def test_valid(self):
@@ -299,6 +305,21 @@ class TestRecordFinding:
                     ci_95=[0.3, 0.7], n=100,
                     stat_test="t-test", valence="positive",
                     data_file="data.csv", robust="maybe",
+                )
+
+    def test_absolute_data_file_rejected(self, tmp_path):
+        from voronoi.mcp.tools_beads import record_finding
+
+        data_file = tmp_path / "data.csv"
+        data_file.write_text("x,y\n1,2\n")
+
+        with patch.dict(os.environ, {"VORONOI_WORKSPACE": str(tmp_path)}):
+            with pytest.raises(ValidationError, match="path must be relative"):
+                record_finding(
+                    task_id="bd-42", effect_size="d=0.5",
+                    ci_95=[0.3, 0.7], n=100,
+                    stat_test="t-test", valence="positive",
+                    data_file=str(data_file),
                 )
 
 
@@ -487,6 +508,15 @@ class TestCreateTaskGuards:
                 produces="output/bd-1/pilot.json",
             )
             assert result["status"] == "created"
+
+    def test_requires_rejects_absolute_in_workspace_path(self, tmp_path):
+        from voronoi.mcp.tools_beads import create_task
+
+        req = tmp_path / "input.csv"
+        req.write_text("x\n1\n")
+        with patch.dict(os.environ, {"VORONOI_WORKSPACE": str(tmp_path)}):
+            with pytest.raises(ValidationError, match="path must be relative"):
+                create_task("FINDING: x is greater than y", requires=str(req))
 
     def test_create_task_schema_exposes_created_by(self):
         from voronoi.mcp.server import TOOLS, _build_registry
@@ -1024,6 +1054,9 @@ class TestMCPServer:
         assert "required" in finding["inputSchema"]
         assert "task_id" in finding["inputSchema"]["required"]
         assert "effect_size" in finding["inputSchema"]["required"]
+        data_file_description = finding["inputSchema"]["properties"]["data_file"]["description"]
+        assert "Workspace-relative" in data_file_description
+        assert "absolute paths" in data_file_description
         # Optional fields should not be in required
         assert "data_hash" not in finding["inputSchema"]["required"]
 

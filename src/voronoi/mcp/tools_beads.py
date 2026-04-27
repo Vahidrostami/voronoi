@@ -12,7 +12,7 @@ import os
 import re
 import tempfile
 from contextlib import contextmanager
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from voronoi.beads import run_bd, run_bd_json
@@ -174,7 +174,7 @@ def _workspace_relative_path(path: str, workspace: str, field: str) -> Path:
     """Resolve a workspace-relative path and reject absolute/escaping paths."""
     path = require_non_empty(path, field)
     candidate = Path(path)
-    if candidate.is_absolute():
+    if candidate.is_absolute() or PureWindowsPath(path).is_absolute():
         raise ValidationError(f"{field}: path must be relative to workspace: {path}")
     ws = Path(workspace).resolve()
     full = (ws / candidate).resolve()

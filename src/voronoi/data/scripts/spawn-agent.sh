@@ -83,6 +83,34 @@ fi
 
 WORKTREE_PATH="${SWARM_DIR}/${BRANCH_NAME}"
 
+resolve_workspace_artifact() {
+    local root="$1"
+    local artifact="$2"
+    local field="$3"
+    python3 - "$root" "$artifact" "$field" <<'PY'
+from pathlib import Path, PureWindowsPath
+import sys
+
+root = Path(sys.argv[1]).resolve()
+raw = sys.argv[2].strip()
+field = sys.argv[3]
+candidate = Path(raw)
+if not raw:
+    print(f"{field} path is empty", file=sys.stderr)
+    sys.exit(2)
+if candidate.is_absolute() or PureWindowsPath(raw).is_absolute():
+    print(f"{field} path must be workspace-relative: {raw}", file=sys.stderr)
+    sys.exit(2)
+resolved = (root / candidate).resolve()
+try:
+    resolved.relative_to(root)
+except ValueError:
+    print(f"{field} path escapes workspace: {raw}", file=sys.stderr)
+    sys.exit(2)
+print(resolved)
+PY
+}
+
 resolve_default_branch() {
     local branch
     branch=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##') || true
@@ -196,7 +224,11 @@ if [ -n "$REQUIRES_LIST" ]; then
     MISSING_REQUIRES=""
     while IFS= read -r req; do
         [ -z "$req" ] && continue
-        if [ ! -e "${PROJECT_DIR}/${req}" ]; then
+        if ! REQ_FULL=$(resolve_workspace_artifact "$PROJECT_DIR" "$req" "REQUIRES"); then
+            MISSING_REQUIRES="${MISSING_REQUIRES}  - ${req} (invalid path)\n"
+            continue
+        fi
+        if [ ! -e "$REQ_FULL" ]; then
             MISSING_REQUIRES="${MISSING_REQUIRES}  - ${req}\n"
         fi
     done <<< "$REQUIRES_LIST"
@@ -222,17 +254,21 @@ for line in notes.split('\n'):
 " 2>/dev/null || true)
 
 if [ -n "$GATE_PATH" ]; then
-    GATE_FULL="${PROJECT_DIR}/${GATE_PATH}"
+    if ! GATE_FULL=$(resolve_workspace_artifact "$PROJECT_DIR" "$GATE_PATH" "GATE"); then
+        echo "✗ Pre-dispatch FAILED: Invalid GATE path: $GATE_PATH"
+        timeout 10s bd update "$TASK_ID" --notes "BLOCKED: GATE artifact path invalid — dispatch deferred" 2>/dev/null || true
+        exit 1
+    fi
     if [ ! -f "$GATE_FULL" ]; then
         echo "✗ Pre-dispatch FAILED: GATE file missing: $GATE_PATH"
         timeout 10s bd update "$TASK_ID" --notes "BLOCKED: GATE artifact missing — dispatch deferred" 2>/dev/null || true
         exit 1
     fi
     # Verify GATE contains passing verdict
-    GATE_STATUS=$(python3 -c "
+    GATE_STATUS=$(python3 - "$GATE_FULL" 2>/dev/null <<'PY'
 import sys, json
 try:
-    data = json.load(open('$GATE_FULL'))
+    data = json.load(open(sys.argv[1]))
     status = data.get('status', '')
     converged = data.get('converged', False)
     if status in ('converged', 'pass', 'passed') or converged:
@@ -241,7 +277,8 @@ try:
         print('FAIL:' + status)
 except Exception as e:
     print('ERROR:' + str(e))
-" 2>/dev/null || echo "ERROR:parse_failed")
+PY
+)
     if [[ "$GATE_STATUS" != "PASS" ]]; then
         echo "✗ Pre-dispatch FAILED: GATE not passing: $GATE_PATH ($GATE_STATUS)"
         timeout 10s bd update "$TASK_ID" --notes "BLOCKED: GATE validation not passing — dispatch deferred" 2>/dev/null || true

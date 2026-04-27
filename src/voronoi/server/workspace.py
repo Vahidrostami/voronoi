@@ -192,8 +192,11 @@ class WorkspaceManager:
     def cleanup_path(self, workspace_path: str | Path,
                      diagnostics: list[str] | None = None) -> bool:
         """Remove a workspace path and its sibling swarm worktree directory."""
-        workspace_path = Path(workspace_path)
-        swarm_path = workspace_path.parent / f"{workspace_path.name}-swarm"
+        workspace_path = self._validated_cleanup_target(workspace_path, diagnostics)
+        if workspace_path is None:
+            return False
+
+        swarm_path = workspace_path.with_name(f"{workspace_path.name}-swarm")
         workspace_lock = self._lock_name("workspace", workspace_path.name)
 
         removed = False
@@ -222,6 +225,57 @@ class WorkspaceManager:
                     workspace_path, diagnostics,
                 ) or removed
         return removed
+
+    def _validated_cleanup_target(
+        self,
+        workspace_path: str | Path,
+        diagnostics: list[str] | None = None,
+    ) -> Path | None:
+        """Return a canonical active workspace path, or refuse unsafe cleanup."""
+        raw_path = Path(workspace_path)
+        active_root = self.active_dir.resolve()
+        try:
+            target = raw_path.resolve()
+        except OSError as exc:
+            self._record_cleanup_refusal(raw_path, f"could not resolve path: {exc}", diagnostics)
+            return None
+
+        if not target.is_relative_to(active_root):
+            self._record_cleanup_refusal(
+                raw_path,
+                f"path is outside active workspace root {active_root}",
+                diagnostics,
+            )
+            return None
+
+        if target.parent != active_root:
+            self._record_cleanup_refusal(
+                raw_path,
+                f"target must be a direct child of active workspace root {active_root}",
+                diagnostics,
+            )
+            return None
+
+        name = target.name
+        if not name.startswith("inv-") or name.endswith("-swarm"):
+            self._record_cleanup_refusal(
+                raw_path,
+                "target must be an inv-* workspace and not a direct *-swarm path",
+                diagnostics,
+            )
+            return None
+        return target
+
+    def _record_cleanup_refusal(
+        self,
+        path: Path,
+        reason: str,
+        diagnostics: list[str] | None,
+    ) -> None:
+        message = f"Refusing cleanup for {path}: {reason}"
+        logger.warning(message)
+        if diagnostics is not None:
+            diagnostics.append(message)
 
     def _remove_tree_with_diagnostics(
         self,

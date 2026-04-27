@@ -297,6 +297,8 @@ Pure plumbing — no decision logic. The orchestrator makes all decisions.
 | `sync-package-data.sh` | Copy `.env.example` for pip build | Developer workflow |
 | `dashboard.py` | Rich terminal dashboard (optional) | Manual monitoring |
 
+Artifact gates in `spawn-agent.sh` and `merge-agent.sh` treat `REQUIRES`, `GATE`, and `PRODUCES` entries as workspace-relative contract paths. Absolute paths and `..` escapes are rejected before existence checks, so an artifact outside the workspace can never satisfy a task gate.
+
 ### Copilot CLI Flags Injected at Launch
 
 Both the dispatcher (orchestrator launch) and `spawn-agent.sh` (worker launch) inject these flags:
@@ -311,10 +313,10 @@ The launchers also propagate Copilot CLI session state into tmux (`COPILOT_HOME`
 
 ## 7. Deployment Topology
 
-### Server Mode (`~/.voronoi/`)
+### Server Mode (`<base-dir>/`, default `~/.voronoi/`)
 
 ```
-~/.voronoi/
+<base-dir>/
 ├── .env                    # VORONOI_TG_BOT_TOKEN, etc.
 ├── config.json             # Server configuration
 ├── queue.db                # SQLite investigation queue
@@ -390,9 +392,9 @@ The server communicates over stdio (no network, no ports). It reads `VORONOI_WOR
 - Beads MCP tools MUST upsert only the fields they own and preserve unrelated task notes.
 - `voronoi_create_task` exposes `created_by` in the public tool schema and stamps it into task notes as `CREATED_BY:<value>`; when omitted it falls back to `$VORONOI_AGENT_ROLE` and then `unknown`.
 - `voronoi_create_task` MUST reject title-laundered task names at create-time, MUST require non-empty `PRODUCES` for `build`, `experiment`, `investigation`, `evaluation`, and `paper` task types, and MUST reject any `PRODUCES` artifact whose basename is a shared collision name (`answer.json`, `FINAL_ANSWER.json`, `output.json`, `result.json`, `results.json`, `findings.json`) anywhere in the workspace. Valid outputs are task-scoped and task-specific, for example `output/bd-42/experiment_metrics.json` or `output/bd-42/validation_report.json`.
-- Artifact contract paths accepted by Beads MCP tools MUST be workspace-relative and MUST NOT resolve outside the workspace. `voronoi_close_task` verifies every declared `PRODUCES` file exists after that containment check.
+- Artifact contract paths accepted by Beads MCP tools MUST be workspace-relative and MUST NOT resolve outside the workspace. `voronoi_create_task` verifies every declared `REQUIRES` file exists after that containment check; `voronoi_close_task` verifies every declared `PRODUCES` file exists after that containment check.
 - `voronoi_close_task` MUST refuse to close `experiment`, `investigation`, or `evaluation` tasks unless `FINDING_TASK_IDS` resolves to sibling tasks whose titles start with `FINDING:` / `FINDING -` / `FINDING —`, or the task carries `FINDING:NULL` plus a rationale of at least 40 characters.
-- `voronoi_record_finding` MUST reject malformed finding metadata at the tool boundary, including invalid enum values such as `ROBUST` values outside `yes|no`; numeric values such as `CONFIDENCE:0.0` are valid and must be preserved.
+- `voronoi_record_finding` MUST reject malformed finding metadata at the tool boundary, including invalid enum values such as `ROBUST` values outside `yes|no`; numeric values such as `CONFIDENCE:0.0` are valid and must be preserved. Its `data_file` parameter is a workspace-relative raw data path; absolute paths and `..` escapes are rejected before existence and hash checks.
 - `voronoi_pre_register` tool schemas MUST expose all required fields consumed by `pre_register()`, including `expected_result` and `effect_size`, so schema-valid MCP calls cannot fail with hidden missing-argument errors.
 - State-file MCP tools MUST read/write the same schemas used by the core convergence and dispatcher code paths.
 - `voronoi_update_belief_map` MUST emit the canonical list-based hypothesis schema from INV-33, append new evidence IDs to the existing list (with deduplication, never replace), and re-infer the confidence tier when `posterior` is updated without an explicit `confidence`.

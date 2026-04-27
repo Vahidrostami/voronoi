@@ -106,6 +106,8 @@
 | `src/voronoi/gateway/handoff.py` | GATEWAY.md | §11 | `test_handoff.py` |
 | `src/voronoi/data/scripts/telegram-bridge.py` | GATEWAY.md | §12 | — |
 | `src/voronoi/data/scripts/dashboard.py` | CLI.md | — | — |
+| `src/voronoi/data/scripts/spawn-agent.sh` | ARCHITECTURE.md | §6 | `test_runtime_scripts.py` |
+| `src/voronoi/data/scripts/merge-agent.sh` | ARCHITECTURE.md | §6 | `test_runtime_scripts.py` |
 | `src/voronoi/server/queue.py` | SERVER.md | §2 | `test_queue.py` |
 | `src/voronoi/server/dispatcher.py` | SERVER.md | §3 | `test_dispatcher.py` |
 | `src/voronoi/server/tmux.py` | SERVER.md | §3 | `test_dispatcher.py` |

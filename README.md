@@ -56,13 +56,14 @@ pip install voronoi
 
 ```bash
 voronoi server init
-# Edit ~/.voronoi/.env with your VORONOI_TG_BOT_TOKEN
+# Edit <base-dir>/.env with your VORONOI_TG_BOT_TOKEN (default: ~/.voronoi/.env)
 voronoi server start
 # On a remote host or over SSH, prefer:
 # voronoi server start --daemon
 ```
 
 `voronoi server start` runs in the foreground. Use `--daemon` on remote hosts so the bridge survives shell disconnects.
+All `voronoi server` subcommands accept `--base-dir <path>`; you can also set `VORONOI_BASE_DIR` to use a non-default server directory.
 
 **CLI** — work inside a project:
 
@@ -169,6 +170,8 @@ graph TD
 | `/voronoi recall <query>` | Search past findings |
 | `/voronoi resume [id\|codename]` | Resume a paused or failed investigation |
 | `/voronoi review [codename]` | Show Claim Ledger — lock, challenge, or accept findings |
+| `/voronoi review-negative <codename>` | Record a negative/falsifying review and show lock, deliberate, and continue actions |
+| `/voronoi lock-negative <codename> <claim-id>` | Lock a generated negative-result review claim as durable evidence |
 | `/voronoi continue <codename> [feedback]` | Start a new round with PI feedback |
 | `/voronoi extend <codename> [minutes]` | Grant extra stall budget while a run is still active |
 | `/voronoi paper <codename>` | Start manuscript production after at least one locked or replicated claim; otherwise show a Reviewer Defense Brief |
@@ -305,7 +308,7 @@ Each agent is a **full Copilot CLI session** in its own **tmux window** with its
 The dispatcher also regenerates `.swarm/run-status.json` and `.swarm/health.md` on progress polls. These files project Beads, checkpoint, and gate state into the PI/operator view used by humans and future UI surfaces.
 
 ```
-~/.voronoi/              # server mode
+~/.voronoi/              # server mode default base directory
   config.json  queue.db
   objects/               # shared bare git repos
   ledgers/               # claim ledgers per investigation lineage
@@ -358,7 +361,7 @@ pip install voronoi[report]                     # optional: PDF generation
 # Install Copilot CLI: see https://docs.github.com/en/copilot
 ```
 
-**Telegram**: Get bot token from @BotFather → set `VORONOI_TG_BOT_TOKEN` in `~/.voronoi/.env` → `voronoi server start`
+**Telegram**: Get bot token from @BotFather → set `VORONOI_TG_BOT_TOKEN` in `~/.voronoi/.env` or `<base-dir>/.env` → `voronoi server start`
 
 **Docker**: `docker build -t voronoi-python:latest -f docker/voronoi-python.Dockerfile .`
 

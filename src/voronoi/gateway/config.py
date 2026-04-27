@@ -14,6 +14,14 @@ from pathlib import Path
 logger = logging.getLogger("voronoi.config")
 
 
+def get_gateway_base_dir() -> Path:
+    """Return the server base directory used by gateway runtime state."""
+    raw_base = os.environ.get("VORONOI_BASE_DIR")
+    if raw_base:
+        return Path(raw_base).expanduser()
+    return Path.home() / ".voronoi"
+
+
 def load_dotenv(env_path: Path | None = None, *, override: bool = False) -> None:
     """Load .env file into os.environ.
 
@@ -57,13 +65,14 @@ def load_dotenv(env_path: Path | None = None, *, override: bool = False) -> None
 def load_config(config_path: str = ".swarm-config.json") -> dict:
     """Load config from .env files and optionally .swarm-config.json."""
     load_dotenv()
-    load_dotenv(Path.home() / ".voronoi" / ".env")
+    base_dir = get_gateway_base_dir()
+    load_dotenv(base_dir / ".env")
 
     path = Path(config_path)
     if not path.exists():
         path = Path(__file__).parent.parent.parent.parent / config_path
     if not path.exists():
-        path = Path.home() / ".voronoi" / ".swarm-config.json"
+        path = base_dir / ".swarm-config.json"
 
     config: dict = {}
     tg: dict = {}

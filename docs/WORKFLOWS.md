@@ -500,5 +500,7 @@ New runs add experiments, code, and data to the workspace. They never regenerate
 | Command | When | Effect |
 |---------|------|--------|
 | `/voronoi review [codename]` | During or after run | Show Claim Ledger |
+| `/voronoi review-negative <codename>` | After a negative/falsifying review | Record and show a Negative Result Review with lock/deliberate/continue actions |
+| `/voronoi lock-negative <codename> <claim-id>` | After `review-negative` | Lock the generated negative-result review claim |
 | `/voronoi continue <codename> [feedback]` | After review or partial review | Start new round with feedback; partial-review diagnosis is injected into the warm-start prompt |
 | `/voronoi claims [codename]` | Any time | Show claim state |

@@ -506,7 +506,7 @@ class ClaimLedger:
             lines.append(f"{badge} *{c.id}*: {c.statement}{ev}")
             lines.append(f"   Source: {prov_badge} | Cycle {c.source_cycle}")
             if c.supporting_findings:
-                lines.append(f"   Evidence: {', '.join(c.supporting_findings[:5])}")
+                lines.append(f"   Evidence refs: {', '.join(c.supporting_findings[:5])}")
             if c.challenges:
                 active = [ch for ch in c.challenges if ch.status in ("pending", "investigating")]
                 if active:

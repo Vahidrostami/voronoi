@@ -7,9 +7,8 @@ Beads/filesystem layer, its inputs are guaranteed well-formed.
 from __future__ import annotations
 
 import hashlib
-import os
 import re
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 
@@ -140,8 +139,11 @@ def require_ci(value: Any, field: str = "ci_95") -> list[float]:
 
 def require_file_exists(path: str, workspace: str, field: str = "data_file") -> Path:
     """Validate that a file exists relative to the workspace."""
+    candidate = Path(path)
+    if candidate.is_absolute() or PureWindowsPath(path).is_absolute():
+        raise ValidationError(f"{field}: path must be relative to workspace: {path}")
     ws = Path(workspace).resolve()
-    full = (ws / path).resolve()
+    full = (ws / candidate).resolve()
     if not full.is_relative_to(ws):
         raise ValidationError(f"{field}: path escapes workspace: {path}")
     if not full.is_file():

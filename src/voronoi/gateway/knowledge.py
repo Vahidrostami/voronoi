@@ -261,14 +261,15 @@ class KnowledgeStore:
 
 
 def _default_knowledge_db() -> Path:
-    return Path.home() / ".voronoi" / "knowledge.db"
+    from voronoi.gateway.config import get_gateway_base_dir
+    return get_gateway_base_dir() / "knowledge.db"
 
 
 class FederatedKnowledge:
     """Persistent FTS5 index across all investigations.
 
     Stores findings from every completed investigation in a single
-    SQLite database at ``~/.voronoi/knowledge.db``, enabling cross-
+    SQLite database at ``<base-dir>/knowledge.db``, enabling cross-
     investigation search.
     """
 

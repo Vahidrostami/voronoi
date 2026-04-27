@@ -23,6 +23,8 @@ from voronoi.science.interpretation import (
     load_continuation_proposals,
     load_interpretation_request,
     load_tribunal_results,
+    NEGATIVE_RESULT_MODEL_BASIS,
+    record_negative_result,
     save_continuation_proposals,
     save_interpretation_request,
     save_tribunal_result,
@@ -310,6 +312,35 @@ class TestContinuationProposals:
 
     def test_load_empty(self, tmp_path):
         assert load_continuation_proposals(tmp_path) == []
+
+
+class TestNegativeResultRecording:
+    def test_record_negative_result_stores_source_claim_ids_as_evidence_refs(self):
+        ledger = ClaimLedger()
+        claim = record_negative_result(
+            ledger,
+            "H1 was not supported on the benchmark.",
+            codename="Synapse",
+            primary_claim_ids=["C1"],
+            reason_summary="replicated null result",
+            source_cycle=2,
+        )
+
+        assert claim.id == "C1"
+        assert claim.provenance == "run_evidence"
+        assert claim.model_basis == NEGATIVE_RESULT_MODEL_BASIS
+        assert claim.supporting_findings == ["C1"]
+        assert claim.effect_summary == "replicated null result"
+        assert claim.source_cycle == 2
+        assert "negative result" in claim.statement.lower()
+
+    def test_record_negative_result_is_idempotent_for_same_summary(self):
+        ledger = ClaimLedger()
+        first = record_negative_result(ledger, "H1 was not supported.", codename="Synapse")
+        second = record_negative_result(ledger, "H1 was not supported.", codename="Synapse")
+
+        assert second.id == first.id
+        assert len(ledger.claims) == 1
 
 
 # ---------------------------------------------------------------------------

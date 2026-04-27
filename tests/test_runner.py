@@ -73,6 +73,23 @@ class TestServerConfig:
         assert config.max_agents_per_investigation == 6
         assert config.sandbox.enabled is True
 
+    def test_base_dir_env_override(self, tmp_path, monkeypatch):
+        base = tmp_path / "custom-voronoi"
+        monkeypatch.setenv("VORONOI_BASE_DIR", str(base))
+
+        config = ServerConfig()
+
+        assert config.base_dir == base
+
+    def test_explicit_base_dir_overrides_env(self, tmp_path, monkeypatch):
+        env_base = tmp_path / "env-voronoi"
+        explicit_base = tmp_path / "explicit-voronoi"
+        monkeypatch.setenv("VORONOI_BASE_DIR", str(env_base))
+
+        config = ServerConfig(base_dir=str(explicit_base))
+
+        assert config.base_dir == explicit_base
+
     def test_save_and_load(self, tmp_path):
         base = tmp_path / "voronoi"
         config = ServerConfig(base_dir=str(base))

@@ -558,8 +558,6 @@ def cmd_version(args: argparse.Namespace) -> None:
 
 def cmd_server(args: argparse.Namespace) -> None:
     """Handle server subcommands."""
-    from voronoi.server.runner import ServerConfig
-
     if args.server_action == "init":
         _server_init(args)
     elif args.server_action == "start":
@@ -665,7 +663,7 @@ def _server_start(args: argparse.Namespace) -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("telegram").setLevel(logging.WARNING)
 
-    config = ServerConfig()
+    config = ServerConfig(base_dir=getattr(args, "base_dir", None))
 
     if not config.base_dir.exists():
         print("Server not initialized. Run: voronoi server init")
@@ -721,6 +719,7 @@ def _server_start(args: argparse.Namespace) -> None:
 
     # Pass log level to the bridge subprocess via environment
     env = _server_runtime_env(config.base_dir)
+    env["VORONOI_BASE_DIR"] = str(config.base_dir)
     env.setdefault("VORONOI_LOG_LEVEL", log_level)
 
     try:
@@ -782,7 +781,7 @@ def _server_status(args: argparse.Namespace) -> None:
     from voronoi.server.runner import ServerConfig
     from voronoi.server.workspace import WorkspaceManager
 
-    config = ServerConfig()
+    config = ServerConfig(base_dir=getattr(args, "base_dir", None))
     queue_path = config.base_dir / "queue.db"
 
     if not config.base_dir.exists():
@@ -819,7 +818,7 @@ def _server_prune(args: argparse.Namespace) -> None:
     from voronoi.server.tmux import cleanup_tmux
     from voronoi.server.workspace import WorkspaceManager
 
-    config = ServerConfig()
+    config = ServerConfig(base_dir=getattr(args, "base_dir", None))
     wm = WorkspaceManager(config.base_dir)
     active_dir = config.base_dir / "active"
     queue_path = config.base_dir / "queue.db"
@@ -902,7 +901,7 @@ def _server_config(args: argparse.Namespace) -> None:
     """Show server configuration."""
     from voronoi.server.runner import ServerConfig
 
-    config = ServerConfig()
+    config = ServerConfig(base_dir=getattr(args, "base_dir", None))
     if not config.config_path.exists():
         print("No config found. Run: voronoi server init")
         sys.exit(1)
@@ -919,7 +918,7 @@ def _server_extend_timeout(args: argparse.Namespace) -> None:
     from voronoi.server.runner import ServerConfig
     from voronoi.server.workspace import WorkspaceManager
 
-    config = ServerConfig()
+    config = ServerConfig(base_dir=getattr(args, "base_dir", None))
     if not config.base_dir.exists():
         print("Server not initialized. Run: voronoi server init")
         sys.exit(1)
@@ -1005,20 +1004,26 @@ def main() -> None:
     # Server subcommand
     server_parser = sub.add_parser("server", help="Manage the Voronoi server")
     server_sub = server_parser.add_subparsers(dest="server_action")
+    base_dir_help = "Custom server base directory (default: VORONOI_BASE_DIR or ~/.voronoi)"
     server_init = server_sub.add_parser("init", help="Initialize server at ~/.voronoi/")
-    server_init.add_argument("--base-dir", dest="base_dir", help="Custom base directory")
+    server_init.add_argument("--base-dir", dest="base_dir", help=base_dir_help)
     server_start = server_sub.add_parser("start", help="Start Telegram bridge")
+    server_start.add_argument("--base-dir", dest="base_dir", help=base_dir_help)
     server_start.add_argument("--daemon", action="store_true", help="Run the Telegram bridge in the background")
     server_start.add_argument("--log-file", help="Path to the bridge log file when using --daemon")
-    server_sub.add_parser("status", help="Show server status")
+    server_status = server_sub.add_parser("status", help="Show server status")
+    server_status.add_argument("--base-dir", dest="base_dir", help=base_dir_help)
     server_prune = server_sub.add_parser("prune", help="Clean up old workspaces")
+    server_prune.add_argument("--base-dir", dest="base_dir", help=base_dir_help)
     server_prune.add_argument("--force", action="store_true", help="Actually remove workspaces")
-    server_sub.add_parser("config", help="Show server configuration")
+    server_config = server_sub.add_parser("config", help="Show server configuration")
+    server_config.add_argument("--base-dir", dest="base_dir", help=base_dir_help)
     ext_parser = server_sub.add_parser(
         "extend-timeout",
         help="Set review budget for a running investigation",
         description="Set review budget for a running investigation",
     )
+    ext_parser.add_argument("--base-dir", dest="base_dir", help=base_dir_help)
     ext_parser.add_argument("investigation", help="Investigation ID or workspace name")
     ext_parser.add_argument("hours", type=int, help="Total review budget in hours")
 

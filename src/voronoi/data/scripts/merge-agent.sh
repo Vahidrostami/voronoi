@@ -12,6 +12,34 @@ TMUX_SESSION=$(echo "$CONFIG" | jq -r '.tmux_session')
 
 WORKTREE_PATH="${SWARM_DIR}/${BRANCH_NAME}"
 
+resolve_workspace_artifact() {
+    local root="$1"
+    local artifact="$2"
+    local field="$3"
+    python3 - "$root" "$artifact" "$field" <<'PY'
+from pathlib import Path, PureWindowsPath
+import sys
+
+root = Path(sys.argv[1]).resolve()
+raw = sys.argv[2].strip()
+field = sys.argv[3]
+candidate = Path(raw)
+if not raw:
+    print(f"{field} path is empty", file=sys.stderr)
+    sys.exit(2)
+if candidate.is_absolute() or PureWindowsPath(raw).is_absolute():
+    print(f"{field} path must be workspace-relative: {raw}", file=sys.stderr)
+    sys.exit(2)
+resolved = (root / candidate).resolve()
+try:
+    resolved.relative_to(root)
+except ValueError:
+    print(f"{field} path escapes workspace: {raw}", file=sys.stderr)
+    sys.exit(2)
+print(resolved)
+PY
+}
+
 resolve_default_branch() {
     local branch
     branch=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##') || true
@@ -40,8 +68,6 @@ has_origin_remote() {
 }
 
 cd "$PROJECT_DIR"
-
-MAIN_BRANCH=$(resolve_default_branch)
 
 echo "--- Merging agent: $BRANCH_NAME ---"
 
@@ -89,7 +115,18 @@ except Exception:
         while IFS= read -r prod; do
             [ -z "$prod" ] && continue
             # Check in worktree first, then project root
-            if [ ! -e "${WORKTREE_PATH}/${prod}" ] && [ ! -e "${PROJECT_DIR}/${prod}" ]; then
+            if ! WORKTREE_PROD=$(resolve_workspace_artifact "$WORKTREE_PATH" "$prod" "PRODUCES"); then
+                MISSING_PRODUCES="${MISSING_PRODUCES}  - ${prod} (invalid path)\n"
+                continue
+            fi
+            if [ -e "$WORKTREE_PROD" ]; then
+                continue
+            fi
+            if ! PROJECT_PROD=$(resolve_workspace_artifact "$PROJECT_DIR" "$prod" "PRODUCES"); then
+                MISSING_PRODUCES="${MISSING_PRODUCES}  - ${prod} (invalid path)\n"
+                continue
+            fi
+            if [ ! -e "$PROJECT_PROD" ]; then
                 MISSING_PRODUCES="${MISSING_PRODUCES}  - ${prod}\n"
             fi
         done <<< "$PRODUCES_LIST"
@@ -125,6 +162,7 @@ except Exception:
 fi
 
 # 1. Ensure we're on the repository default branch
+MAIN_BRANCH=$(resolve_default_branch)
 git checkout "$MAIN_BRANCH"
 if has_origin_remote; then
     git pull --rebase origin "$MAIN_BRANCH"

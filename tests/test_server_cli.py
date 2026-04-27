@@ -1,6 +1,7 @@
 """Tests for voronoi server CLI commands."""
 
 import argparse
+import os
 import subprocess
 import sys
 import time
@@ -88,6 +89,31 @@ def test_server_start_passes_temp_env_to_bridge(tmp_path, monkeypatch):
     assert env["TMPDIR"] == str(temp_dir)
     assert env["TMP"] == str(temp_dir)
     assert env["TEMP"] == str(temp_dir)
+    assert env["VORONOI_BASE_DIR"] == str(base_dir)
+
+
+def test_server_status_uses_custom_base_dir(tmp_path):
+    """server status should honor --base-dir instead of falling back to HOME."""
+    custom_base = tmp_path / "custom-voronoi"
+    active_dir = custom_base / "active"
+    active_dir.mkdir(parents=True)
+    (custom_base / "config.json").write_text("{}")
+    (active_dir / "inv-1-custom").mkdir()
+    home = tmp_path / "home"
+    home.mkdir()
+
+    result = subprocess.run(
+        [
+            sys.executable, "-m", "voronoi.cli", "server", "status",
+            "--base-dir", str(custom_base),
+        ],
+        capture_output=True, text=True,
+        env={**os.environ, "HOME": str(home)},
+    )
+
+    assert result.returncode == 0
+    assert f"Voronoi Server — {custom_base}" in result.stdout
+    assert "Active workspaces: 1" in result.stdout
 
 
 def test_server_prune_removes_terminal_workspace_and_swarm(tmp_path, monkeypatch):

@@ -17,6 +17,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
+from voronoi.gateway.config import get_gateway_base_dir
 from voronoi.gateway.intent import ClassifiedIntent, WorkflowMode, classify, classify_for_new_investigation
 from voronoi.gateway.progress import MODE_EMOJI
 
@@ -49,6 +50,8 @@ from voronoi.gateway.handlers_mutate import (  # noqa: F401
     handle_complete,
     handle_complete_investigation,
     handle_review_investigation,
+    handle_review_negative,
+    handle_lock_negative,
     handle_continue_investigation,
     handle_abort,
     handle_pivot,
@@ -72,7 +75,8 @@ __all__ = [
     "handle_resume_investigation",
     "handle_complete",
     "handle_complete_investigation",
-    "handle_review_investigation", "handle_continue_investigation", "handle_claims",
+    "handle_review_investigation", "handle_review_negative", "handle_lock_negative",
+    "handle_continue_investigation", "handle_claims",
     "handle_dead_ends",
     "handle_abort", "handle_pivot", "handle_guide", "handle_extend",
     "handle_discover", "handle_prove", "handle_paper",
@@ -154,6 +158,9 @@ _HELP_MESSAGE = (
     "`/voronoi belief` · `finding <id>` · `recall <query>`\n"
     "`/voronoi ask <question>` — ask about a running investigation\n\n"
     "*Review*\n"
+    "`/voronoi review [codename]` — inspect the Claim Ledger\n"
+    "`/voronoi review-negative <codename>` — record a lockable negative-result review\n"
+    "`/voronoi lock-negative <codename> <claim-id>` — lock that negative result\n"
     "`/voronoi deliberate [codename]` — reason about results interactively\n\n"
     "*Steer*\n"
     "`/voronoi guide <msg>` · `pivot <msg>` · `abort`\n"
@@ -299,6 +306,13 @@ class CommandRouter:
             elif sub == "review":
                 arg = args[0] if args else ""
                 return handle_review_investigation(self.project_dir, arg), None
+            elif sub == "review-negative":
+                arg = args[0] if args else ""
+                return handle_review_negative(self.project_dir, arg), None
+            elif sub == "lock-negative":
+                identifier = args[0] if args else ""
+                claim_id = args[1] if len(args) > 1 else ""
+                return handle_lock_negative(self.project_dir, identifier, claim_id), None
             elif sub == "continue" and args:
                 identifier = args[0]
                 feedback = " ".join(args[1:]) if len(args) > 1 else ""
@@ -326,8 +340,7 @@ class CommandRouter:
         """Check if any investigations are currently running."""
         try:
             from voronoi.server.queue import InvestigationQueue
-            base = Path.home() / ".voronoi"
-            q = InvestigationQueue(base / "queue.db")
+            q = InvestigationQueue(get_gateway_base_dir() / "queue.db")
             return len(q.get_running()) > 0
         except Exception:
             return False

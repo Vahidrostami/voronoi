@@ -431,6 +431,35 @@ class TestArtifactDiscovery:
         assert sub.bytes is not None
         assert sub.bytes > 0
 
+    def test_absolute_data_file_artifact_normalized_to_relative(self, swarm_workspace, monkeypatch):
+        data_file = swarm_workspace / "data" / "raw" / "results.csv"
+        data_file.parent.mkdir(parents=True)
+        data_file.write_text("x,y\n1,2\n")
+        monkeypatch.setattr(
+            "voronoi.science.manifest._safe_get_findings",
+            lambda ws: [{"id": "bd-5", "notes": f"DATA_FILE:{data_file}"}],
+        )
+
+        m = build_manifest_from_workspace(swarm_workspace, question="Q?")
+
+        paths = {a.path for a in m.artifacts}
+        assert "data/raw/results.csv" in paths
+        assert str(data_file) not in paths
+
+    def test_escaped_data_file_artifact_is_ignored(self, swarm_workspace, monkeypatch):
+        outside = swarm_workspace.parent / "outside.csv"
+        outside.write_text("secret\n")
+        monkeypatch.setattr(
+            "voronoi.science.manifest._safe_get_findings",
+            lambda ws: [{"id": "bd-5", "notes": "DATA_FILE:../outside.csv"}],
+        )
+
+        m = build_manifest_from_workspace(swarm_workspace, question="Q?")
+
+        paths = {a.path for a in m.artifacts}
+        assert "../outside.csv" not in paths
+        assert str(outside) not in paths
+
 
 # ---------------------------------------------------------------------------
 # Integration: end-to-end smoke test

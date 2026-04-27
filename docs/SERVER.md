@@ -28,7 +28,7 @@ src/voronoi/server/
 
 ### Purpose
 
-SQLite-backed investigation lifecycle management. Global queue (`~/.voronoi/queue.db`) shared across all investigations.
+SQLite-backed investigation lifecycle management. Global queue (`<base-dir>/queue.db`, default `~/.voronoi/queue.db`) shared across all investigations.
 
 ### Investigation Data Structure
 
@@ -189,7 +189,7 @@ The dispatcher is the server's main loop. It polls the queue, provisions workspa
 ```python
 @dataclass
 class DispatcherConfig:
-    base_dir: Path           # ~/.voronoi (default)
+    base_dir: Path           # ~/.voronoi unless overridden
     max_concurrent: int      # 2 — max simultaneous investigations
     max_agents: int          # 6 — max parallel hypothesis-tranches per investigation (see INV-46)
     agent_command: str       # "copilot" (default)
@@ -288,7 +288,7 @@ The dispatcher injects several Copilot CLI flags at launch time:
 
 Both orchestrator and worker tmux launches also propagate Copilot CLI auth/state environment needed for durable restarts: `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`, `COPILOT_HOME`, and `GH_HOST`. This ensures a resumed agent uses the same stored Copilot state directory and GitHub host selection as the parent server process, rather than falling back to a fresh login prompt.
 
-Server runtime also reserves `~/.voronoi/tmp` as the shared temp root. `voronoi server start` exports `TMPDIR`, `TMP`, and `TEMP` to that directory, and `_launch_in_tmux()` relays the same values into orchestrator sessions so worker-side tests and scratch files stay under server state instead of falling back to the system `/tmp`.
+Server runtime also reserves `<base-dir>/tmp` as the shared temp root (default `~/.voronoi/tmp`). `voronoi server start` exports `TMPDIR`, `TMP`, and `TEMP` to that directory, and `_launch_in_tmux()` relays the same values into orchestrator sessions so worker-side tests and scratch files stay under server state instead of falling back to the system `/tmp`.
 
 **Effort-by-rigor mapping** (applied in `_launch_in_tmux()` and `spawn-agent.sh`):
 
@@ -544,12 +544,12 @@ The dispatcher syncs `criteria_status` from the orchestrator checkpoint into `su
 3. **Negative result detection**: If convergence.json status is `negative_result`, send `format_negative_result()` instead of the standard teaser. This presents valid null findings as legitimate science rather than failure.
 4. On success: generate teaser via `ReportGenerator.build_teaser()`, generate PDF via `build_pdf()`, send teaser + document to Telegram
 5. On failure: extract log tail, send failure message via `format_failure()`
-6. **Federated knowledge sync**: Sync findings to `~/.voronoi/knowledge.db` for cross-investigation search
+6. **Federated knowledge sync**: Sync findings to `<base-dir>/knowledge.db` for cross-investigation search
 7. Try GitHub publish if `gh` CLI available
 8. Clean up agent worktrees — prune git worktrees, remove worktree directories, remove the `-swarm/` directory
     - If removal is blocked, cleanup logs likely live lock holders using `lsof` (for example lingering `bd`, MCP, or agent processes) and leaves the main workspace intact for operator follow-up.
 9. Remove the per-session secrets env file (sibling of the workspace at `<base_dir>/active/.tmux-env-<session>`, outside the git repo — see INV-31). Also unlink any legacy `.swarm/.tmux-env` left over from prior dispatcher versions.
-10. Clean `~/.voronoi/tmp` if no other investigations are running
+10. Clean `<base-dir>/tmp` if no other investigations are running
 
 ### Agent Restart
 
@@ -616,7 +616,7 @@ Paused investigations do not auto-fail by default. If an operator explicitly set
 `_handle_abort(inv_id)` aborts a specific running investigation (or all if no ID given):
 - Reads `.swarm/abort-signal` file written by `handle_abort()` in router
 - Each signal file aborts only the investigation whose workspace contains it
-- Global signal file (`~/.voronoi/.swarm/abort-signal`) aborts all running investigations
+- Global signal file (`<base-dir>/.swarm/abort-signal`, default `~/.voronoi/.swarm/abort-signal`) aborts all running investigations
 - Kills tmux sessions
 - Marks investigations as **cancelled** via `queue.abort()` (`running → cancelled`)
 - Cancelled investigations are NOT resumable (unlike failed ones)
@@ -792,6 +792,8 @@ class WorkspaceManager:
     def list_active(self) -> list[str]: ...  # Excludes -swarm directories
 ```
 
+`cleanup_path()` canonicalizes the requested target and `active/` root before deleting anything. It only accepts direct `inv-{id}-{slug}/` children of `active/`, refuses nested paths or paths outside `active/`, refuses direct `*-swarm` targets as the main cleanup target, and only removes the sibling `*-swarm/` directory constructed from a validated workspace path.
+
 ### Provisioning Steps
 
 **Repo-type** (`provision_repo`):
@@ -886,7 +888,7 @@ class ServerConfig:
     def __init__(self, base_dir: str | None = None): ...
 
     # Server settings
-    base_dir: Path                        # ~/.voronoi
+    base_dir: Path                        # ~/.voronoi unless overridden
     max_concurrent: int                   # 2
     max_agents_per_investigation: int     # 4
     agent_command: str                    # "copilot"
@@ -908,12 +910,13 @@ class ServerConfig:
 
 ### Config File Location
 
-`~/.voronoi/config.json` — JSON with sections: `server`, `github`, `sandbox`.
+`<base-dir>/config.json` — JSON with sections: `server`, `github`, `sandbox`. The base directory is `~/.voronoi` unless explicitly passed by the CLI or set with `VORONOI_BASE_DIR`.
 
 ### Environment Variable Overrides
 
 | Env Var | Config Key |
 |---------|-----------|
+| `VORONOI_BASE_DIR` | `base_dir` |
 | `VORONOI_AGENT_COMMAND` | `agent_command` |
 | `VORONOI_ORCHESTRATOR_MODEL` | `orchestrator_model` |
 | `VORONOI_WORKER_MODEL` | `worker_model` |
