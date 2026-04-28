@@ -13,8 +13,6 @@ venv/
 .env
 .telegram-chat-id
 
-# Bundled package data — only .env.example is generated (by scripts/sync-package-data.sh)
-src/voronoi/data/.env.example
 
 # Agent runtime artifacts (never commit these)
 .agent-prompt.txt

@@ -26,7 +26,7 @@ Use `list_dir` on `src/voronoi/` to explore the current layout — do not rely o
 - Agent roles live in `src/voronoi/data/agents/*.agent.md` — prompt builder references, never duplicates
 - `.github/` is for **development only** (CI workflows, Copilot dev agents/prompts)
 - All runtime content lives in `src/voronoi/data/` — the single canonical location
-- `scripts/sync-package-data.sh` at repo root is a dev-only build tool (copies `.env.example`)
+- `scripts/sync-package-data.sh` at repo root syncs root `.env.example` → `src/voronoi/data/.env.example` (run only after editing the root copy)
 
 ## File Audience Separation
 
