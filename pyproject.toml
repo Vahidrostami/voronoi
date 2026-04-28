@@ -28,4 +28,4 @@ voronoi = ["data/**/*"]
 
 # NOTE: All runtime content (agents, prompts, skills, scripts, demos, templates)
 # lives in src/voronoi/data/ — the canonical location tracked in git.
-# Only .env.example needs syncing: ./scripts/sync-package-data.sh
+# All content including .env.example is maintained in-tree under src/voronoi/data/.
