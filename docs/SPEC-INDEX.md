@@ -44,7 +44,7 @@
 | Targeted Beads queries | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §5 |
 | Code-assembled worker prompts | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §6 |
 | Per-agent context budget | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §3 |
-| System rules, code review | [INVARIANTS.md](INVARIANTS.md) | All (47 invariants) |
+| System rules, code review | [INVARIANTS.md](INVARIANTS.md) | All (58 invariants) |
 | Worker self-verification protocol | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §8 |
 | Token budget tracking | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §9 |
 | Structured event log | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §10 |
@@ -57,10 +57,18 @@
 | Run Manifest source-of-truth map, validation | [SCIENCE.md](SCIENCE.md) | §19 (Run Manifest) |
 | `.swarm/run-manifest.json` format | [DATA-STRUCTURES.md](DATA-STRUCTURES.md) | §7 |
 | Deliberation mode | [GATEWAY.md](GATEWAY.md) | §14 (Deliberation) |
-| Iterative science, review/continue | [WORKFLOWS.md](WORKFLOWS.md) | §9 (Multi-Run Iteration) |
+| Iterative science, review/continue | [WORKFLOWS.md](WORKFLOWS.md) | §10 (Multi-Run Iteration) |
 | Structured evaluator feedback | [SCIENCE.md](SCIENCE.md) | §5 (Convergence) |
 | Hybrid BM25+keyword search | [GATEWAY.md](GATEWAY.md) | §6 (Knowledge) |
 | Term definitions | [GLOSSARY.md](GLOSSARY.md) | — |
+| Paper-track manuscript production (Outliner, Lit-Synth, Figure-Critic, Refiner) | [AGENT-ROLES.md](AGENT-ROLES.md) | §2 (Paper-track) |
+| Citation-coverage gate (≥0.90 integration, zero orphans) | [SCIENCE.md](SCIENCE.md) | §20 (Citation Coverage) |
+| Evidence-gated epoch scaling, adaptive agent cap | [SCIENCE.md](SCIENCE.md) | §21 (Epoch Scaling) |
+| Structured failure diagnosis, continuation diagnostics | [SCIENCE.md](SCIENCE.md) | §22 (Failure Diagnosis) |
+| `.swarm/epoch-state.json` format | [SCIENCE.md](SCIENCE.md) | §21 |
+| `.swarm/failure-diagnosis.json` format | [SCIENCE.md](SCIENCE.md) | §22 |
+| `/voronoi paper <codename>` manuscript command | [GATEWAY.md](GATEWAY.md) | §3 (Router) |
+| `.swarm/manuscript/` state contract | [DATA-STRUCTURES.md](DATA-STRUCTURES.md) | §7 |
 
 ## How to Use Specs
 
@@ -98,6 +106,8 @@
 | `src/voronoi/gateway/handoff.py` | GATEWAY.md | §11 | `test_handoff.py` |
 | `src/voronoi/data/scripts/telegram-bridge.py` | GATEWAY.md | §12 | — |
 | `src/voronoi/data/scripts/dashboard.py` | CLI.md | — | — |
+| `src/voronoi/data/scripts/spawn-agent.sh` | ARCHITECTURE.md | §6 | `test_runtime_scripts.py` |
+| `src/voronoi/data/scripts/merge-agent.sh` | ARCHITECTURE.md | §6 | `test_runtime_scripts.py` |
 | `src/voronoi/server/queue.py` | SERVER.md | §2 | `test_queue.py` |
 | `src/voronoi/server/dispatcher.py` | SERVER.md | §3 | `test_dispatcher.py` |
 | `src/voronoi/server/tmux.py` | SERVER.md | §3 | `test_dispatcher.py` |
@@ -110,6 +120,7 @@
 | `src/voronoi/server/publisher.py` | SERVER.md | §8 | `test_publisher.py` |
 | `src/voronoi/server/repo_url.py` | SERVER.md | §9 | `test_repo_url.py` |
 | `src/voronoi/server/compact.py` | CONTEXT-MANAGEMENT.md | §12 | `test_compact.py` |
+| `src/voronoi/server/provenance.py` | SCIENCE.md / DATA-STRUCTURES.md | §17 / §7 | `test_provenance.py` |
 | `src/voronoi/science/claims.py` | SCIENCE.md | §16 | `test_claims.py` |
 | `src/voronoi/science/gates.py` | SCIENCE.md | §2, §10 | `test_science.py` |
 | `src/voronoi/science/convergence.py` | SCIENCE.md | §5 | `test_science.py` |
@@ -117,6 +128,8 @@
 | `src/voronoi/science/consistency.py` | SCIENCE.md | — | `test_science.py` |
 | `src/voronoi/science/interpretation.py` | SCIENCE.md | §18 | `test_interpretation.py` |
 | `src/voronoi/science/manifest.py` | SCIENCE.md / MANIFEST.md | §19 / all | `test_manifest.py` |
+| `src/voronoi/science/citation_coverage.py` | SCIENCE.md | §20 | `test_citation_coverage.py` |
+| `src/voronoi/science/lab_kg.py` | SCIENCE.md | §23 | `test_lab_kg.py` |
 | `src/voronoi/mcp/server.py` | ARCHITECTURE.md | §8 | `test_mcp.py` |
 | `src/voronoi/mcp/tools_beads.py` | ARCHITECTURE.md | §8 | `test_mcp.py` |
 | `src/voronoi/mcp/tools_swarm.py` | ARCHITECTURE.md | §8 | `test_mcp.py` |

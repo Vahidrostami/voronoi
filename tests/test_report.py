@@ -628,6 +628,23 @@ class TestLimitations:
         assert lim is not None
         assert "Inconclusive" in lim
 
+    @patch("voronoi.gateway.evidence._run_bd")
+    def test_limitations_from_dict_keyed_belief_map(self, mock_bd, tmp_path):
+        """BUG-002 regression: dict-keyed belief map should not crash."""
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "belief-map.json").write_text(json.dumps({
+            "hypotheses": {
+                "H1": {"name": "Untested H", "prior": 0.5, "status": "inconclusive"},
+            }
+        }))
+        mock_bd.return_value = (0, json.dumps([]))
+        rg = ReportGenerator(tmp_path)
+        findings = [{"title": "FINDING: test", "notes": ""}]
+        lim = rg._render_limitations(findings)
+        assert lim is not None
+        assert "Inconclusive" in lim
+
     def test_no_limitations_when_all_robust(self):
         rg = ReportGenerator.__new__(ReportGenerator)
         rg.ws = Path("/tmp/fake")

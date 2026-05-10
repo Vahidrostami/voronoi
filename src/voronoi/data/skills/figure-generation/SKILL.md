@@ -4,6 +4,8 @@ description: >
   Skill for generating scientific figures from experimental data. Ensures every
   figure referenced in LaTeX documents exists on disk before compilation, preventing
   blank PDFs and broken references.
+user-invocable: true
+disable-model-invocation: false
 ---
 
 # Figure Generation Skill
@@ -41,13 +43,13 @@ If your figures depend on data files, declare those too:
 
 ```bash
 # Declare inputs
-bd update <task-id> --notes "REQUIRES:output/results.json,output/data/experiment_results.csv"
+bd update <task-id> --notes "REQUIRES:output/bd-42/experiment_metrics.json,output/data/experiment_results.csv"
 ```
 
 ### Phase 2: Data Dependency Check
 
 For each figure, answer:
-1. **What data file does it need?** (results.json, experiment_data.csv, etc.)
+1. **What data file does it need?** (experiment_metrics.json, experiment_data.csv, etc.)
 2. **Does that data file exist?** Run `ls -la <path>` to verify
 3. If missing: your task has an unsatisfied REQUIRES — report BLOCKED:
    ```bash
@@ -65,7 +67,7 @@ import json
 import matplotlib.pyplot as plt
 
 # Load data
-with open('output/results.json') as f:
+with open('output/bd-42/experiment_metrics.json') as f:
     data = json.load(f)
 
 # Generate figure
@@ -114,6 +116,46 @@ done
 # Update Beads with verification
 bd update <task-id> --notes "FIGURES_VERIFIED: all N/N present"
 ```
+
+### Phase 4b: Emit `.meta.json` sidecar (MANDATORY on paper-track)
+
+Every figure on the paper-track MUST have a sibling `<fig>.meta.json`
+describing what's on the plot. This is the contract the **Figure-Critic**
+agent reads to run its text-only publication-quality rubric (no VLM needed).
+
+Emit it **from the plotting script** — do not hand-edit:
+
+```python
+import json, hashlib, pathlib
+# ... after fig.savefig('figures/ablation.pdf', ...) ...
+meta = {
+    "figure_id": "fig-ablation",
+    "path": "figures/ablation.pdf",
+    "supports_claim": "H1",            # ID from .swarm/claim-evidence.json
+    "axes": {
+        "xlabel": ax.get_xlabel(),
+        "ylabel": ax.get_ylabel(),
+        "xscale": ax.get_xscale(),
+        "yscale": ax.get_yscale(),
+    },
+    "n_series": len(ax.get_lines()) or len(ax.patches),
+    "has_errorbars": any(c.get_label().startswith("_child") for c in ax.containers)
+                    if hasattr(ax, "containers") else False,
+    "caption_draft": "Ablation over condition C. N=120 per arm. "
+                     "Error bars = 95% CI bootstrap. d=0.42 (medium).",
+    "data_file": "output/bd-42/experiment_metrics.json",
+    "data_sha256": hashlib.sha256(
+        pathlib.Path("output/bd-42/experiment_metrics.json").read_bytes()
+    ).hexdigest(),
+    "n_samples": 120,
+    "palette": "viridis",              # colour-blind-safe
+}
+pathlib.Path("figures/ablation.pdf.meta.json").write_text(json.dumps(meta, indent=2))
+```
+
+Required fields: `figure_id`, `path`, `supports_claim`, `axes.xlabel`,
+`axes.ylabel`, `caption_draft`, `data_file`, `data_sha256`, `n_samples`,
+`palette`. Missing fields cause the Figure-Critic to auto-fail the figure.
 
 ### Phase 5: Run figure-lint (if available)
 

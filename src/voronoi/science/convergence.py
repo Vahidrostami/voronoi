@@ -31,6 +31,28 @@ CONFIDENCE_TIERS: dict[str, float] = {
 
 VALID_CONFIDENCE_TIERS = frozenset(CONFIDENCE_TIERS)
 
+# Valid hypothesis status values (docs/SCIENCE.md §4)
+VALID_HYPOTHESIS_STATUSES = frozenset([
+    "untested", "testing", "confirmed", "refuted", "refuted_reversed", "inconclusive", "merged"
+])
+
+
+def _safe_float(value: any, default: float = 0.5) -> float:
+    """Safely coerce value to float, returning default if conversion fails.
+
+    Handles legacy belief-map data with non-numeric posterior/prior values
+    like "TBD", "N/A", or empty strings.
+    """
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            logger.warning("Non-numeric value %r, using default %s", value, default)
+            return default
+    return default
+
 
 def _infer_confidence_from_posterior(posterior: float) -> str:
     """Infer a confidence tier from a legacy posterior value."""
@@ -106,7 +128,18 @@ class BeliefMap:
         return sorted(untested, key=lambda h: h.information_gain, reverse=True)
 
     def all_resolved(self) -> bool:
-        return all(h.status not in ("untested", "testing") for h in self.hypotheses)
+        """True if all hypotheses are resolved (no untested/testing).
+
+        Only considers hypotheses with valid known statuses — unknown
+        statuses default to unresolved to avoid false positives.
+        """
+        for h in self.hypotheses:
+            if h.status not in VALID_HYPOTHESIS_STATUSES:
+                # Unknown status — treat as unresolved to be safe
+                return False
+            if h.status in ("untested", "testing"):
+                return False
+        return True
 
     def summary(self) -> dict:
         by_status: dict[str, int] = {}
@@ -147,16 +180,29 @@ def load_belief_map(workspace: Path) -> BeliefMap:
         for h in raw_hyps:
             if not isinstance(h, dict):
                 continue
-            posterior = h.get("posterior", h.get("prior", 0.5))
+            # Safe numeric coercion for legacy data with "TBD", "N/A", etc.
+            raw_posterior = h.get("posterior", h.get("prior", 0.5))
+            raw_prior = h.get("prior", 0.5)
+            posterior = _safe_float(raw_posterior, 0.5)
+            prior = _safe_float(raw_prior, 0.5)
             confidence = h.get("confidence", "")
             # Infer confidence from posterior for legacy data missing the field
             if not confidence:
-                confidence = _infer_confidence_from_posterior(float(posterior))
+                confidence = _infer_confidence_from_posterior(posterior)
+            # Validate status against known set
+            status = h.get("status", "untested")
+            if status not in VALID_HYPOTHESIS_STATUSES:
+                logger.warning(
+                    "Unknown hypothesis status %r in %s, defaulting to 'untested'",
+                    status, workspace
+                )
+                status = "untested"
             bm.hypotheses.append(Hypothesis(
                 id=h.get("id", ""), name=h.get("name", ""),
-                prior=h.get("prior", 0.5), posterior=posterior,
-                status=h.get("status", "untested"), evidence=h.get("evidence", []),
-                testability=h.get("testability", 0.5), impact=h.get("impact", 0.5),
+                prior=prior, posterior=posterior,
+                status=status, evidence=h.get("evidence", []),
+                testability=_safe_float(h.get("testability", 0.5), 0.5),
+                impact=_safe_float(h.get("impact", 0.5), 0.5),
                 confidence=confidence,
                 rationale=h.get("rationale", ""),
                 next_test=h.get("next_test", ""),
@@ -186,6 +232,245 @@ def save_belief_map(workspace: Path, bm: BeliefMap) -> None:
 
 
 # ===================================================================
+# Evidence-Gated Epoch Tracking
+# ===================================================================
+
+# Scaling tiers: epoch → max parallel tranches allowed.
+# Each tier is earned by producing evidence in the prior epoch.
+EPOCH_AGENT_CAP: dict[int, int] = {
+    1: 2,   # Prove the approach works
+    2: 4,   # Evidence supports scaling
+    3: 6,   # Full scale (matches default max_agents)
+}
+
+# Default cap for epochs beyond the table
+_DEFAULT_FULL_CAP: int = 6
+
+
+@dataclass
+class EpochState:
+    """Persistent epoch tracking state for an investigation.
+
+    Written to ``.swarm/epoch-state.json`` and read by both the
+    dispatcher (to enforce agent caps and detect stalls) and the
+    orchestrator prompt (to communicate the current budget).
+    """
+    epoch: int = 1
+    max_tranches: int = 2
+    findings_this_epoch: int = 0
+    belief_map_moves: int = 0  # Confidence tier changes in this epoch
+    tokens_this_epoch: int = 0
+    epoch_started_at: str = ""
+    history: list[dict] = field(default_factory=list)
+
+    @property
+    def learning_rate(self) -> float:
+        """Findings per million tokens in this epoch (0 if no tokens yet)."""
+        if self.tokens_this_epoch <= 0:
+            return 0.0
+        return self.findings_this_epoch / (self.tokens_this_epoch / 1_000_000)
+
+    @property
+    def has_evidence(self) -> bool:
+        """True if this epoch produced at least one belief-map-moving finding."""
+        return self.belief_map_moves > 0
+
+
+def load_epoch_state(workspace: Path) -> EpochState:
+    """Load epoch state from workspace, returning defaults for new investigations."""
+    path = workspace / ".swarm" / "epoch-state.json"
+    if not path.exists():
+        return EpochState(
+            epoch_started_at=datetime.now(timezone.utc).isoformat(),
+        )
+    try:
+        d = json.loads(path.read_text())
+        if not isinstance(d, dict):
+            return EpochState(
+                epoch_started_at=datetime.now(timezone.utc).isoformat(),
+            )
+        return EpochState(
+            epoch=d.get("epoch", 1),
+            max_tranches=d.get("max_tranches", 2),
+            findings_this_epoch=d.get("findings_this_epoch", 0),
+            belief_map_moves=d.get("belief_map_moves", 0),
+            tokens_this_epoch=d.get("tokens_this_epoch", 0),
+            epoch_started_at=d.get("epoch_started_at", ""),
+            history=d.get("history", []),
+        )
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning("Failed to load epoch-state.json: %s", e)
+        return EpochState(
+            epoch_started_at=datetime.now(timezone.utc).isoformat(),
+        )
+
+
+def save_epoch_state(workspace: Path, state: EpochState) -> None:
+    """Persist epoch state to workspace."""
+    path = workspace / ".swarm" / "epoch-state.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(asdict(state), indent=2))
+
+
+def advance_epoch(state: EpochState, configured_max: int = _DEFAULT_FULL_CAP) -> EpochState:
+    """Advance to the next epoch after evidence was produced.
+
+    Archives the current epoch's metrics into ``history`` and increases
+    the agent cap for the next epoch.
+    """
+    state.history.append({
+        "epoch": state.epoch,
+        "findings": state.findings_this_epoch,
+        "belief_map_moves": state.belief_map_moves,
+        "tokens": state.tokens_this_epoch,
+        "started_at": state.epoch_started_at,
+        "advanced_at": datetime.now(timezone.utc).isoformat(),
+    })
+    state.epoch += 1
+    # Cap increases per EPOCH_AGENT_CAP table, never exceeding configured max
+    raw_cap = EPOCH_AGENT_CAP.get(state.epoch, configured_max)
+    state.max_tranches = min(raw_cap, configured_max)
+    state.findings_this_epoch = 0
+    state.belief_map_moves = 0
+    state.tokens_this_epoch = 0
+    state.epoch_started_at = datetime.now(timezone.utc).isoformat()
+    return state
+
+
+def compute_learning_rate_display(state: EpochState) -> str:
+    """Format learning rate for Telegram digest display."""
+    if state.tokens_this_epoch <= 0:
+        return ""
+    rate = state.learning_rate
+    if rate <= 0:
+        return f"Learning: 0 findings (epoch {state.epoch}, cap {state.max_tranches} tranches)"
+    return (
+        f"Learning: {rate:.1f} findings/M tokens "
+        f"(epoch {state.epoch}, cap {state.max_tranches} tranches)"
+    )
+
+
+# ===================================================================
+# Structured Failure Diagnosis
+# ===================================================================
+
+
+def build_failure_diagnosis(workspace: Path) -> dict:
+    """Build a structured diagnosis of why an investigation stalled or failed.
+
+    Returns a dict suitable for writing to ``.swarm/failure-diagnosis.json``
+    and for injecting into continuation warm-start prompts.
+    """
+    swarm = workspace / ".swarm"
+    diagnosis: dict = {
+        "met_criteria": [],
+        "unmet_criteria": [],
+        "systemic_issues": [],
+        "epoch_history": [],
+        "proposed_action": "",
+    }
+
+    # Success criteria analysis
+    sc_path = swarm / "success-criteria.json"
+    if sc_path.exists():
+        try:
+            sc = json.loads(sc_path.read_text())
+            if isinstance(sc, list):
+                for c in sc:
+                    if not isinstance(c, dict):
+                        continue
+                    cid = c.get("id", "?")
+                    desc = c.get("description", "")
+                    if c.get("met"):
+                        diagnosis["met_criteria"].append(cid)
+                    else:
+                        diagnosis["unmet_criteria"].append({
+                            "id": cid,
+                            "description": desc,
+                            "diagnosis": "NOT_TESTED",
+                            "recommendation": "",
+                        })
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    # Check experiments to refine diagnosis
+    exp_path = swarm / "experiments.tsv"
+    if exp_path.exists():
+        try:
+            lines = exp_path.read_text().strip().splitlines()
+            exp_count = max(0, len(lines) - 1)  # minus header
+            keep_count = sum(1 for l in lines[1:] if "\tkeep\t" in l)
+            crash_count = sum(1 for l in lines[1:] if "\tcrash\t" in l)
+            if exp_count == 0:
+                diagnosis["systemic_issues"].append(
+                    "Zero experiments ran — plan likely overscoped or setup failed"
+                )
+            elif keep_count == 0:
+                diagnosis["systemic_issues"].append(
+                    f"{exp_count} experiments attempted but 0 produced usable results"
+                )
+            if crash_count > exp_count * 0.5 and exp_count > 0:
+                diagnosis["systemic_issues"].append(
+                    f"{crash_count}/{exp_count} experiments crashed — infrastructure issue"
+                )
+        except OSError:
+            pass
+
+    # Epoch history for learning rate trajectory
+    epoch_state = load_epoch_state(workspace)
+    diagnosis["epoch_history"] = epoch_state.history
+    if epoch_state.epoch == 1 and epoch_state.findings_this_epoch == 0:
+        diagnosis["systemic_issues"].append(
+            "Never advanced past epoch 1 — no evidence-producing work completed"
+        )
+        diagnosis["proposed_action"] = (
+            "Start with a single minimum-viable experiment that tests "
+            "the core assumption before scaling"
+        )
+
+    # Belief map state
+    bm = load_belief_map(workspace)
+    if bm.hypotheses:
+        untested = sum(1 for h in bm.hypotheses if h.status == "untested")
+        if untested == len(bm.hypotheses):
+            diagnosis["systemic_issues"].append(
+                f"All {untested} hypotheses still untested — "
+                f"agents dispatched but none produced findings"
+            )
+    else:
+        diagnosis["systemic_issues"].append(
+            "No hypotheses in belief map — investigation never reached hypothesis stage"
+        )
+
+    # Refine unmet criteria diagnoses based on experiment data
+    for entry in diagnosis["unmet_criteria"]:
+        if entry["diagnosis"] == "NOT_TESTED" and exp_path.exists():
+            # If experiments ran but criterion unmet, it's a real null, not untested
+            try:
+                lines = exp_path.read_text().strip().splitlines()
+                keep_count = sum(1 for l in lines[1:] if "\tkeep\t" in l)
+                if keep_count > 0:
+                    entry["diagnosis"] = "TESTED_BUT_UNMET"
+                    entry["recommendation"] = (
+                        "Experiments ran but did not satisfy this criterion — "
+                        "review results to determine if this is a real null or "
+                        "a methodology issue"
+                    )
+            except OSError:
+                pass
+
+    return diagnosis
+
+
+def save_failure_diagnosis(workspace: Path, diagnosis: dict) -> None:
+    """Write structured diagnosis to workspace."""
+    path = workspace / ".swarm" / "failure-diagnosis.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    diagnosis["timestamp"] = datetime.now(timezone.utc).isoformat()
+    path.write_text(json.dumps(diagnosis, indent=2))
+
+
+# ===================================================================
 # Orchestrator Checkpoint
 # ===================================================================
 
@@ -195,6 +480,11 @@ class OrchestratorCheckpoint:
     phase: str = "starting"
     mode: str = "discover"
     rigor: str = "adaptive"
+    # Orchestrator-declared work mode for phase-aware stall budgets.
+    # "" (empty) = inferred from ``phase``; "setup" | "explore" | "test" |
+    # "synthesize" when the orchestrator knows better than the coarse phase.
+    # Consumed by dispatcher._stall_phase_multiplier(). See docs/SERVER.md §3.
+    lifecycle_phase: str = ""
     hypotheses_summary: str = ""
     total_tasks: int = 0
     closed_tasks: int = 0
@@ -228,6 +518,7 @@ def load_checkpoint(workspace: Path) -> OrchestratorCheckpoint:
         return OrchestratorCheckpoint(
             cycle=d.get("cycle", 0), phase=d.get("phase", "starting"),
             mode=d.get("mode", "discover"), rigor=d.get("rigor", "adaptive"),
+            lifecycle_phase=d.get("lifecycle_phase", ""),
             hypotheses_summary=d.get("hypotheses_summary", ""),
             total_tasks=d.get("total_tasks", 0), closed_tasks=d.get("closed_tasks", 0),
             active_workers=d.get("active_workers", []),
@@ -313,6 +604,40 @@ class ConvergenceResult:
     blockers: list[str] = field(default_factory=list)
 
 
+# -- Red Team verdict gate (INV-47) -----------------------------------------
+
+
+_RED_TEAM_VERDICT_FILE = "red-team-verdict.json"
+_RED_TEAM_PASS_VERDICTS = {"pass", "pass_with_caveats"}
+_RED_TEAM_FAIL_VERDICT = "fatal_flaw"
+
+
+def _check_red_team_verdict(workspace: Path) -> list[str]:
+    """Return blockers if the Red Team verdict is missing or fatal.
+
+    Scientific+ rigor requires an independent adversarial reviewer to have
+    inspected the deliverable and written `.swarm/red-team-verdict.json`
+    with a `verdict` field in {pass, pass_with_caveats, fatal_flaw}.
+    Missing file, unparseable JSON, or fatal_flaw verdict all block
+    convergence — the orchestrator must dispatch the red-team agent (or
+    address the flagged flaw) before retrying.
+    """
+    path = workspace / ".swarm" / _RED_TEAM_VERDICT_FILE
+    if not path.exists():
+        return ["Red Team review missing — dispatch the red-team agent"]
+    try:
+        data = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return ["Red Team verdict file is unreadable — re-run the red-team agent"]
+    verdict = (data.get("verdict") or "").strip().lower()
+    if verdict == _RED_TEAM_FAIL_VERDICT:
+        reason = data.get("reason", "fatal flaw identified")
+        return [f"Red Team blocked convergence: {reason}"]
+    if verdict not in _RED_TEAM_PASS_VERDICTS:
+        return [f"Red Team verdict is invalid: {verdict or '(missing)'}"]
+    return []
+
+
 def check_convergence(workspace: Path, rigor: str,
                       eval_score: float = 0.0,
                       improvement_rounds: int = 0) -> ConvergenceResult:
@@ -377,7 +702,7 @@ def check_convergence(workspace: Path, rigor: str,
     if design_invalid:
         blockers.append(f"{len(design_invalid)} DESIGN_INVALID experiment(s) — fix before converging")
     blockers.extend(_check_success_criteria(workspace))
-    blockers.extend(_check_hypothesis_alignment(workspace))
+    blockers.extend(_check_hypothesis_alignment(workspace, tasks))
     conflicts = _helpers._find_consistency_conflicts(workspace, tasks)
     if conflicts:
         blockers.append(f"{len(conflicts)} unresolved consistency conflicts")
@@ -404,6 +729,13 @@ def check_convergence(workspace: Path, rigor: str,
         fragile = _helpers._find_undocumented_fragile(workspace, tasks)
         if fragile:
             blockers.append(f"{len(fragile)} fragile findings without conditions documented")
+
+        # Red Team gate (INV-47): scientific+ rigor requires an independent
+        # adversarial review verdict in .swarm/red-team-verdict.json before
+        # convergence is permitted.  A fatal_flaw verdict blocks; pass or
+        # pass_with_caveats allows the normal downstream gates to decide.
+        rt_blockers = _check_red_team_verdict(workspace)
+        blockers.extend(rt_blockers)
 
     if rigor == "experimental":
         unreplicated = _helpers._find_unreplicated_high_impact(workspace, tasks)
@@ -487,9 +819,10 @@ def _check_success_criteria(workspace: Path) -> list[str]:
             for c in data if isinstance(c, dict) and not c.get("met", False)]
 
 
-def _check_hypothesis_alignment(workspace: Path) -> list[str]:
+def _check_hypothesis_alignment(workspace: Path, tasks: list[dict] | None = None) -> list[str]:
     blockers: list[str] = []
-    tasks = _helpers._fetch_tasks(workspace)
+    if tasks is None:
+        tasks = _helpers._fetch_tasks(workspace)
     if tasks:
         for t in tasks:
             notes = t.get("notes", "")

@@ -8,6 +8,7 @@ to these modules — it is not tested directly here.
 import asyncio
 import importlib.util
 import json
+import subprocess
 import threading
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -34,12 +35,46 @@ from voronoi.gateway.router import (
     handle_complete,
     handle_complete_investigation,
     handle_review_investigation,
+    handle_review_negative,
+    handle_lock_negative,
     handle_continue_investigation,
     handle_claims,
+    handle_dead_ends,
     handle_ask,
     handle_deliberate,
     handle_ops,
 )
+
+
+def test_run_copilot_query_uses_temp_prompt_file_not_full_argv(tmp_path):
+    """Large ask prompts are stored in a temp file and referenced by bootstrap."""
+    from voronoi.gateway import handlers_query
+
+    full_prompt = "ASK_PROMPT_SENTINEL " * 5000
+    captured_cmd = []
+    prompt_path = ""
+
+    def fake_run(cmd, **kwargs):
+        nonlocal prompt_path
+        captured_cmd.extend(cmd)
+        prompt_arg = cmd[cmd.index("-p") + 1]
+        marker = "stored at "
+        start = prompt_arg.index(marker) + len(marker)
+        prompt_path = prompt_arg[start:].split(". Before", 1)[0]
+        assert Path(prompt_path).read_text() == full_prompt
+        return subprocess.CompletedProcess(cmd, 0, stdout="answer\n", stderr="")
+
+    with patch("shutil.which", return_value="/usr/bin/copilot"), \
+         patch("voronoi.gateway.handlers_query.subprocess.run", side_effect=fake_run):
+        result = handlers_query._run_copilot_query(full_prompt)
+
+    assert result == "answer"
+    assert "-p" in captured_cmd
+    prompt_arg = captured_cmd[captured_cmd.index("-p") + 1]
+    assert "ASK_PROMPT_SENTINEL" not in prompt_arg
+    assert "stored at" in prompt_arg
+    assert prompt_path
+    assert not Path(prompt_path).exists()
 
 
 def _load_bridge_module():
@@ -85,6 +120,32 @@ class TestConfig:
 
 
 class TestBridgeSupervision:
+    def test_action_buttons_for_partial_review(self):
+        module = _load_bridge_module()
+
+        buttons = module._action_buttons_for_text(
+            "🔬 *Synapse* is ready for partial review."
+        )
+
+        assert buttons == [[
+            ("🔬 Review", "review:Synapse"),
+            ("🔄 Continue", "continue:Synapse"),
+            ("✅ Complete", "complete:Synapse"),
+        ]]
+
+    def test_action_buttons_skip_action_heading(self):
+        module = _load_bridge_module()
+
+        buttons = module._action_buttons_for_text(
+            "*Action needed*\n• *Synapse* is paused — `/voronoi resume Synapse`"
+        )
+
+        assert buttons == [[
+            ("▶️ Resume", "resume:Synapse"),
+            ("📋 Details", "details"),
+            ("📊 Status", "status"),
+        ]]
+
     def test_run_coro_threadsafe_returns_result_without_worker_event_loop(self):
         module = _load_bridge_module()
         loop = asyncio.new_event_loop()
@@ -206,6 +267,26 @@ class TestHandlers:
         assert isinstance(result, str)
         assert len(result) > 0
 
+    def test_handle_whatsup_surfaces_durable_actions(self, tmp_path):
+        from types import SimpleNamespace
+
+        mock_q = MagicMock()
+        mock_q.get_running.return_value = []
+        mock_q.get_queued.return_value = []
+        mock_q.get_recent.return_value = [
+            SimpleNamespace(id=1, codename="Synapse", status="review"),
+            SimpleNamespace(id=2, codename="Cortex", status="paused"),
+            SimpleNamespace(id=3, codename="Axon", status="failed"),
+        ]
+        with patch("voronoi.gateway.handlers_query._get_queue", return_value=mock_q):
+            result = handle_whatsup(str(tmp_path))
+
+        assert "Action needed" in result
+        assert "/voronoi review Synapse" in result
+        assert "/voronoi continue Synapse" in result
+        assert "/voronoi resume Cortex" in result
+        assert "/voronoi resume Axon" in result
+
     def test_handle_howsitgoing_no_running(self, tmp_path):
         with patch("voronoi.gateway.handlers_query._get_active_workspaces", return_value=[]):
             result = handle_howsitgoing(str(tmp_path))
@@ -244,21 +325,22 @@ class TestHandlers:
             result = handle_pivot(str(tmp_path), "new direction")
         assert "Pivot recorded" in result
 
-    def test_handle_abort(self, tmp_path):
+    def test_handle_abort(self, tmp_path, monkeypatch):
+        base_dir = tmp_path / "server-base"
+        monkeypatch.setenv("VORONOI_BASE_DIR", str(base_dir))
         mock_q = MagicMock()
         mock_q.get_queued.return_value = []
         with patch("voronoi.gateway.handlers_mutate._get_queue", return_value=mock_q), \
              patch("voronoi.gateway.handlers_mutate._get_active_workspaces", return_value=[]):
             result = handle_abort(str(tmp_path))
         assert "Abort requested" in result
-        # Should write abort signal to global fallback
-        assert (Path.home() / ".voronoi" / ".swarm" / "abort-signal").exists()
-        # Clean up
-        (Path.home() / ".voronoi" / ".swarm" / "abort-signal").unlink(missing_ok=True)
+        assert (base_dir / ".swarm" / "abort-signal").exists()
 
-    def test_handle_abort_cancels_queued(self, tmp_path):
+    def test_handle_abort_cancels_queued(self, tmp_path, monkeypatch):
         """Abort should cancel queued investigations via the queue."""
         from voronoi.server.queue import InvestigationQueue, Investigation
+        base_dir = tmp_path / "server-base"
+        monkeypatch.setenv("VORONOI_BASE_DIR", str(base_dir))
         q = InvestigationQueue(tmp_path / "test-queue.db")
         inv = Investigation(chat_id="test", question="test q", slug="abort-test",
                             mode="discover", rigor="adaptive")
@@ -268,8 +350,37 @@ class TestHandlers:
             result = handle_abort(str(tmp_path))
         assert "Abort requested" in result
         assert "Cancelled 1" in result
-        # Clean up global abort signal
-        (Path.home() / ".voronoi" / ".swarm" / "abort-signal").unlink(missing_ok=True)
+        assert (base_dir / ".swarm" / "abort-signal").exists()
+
+    def test_gateway_workflow_uses_voronoi_base_dir_env(self, tmp_path, monkeypatch):
+        from voronoi.server.queue import InvestigationQueue
+
+        base_dir = tmp_path / "custom-server"
+        monkeypatch.setenv("VORONOI_BASE_DIR", str(base_dir))
+
+        result = handle_discover(str(tmp_path / "project"), "Why does latency rise?", "chat1")
+
+        assert "is live" in result
+        assert (base_dir / "queue.db").exists()
+        queue = InvestigationQueue(base_dir / "queue.db")
+        queued = queue.get_queued()
+        assert len(queued) == 1
+        assert queued[0].question == "Why does latency rise?"
+
+    def test_router_running_check_uses_voronoi_base_dir_env(self, tmp_path, monkeypatch):
+        from voronoi.server.queue import Investigation, InvestigationQueue
+
+        base_dir = tmp_path / "custom-server"
+        monkeypatch.setenv("VORONOI_BASE_DIR", str(base_dir))
+        queue = InvestigationQueue(base_dir / "queue.db")
+        inv_id = queue.enqueue(Investigation(
+            chat_id="chat1", question="Q", slug="q", mode="discover",
+        ))
+        queue.start(inv_id, str(tmp_path / "workspace"))
+
+        router = CommandRouter(str(tmp_path / "project"))
+
+        assert router._has_running_investigations() is True
 
 
 # ---------------------------------------------------------------------------
@@ -302,6 +413,212 @@ class TestScienceHandlers:
         result = handle_prove(str(tmp_path), "test batch size effect", "chat1")
         assert "is live" in result
         assert "proof" in result
+
+
+# ---------------------------------------------------------------------------
+# Paper-track handler (handle_paper)
+# ---------------------------------------------------------------------------
+
+class TestPaperHandler:
+    def test_empty_codename_returns_usage(self, tmp_path):
+        from voronoi.gateway.router import handle_paper
+        result = handle_paper(str(tmp_path), "", "chat1")
+        assert "Usage" in result
+        assert "/voronoi paper" in result
+
+    @patch("voronoi.gateway.handlers_workflow.InvestigationQueue", autospec=True)
+    def test_unknown_codename_returns_not_found(self, mock_queue_cls, tmp_path):
+        from voronoi.gateway.router import handle_paper
+        mock_q = MagicMock()
+        mock_q.find_by_codename.return_value = []
+        mock_queue_cls.return_value = mock_q
+
+        result = handle_paper(str(tmp_path), "Unicorn", "chat1")
+        assert "No completed investigation" in result
+        assert "Unicorn" in result
+
+    @patch("voronoi.gateway.handlers_workflow.InvestigationQueue", autospec=True)
+    @patch("voronoi.gateway.handlers_workflow.make_slug", return_value="paper-dopamine")
+    def test_enqueues_paper_track_for_completed_investigation(
+        self, mock_slug, mock_queue_cls, tmp_path,
+    ):
+        from voronoi.gateway.router import handle_paper
+        from voronoi.server.queue import Investigation
+        from voronoi.science.claims import ClaimLedger, PROVENANCE_RUN_EVIDENCE, save_ledger
+
+        parent = Investigation(
+            id=42, chat_id="chat1", status="complete",
+            question="Why is X slow?", slug="why-x", codename="Dopamine",
+            mode="discover", rigor="adaptive",
+        )
+        ledger = ClaimLedger()
+        ledger.add_claim("Encoding improves retrieval accuracy", PROVENANCE_RUN_EVIDENCE)
+        ledger.assert_claim("C1")
+        ledger.lock_claim("C1")
+        save_ledger(42, ledger, base_dir=tmp_path)
+
+        mock_q = MagicMock()
+        mock_q.db_path = tmp_path / "queue.db"
+        mock_q.find_by_codename.return_value = [parent]
+        mock_q.get_queued.return_value = []
+        mock_q.get_running.return_value = []
+        mock_q.get_paused.return_value = []
+        mock_q.get_recent.return_value = []
+        mock_q.enqueue.return_value = 43
+        stored = Investigation(
+            id=43, chat_id="chat1", codename="Serotonin", question="",
+            parent_id=42,
+        )
+        mock_q.get.return_value = stored
+        mock_queue_cls.return_value = mock_q
+
+        result = handle_paper(str(tmp_path), "dopamine", "chat1")
+        assert "paper-track is live" in result
+        assert "Dopamine" in result  # parent codename mentioned
+
+        # Verify the enqueued Investigation has the right shape.
+        assert mock_q.enqueue.call_count == 1
+        enqueued = mock_q.enqueue.call_args.args[0]
+        assert enqueued.mode == "prove"
+        assert enqueued.rigor == "scientific"
+        assert enqueued.parent_id == 42
+        assert enqueued.question.startswith("[PAPER-TRACK]")
+        assert "Dopamine" in enqueued.question
+        assert "locked or replicated Claim Ledger" in enqueued.question
+
+    @patch("voronoi.gateway.handlers_workflow.InvestigationQueue", autospec=True)
+    def test_paper_track_requires_locked_or_replicated_claim(
+        self, mock_queue_cls, tmp_path,
+    ):
+        from voronoi.gateway.router import handle_paper
+        from voronoi.server.queue import Investigation
+        from voronoi.science.claims import ClaimLedger, PROVENANCE_RUN_EVIDENCE, save_ledger
+
+        parent = Investigation(
+            id=42, chat_id="chat1", status="complete",
+            question="Why is X slow?", slug="why-x", codename="Dopamine",
+            mode="discover", rigor="adaptive",
+        )
+        ledger = ClaimLedger()
+        ledger.add_claim("Encoding improves retrieval accuracy", PROVENANCE_RUN_EVIDENCE)
+        save_ledger(42, ledger, base_dir=tmp_path)
+
+        mock_q = MagicMock()
+        mock_q.db_path = tmp_path / "queue.db"
+        mock_q.find_by_codename.return_value = [parent]
+        mock_q.get_queued.return_value = []
+        mock_q.get_running.return_value = []
+        mock_q.get_paused.return_value = []
+        mock_q.get_recent.return_value = []
+        mock_queue_cls.return_value = mock_q
+
+        result = handle_paper(str(tmp_path), "dopamine", "chat1")
+
+        assert "Reviewer Defense Brief" in result
+        assert "not paper-ready" in result
+        assert "Paper-worthy headline claims: 0" in result
+        assert "Fragile/provisional claims: 1" in result
+        assert "/voronoi review Dopamine" in result
+        mock_q.enqueue.assert_not_called()
+
+    @patch("voronoi.gateway.handlers_workflow.InvestigationQueue", autospec=True)
+    def test_paper_track_empty_ledger_falls_back_to_claim_evidence(
+        self, mock_queue_cls, tmp_path,
+    ):
+        from voronoi.gateway.router import handle_paper
+        from voronoi.server.queue import Investigation
+
+        workspace = tmp_path / "workspace"
+        (workspace / ".swarm").mkdir(parents=True)
+        (workspace / ".swarm" / "claim-evidence.json").write_text(json.dumps([
+            {"claim": "Encoding improves retrieval accuracy", "finding_ids": ["bd-1"]},
+            {"claim": "Latency stays flat", "finding_ids": ["bd-2"]},
+        ]))
+        parent = Investigation(
+            id=42, chat_id="chat1", status="complete",
+            question="Why is X slow?", slug="why-x", codename="Dopamine",
+            mode="discover", rigor="adaptive", workspace_path=str(workspace),
+        )
+        mock_q = MagicMock()
+        mock_q.db_path = tmp_path / "queue.db"
+        mock_q.find_by_codename.return_value = [parent]
+        mock_q.get_queued.return_value = []
+        mock_q.get_running.return_value = []
+        mock_q.get_paused.return_value = []
+        mock_q.get_recent.return_value = []
+        mock_queue_cls.return_value = mock_q
+
+        result = handle_paper(str(tmp_path), "dopamine", "chat1")
+
+        assert "Reviewer Defense Brief" in result
+        assert "claim-evidence.json` has 2 claim(s)" in result
+        assert "no Claim Ledger statuses" in result
+        assert "lock C<id>" in result
+        mock_q.enqueue.assert_not_called()
+
+    @patch("voronoi.gateway.handlers_workflow.InvestigationQueue", autospec=True)
+    def test_rejects_paper_for_running_investigation(self, mock_queue_cls, tmp_path):
+        from voronoi.gateway.router import handle_paper
+        from voronoi.server.queue import Investigation
+
+        mock_q = MagicMock()
+        mock_q.find_by_codename.return_value = []  # no complete match
+        mock_queue_cls.return_value = mock_q
+
+        result = handle_paper(str(tmp_path), "Dopamine", "chat1")
+        assert "No completed investigation" in result
+
+    @patch("voronoi.gateway.handlers_workflow.InvestigationQueue", autospec=True)
+    def test_duplicate_paper_track_is_blocked(self, mock_queue_cls, tmp_path):
+        from voronoi.gateway.router import handle_paper
+        from voronoi.server.queue import Investigation
+
+        parent = Investigation(
+            id=42, chat_id="c", status="complete", question="q", slug="s",
+            codename="Dopamine",
+        )
+        existing_paper = Investigation(
+            id=43, chat_id="c", status="running", question="[PAPER-TRACK] ...",
+            slug="paper-dopamine", codename="Serotonin", parent_id=42,
+        )
+        mock_q = MagicMock()
+        mock_q.find_by_codename.return_value = [parent]
+        mock_q.get_queued.return_value = []
+        mock_q.get_running.return_value = [existing_paper]
+        mock_q.get_paused.return_value = []
+        mock_q.get_recent.return_value = []
+        mock_queue_cls.return_value = mock_q
+
+        result = handle_paper(str(tmp_path), "Dopamine", "chat1")
+        assert "already" in result
+        assert "Serotonin" in result
+
+    @patch("voronoi.gateway.handlers_workflow.InvestigationQueue", autospec=True)
+    def test_failed_paper_track_warns_user(self, mock_queue_cls, tmp_path):
+        from voronoi.gateway.router import handle_paper
+        from voronoi.server.queue import Investigation
+
+        parent = Investigation(
+            id=42, chat_id="c", status="complete", question="q", slug="s",
+            codename="Dopamine",
+        )
+        failed_paper = Investigation(
+            id=43, chat_id="c", status="failed", question="[PAPER-TRACK] ...",
+            slug="paper-dopamine", codename="Serotonin", parent_id=42,
+        )
+        mock_q = MagicMock()
+        mock_q.find_by_codename.side_effect = lambda cn, **kw: (
+            [parent] if kw.get("statuses") == ("complete", "review") else [failed_paper]
+        )
+        mock_q.get_queued.return_value = []
+        mock_q.get_running.return_value = []
+        mock_q.get_paused.return_value = []
+        mock_q.get_recent.return_value = [failed_paper]
+        mock_queue_cls.return_value = mock_q
+
+        result = handle_paper(str(tmp_path), "Dopamine", "chat1")
+        assert "failed" in result.lower()
+        assert "Serotonin" in result
 
 
 # ---------------------------------------------------------------------------
@@ -397,6 +714,48 @@ class TestKnowledgeHandlers:
         mock_bd.return_value = (1, "not found")
         result = handle_finding(str(tmp_path), "bd-999")
         assert "not found" in result
+
+    def test_handle_dead_ends_empty(self, tmp_path):
+        """With no ledgers and an empty knowledge DB, returns a friendly message."""
+        from voronoi.gateway.knowledge import FederatedKnowledge
+        mock_q = MagicMock()
+        mock_q.db_path = tmp_path / "queue.db"
+        # No ledgers directory exists under tmp_path → iter_all_ledgers yields nothing
+        empty_fk = FederatedKnowledge(tmp_path / "knowledge.db")
+        with patch("voronoi.gateway.handlers_query._get_queue", return_value=mock_q), \
+             patch("voronoi.gateway.handlers_query._get_federated_knowledge",
+                   return_value=empty_fk):
+            result = handle_dead_ends(str(tmp_path), "")
+        assert "dead ends" in result.lower()
+        assert "No dead ends" in result
+
+    def test_handle_dead_ends_lists_retired_claims(self, tmp_path):
+        """Retired claims from any lineage surface in the dead-ends listing."""
+        from voronoi.science.claims import (
+            ClaimLedger, PROVENANCE_RUN_EVIDENCE, save_ledger,
+        )
+        from voronoi.gateway.knowledge import FederatedKnowledge
+
+        ledger = ClaimLedger()
+        ledger.add_claim("Dropout 0.5 hurts accuracy", PROVENANCE_RUN_EVIDENCE)
+        ledger.retire_claim("C1")
+        save_ledger(7, ledger, base_dir=tmp_path)
+
+        mock_q = MagicMock()
+        mock_q.db_path = tmp_path / "queue.db"
+        fake_inv = MagicMock()
+        fake_inv.codename = "Mimir"
+        mock_q.get.return_value = fake_inv
+
+        empty_fk = FederatedKnowledge(tmp_path / "knowledge.db")
+        with patch("voronoi.gateway.handlers_query._get_queue", return_value=mock_q), \
+             patch("voronoi.gateway.handlers_query._get_federated_knowledge",
+                   return_value=empty_fk):
+            result = handle_dead_ends(str(tmp_path), "")
+
+        assert "Mimir" in result
+        assert "Dropout" in result
+        assert "retired" in result.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -912,6 +1271,107 @@ class TestReviewContinueClaims:
             result = handle_review_investigation(str(tmp_path), "Nonexistent")
         assert "not found" in result
 
+    def test_review_negative_records_negative_result_claim(self, tmp_path):
+        from voronoi.science.claims import load_ledger, save_ledger
+
+        q, inv_id = self._setup_investigation(tmp_path)
+        ledger = load_ledger(inv_id, base_dir=tmp_path)
+        ledger.retire_claim("C2")
+        ledger.challenge_claim("C1", "replication failed", raised_by="PI")
+        save_ledger(inv_id, ledger, base_dir=tmp_path)
+
+        with patch("voronoi.gateway.handlers_mutate._get_queue", return_value=q):
+            result = handle_review_negative(str(tmp_path), "Synapse")
+
+        updated = load_ledger(inv_id, base_dir=tmp_path)
+        negative = updated.get_claim("C3")
+        assert negative is not None
+        assert "Negative Result Review" in result
+        assert "lock-negative Synapse C3" in result
+        assert "deliberate Synapse" in result
+        assert "continue Synapse" in result
+        assert negative.model_basis == "negative_result_review"
+        assert negative.supporting_findings == ["C2"]
+        assert "Not lockable yet" in result
+
+    def test_review_negative_challenged_only_does_not_record(self, tmp_path):
+        from voronoi.science.claims import load_ledger, save_ledger
+
+        q, inv_id = self._setup_investigation(tmp_path)
+        ledger = load_ledger(inv_id, base_dir=tmp_path)
+        ledger.challenge_claim("C1", "replication failed", raised_by="PI")
+        save_ledger(inv_id, ledger, base_dir=tmp_path)
+
+        with patch("voronoi.gateway.handlers_mutate._get_queue", return_value=q):
+            result = handle_review_negative(str(tmp_path), "Synapse")
+
+        updated = load_ledger(inv_id, base_dir=tmp_path)
+        assert "Only challenged claim" in result
+        assert "Resolve or retire" in result
+        assert len(updated.claims) == 2
+
+    def test_review_negative_without_negative_sources_does_not_record(self, tmp_path):
+        from voronoi.science.claims import load_ledger
+
+        q, inv_id = self._setup_investigation(tmp_path)
+        with patch("voronoi.gateway.handlers_mutate._get_queue", return_value=q):
+            result = handle_review_negative(str(tmp_path), "Synapse")
+
+        ledger = load_ledger(inv_id, base_dir=tmp_path)
+        assert "No retired/falsified claims" in result
+        assert len(ledger.claims) == 2
+
+    def test_lock_negative_locks_recorded_negative_result(self, tmp_path):
+        from voronoi.science.claims import load_ledger, save_ledger
+
+        q, inv_id = self._setup_investigation(tmp_path)
+        ledger = load_ledger(inv_id, base_dir=tmp_path)
+        ledger.retire_claim("C2")
+        save_ledger(inv_id, ledger, base_dir=tmp_path)
+
+        with patch("voronoi.gateway.handlers_mutate._get_queue", return_value=q):
+            handle_review_negative(str(tmp_path), "Synapse")
+            result = handle_lock_negative(str(tmp_path), "Synapse", "C3")
+
+        updated = load_ledger(inv_id, base_dir=tmp_path)
+        assert "locked as a negative result" in result
+        assert updated.get_claim("C3").status == "locked"
+
+    def test_lock_negative_rejects_ordinary_claim(self, tmp_path):
+        from voronoi.science.claims import load_ledger
+
+        q, inv_id = self._setup_investigation(tmp_path)
+        with patch("voronoi.gateway.handlers_mutate._get_queue", return_value=q):
+            result = handle_lock_negative(str(tmp_path), "Synapse", "C1")
+
+        ledger = load_ledger(inv_id, base_dir=tmp_path)
+        assert "not a recorded negative-result" in result
+        assert ledger.get_claim("C1").status == "asserted"
+
+    def test_lock_negative_rejects_review_with_unresolved_source_claim(self, tmp_path):
+        from voronoi.science.claims import load_ledger, save_ledger
+        from voronoi.science.interpretation import record_negative_result
+
+        q, inv_id = self._setup_investigation(tmp_path)
+        ledger = load_ledger(inv_id, base_dir=tmp_path)
+        ledger.challenge_claim("C1", "replication failed", raised_by="PI")
+        record_negative_result(
+            ledger,
+            "Synapse produced a negative result by unresolved challenge.",
+            codename="Synapse",
+            primary_claim_ids=["C1"],
+            reason_summary="challenged: C1",
+            source_cycle=1,
+        )
+        save_ledger(inv_id, ledger, base_dir=tmp_path)
+
+        with patch("voronoi.gateway.handlers_mutate._get_queue", return_value=q):
+            result = handle_lock_negative(str(tmp_path), "Synapse", "C3")
+
+        updated = load_ledger(inv_id, base_dir=tmp_path)
+        assert "unresolved source claim" in result
+        assert updated.get_claim("C3").status == "provisional"
+
     def test_claims_shows_ledger(self, tmp_path):
         q, inv_id = self._setup_investigation(tmp_path)
         with patch("voronoi.gateway.handlers_query._get_queue", return_value=q):
@@ -927,6 +1387,47 @@ class TestReviewContinueClaims:
         assert "Round 2" in result
         assert "queued" in result.lower()
 
+    def test_continue_refuses_no_info_rerun(self, tmp_path):
+        """BUG-001: converged+paper+no-feedback must refuse to rerun."""
+        import json as _json
+        q, inv_id = self._setup_investigation(tmp_path)
+        inv = q.get(inv_id)
+        ws = Path(inv.workspace_path)
+        (ws / ".swarm").mkdir(parents=True, exist_ok=True)
+        (ws / ".swarm" / "convergence.json").write_text(
+            _json.dumps({"gate_passed": True})
+        )
+        (ws / "deliverable.md").write_text("# Final paper\n")
+        with patch("voronoi.gateway.handlers_mutate._get_queue", return_value=q):
+            result = handle_continue_investigation(str(tmp_path), "Synapse", "")
+        assert "converged" in result.lower() or "no new information" in result.lower()
+        # Investigation should NOT have been re-queued
+        assert q.get(inv_id).status in ("review", "complete")
+
+    def test_continue_allows_rerun_with_feedback(self, tmp_path):
+        """Converged+paper but with feedback → continuation allowed."""
+        import json as _json
+        q, inv_id = self._setup_investigation(tmp_path)
+        inv = q.get(inv_id)
+        ws = Path(inv.workspace_path)
+        (ws / ".swarm").mkdir(parents=True, exist_ok=True)
+        (ws / ".swarm" / "convergence.json").write_text(
+            _json.dumps({"gate_passed": True})
+        )
+        (ws / "deliverable.md").write_text("# Final paper\n")
+        with patch("voronoi.gateway.handlers_mutate._get_queue", return_value=q):
+            result = handle_continue_investigation(
+                str(tmp_path), "Synapse", "try a larger N",
+            )
+        assert "Round 2" in result
+
+    def test_continue_allows_rerun_when_not_converged(self, tmp_path):
+        """No convergence.json → not converged → continuation allowed."""
+        q, inv_id = self._setup_investigation(tmp_path)
+        with patch("voronoi.gateway.handlers_mutate._get_queue", return_value=q):
+            result = handle_continue_investigation(str(tmp_path), "Synapse", "")
+        assert "Round 2" in result
+
     def test_continue_wrong_status(self, tmp_path):
         from voronoi.server.queue import InvestigationQueue, Investigation
         q = InvestigationQueue(tmp_path / "queue.db")
@@ -939,6 +1440,26 @@ class TestReviewContinueClaims:
             result = handle_continue_investigation(str(tmp_path), "Test")
         assert "running" in result.lower()
 
+    def test_continue_failed_with_partial_artifact(self, tmp_path):
+        from voronoi.server.queue import InvestigationQueue, Investigation
+
+        q = InvestigationQueue(tmp_path / "queue.db")
+        workspace = tmp_path / "workspace"
+        swarm = workspace / ".swarm"
+        swarm.mkdir(parents=True)
+        (swarm / "deliverable-partial.md").write_text("# Partial review")
+        inv_id = q.enqueue(Investigation(
+            chat_id="c1", question="Q", slug="q", codename="Test", mode="discover",
+        ))
+        q.start(inv_id, str(workspace))
+        q.fail(inv_id, "parked for partial review")
+
+        with patch("voronoi.gateway.handlers_mutate._get_queue", return_value=q):
+            result = handle_continue_investigation(str(tmp_path), "Test", "keep going")
+
+        assert "Round 2" in result
+        assert "queued" in result.lower()
+
     def test_router_dispatches_review(self, tmp_path):
         router = CommandRouter(str(tmp_path))
         with patch("voronoi.gateway.router.handle_review_investigation",
@@ -946,6 +1467,22 @@ class TestReviewContinueClaims:
             text, _ = router.route("review", ["Synapse"], "c1")
         assert text == "review result"
         mock.assert_called_once_with(str(tmp_path), "Synapse")
+
+    def test_router_dispatches_review_negative(self, tmp_path):
+        router = CommandRouter(str(tmp_path))
+        with patch("voronoi.gateway.router.handle_review_negative",
+                    return_value="negative result") as mock:
+            text, _ = router.route("review-negative", ["Synapse"], "c1")
+        assert text == "negative result"
+        mock.assert_called_once_with(str(tmp_path), "Synapse")
+
+    def test_router_dispatches_lock_negative(self, tmp_path):
+        router = CommandRouter(str(tmp_path))
+        with patch("voronoi.gateway.router.handle_lock_negative",
+                    return_value="locked") as mock:
+            text, _ = router.route("lock-negative", ["Synapse", "C3"], "c1")
+        assert text == "locked"
+        mock.assert_called_once_with(str(tmp_path), "Synapse", "C3")
 
     def test_router_dispatches_continue(self, tmp_path):
         router = CommandRouter(str(tmp_path))
@@ -1095,12 +1632,11 @@ class TestOpsHandler:
         # grep line should be filtered out
         assert "grep" not in result
 
-    def test_ops_disk(self, tmp_path):
-        active = Path.home() / ".voronoi" / "active"
-        with patch("voronoi.gateway.handlers_query.subprocess.run") as mock_run, \
-             patch("voronoi.gateway.handlers_query.Path.home") as mock_home:
-            mock_home.return_value = tmp_path
-            active_dir = tmp_path / ".voronoi" / "active"
+    def test_ops_disk(self, tmp_path, monkeypatch):
+        base_dir = tmp_path / "server-base"
+        monkeypatch.setenv("VORONOI_BASE_DIR", str(base_dir))
+        with patch("voronoi.gateway.handlers_query.subprocess.run") as mock_run:
+            active_dir = base_dir / "active"
             active_dir.mkdir(parents=True)
             (active_dir / "inv-1").mkdir()
             mock_run.return_value = MagicMock(
@@ -1109,18 +1645,18 @@ class TestOpsHandler:
             result = handle_ops(str(tmp_path), "disk")
         assert "ops disk" in result
 
-    def test_ops_logs(self, tmp_path):
-        with patch("voronoi.gateway.handlers_query.Path.home") as mock_home:
-            mock_home.return_value = tmp_path
-            active_dir = tmp_path / ".voronoi" / "active"
-            swarm_dir = active_dir / "inv-1" / ".swarm"
-            swarm_dir.mkdir(parents=True)
-            (swarm_dir / "agent.log").write_text("line1\nline2\nline3\n")
-            with patch("voronoi.gateway.handlers_query.subprocess.run") as mock_run:
-                mock_run.return_value = MagicMock(
-                    returncode=0, stdout="line1\nline2\nline3", stderr="",
-                )
-                result = handle_ops(str(tmp_path), "logs")
+    def test_ops_logs(self, tmp_path, monkeypatch):
+        base_dir = tmp_path / "server-base"
+        monkeypatch.setenv("VORONOI_BASE_DIR", str(base_dir))
+        active_dir = base_dir / "active"
+        swarm_dir = active_dir / "inv-1" / ".swarm"
+        swarm_dir.mkdir(parents=True)
+        (swarm_dir / "agent.log").write_text("line1\nline2\nline3\n")
+        with patch("voronoi.gateway.handlers_query.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0, stdout="line1\nline2\nline3", stderr="",
+            )
+            result = handle_ops(str(tmp_path), "logs")
         assert "inv-1" in result
         assert "ops logs" in result
 
@@ -1173,3 +1709,78 @@ class TestDeliberate:
             "chat1", is_private=True,
         )
         assert isinstance(text, str)
+
+
+# ---------------------------------------------------------------------------
+# Callback handler security & robustness (BUG-001 through BUG-004)
+# ---------------------------------------------------------------------------
+
+class TestCallbackHandlerSecurity:
+    """Tests for inline button callback handler fixes."""
+
+    def test_handle_callback_enforces_allowlist(self):
+        """BUG-001: handle_callback must check _is_allowed before routing."""
+        bridge = _load_bridge_module()
+        source = __import__("inspect").getsource(bridge.run_bot)
+        # The handle_callback function is defined inside run_bot, so we
+        # verify that the source of run_bot contains the auth guard.
+        assert "_is_allowed" in source
+        # Must appear inside handle_callback, not just in other handlers.
+        # Find the handle_callback block and check it contains the guard.
+        cb_start = source.index("async def handle_callback")
+        # Next function definition after handle_callback
+        next_func = source.find("async def ", cb_start + 30)
+        if next_func == -1:
+            next_func = source.find("def ", cb_start + 30)
+        cb_block = source[cb_start:next_func] if next_func != -1 else source[cb_start:]
+        assert "_is_allowed" in cb_block, (
+            "handle_callback must call _is_allowed to enforce INV-28"
+        )
+
+    def test_handle_callback_guards_none_message(self):
+        """BUG-002: handle_callback must not crash when query.message is None."""
+        bridge = _load_bridge_module()
+        source = __import__("inspect").getsource(bridge.run_bot)
+        cb_start = source.index("async def handle_callback")
+        next_func = source.find("async def ", cb_start + 30)
+        if next_func == -1:
+            next_func = source.find("def ", cb_start + 30)
+        cb_block = source[cb_start:next_func] if next_func != -1 else source[cb_start:]
+        # Must guard against None message before calling reply_text
+        assert "query.message is None" in cb_block, (
+            "handle_callback must guard against query.message being None"
+        )
+
+    def test_send_returns_none_on_failure(self):
+        """BUG-003: _send must return None on failure, not a stale message_id."""
+        bridge = _load_bridge_module()
+        source = __import__("inspect").getsource(bridge.run_bot)
+        # Find the _send function and verify its except block returns None
+        send_start = source.index("def _send(text: str)")
+        send_end = source.find("\n            def ", send_start + 10)
+        send_block = source[send_start:send_end] if send_end != -1 else source[send_start:send_start + 500]
+        assert "return None" in send_block
+        # The except block for schedule failure must return None, not _last_sent_msg_id
+        except_idx = send_block.find("except Exception:")
+        if except_idx != -1:
+            # Extract only up to the next return statement after the except
+            after_except = send_block[except_idx:]
+            return_idx = after_except.find("return ")
+            if return_idx != -1:
+                return_line = after_except[return_idx:after_except.find("\n", return_idx)]
+                assert return_line.strip() == "return None", (
+                    f"_send except block must 'return None', got: {return_line.strip()!r}"
+                )
+
+    def test_handle_callback_saves_chat_id(self):
+        """BUG-004: handle_callback must call save_chat_id."""
+        bridge = _load_bridge_module()
+        source = __import__("inspect").getsource(bridge.run_bot)
+        cb_start = source.index("async def handle_callback")
+        next_func = source.find("async def ", cb_start + 30)
+        if next_func == -1:
+            next_func = source.find("def ", cb_start + 30)
+        cb_block = source[cb_start:next_func] if next_func != -1 else source[cb_start:]
+        assert "save_chat_id" in cb_block, (
+            "handle_callback must persist chat_id for outbound notifications"
+        )

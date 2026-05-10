@@ -235,7 +235,13 @@ def cmd_init(args: argparse.Namespace) -> None:
     init_script = target / "scripts" / "swarm-init.sh"
     if init_script.exists():
         print("\nRunning swarm-init.sh...")
-        subprocess.run(["bash", str(init_script)], cwd=str(target))
+        result = subprocess.run(["bash", str(init_script)], cwd=str(target))
+        if result.returncode != 0:
+            print(
+                "  Warning: swarm-init.sh did not complete. "
+                "Install/update Beads with server-mode support before running agents: "
+                "https://github.com/gastownhall/beads"
+            )
 
     # Re-copy AGENTS.md after swarm-init.sh — bd init overwrites it with
     # its own template that unconditionally mandates git push. The Voronoi
@@ -379,7 +385,10 @@ def cmd_demo(args: argparse.Namespace) -> None:
         if args.dry_run:
             print(f"\n--dry-run: demo copied but not started.")
             print(f"To run manually:")
-            print(f"  copilot --allow-all -p \"$(cat .swarm/orchestrator-prompt.txt)\"")
+            print(
+                "  copilot --allow-all -p \"Read .swarm/orchestrator-prompt.txt "
+                "completely before acting.\""
+            )
             return
 
         # Read config for agent settings
@@ -410,14 +419,21 @@ def cmd_demo(args: argparse.Namespace) -> None:
         # Write prompt to file for reference/debugging
         swarm_dir = target / ".swarm"
         swarm_dir.mkdir(parents=True, exist_ok=True)
-        (swarm_dir / "orchestrator-prompt.txt").write_text(prompt)
+        prompt_file = swarm_dir / "orchestrator-prompt.txt"
+        prompt_file.write_text(prompt)
+        bootstrap_prompt = (
+            "You are the Voronoi demo orchestrator. The full launch prompt is "
+            "stored at .swarm/orchestrator-prompt.txt. Before doing anything "
+            "else, read that file completely and follow it exactly. Treat this "
+            "bootstrap only as a pointer; the file is authoritative."
+        )
 
         # Launch orchestrator — Copilot IS the autopilot now
         agent_flags = "--allow-all"
         cmd = [agent_cmd] + agent_flags.split()
         if orchestrator_model:
             cmd += ["--model", orchestrator_model]
-        cmd += ["-p", prompt]
+        cmd += ["-p", bootstrap_prompt]
 
         project_name = target.name
         print(f"\nLaunching orchestrator...\n")
@@ -542,8 +558,6 @@ def cmd_version(args: argparse.Namespace) -> None:
 
 def cmd_server(args: argparse.Namespace) -> None:
     """Handle server subcommands."""
-    from voronoi.server.runner import ServerConfig
-
     if args.server_action == "init":
         _server_init(args)
     elif args.server_action == "start":
@@ -649,7 +663,7 @@ def _server_start(args: argparse.Namespace) -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("telegram").setLevel(logging.WARNING)
 
-    config = ServerConfig()
+    config = ServerConfig(base_dir=getattr(args, "base_dir", None))
 
     if not config.base_dir.exists():
         print("Server not initialized. Run: voronoi server init")
@@ -705,6 +719,7 @@ def _server_start(args: argparse.Namespace) -> None:
 
     # Pass log level to the bridge subprocess via environment
     env = _server_runtime_env(config.base_dir)
+    env["VORONOI_BASE_DIR"] = str(config.base_dir)
     env.setdefault("VORONOI_LOG_LEVEL", log_level)
 
     try:
@@ -766,7 +781,7 @@ def _server_status(args: argparse.Namespace) -> None:
     from voronoi.server.runner import ServerConfig
     from voronoi.server.workspace import WorkspaceManager
 
-    config = ServerConfig()
+    config = ServerConfig(base_dir=getattr(args, "base_dir", None))
     queue_path = config.base_dir / "queue.db"
 
     if not config.base_dir.exists():
@@ -797,31 +812,87 @@ def _server_status(args: argparse.Namespace) -> None:
 
 
 def _server_prune(args: argparse.Namespace) -> None:
-    """Clean up old investigation workspaces."""
+    """Clean up old terminal investigation workspaces and orphaned swarms."""
     from voronoi.server.runner import ServerConfig
+    from voronoi.server.queue import InvestigationQueue
+    from voronoi.server.tmux import cleanup_tmux
     from voronoi.server.workspace import WorkspaceManager
 
-    config = ServerConfig()
+    config = ServerConfig(base_dir=getattr(args, "base_dir", None))
     wm = WorkspaceManager(config.base_dir)
-    active = wm.list_active()
+    active_dir = config.base_dir / "active"
+    queue_path = config.base_dir / "queue.db"
+    terminal_statuses = {"complete", "failed", "cancelled"}
+    cutoff = time.time() - (config.workspace_retention_days * 86400)
+    eligible = []
 
-    if not active:
+    if queue_path.exists():
+        queue = InvestigationQueue(queue_path)
+        investigations = queue.get_recent(limit=100000)
+        protected_paths = {
+            str(Path(inv.workspace_path))
+            for inv in investigations
+            if inv.workspace_path and inv.status not in terminal_statuses
+        }
+        for inv in investigations:
+            if inv.status not in terminal_statuses or not inv.workspace_path:
+                continue
+            if str(Path(inv.workspace_path)) in protected_paths:
+                continue
+            completed_at = inv.completed_at or inv.created_at
+            if completed_at <= cutoff:
+                eligible.append(inv)
+
+    orphan_swarms = []
+    if active_dir.exists():
+        for swarm_dir in sorted(active_dir.glob("inv-*-swarm")):
+            if not swarm_dir.is_dir():
+                continue
+            main_name = swarm_dir.name.removesuffix("-swarm")
+            if not (active_dir / main_name).exists():
+                orphan_swarms.append(swarm_dir)
+
+    if not eligible and not orphan_swarms:
         print("No workspaces to prune.")
         return
 
-    print(f"Active workspaces: {len(active)}")
-    for name in active:
-        print(f"  {name}")
+    print(f"Prunable terminal workspaces: {len(eligible)}")
+    for inv in eligible:
+        print(f"  #{inv.id} {Path(inv.workspace_path).name} ({inv.status})")
+    print(f"Orphan swarm directories: {len(orphan_swarms)}")
+    for swarm_dir in orphan_swarms:
+        print(f"  {swarm_dir.name}")
 
     if not getattr(args, "force", False):
-        print(f"\nRun with --force to remove all workspaces.")
+        print("\nRun with --force to remove these workspaces and swarm directories.")
         return
 
-    for name in active:
-        p = config.base_dir / "active" / name
-        if p.exists():
-            shutil.rmtree(p)
-            print(f"  ✓ Removed {name}")
+    for inv in eligible:
+        workspace_path = Path(inv.workspace_path)
+        cleanup_tmux(f"voronoi-inv-{inv.id}", workspace_path)
+        diagnostics: list[str] = []
+        removed = wm.cleanup_path(workspace_path, diagnostics=diagnostics)
+        if removed:
+            print(f"  Removed {workspace_path.name}")
+        else:
+            print(f"  Could not remove {workspace_path.name}")
+        for message in diagnostics:
+            print(f"    Warning: {message}")
+
+    for swarm_dir in orphan_swarms:
+        try:
+            shutil.rmtree(swarm_dir)
+            print(f"  Removed {swarm_dir.name}")
+        except OSError as exc:
+            from voronoi.server.workspace import describe_live_file_holders
+            holders = describe_live_file_holders([swarm_dir])
+            if holders:
+                print(
+                    f"  Could not remove {swarm_dir.name}; "
+                    f"live processes hold files: {', '.join(holders[:8])}"
+                )
+            else:
+                print(f"  Could not remove {swarm_dir.name}: {exc}")
 
     print("Done.")
 
@@ -830,7 +901,7 @@ def _server_config(args: argparse.Namespace) -> None:
     """Show server configuration."""
     from voronoi.server.runner import ServerConfig
 
-    config = ServerConfig()
+    config = ServerConfig(base_dir=getattr(args, "base_dir", None))
     if not config.config_path.exists():
         print("No config found. Run: voronoi server init")
         sys.exit(1)
@@ -839,15 +910,15 @@ def _server_config(args: argparse.Namespace) -> None:
 
 
 def _server_extend_timeout(args: argparse.Namespace) -> None:
-    """Extend (or set) the timeout for a running investigation.
+    """Set the review budget for a running investigation.
 
-    Writes the new total timeout to <workspace>/.swarm/timeout_hours so the
+    Writes the total review budget to <workspace>/.swarm/timeout_hours so the
     dispatcher picks it up on the next poll cycle — no restart required.
     """
     from voronoi.server.runner import ServerConfig
     from voronoi.server.workspace import WorkspaceManager
 
-    config = ServerConfig()
+    config = ServerConfig(base_dir=getattr(args, "base_dir", None))
     if not config.base_dir.exists():
         print("Server not initialized. Run: voronoi server init")
         sys.exit(1)
@@ -897,8 +968,8 @@ def _server_extend_timeout(args: argparse.Namespace) -> None:
     swarm_dir.mkdir(parents=True, exist_ok=True)
     override_file = swarm_dir / "timeout_hours"
     override_file.write_text(str(hours))
-    print(f"Timeout for {ws_path.name} set to {hours}h (was {config.sandbox.timeout_hours}h default).")
-    print("The dispatcher will pick this up on the next poll cycle.")
+    print(f"Review budget for {ws_path.name} set to {hours}h.")
+    print("The dispatcher will park the run for review if the budget is reached.")
 
 
 def main() -> None:
@@ -933,18 +1004,28 @@ def main() -> None:
     # Server subcommand
     server_parser = sub.add_parser("server", help="Manage the Voronoi server")
     server_sub = server_parser.add_subparsers(dest="server_action")
+    base_dir_help = "Custom server base directory (default: VORONOI_BASE_DIR or ~/.voronoi)"
     server_init = server_sub.add_parser("init", help="Initialize server at ~/.voronoi/")
-    server_init.add_argument("--base-dir", dest="base_dir", help="Custom base directory")
+    server_init.add_argument("--base-dir", dest="base_dir", help=base_dir_help)
     server_start = server_sub.add_parser("start", help="Start Telegram bridge")
+    server_start.add_argument("--base-dir", dest="base_dir", help=base_dir_help)
     server_start.add_argument("--daemon", action="store_true", help="Run the Telegram bridge in the background")
     server_start.add_argument("--log-file", help="Path to the bridge log file when using --daemon")
-    server_sub.add_parser("status", help="Show server status")
+    server_status = server_sub.add_parser("status", help="Show server status")
+    server_status.add_argument("--base-dir", dest="base_dir", help=base_dir_help)
     server_prune = server_sub.add_parser("prune", help="Clean up old workspaces")
+    server_prune.add_argument("--base-dir", dest="base_dir", help=base_dir_help)
     server_prune.add_argument("--force", action="store_true", help="Actually remove workspaces")
-    server_sub.add_parser("config", help="Show server configuration")
-    ext_parser = server_sub.add_parser("extend-timeout", help="Extend timeout for a running investigation")
+    server_config = server_sub.add_parser("config", help="Show server configuration")
+    server_config.add_argument("--base-dir", dest="base_dir", help=base_dir_help)
+    ext_parser = server_sub.add_parser(
+        "extend-timeout",
+        help="Set review budget for a running investigation",
+        description="Set review budget for a running investigation",
+    )
+    ext_parser.add_argument("--base-dir", dest="base_dir", help=base_dir_help)
     ext_parser.add_argument("investigation", help="Investigation ID or workspace name")
-    ext_parser.add_argument("hours", type=int, help="New total timeout in hours")
+    ext_parser.add_argument("hours", type=int, help="Total review budget in hours")
 
     args = parser.parse_args()
 

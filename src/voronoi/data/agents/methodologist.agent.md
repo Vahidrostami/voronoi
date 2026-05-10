@@ -3,7 +3,7 @@ name: methodologist
 description: Experimental design reviewer that ensures proper controls, adequate sample sizes, appropriate statistical tests, and SOTA compliance before any investigation proceeds.
 tools: ["execute", "read", "search", "edit"]
 disable-model-invocation: true
-user-invokable: false
+user-invocable: false
 ---
 
 # Methodologist Agent 📐

@@ -10,11 +10,15 @@ The science layer (`src/voronoi/science/`) enforces the scientific rigor framewo
 
 | Submodule | Responsibility |
 |-----------|---------------|
-| `consistency.py` | Beads queries, consistency gate, paradigm stress, heartbeat stall, finding interpretation, claim-evidence I/O, success criteria I/O |
-| `convergence.py` | Belief map, orchestrator checkpoint, convergence detection |
-| `fabrication.py` | Anti-fabrication verification, simulation bypass detection |
-| `gates.py` | Dispatch/merge gates, pre-registration, invariants, calibration, replication |
-| `claims.py` | Cross-run claim ledger, provenance, objections, self-critique |
+| `consistency.py` | Consistency gates, paradigm stress, heartbeat stalls, claim-evidence and success-criteria I/O |
+| `convergence.py` | Belief maps, checkpoint-aware convergence detection, Red Team gate integration |
+| `fabrication.py` | Anti-fabrication verification, data hashes, simulation bypass detection |
+| `gates.py` | Rigor gates, pre-registration checks, dispatch/merge validation |
+| `claims.py` | Lineage-scoped Claim Ledger, provenance, objections, self-critique |
+| `interpretation.py` | Directional verification, triviality checks, tribunal verdicts, continuation proposals |
+| `manifest.py` | Run Manifest assembly and source-of-truth mapping |
+| `citation_coverage.py` | Paper-track citation integration and orphan-citation gate |
+| `lab_kg.py` | Per-PI Lab-KG for durable cross-lineage priors and dead ends |
 
 All public symbols are re-exported from `science/__init__.py`, so `from voronoi.science import X` works as before.
 
@@ -39,6 +43,9 @@ Rigor is determined by mode: DISCOVER uses adaptive rigor (starts analytical, es
 | Adversarial review loop | — | YES | YES | YES |
 | Plan review | YES (Critic) | YES (Critic + Theorist) | YES (Critic + Theorist) | YES (Critic + Theorist + Methodologist) |
 | Replication | — | — | — | YES |
+| Citation-coverage (paper-track only) | — | — | YES (Scribe + Refiner) | YES (Scribe + Refiner) |
+
+Paper-track gates (Outliner, Lit-Synthesizer, Figure-Critic, Refiner) are orthogonal to rigor — see §20.
 
 ## 3. Pre-Registration
 
@@ -124,7 +131,7 @@ class Hypothesis:
     name: str
     prior: float           # Initial probability [0, 1] (legacy, kept for compat)
     posterior: float        # Updated probability [0, 1] (legacy, kept for compat)
-    status: str            # untested | testing | confirmed | refuted | merged
+    status: str            # untested | testing | confirmed | refuted | refuted_reversed | inconclusive | merged
     evidence: list[str]    # Finding IDs supporting/refuting
     testability: float     # How easily tested [0, 1]
     impact: float          # How important if true [0, 1]
@@ -144,7 +151,7 @@ class BeliefMap:
     def update_hypothesis(self, id: str, posterior: float, status: str) -> None: ...
     def get_priority_order(self) -> list[Hypothesis]: ...  # Sorted by information_gain DESC
     def all_resolved(self) -> bool: ...                     # All confirmed or rejected
-    def summary(self) -> str: ...                           # Human-readable summary
+    def summary(self) -> dict: ...                           # {total, by_status, cycle}
 ```
 
 ### File Location
@@ -262,7 +269,7 @@ At Scientific and Experimental rigor, the investigation pauses for human approva
 | Pre-registration | After pre-reg, before experiments | Write `.swarm/human-gate.json` with `status: "pending"` |
 | Convergence | Before finalizing deliverable | Same file, new gate entry |
 
-The dispatcher detects pending gates and sends a Telegram message. The human replies `/approve <id>` or `/revise <id> <feedback>`. The orchestrator polls the gate file and resumes when approved or revises when feedback is given.
+The dispatcher detects pending gates and sends a Telegram message. The human replies `/approve <id>` or `/revise <id> <feedback>`. The orchestrator **parks and exits** at the gate (writes the gate file, writes a checkpoint with `active_workers: []` and `phase: "awaiting-human-gate"`, terminates); it must not sleep or poll the gate file in-session. The dispatcher kills any still-alive session, and on approval/revision restarts the agent with a resume prompt that reads the updated gate status.
 
 This prevents the system from spending hours on a flawed methodology that a human would catch in minutes.
 
@@ -575,13 +582,18 @@ This prevents silent false-passes when the contract's field paths don't match th
 
 When `validate_experiment_contract` then detects the on-disk file still exists, it produces a critical-failure audit (`CONTRACT_SCHEMA: experiment-contract.json unparseable or unknown shape`) rather than silently returning `passed=True` with zero checks. This closes a false-positive path where an orchestrator's off-schema contract produced consecutive passing audits while running no validation at all.
 
+The orchestrator prompt §Experiment Contract embeds the schema verbatim (top-level keys + a JSON skeleton) so that agents writing the contract for the first time cannot invent an off-schema shape (`studies`, `phases`, `hard_gates`, `primary_metric`, `runner` were observed in the wild). The dispatcher's `sentinel_violation` directive distinguishes `CONTRACT_SCHEMA` failures (instructs orchestrator to rewrite the file directly, no Methodologist) from genuine design failures (Methodologist + REVISE task).
+
+To prevent log spam while the orchestrator iterates on a malformed contract, repeated rejections of the same key-set in the same workspace are demoted to DEBUG after the first WARNING — the dispatcher polls every 30s and would otherwise emit thousands of identical lines.
+
 ### Escalation Path
 
 When the sentinel finds a critical failure:
 1. Writes `.swarm/sentinel-audit.json` (persisted for orchestrator to read)
-2. Writes `.swarm/dispatcher-directive.json` with `level: sentinel_violation` (forces orchestrator to act)
+2. Writes `.swarm/dispatcher-directive.json` with `directive: sentinel_violation` and `action: stop_and_fix` (forces orchestrator to act)
 3. Returns `design_invalid` event (triggers Telegram alert to PI)
 4. `_is_complete()` returns False while DESIGN_INVALID exists (hard gate — cannot be bypassed)
+5. **Structural dispatch block (INV-50).** `spawn-agent.sh` reads `.swarm/dispatcher-directive.json` before claiming any task. If `action == "stop_and_fix"` (or a legacy directive has `directive == "sentinel_violation"`), it refuses to spawn any task whose title does not match the methodologist/post-mortem/revise/fix-contract/sentinel pattern, and marks the task BLOCKED in Beads. This catches orchestrators that ignore the sentinel directive in their prompt: no new workers can burn hours on invalid data.
 
 The directive explicitly states: "This IS a DESIGN_INVALID event — do NOT create a separate DESIGN_INVALID task." This prevents duplicate escalation.
 
@@ -832,6 +844,49 @@ During progress polling, the dispatcher syncs Beads findings to the Claim Ledger
 - Investigator findings → `run_evidence` provenance
 - On convergence: provisional claims promoted to `asserted`, self-critique generated
 
+### LLM Call Provenance
+
+Experiment runners or agent-side tooling may preserve LLM calls by writing one
+JSON record per call under `.swarm/llm_provenance/`. Voronoi provides
+`src/voronoi/server/provenance.py` as a small stdlib writer/reader for this
+directory. The writer records caller-provided metadata, a stable
+`content_sha256`, and an index at `.swarm/llm_provenance/manifest.json` so later
+reviewers can discover which prompt/response records supported an experiment.
+
+The first slice is infrastructure only: the prompt builder remains pure, the
+dispatcher does not intercept Copilot output, and agents are not required to
+write provenance automatically. External experiment code decides which calls
+are important enough to preserve and whether metadata contains full prompt text
+or a reconstructable prompt recipe.
+
+Public API:
+
+```python
+def write_provenance(workspace_path: str | Path, record: dict[str, Any]) -> Path: ...
+def discover_provenance(workspace_path: str | Path) -> list[Path]: ...
+```
+
+`write_provenance()` creates `.swarm/llm_provenance/<uuid>.json`, updates
+`.swarm/llm_provenance/manifest.json`, and returns the absolute path to the
+record file. `discover_provenance()` returns record paths from the manifest when
+valid, falling back to listing per-call JSON files in the provenance directory.
+
+A task is treated as a finding ONLY when its title **starts with** `FINDING:`, `FINDING -`, or `FINDING —` (case-insensitive). Substring matches on "findings" in arbitrary titles (e.g. "Analyze pricing dataset for five action-changing findings") are explicitly rejected — otherwise task titles launder into provisional claims, inflating the ledger with verb-phrase ghost-claims that satisfy success criteria and mask genuine learning stalls. See INV-47.
+
+The Beads-to-Ledger gate is defence-in-depth. The **first line of defence** is at task creation: `voronoi.mcp.tools_beads.create_task` rejects laundered titles up-front (INV-55), refuses experiment-type tasks without `PRODUCES:` and namespaced output paths (INV-56), and stamps `CREATED_BY:` provenance for accountability. The **second line of defence** is at task closure: `close_task` refuses to close `experiment` / `investigation` / `evaluation` tasks that have no `FINDING_TASK_IDS:` link (resolved via `bd show` against sibling `FINDING:`-prefixed tasks) or honest `FINDING:NULL` rationale (INV-57). The **third line of defence** is the dispatcher's per-cycle graph-health audit (INV-58), which writes `.swarm/graph-health.json` and emits a `swarm_degenerate` directive (with `action: stop_and_fix`, structurally enforced by `spawn-agent.sh` per INV-50) when orphan ratio or sibling-cluster size cross thresholds. The Claim-Ledger title-prefix check is the **fourth and final** layer.
+
+### Claim Statement Shape
+
+A claim is a *proposition* about the world — a statement that can be true or false given evidence. It is NOT a task directive. `ClaimLedger.add_claim` validates each incoming statement via `validate_claim_statement` and raises `ValueError` on:
+
+- **Empty or whitespace-only** statements.
+- **Bare-imperative task directives**: statements that begin with `Analyze`, `Analyse`, `Investigate`, `Run`, `Check`, `Explore`, `Examine`, `Study`, `Review`, `Assess`, `Evaluate`, `Test`, `Verify`, `Look`, `Find`, `Identify`, `Determine`, or `Survey` AND contain no relational marker. An imperative-shaped statement that carries a concrete proposition (e.g. "Test whether L4 > L1") is accepted because it includes a relational marker.
+- **Exact duplicates** (after normalization — lowercase, collapsed whitespace, stripped trailing punctuation) against any existing claim in the same ledger.
+
+Effect-size anchoring (`effect_summary`) is encouraged but **not required** — hunches without quantitative backing are still legitimate propositions in DISCOVER mode. The MCP tool surface enforces the same shape via `voronoi.mcp.validators.require_claim_statement`.
+
+When the dispatcher's Beads-to-Ledger sync produces a statement that fails validation, it logs at INFO level and skips the task rather than crashing the poll loop — the finding task stays closed, no provisional claim is created.
+
 ### Self-Critique
 
 At convergence, `generate_self_critique()` identifies weak claims:
@@ -853,6 +908,10 @@ Locked claims' supporting artifacts become immutable in subsequent runs. The dis
 - Pending objections
 - Immutable artifact paths
 - PI feedback
+
+### Negative Result Review
+
+Negative or falsifying outcomes are recorded as ordinary `run_evidence` claims rather than a separate ledger schema. `record_negative_result()` creates an idempotent review claim with `model_basis="negative_result_review"`, source claim IDs in `supporting_findings`, and a concise reason in `effect_summary`. The gateway records lockable negative-result reviews only for retired/falsified source claims. Challenged-only claims remain non-durable review context until the PI resolves or retires them. The PI can then lock that review claim with `/voronoi lock-negative <codename> <claim-id>`, making the negative result durable without locking the retired source claims themselves.
 
 ---
 
@@ -937,6 +996,10 @@ def generate_continuation_proposals(ledger: ClaimLedger, tribunal_results: list[
 
 Proposals are ranked by information gain and saved to `.swarm/continuation-proposals.json` for PI review during `/deliberate` or `/review`.
 
+#### 18.5 Negative Result Recording
+
+`record_negative_result(ledger, summary_sentence, codename="", primary_claim_ids=None, reason_summary="", source_cycle=1)` records a negative-result review as a reversible Claim Ledger entry. It does not dispatch agents or change convergence; it stores source claim IDs in `supporting_findings`. Gateway-created reviews are lockable only when those source claims are retired/falsified; challenged-only claims should be resolved or retired before being turned into durable negative evidence.
+
 ### Evaluator Scoring: CCSAN
 
 The evaluator formula gains a fifth dimension **N (Non-triviality)**:
@@ -972,9 +1035,14 @@ The **Run Manifest** (`.swarm/run-manifest.json`) is a consolidated, machine-rea
 | `primary_claims` | Claim Ledger (preferred) → `.swarm/claim-evidence.json` (fallback) |
 | `experiments` | Beads `FINDING` tasks |
 | `pending_objections` | `ClaimLedger.objections` (pending/investigating/surfaced) |
-| `artifacts` | Filesystem scan + finding `DATA_FILE` notes |
+| `artifacts` | Filesystem scan + finding `DATA_FILE` notes, normalized to workspace-relative paths |
 | `caveats` | Derived: convergence blockers + `ROBUST=no` + non-APPROVED stat review |
 | `answer` | Derived: strongest-status claim (`replicated > locked > asserted > provisional`) |
+
+LLM-call provenance records in `.swarm/llm_provenance/` are supporting audit
+artifacts. They are indexed by `.swarm/llm_provenance/manifest.json` and can be
+referenced by downstream reports or external graders without changing the run
+manifest's convergence semantics.
 
 ### Rigor-Tiered Validation
 
@@ -985,4 +1053,269 @@ See [MANIFEST.md](MANIFEST.md) for the full schema, rigor table, sub-structure d
 ### Relationship to §5 Convergence
 
 Convergence is still the authoritative *signal* (written to `.swarm/convergence.json` and gated by `convergence-gate.sh`). The manifest is written **after** completion is decided; it does not participate in the convergence gate. The manifest's `status` and `converged` fields mirror `convergence.json`.
+
+
+## 20. Citation Coverage — Paper-Track Manuscript Gate
+
+Paper-track manuscripts (triggered by `/voronoi paper <codename>`) have a zero-tolerance citation-integrity gate that runs as the Scribe's verify-loop step 6 and again after every Refiner round.
+
+### Purpose
+
+Every reference in the compiled `paper.tex` must be **verifiable** against Semantic Scholar, and every verified candidate must be **integrated** (actually `\cite`d) in the body. This single gate catches the two biggest failure modes of LLM-written papers: hallucinated citations, and "we searched and found relevant work, but never actually cited it."
+
+The gate enforces a ≥90% integration threshold and Levenshtein ≥70 fuzzy match policy.
+
+### Module
+
+`src/voronoi/science/citation_coverage.py` — standard library only (uses `difflib.SequenceMatcher` for Levenshtein-like fuzzy matching, no new runtime dependency).
+
+### Public API
+
+```python
+DEFAULT_TITLE_THRESHOLD = 0.70      # Levenshtein-like similarity (0..1)
+DEFAULT_COVERAGE_TARGET = 0.90      # Integration rate required to pass
+
+@dataclass
+class CoverageResult:
+    integration_rate: float            # integrated / verified
+    verified_count: int
+    integrated_count: int
+    unintegrated_keys: list[str]       # verified but not \cite'd
+    orphan_cites: list[str]            # \cite'd but not verified (hallucinations)
+    target: float
+    @property
+    def passes(self) -> bool           # rate >= target AND orphan_cites == []
+
+def fuzzy_match_title(a: str, b: str, threshold: float = 0.70) -> bool
+def extract_cite_keys(tex: str) -> set[str]   # strips comments + verbatim first
+def check_coverage(ledger_path, paper_tex_path, *, target=0.90) -> CoverageResult
+def write_coverage_audit(result, out_path) -> Path
+```
+
+### Comment & Verbatim Stripping
+
+`extract_cite_keys()` strips LaTeX comment lines (unescaped `%` to end-of-line) and the content of `verbatim`, `lstlisting`, and `minted` environments before extracting `\cite` keys. This prevents commented-out or example citations from producing false orphan reports.
+
+### Gate Semantics
+
+The gate **fails** if either:
+1. `integration_rate < 0.90` (more than 10% of verified candidates never cited), or
+2. `orphan_cites` is non-empty (any `\cite{key}` without a matching ledger entry with `verified: true`).
+
+Orphan cites are treated as hallucinations — zero tolerance, regardless of integration rate.
+
+### Inputs
+
+- `.swarm/manuscript/citation-ledger.json` — produced by the **Lit-Synthesizer** agent. Entries must carry `{bibtex_key, verified, title, paper_id, ...}`.
+- `paper.tex` at workspace root — produced by **Scribe**.
+
+### Output
+
+- `.swarm/manuscript/coverage-audit.json` — persisted by `write_coverage_audit()` after every gate run. Read by the dual-rubric Evaluator to score the "citation integrity" axis of MS_QUALITY.
+
+### Where Invoked
+
+- **Scribe verify loop (step 6)** — first gate run; fails the compile iteration if coverage is below target or orphans exist.
+- **Refiner — after every review round** — coverage is re-checked; if it regressed below target, the Refiner reverts the round (`git checkout paper.tex paper.pdf`).
+
+### Related Invariant
+
+See [INVARIANTS.md](INVARIANTS.md) — "Every `\cite{...}` in a compiled paper-track manuscript must resolve to a verified entry in `citation-ledger.json`."
+
+---
+
+## 21. Evidence-Gated Epoch Scaling
+
+### Purpose
+
+Prevents unbounded resource commitment before evidence exists. The system operates in **epochs** — dynamically-scoped batches of work where each epoch must produce evidence (belief-map moves) before the agent cap increases.
+
+### EpochState Data Structure
+
+```python
+EPOCH_AGENT_CAP: dict[int, int] = {1: 2, 2: 4, 3: 6}
+
+@dataclass
+class EpochState:
+    epoch: int = 1
+    max_tranches: int = 2
+    findings_this_epoch: int = 0
+    belief_map_moves: int = 0
+    tokens_this_epoch: int = 0
+    epoch_started_at: str = ""
+    history: list[dict] = field(default_factory=list)
+
+    @property
+    def learning_rate(self) -> float: ...   # findings per M tokens
+    @property
+    def has_evidence(self) -> bool: ...     # belief_map_moves > 0
+```
+
+### File Location
+
+`.swarm/epoch-state.json` — read/written by dispatcher, read by orchestrator each OODA cycle.
+
+### Functions
+
+```python
+def load_epoch_state(workspace: Path) -> EpochState
+def save_epoch_state(workspace: Path, state: EpochState) -> None
+def advance_epoch(state: EpochState, configured_max: int) -> EpochState
+def compute_learning_rate_display(state: EpochState) -> str
+```
+
+### Epoch Advancement Rules
+
+- Epoch auto-advances when `has_evidence` is True and `max_tranches < configured_max`
+- Each epoch's findings/moves/tokens are archived into `history`
+- Cap never exceeds `DispatcherConfig.max_agents`
+- The orchestrator prompt instructs the LLM to respect `max_tranches` from the file
+
+### Minimum Viable Experiment (MVE)
+
+The orchestrator prompt mandates that in epoch 1, the FIRST dispatch must be a single concrete experiment that can complete in <30 minutes and produces one measurable outcome. This is a pilot study — it validates the experimental setup works before committing to the full plan.
+
+---
+
+## 22. Structured Failure Diagnosis
+
+### Purpose
+
+When an investigation stalls, reaches an explicit review budget, or fails, produces a structured machine-readable diagnosis that tells the continuation round exactly what stopped and why — enabling targeted remediation instead of blind re-execution.
+
+### Function
+
+```python
+def build_failure_diagnosis(workspace: Path) -> dict
+def save_failure_diagnosis(workspace: Path, diagnosis: dict) -> None
+```
+
+### Output Schema
+
+```json
+{
+  "met_criteria": ["SC1", "SC3"],
+  "unmet_criteria": [
+    {"id": "SC2", "diagnosis": "NOT_TESTED|TESTED_BUT_UNMET", "description": "...", "recommendation": "..."}
+  ],
+  "systemic_issues": ["Zero experiments ran — plan likely overscoped"],
+  "epoch_history": [{"epoch": 1, "findings": 0, "belief_map_moves": 0}],
+  "proposed_action": "Start with a single MVE...",
+  "timestamp": "2026-01-01T00:00:00+00:00"
+}
+```
+
+### Diagnosis Categories
+
+| Category | Meaning |
+|----------|---------|
+| `NOT_TESTED` | No experiments ran that could have satisfied this criterion |
+| `TESTED_BUT_UNMET` | Experiments ran but results didn't satisfy the criterion |
+
+### When Written
+
+- Partial review from stall strike 4 or explicit wall-clock review budget
+- `_handle_completion(failed=True)` — any failed investigation
+
+### Consumed By
+
+`build_warm_start_context()` reads `.swarm/failure-diagnosis.json` or the latest archived prior-run diagnosis and injects it into the continuation prompt under a "Failure Diagnosis from Prior Round" heading. Continuation prep archives and clears stale active stall directives so the new round does not inherit a terminated-session instruction.
+
+---
+
+## 23. Lab-Wide Knowledge Graph (Per-PI)
+
+### Purpose
+
+The Claim Ledger (§17) is scoped to a single *lineage* of investigations. The Lab-KG accumulates snapshots of ledger claims, dead ends, and known artifact-traps across **every** lineage a single scientist runs. Purpose: make investigation #100 structurally smarter than investigation #1.
+
+**Scope is per-PI.** The store lives at `~/.voronoi/lab/kg/kg.json` (overridable via `VORONOI_LAB_KG_PATH`). Cross-lab sharing is explicit opt-in and out of scope for this section.
+
+### Module
+
+`src/voronoi/science/lab_kg.py` — `LabKG`, `LabEntry`, `DeadEnd`, `default_store_path`. Re-exported from `voronoi.science`.
+
+### Safeguards Against Contamination
+
+A naive "accumulate everything and trust it" store would rebuild the replication crisis. The KG therefore enforces:
+
+1. **Provenance preservation.** Every entry carries the Claim Ledger provenance tag (`model_prior` / `retrieved_prior` / `run_evidence`). Callers that inject KG content into prompts MUST NOT elevate an entry's trust beyond what its provenance + status justify.
+2. **Durability filter.** Only `locked` and `replicated` entries (`DURABLE_STATUSES`) are returned by `query()` by default. `provisional`/`asserted` are retained but require `include_non_durable=True` and MUST be presented to downstream agents as "prior attempts, unsettled", never as established facts.
+3. **Replication-on-convergence.** When two independent lineages assert the *same* locked statement, the entry is automatically promoted to `replicated`. Single-run findings never harden into dogma through this path.
+4. **Dissent as a first-class edge.** When a lineage challenges a claim that matches an existing entry, that lineage is appended to the entry's `dissent` list. Queries and the Lab Context Brief surface dissenting lineages alongside the claim.
+5. **Half-life.** Every durable entry gets `half_life_due` (default 180 days). Entries older than `half_life_due` are returned with `stale_as_of_query=True`; callers SHOULD force re-examination rather than trust stale priors.
+6. **Retirement propagation.** When any lineage retires a claim (PI-driven demotion), the KG entry's status flips to `retired` — no further durable use.
+
+### Safeguards Against Groupthink
+
+1. **KG is a second source, never the first.** Scout's `/research` against external literature still runs for every investigation. KG is consulted *after* and *in comparison with* external results.
+2. **Adversarial framing on read.** `format_brief()` renders entries with the explicit preamble *"Treat every entry below as a hypothesis to challenge, not a fact to accept. Always run fresh external `/research` before trusting any lab-KG item."*
+3. **Novelty Gate asymmetry.** (Orchestrator-level policy, not enforced by this module.) A KG hit that suggests `REDUNDANT` requires stronger evidence than a KG hit that suggests `NOVEL`. Default is "proceed until proven redundant".
+4. **Scope by default.** Per-PI scope; cross-lab transfer is explicit `/voronoi kg export/import` (future).
+
+### API
+
+```python
+class LabKG:
+    @classmethod
+    def load(cls, path: Path | None = None) -> "LabKG": ...
+    def save(self) -> None: ...
+    def upsert_from_ledger(self, lineage_id: str, ledger: ClaimLedger) -> list[LabEntry]: ...
+    def record_dead_end(self, lineage_id: str, description: str, reason: str, category: str) -> DeadEnd: ...
+    def query(self, topic: str, *, limit: int = 20, include_non_durable: bool = False) -> list[LabEntry]: ...
+    def query_dead_ends(self, topic: str, *, limit: int = 20) -> list[DeadEnd]: ...
+    def format_brief(self, topic: str, *, limit: int = 10, include_non_durable: bool = False) -> str: ...
+```
+
+`upsert_from_ledger` is idempotent: re-inserting an already-present statement updates in place and applies the replication / dissent / retirement rules above.
+
+### Storage Schema
+
+```json
+{
+  "schema_version": 1,
+  "entries": [
+    {
+      "id": "L1",
+      "statement": "...",
+      "provenance": "run_evidence",
+      "status": "replicated",
+      "source_lineage": "lineage-alpha",
+      "source_claim_id": "C7",
+      "supporting_lineages": ["lineage-alpha", "lineage-beta"],
+      "replicated_in": ["lineage-beta"],
+      "dissent": [],
+      "effect_summary": "+14.2pp (95% CI ...)",
+      "artifact_paths": ["output/k4_depth.csv"],
+      "first_recorded": "...",
+      "last_updated": "...",
+      "half_life_due": "..."
+    }
+  ],
+  "dead_ends": [
+    {
+      "id": "DE1",
+      "lineage": "lineage-7",
+      "description": "StandardScaler applied per-batch before train/val split",
+      "reason": "Caused 14pp spurious improvement; artifact of data leakage",
+      "category": "artifact",
+      "recorded": "..."
+    }
+  ]
+}
+```
+
+### Wire-Up (Future Work)
+
+This section defines the substrate. Three follow-ups remain:
+
+- **Dispatcher**: on completion, call `LabKG.load().upsert_from_ledger(lineage_id, ledger)` after the Claim Ledger is synced.
+- **Prompt builder**: write `.swarm/lab-context-brief.md` via `format_brief(question)` before orchestrator launch; Scout/Theorist prompts reference it.
+- **Router**: `/voronoi kg query <topic>` for PI-driven exploration.
+
+Each follow-up has its own spec section when implemented; this section is the substrate contract.
+
+### Invariant
+
+See `docs/INVARIANTS.md` INV-53 (KG provenance & durability).
 

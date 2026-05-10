@@ -56,13 +56,14 @@ pip install voronoi
 
 ```bash
 voronoi server init
-# Edit ~/.voronoi/.env with your VORONOI_TG_BOT_TOKEN
+# Edit <base-dir>/.env with your VORONOI_TG_BOT_TOKEN (default: ~/.voronoi/.env)
 voronoi server start
 # On a remote host or over SSH, prefer:
 # voronoi server start --daemon
 ```
 
 `voronoi server start` runs in the foreground. Use `--daemon` on remote hosts so the bridge survives shell disconnects.
+All `voronoi server` subcommands accept `--base-dir <path>`; you can also set `VORONOI_BASE_DIR` to use a non-default server directory.
 
 **CLI** — work inside a project:
 
@@ -149,7 +150,7 @@ graph TD
     style H fill:#161b22,stroke:#d29922
 ```
 
-<sup>**Baseline**, **EWC**, and **Replay** run in parallel. **Hybrid** is automatically blocked until all three finish — its experiment depends on their results. The orchestrator tracks this via [Beads](https://github.com/steveyegge/beads) dependency graph.</sup>
+<sup>**Baseline**, **EWC**, and **Replay** run in parallel. **Hybrid** is automatically blocked until all three finish — its experiment depends on their results. The orchestrator tracks this via the [Beads](https://github.com/gastownhall/beads) dependency graph.</sup>
 
 ---
 
@@ -169,7 +170,11 @@ graph TD
 | `/voronoi recall <query>` | Search past findings |
 | `/voronoi resume [id\|codename]` | Resume a paused or failed investigation |
 | `/voronoi review [codename]` | Show Claim Ledger — lock, challenge, or accept findings |
+| `/voronoi review-negative <codename>` | Record a negative/falsifying review and show lock, deliberate, and continue actions |
+| `/voronoi lock-negative <codename> <claim-id>` | Lock a generated negative-result review claim as durable evidence |
 | `/voronoi continue <codename> [feedback]` | Start a new round with PI feedback |
+| `/voronoi extend <codename> [minutes]` | Grant extra stall budget while a run is still active |
+| `/voronoi paper <codename>` | Start manuscript production after at least one locked or replicated claim; otherwise show a Reviewer Defense Brief |
 | `/voronoi claims [codename]` | Show current claim state for an investigation |
 | Free text in groups | Auto-detect intent and dispatch |
 
@@ -188,6 +193,7 @@ voronoi demo run emergent-ecosystem --safe
 | Demo | What it does |
 |------|-------------|
 | **computational-triage** | Evidence encoding as a scaling axis for multi-agent LLM reasoning |
+| **compilation-threshold-hunt** | Same hypothesis as `epistemic-trajectories`, but the swarm designs the experiment (surprise-budget protocol) |
 | **coupled-decisions** | 5 coupled levers, planted ground truth in 100K transactions |
 | **emergent-ecosystem** | 4 species on a 100×100 grid, each agent builds one in isolation |
 | **epistemic-trajectories** | Phase transitions in LLM multi-source reasoning across capability tiers |
@@ -200,9 +206,9 @@ voronoi demo run emergent-ecosystem --safe
 
 <br/>
 
-**12 Specialized Roles** — auto-selected by task type:
+**19 Role Files** — 12 core roles plus auxiliary gates, paper-track roles, and Red Team:
 
-Builder 🔨 · Scout 🔍 · Investigator 🔬 · Critic ⚖️ · Synthesizer 🧩 · Evaluator 🎯 · Explorer 🧭 · Theorist 🧬 · Methodologist 📐 · Statistician 📊 · Scribe ✍️ · Worker ⚙️
+Builder 🔨 · Scout 🔍 · Investigator 🔬 · Critic ⚖️ · Synthesizer 🧩 · Evaluator 🎯 · Explorer 🧭 · Theorist 🧬 · Methodologist 📐 · Statistician 📊 · Scribe ✍️ · Worker ⚙️ · Question Framer · Assumption Auditor · Outliner · Lit-Synthesizer · Figure-Critic · Refiner · Red Team
 
 **Two Science Modes** — auto-classified from your question:
 
@@ -265,8 +271,9 @@ src/voronoi/
   cli.py                  # init, upgrade, demo, server
   utils.py                # shared field extraction, note parsing
   beads.py                # Beads subprocess helpers
-  science/                # rigor gates (6 modules)
-    claims.py  consistency.py  convergence.py  fabrication.py  gates.py  interpretation.py
+  science/                # rigor gates and scientific state
+    claims.py  consistency.py  convergence.py  fabrication.py  gates.py
+    interpretation.py  manifest.py  citation_coverage.py  lab_kg.py
   gateway/                # Telegram interface
     config.py  router.py  report.py  intent.py
     handlers_query.py  handlers_mutate.py  handlers_workflow.py
@@ -275,11 +282,11 @@ src/voronoi/
   server/
     prompt.py  dispatcher.py  queue.py  workspace.py
     sandbox.py  publisher.py  runner.py  events.py
-    compact.py  repo_url.py  snapshot.py  tmux.py
+    compact.py  repo_url.py  snapshot.py  tmux.py  provenance.py
   mcp/                    # MCP server — validated tool interface
     __main__.py  server.py  tools_beads.py  tools_swarm.py  validators.py
   data/                   # Runtime files (shipped with pip install)
-    agents/               # Role definitions (12 roles)
+    agents/               # Role definitions (19 role files)
     demos/                # Built-in demo investigations
     hooks/                # Lifecycle hooks (session start, data protection)
     instructions/         # Scoped agent instructions (auto-applied by file context)
@@ -296,10 +303,12 @@ src/voronoi/
 - **Hooks** enforce invariants at agent lifecycle points — session start injects Beads status, and destructive commands on raw data are blocked before execution
 - **Skills** load domain knowledge on demand — Copilot CLI usage patterns, data hashing protocols, evidence management, and 19 other specialized workflows
 
-Each agent is a **full Copilot CLI session** in its own **tmux window** with its own **git worktree**. No custom IPC — agents communicate through git + [Beads](https://github.com/steveyegge/beads).
+Each agent is a **full Copilot CLI session** in its own **tmux window** with its own **git worktree**. No custom IPC — agents communicate through git + [Beads](https://github.com/gastownhall/beads). Voronoi initializes Beads with `bd init --quiet --server` so workers and the dispatcher share one task store instead of each worktree creating its own `.beads/` database.
+
+The dispatcher also regenerates `.swarm/run-status.json` and `.swarm/health.md` on progress polls. These files project Beads, checkpoint, and gate state into the PI/operator view used by humans and future UI surfaces.
 
 ```
-~/.voronoi/              # server mode
+~/.voronoi/              # server mode default base directory
   config.json  queue.db
   objects/               # shared bare git repos
   ledgers/               # claim ledgers per investigation lineage
@@ -344,7 +353,7 @@ Voronoi orchestrates coding agents for scientific investigation. Here's how it c
 
 <br/>
 
-**Prerequisites**: Python 3.10+ · [Beads](https://github.com/steveyegge/beads) · [tmux](https://github.com/tmux/tmux) · [GitHub Copilot CLI](https://docs.github.com/en/copilot/using-github-copilot/using-github-copilot-in-the-command-line) (or [Claude Code](https://docs.anthropic.com/en/docs/claude-code))
+**Prerequisites**: Python 3.10+ · [Beads](https://github.com/gastownhall/beads) with `bd init --server` support · [tmux](https://github.com/tmux/tmux) · [GitHub Copilot CLI](https://docs.github.com/en/copilot/using-github-copilot/using-github-copilot-in-the-command-line) (or [Claude Code](https://docs.anthropic.com/en/docs/claude-code))
 
 ```bash
 brew install beads tmux                        # macOS
@@ -352,7 +361,7 @@ pip install voronoi[report]                     # optional: PDF generation
 # Install Copilot CLI: see https://docs.github.com/en/copilot
 ```
 
-**Telegram**: Get bot token from @BotFather → set `VORONOI_TG_BOT_TOKEN` in `~/.voronoi/.env` → `voronoi server start`
+**Telegram**: Get bot token from @BotFather → set `VORONOI_TG_BOT_TOKEN` in `~/.voronoi/.env` or `<base-dir>/.env` → `voronoi server start`
 
 **Docker**: `docker build -t voronoi-python:latest -f docker/voronoi-python.Dockerfile .`
 

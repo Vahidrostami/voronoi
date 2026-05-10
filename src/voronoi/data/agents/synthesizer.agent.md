@@ -3,7 +3,7 @@ name: synthesizer
 description: Final-output architect that integrates findings into coherent deliverables, maintains the belief map, runs consistency checks, and produces structured final artifacts that directly answer the original abstract.
 tools: ["execute", "read", "search", "edit"]
 disable-model-invocation: true
-user-invokable: false
+user-invocable: false
 ---
 
 # Synthesizer Agent 🧩

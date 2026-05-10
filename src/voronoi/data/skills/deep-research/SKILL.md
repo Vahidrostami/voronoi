@@ -4,6 +4,8 @@ description: >
   Skill for deep research grounding using Copilot CLI /research for multi-source
   literature review, prior-art search, and SOTA anchoring. Use before forming
   hypotheses to anchor claims in real, citation-backed evidence.
+user-invocable: true
+disable-model-invocation: false
 ---
 
 # Deep Research Skill

@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS investigations (
     question          TEXT NOT NULL,
     slug              TEXT NOT NULL,
     mode              TEXT NOT NULL DEFAULT 'discover',
-    rigor             TEXT NOT NULL DEFAULT 'scientific',
+    rigor             TEXT NOT NULL DEFAULT 'adaptive',
     codename          TEXT NOT NULL DEFAULT '',
     workspace_path    TEXT,
     sandbox_id        TEXT,
@@ -93,7 +93,7 @@ CREATE TABLE IF NOT EXISTS investigations_new (
     question          TEXT NOT NULL,
     slug              TEXT NOT NULL,
     mode              TEXT NOT NULL DEFAULT 'discover',
-    rigor             TEXT NOT NULL DEFAULT 'scientific',
+    rigor             TEXT NOT NULL DEFAULT 'adaptive',
     codename          TEXT NOT NULL DEFAULT '',
     workspace_path    TEXT,
     sandbox_id        TEXT,
@@ -135,7 +135,7 @@ CREATE TABLE IF NOT EXISTS investigations_v3 (
     question          TEXT NOT NULL,
     slug              TEXT NOT NULL,
     mode              TEXT NOT NULL DEFAULT 'discover',
-    rigor             TEXT NOT NULL DEFAULT 'scientific',
+    rigor             TEXT NOT NULL DEFAULT 'adaptive',
     codename          TEXT NOT NULL DEFAULT '',
     workspace_path    TEXT,
     sandbox_id        TEXT,
@@ -166,6 +166,26 @@ CREATE INDEX IF NOT EXISTS idx_inv_status ON investigations(status);
 CREATE INDEX IF NOT EXISTS idx_inv_chat ON investigations(chat_id);
 CREATE INDEX IF NOT EXISTS idx_inv_repo ON investigations(repo);
 """
+
+
+def has_partial_continuation_artifact(inv: Investigation) -> bool:
+    """Return True when a run has durable partial-review continuation state."""
+    if not inv.workspace_path:
+        return False
+    swarm = Path(inv.workspace_path) / ".swarm"
+    if (swarm / "failure-diagnosis.json").exists():
+        return True
+    if (swarm / "deliverable-partial.md").exists():
+        return True
+    manifest = swarm / "run-manifest.json"
+    if manifest.exists():
+        try:
+            data = json.loads(manifest.read_text())
+            status = str(data.get("status", "")).lower()
+            return status in {"partial", "failed", "exhausted"}
+        except (OSError, json.JSONDecodeError):
+            return False
+    return False
 
 
 class InvestigationQueue:
@@ -484,7 +504,7 @@ class InvestigationQueue:
 
     def continue_investigation(self, investigation_id: int,
                                feedback: str = "") -> Optional[int]:
-        """Create a continuation investigation from a completed or reviewed one.
+        """Create a continuation investigation from a reviewable source.
 
         Creates a new investigation with:
         - Same question (original, never mutated)
@@ -503,7 +523,11 @@ class InvestigationQueue:
         inv = self.get(investigation_id)
         if inv is None:
             return None
-        if inv.status not in ("review", "complete"):
+        failed_partial = (
+            inv.status == "failed"
+            and has_partial_continuation_artifact(inv)
+        )
+        if inv.status not in ("review", "complete") and not failed_partial:
             return None
 
         # Use the original question — feedback goes in pi_feedback, not
@@ -635,6 +659,36 @@ class InvestigationQueue:
                     "SELECT * FROM investigations WHERE repo=? "
                     "ORDER BY created_at DESC",
                     (repo,),
+                ).fetchall()
+            return [self._row_to_investigation(r) for r in rows]
+
+    def find_by_codename(self, codename: str,
+                         statuses: tuple[str, ...] | None = None) -> list[Investigation]:
+        """Find investigations by case-insensitive codename.
+
+        Parameters
+        ----------
+        codename : str
+            Codename to search (case-insensitive).
+        statuses : tuple[str, ...] | None
+            If given, only return investigations with one of these statuses.
+            If ``None``, return all matching investigations.
+        """
+        with self._connect() as conn:
+            if statuses:
+                placeholders = ",".join("?" for _ in statuses)
+                rows = conn.execute(
+                    f"SELECT * FROM investigations "
+                    f"WHERE LOWER(codename)=LOWER(?) AND status IN ({placeholders}) "
+                    f"ORDER BY created_at DESC",
+                    (codename, *statuses),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM investigations "
+                    "WHERE LOWER(codename)=LOWER(?) "
+                    "ORDER BY created_at DESC",
+                    (codename,),
                 ).fetchall()
             return [self._row_to_investigation(r) for r in rows]
 

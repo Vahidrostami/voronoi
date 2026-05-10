@@ -11,6 +11,7 @@ from pathlib import Path
 from voronoi.beads import run_bd as _run_bd
 from voronoi.utils import clean_finding_title as _clean_finding_title
 from voronoi.utils import extract_field as _parse_note_value
+from voronoi.utils import is_finding_title as _is_finding_title
 
 
 def get_findings(workspace: Path, *, _cache: dict | None = None) -> list[dict]:
@@ -26,7 +27,9 @@ def get_findings(workspace: Path, *, _cache: dict | None = None) -> list[dict]:
     findings: list[dict] = []
     for t in tasks:
         title = t.get("title", "")
-        if "FINDING" not in title.upper():
+        # Prefix-only: substring matching laundered ghost task titles into
+        # the report and Telegram digests. See INV-47.
+        if not _is_finding_title(title):
             continue
         notes = t.get("notes", "")
         f: dict = {"title": title, "id": t.get("id", "?"), "notes": notes}
@@ -208,18 +211,17 @@ def render_limitations(findings: list[dict], workspace: Path) -> str | None:
         )
 
     # Read belief map for inconclusive hypotheses
-    belief_path = workspace / ".swarm" / "belief-map.json"
-    if belief_path.exists():
-        try:
-            bm_data = json.loads(belief_path.read_text())
-            for h in bm_data.get("hypotheses", []):
-                if h.get("status") == "inconclusive":
-                    limitations.append(
-                        f"- **Inconclusive hypothesis:** {h.get('name', '?')} "
-                        f"(insufficient evidence to confirm or refute)"
-                    )
-        except (json.JSONDecodeError, ValueError):
-            pass
+    try:
+        from voronoi.science.convergence import load_belief_map
+        bm = load_belief_map(workspace)
+        for h in bm.hypotheses:
+            if h.status == "inconclusive":
+                limitations.append(
+                    f"- **Inconclusive hypothesis:** {h.display_name} "
+                    f"(insufficient evidence to confirm or refute)"
+                )
+    except Exception:
+        pass
 
     return "\n".join(limitations) if limitations else None
 

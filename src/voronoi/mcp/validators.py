@@ -7,14 +7,37 @@ Beads/filesystem layer, its inputs are guaranteed well-formed.
 from __future__ import annotations
 
 import hashlib
-import os
 import re
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 
 class ValidationError(Exception):
     """Raised when MCP tool input fails validation."""
+
+
+# ---------------------------------------------------------------------------
+# Claim statement validator (delegates to science.claims)
+# ---------------------------------------------------------------------------
+
+def require_claim_statement(value: str, field: str = "statement") -> str:
+    """Validate a Claim Ledger statement shape at the MCP tool boundary.
+
+    Rejects bare-imperative task directives (e.g. "Analyze pricing dataset").
+    Delegates to :func:`voronoi.science.claims.validate_claim_statement`
+    for shape validation only. See docs/SCIENCE.md §17.
+
+    Note: duplicate detection is NOT performed here because this function
+    has no access to the current ledger. Duplicates are caught by
+    ``ClaimLedger.add_claim()`` which passes all existing claims to the
+    same validator.
+    """
+    from voronoi.science.claims import validate_claim_statement
+
+    ok, reason = validate_claim_statement(value, ())
+    if not ok:
+        raise ValidationError(f"{field}: {reason}")
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -116,8 +139,11 @@ def require_ci(value: Any, field: str = "ci_95") -> list[float]:
 
 def require_file_exists(path: str, workspace: str, field: str = "data_file") -> Path:
     """Validate that a file exists relative to the workspace."""
+    candidate = Path(path)
+    if candidate.is_absolute() or PureWindowsPath(path).is_absolute():
+        raise ValidationError(f"{field}: path must be relative to workspace: {path}")
     ws = Path(workspace).resolve()
-    full = (ws / path).resolve()
+    full = (ws / candidate).resolve()
     if not full.is_relative_to(ws):
         raise ValidationError(f"{field}: path escapes workspace: {path}")
     if not full.is_file():

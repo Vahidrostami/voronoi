@@ -33,7 +33,7 @@ Read `CLAUDE.md` for full architecture rules. The key principles:
 
 ## Dev Agent Roster
 
-Four specialized agents work ON Voronoi (not inside investigations):
+Five specialized agents work ON Voronoi (not inside investigations):
 
 | Agent | Role | When to Use |
 |-------|------|-------------|
@@ -41,12 +41,28 @@ Four specialized agents work ON Voronoi (not inside investigations):
 | **Surgeon** | Implementation | "Implement X", "Fix Y", "Add Z", code changes |
 | **Auditor** | Spec-code-test-doc verification | After multi-file changes, before releases, drift checks |
 | **Detective** | Bug hunting, adversarial analysis | "Find bugs in X", security review, pre-release audit |
+| **Simplify** | Complexity reduction, dead-code cleanup | "Simplify X", "reduce complexity", "merge micro-files", "remove dead code" |
 
 Handoff chains:
 - Catalyst → Surgeon ("implement this design")
 - Surgeon → Auditor ("verify my changes")
 - Detective → Surgeon ("fix this bug")
 - Auditor → Surgeon ("fix this drift")
+- Catalyst/Surgeon → Simplify ("reduce complexity without behavior changes")
+- Simplify → Surgeon ("implement a simplification plan that changes behavior, public surface, or specs")
+- Simplify → Catalyst ("resolve architecture/design judgment before simplifying")
+- Simplify → Auditor ("verify simplification did not create spec/test/doc drift")
+
+## Code Complexity Rules
+
+These rules apply during simplification and refactoring work. Flag violations before expanding the affected code.
+
+- Soft max file length: 300 lines. If a touched file stays over 300 lines, explain why it remains cohesive.
+- Soft max function length: 40 lines. If a touched function stays over 40 lines, explain why extraction would make it worse.
+- A module that imports from more than 3 sibling modules may be misplaced; flag the ownership question before adding another sibling import.
+- Dead code rule: if a function or class has no callers in `src/`, `tests/`, `docs/`, or `.github/`, delete it only after confirming it is not public runtime surface.
+- After refactoring, run relevant targeted tests and `python -m pytest tests/ -x -q`; report line-count delta and test results.
+- Use the `simplify` skill for code simplification, dead-code removal, micro-file merges, and maintainability refactors.
 
 ## What NOT to Do
 

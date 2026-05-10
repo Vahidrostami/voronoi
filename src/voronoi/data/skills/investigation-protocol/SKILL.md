@@ -4,6 +4,8 @@ description: >
   Skill for running the hypothesis → experiment → finding workflow in scientific
   investigations. Covers pre-registration, sensitivity analysis, data integrity,
   review gates, replication, and serendipity handling.
+user-invocable: true
+disable-model-invocation: false
 ---
 
 # Investigation Protocol Skill
@@ -12,7 +14,7 @@ Hypothesis → Experiment → Finding workflow for scientific investigations.
 
 ## When to Use
 
-Use this skill when working on investigation, exploration, or hybrid-mode tasks that require evidence-based answers.
+Use this skill when working on DISCOVER or PROVE tasks that require evidence-based answers.
 
 ## Investigation Task Lifecycle
 
@@ -20,7 +22,7 @@ Use this skill when working on investigation, exploration, or hybrid-mode tasks 
 
 ```bash
 bd create "Test whether [hypothesis]" -t task -p 1 --parent <epic>
-bd update <id> --description "TASK_TYPE:investigation | RIGOR:<standard|analytical|scientific|experimental>"
+bd update <id> --description "TASK_TYPE:investigation | MODE:<discover|prove> | RIGOR:<adaptive|scientific|experimental>"
 bd update <id> --notes "HYPOTHESIS: [specific, falsifiable statement]"
 bd update <id> --notes "METHOD: [experimental approach]"
 bd update <id> --notes "CONTROLS: [control conditions]"

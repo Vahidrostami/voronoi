@@ -80,8 +80,8 @@ NEVER substitute real experiment execution with simulation:
   Flag `RESULT_CONTRADICTS_HYPOTHESIS` — do NOT create a simulation to produce better numbers.
   Disappointing results are scientifically valid. Fabricated "good" results are fraud.
 - The convergence gate runs `detect_simulation_bypass()` which scans for simulation code and blocks completion.
-  It checks: runner script names, source code patterns, LLM cache entry counts, and results.json provenance.
-- Every `results.json` MUST include `"runner": "<script>"` naming the entry point that produced it.
+  It checks: runner script names, source code patterns, LLM cache entry counts, and experiment artifact provenance.
+- Every declared experiment metrics artifact (for example `output/<task_id>/experiment_metrics.json`) MUST include `"runner": "<script>"` naming the entry point that produced it.
   The only valid runner is the one declared in PROMPT.md (typically `run_experiments.py`).
 
 ## Artifact Contracts — MANDATORY

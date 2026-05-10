@@ -2,7 +2,7 @@
 
 > Rules that MUST never be violated. Reference during code review, debugging, and development.
 
-...nvariants. Key ones: prompt.py is sole prompt builder (INV-01). Roles only in .github/ files (INV-02). Orchestrator never enters worktrees (INV-03). Atomic queue claiming (INV-06). Rigor only escalates (INV-08). Baseline-first (INV-09). EVA before finding (INV-12). No simulation bypass (INV-16). Push before session end (INV-25). Plan review before dispatch at Analytical+ (INV-35b). Experiment contract before workers (INV-39). Sentinel audit cannot be bypassed (INV-40). Missing contract warning (INV-41). Tribunal clear before convergence (INV-42). Directional verification on findings (INV-43). Every completion writes a run manifest (INV-44).
+This document lists 58 invariants. Key ones: prompt.py is sole prompt builder (INV-01). Roles only in `src/voronoi/data/agents/*.agent.md` (copied to `.github/agents/` in investigation workspaces) (INV-02). Orchestrator never enters worktrees (INV-03). Atomic queue claiming (INV-06). Rigor only escalates (INV-08). Baseline-first (INV-09). EVA before finding (INV-12). No simulation bypass (INV-16). Push before session end (INV-25). Plan review before dispatch at Analytical+ (INV-35b). Experiment contract before workers (INV-39). Sentinel audit cannot be bypassed (INV-40). Missing contract warning (INV-41). Tribunal clear before convergence (INV-42). Directional verification on findings (INV-43). Every completion writes a run manifest (INV-44). Paper-track citation integrity (INV-45). Hypothesis-tranche parallelism (INV-46). Red Team verdict before Scientific+ convergence (INV-47). Lab-KG priors preserve provenance and durability (INV-53). PROVE question immutability is protected by confirmation/framing gates (INV-54). Title laundering rejected at create-time (INV-55). PRODUCES required and namespaced for experiment-type tasks (INV-56). FINDING linkage required to close experiment tasks (INV-57). Graph-health audit per OODA cycle (INV-58).
 
 ## 1. Architectural Invariants
 
@@ -37,6 +37,7 @@ Investigations MUST follow the state machine defined in SERVER.md §2:
 - `paused | failed → running` (via `resume()`)
 - `review → complete` (via `accept()`)
 - `review | complete → new queued` (via `continue_investigation()`, creates a NEW investigation)
+- `failed → new queued` only when durable partial-review artifacts exist (`failure-diagnosis.json`, `deliverable-partial.md`, or partial/failed manifest); this is a continuation, not a direct retry
 
 A `complete` investigation MUST NOT be re-queued directly. Continuation creates a new investigation with `parent_id` linking to the original (same `lineage_id`, incremented `cycle_number`).
 
@@ -67,6 +68,9 @@ The Statistician MUST independently recompute statistics from raw data. NEVER tr
 
 ### INV-15: Claim-Evidence Traceability
 At Analytical+ rigor, every claim in the deliverable MUST trace to specific finding IDs via `.swarm/claim-evidence.json`. Orphan findings and unsupported claims are audit flags.
+
+### INV-47: Claims Are Propositions, Not Tasks
+A Claim Ledger entry MUST be a proposition about the world (a testable assertion), not a task directive. Statements that begin with a bare imperative verb (`Analyze`, `Investigate`, `Run`, `Check`, `Explore`, `Examine`, `Study`, `Review`, `Assess`, `Evaluate`, `Test`, `Verify`, `Look`, `Find`, `Identify`, `Determine`, `Survey`) AND contain no relational marker (`>`, `<`, `=`, `vs`, `causes`, `predicts`, `increases`, `decreases`, `is`, `are`, ...) MUST be rejected by `ClaimLedger.add_claim` with `ValueError`. Exact duplicates (after normalization — lowercase, collapsed whitespace, stripped trailing punctuation) MUST also be rejected. Enforced by `voronoi.science.claims.validate_claim_statement` and mirrored at the MCP boundary by `require_claim_statement`. The dispatcher's Beads-to-Ledger sync MUST additionally require task titles to **start** with a `FINDING:` / `FINDING -` / `FINDING —` prefix before synthesizing a claim — substring matches on "findings" in arbitrary task titles are banned.
 
 ---
 
@@ -147,11 +151,15 @@ Bot tokens, API keys, and other secrets MUST NOT be included in orchestrator or 
 ### INV-30: Sandbox Resource Limits
 When Docker sandbox is enabled, containers MUST have CPU, memory, and timeout limits. Network isolation MUST be configurable.
 
-### INV-31: No Secrets in Logs
+### INV-31: No Secrets in Logs or Workspace Files
 Auth tokens (GH_TOKEN, GITHUB_TOKEN, COPILOT_GITHUB_TOKEN) MUST NOT appear in tmux pane logs or agent log files. Token injection into tmux shells MUST use environment file mechanisms (`tmux set-environment`) instead of inline `export VAR=value` in send-keys commands that are captured by `pipe-pane` logging.
+
+Secrets MUST NOT be written to any path under the investigation workspace (the git repo at `<base_dir>/active/inv-<id>-<slug>/`). Multiple code paths run `git add -A` over the workspace (orchestrator commit directive, scribe, teardown), and the GitHub publisher pushes the resulting tree to `voronoi-lab/*` with `--force`; a workspace-resident `.tmux-env` would exfiltrate operator credentials. The tmux launcher MUST write the env file to a sibling location outside the repo (e.g. `<base_dir>/active/.tmux-env-<session>`) and the launched shell MUST `rm -f` it immediately after sourcing.
 
 ### INV-32: Human Gate Pause Enforcement
 When a human gate is pending (`.swarm/human-gate.json` with `status: "pending"`), the dispatcher MUST kill the tmux session to halt the agent. A gate-pending dead session MUST NOT be routed through crash-retry logic. The agent resumes only after the gate is approved or revised.
+
+The orchestrator prompt MUST instruct the agent to **park and exit** at the gate — write the gate file, write a checkpoint with `active_workers: []` and `phase: "awaiting-human-gate"`, and terminate. The orchestrator MUST NOT sleep, poll, or re-read the gate file in-session; doing so violates the checkpoint-and-exit lifecycle and burns context. The dispatcher-side polling watchdog MAY force-restart orchestrators observed running `sleep` in their pane.
 
 ### INV-33: Belief Map Schema
 `.swarm/belief-map.json` MUST store `hypotheses` as a JSON array of objects (not an object map keyed by ID). Both the Python loader (`load_belief_map`) and the shell convergence gate MUST validate the schema on load and migrate non-conforming data.
@@ -209,3 +217,51 @@ The manifest is a **derived** artifact — it never contradicts its sources (`.s
 The manifest is written **after** the status transition so it captures finalized ledger state (promoted claims, self-critique, continuation proposals). The narrow race window between `queue.complete()` / `queue.review()` and `_write_run_manifest()` — where a process crash could leave a completed investigation with no manifest — is accepted risk; the manifest is a derived artifact and can be regenerated on demand from `.swarm/` state via `build_manifest_from_workspace()`.
 
 Enforced by `InvestigationDispatcher._write_run_manifest()` (server path) and by `cmd_demo()` post-subprocess (CLI demo path). Schema at `docs/MANIFEST.md`.
+
+### INV-45: Paper-Track Citation Integrity
+Every `\cite{...}` key in a paper-track manuscript's `paper.tex` MUST resolve to an entry in `.swarm/manuscript/citation-ledger.json` with `verified: true`. AND at least 90% of verified ledger entries must be `\cite`d somewhere in `paper.tex` (the citation-integration rate must be ≥ `DEFAULT_COVERAGE_TARGET = 0.90`). Orphan `\cite` keys are treated as hallucinated references — zero tolerance, regardless of integration rate. Enforced by `voronoi.science.citation_coverage.check_coverage()` at Scribe verify-loop step 6 and after every Refiner review round. A failing gate reverts the latest Refiner round. Applies only when `.swarm/manuscript/citation-ledger.json` exists (i.e., paper-track was activated via `/voronoi paper`).
+
+### INV-46: Hypothesis-Tranche Parallelism
+The dispatcher unit of parallelism is a **hypothesis tranche** — one hypothesis arm plus its controls and sensitivity variants — NOT an individual worker. The orchestrator may run up to `max_agents_per_investigation` tranches in parallel (default 6). When a tranche completes, its slot is filled by a NEW tranche rather than by additional variants of an already-resolved arm. This enforces the principle that parallelism serves hypothesis-space coverage, not throughput of a single arm. Enforced by `server/prompt.py` (orchestrator prompt teaches tranche semantics) and by `server/runner.py`/`server/dispatcher.py` default configuration.
+
+### INV-47: Red Team Verdict Before Convergence (Scientific+)
+At rigor levels `scientific` and `experimental`, `check_convergence()` MUST NOT return `converged=True` unless `<workspace>/.swarm/red-team-verdict.json` exists, is valid JSON, and has `verdict ∈ {pass, pass_with_caveats}`. A `fatal_flaw` verdict is a hard blocker with the verdict's `reason` surfaced in `ConvergenceResult.blockers`. The Red Team agent (`src/voronoi/data/agents/red-team.agent.md`) is invoked with a **cold context** via `build_red_team_prompt()` — it reads only `deliverable.md`, `claim-ledger.json`, and raw artifacts under `output/`, never investigation history. Adaptive rigor skips this gate (cost/speed). Enforced by `voronoi.science.convergence._check_red_team_verdict()`.
+
+### INV-48: Continuation Requires New Information
+`handle_continue_investigation` MUST refuse to enqueue a new round when ALL of the following hold: (a) feedback is empty, (b) the prior workspace's `.swarm/convergence.json` has `gate_passed=true`, (c) a manuscript deliverable exists (`paper.tex`, `deliverable.md`, or `.swarm/manuscript/paper.tex`), AND (d) the claim ledger has no pending objections. Re-running a fully-converged investigation with zero new information merely replays the Scribe/Evaluator finisher chain and produces no belief-map delta. The refusal message points the operator at `/voronoi deliberate`, an explicit `challenge Cn: <reason>`, a free-text scope change, or `/voronoi complete`. Enforced by `voronoi.gateway.handlers_mutate._has_continuation_signal()`.
+
+### INV-49: Checkpoint Reconciled Against Beads Before Restart
+`InvestigationDispatcher._has_active_workers` MUST NOT trust `orchestrator-checkpoint.active_workers` alone. Before deciding that workers are done, it cross-checks `bd list --status in_progress --json` and augments the worker-candidate list with any task IDs that are in-progress in Beads but absent from the checkpoint. Without this reconciliation, a stale checkpoint with `active_workers=[]` while a real worker (e.g. Scribe) is still in-progress caused the dispatcher to restart the orchestrator and spawn a duplicate finisher. Enforced by `InvestigationDispatcher._bd_in_progress_task_ids()` feeding into `_has_active_workers()`.
+
+### INV-50: Stop-and-Fix Directive Blocks Dispatch Structurally
+When `.swarm/dispatcher-directive.json` contains `{"action": "stop_and_fix"}`, `spawn-agent.sh` MUST refuse to spawn any task whose title does not match the methodologist/post-mortem/revise/fix-contract/sentinel pattern, returning exit 1 and marking the task BLOCKED in Beads. For backward compatibility with pre-action sentinel directives, `spawn-agent.sh` MUST treat `{"directive": "sentinel_violation"}` as `stop_and_fix`. This is the structural counterpart to INV-40 (prompt-level enforcement of sentinel audits): an orchestrator that ignores the sentinel directive in its prompt is caught at dispatch time, so no new workers can burn hours on invalid data.
+
+### INV-51: Paradigm Stress Counts Refuted Hypotheses
+`check_paradigm_stress` MUST count hypotheses with `status == "refuted"` in `belief-map.json` as equivalent stress events alongside pairwise finding contradictions. The threshold of 3 total stress events is preserved. This closes a blind spot where refuted paper-level hypotheses (contradicting abstract-level claims) silently accumulated at `paradigm_stress=0`, preventing auto-deliberation and paradigm pivots.
+
+### INV-52: Ledger Load-Time Shape Validation
+`_dict_to_ledger` MUST apply `validate_claim_statement` to every incoming claim and drop those that fail (logging a WARNING with the claim ID and reason). This quarantines legacy ledgers — produced before the Beads-to-Ledger launderer was fixed — whose statements are bare imperatives like `"Analyze pricing dataset"`. Surviving claim IDs are preserved and `_next_claim_id` is bumped so the counter never collides with a dropped-but-referenced ID.
+
+### INV-53: Lab-KG Provenance and Durability
+Lab-wide Knowledge Graph entries MUST preserve Claim Ledger provenance (`model_prior`, `retrieved_prior`, `run_evidence`) and MUST NOT be elevated beyond what provenance plus status justify. Only `locked` and `replicated` entries may be injected into future prompts as durable priors by default; `provisional` and `asserted` entries require explicit non-durable handling. Durable entries MUST carry `half_life_due`, stale entries MUST be surfaced as stale, and dissenting/retired claims MUST remain visible rather than being flattened into facts. Dead ends are first-class KG records and MUST remain queryable.
+
+### INV-54: PROVE Question Immutability and Ambiguity Confirmation
+PROVE investigations treat the user's question and pre-registered design as the contract. Once accepted as PROVE, the question MUST NOT be reframed by Question Framer or Assumption Auditor. Borderline PROVE classifications MUST be surfaced to the user for confirmation before enqueueing so they can choose fixed-question PROVE or switch to DISCOVER question refinement. Question Framer runs only before DISCOVER; Assumption Auditor may surface PROVE assumptions for transparency but MUST NOT block, halt, pivot, or revise the question.
+
+### INV-55: Title Laundering Rejected at Create-Time
+`voronoi.mcp.tools_beads.create_task` MUST reject any title whose first non-whitespace token matches the bare-imperative set (`Analyze`, `Analyse`, `Investigate`, `Run`, `Check`, `Explore`, `Examine`, `Study`, `Review`, `Assess`, `Evaluate`, `Test`, `Verify`, `Look`, `Find`, `Identify`, `Determine`, `Survey`) AND that contains no relational marker (`>`, `<`, `=`, `vs`, `causes`, `predicts`, `increases`, `decreases`, `is`, `are`, …). This mirrors the Claim Ledger's `validate_claim_statement` (INV-47, claim shape) but enforces it at the *task creation* boundary instead of at the post-hoc claim sync. Without this gate, ghost tasks like `"Analyze business prompt findings"` are dispatchable, burn worker time, and silently disappear at the ledger layer. The dispatcher's substring guard remains as a defence-in-depth layer.
+
+### INV-56: PRODUCES Required and Namespaced for Experiment-Type Tasks
+For tasks created via `voronoi_create_task` with `task_type ∈ {build, experiment, investigation, evaluation, paper}`, `PRODUCES:` MUST be non-empty. PRODUCES paths MUST NOT use any basename in the shared-name denylist (`answer.json`, `FINAL_ANSWER.json`, `output.json`, `result.json`, `results.json`, `findings.json`) anywhere in the workspace — these are global namespace collisions that let one worker overwrite another's deliverable. Workers MUST namespace experiment outputs under `output/<task_id>/…` or `findings/<task_id>/…` and use task-specific basenames such as `experiment_metrics.json`, `validation_report.json`, or `manuscript_draft.pdf`. Enforced in `voronoi.mcp.tools_beads.create_task`.
+
+### INV-57: FINDING Linkage Required to Close Experiment Tasks
+`voronoi.mcp.tools_beads.close_task` MUST refuse to close any task whose notes carry `TASK_TYPE:{experiment, investigation, evaluation}` unless the notes also contain either:
+  (a) `FINDING_TASK_IDS:bd-X[,bd-Y…]` — at least one Beads task ID that resolves to a sibling task whose title starts with `FINDING:` / `FINDING -` / `FINDING —`, OR
+  (b) `FINDING:NULL` followed by a non-empty rationale of ≥40 characters explaining why the experiment produced no claim-grade result (e.g. an honest negative).
+Without this gate, experiment tasks close green while the Claim Ledger stays empty and the user is told `0/N criteria met` despite real work having happened. This is the structural counterpart to INV-15 (claim-evidence traceability) at the per-task closure boundary.
+
+### INV-58: Graph-Health Audit per OODA Cycle
+`InvestigationDispatcher._check_graph_health` MUST run during each progress poll for any investigation in `mode == "prove"` or `rigor ∈ {analytical, scientific, experimental}`. It MUST persist `.swarm/graph-health.json` with `{generated_at, total_closed, auditable_closed, orphan_count, orphan_ratio, sibling_cluster_max, sibling_cluster_titles, verdict, reasons}` and MUST emit a `swarm_degenerate` directive (with `action: stop_and_fix`, see INV-50) when any of:
+  - `orphan_ratio > 0.4` (closed tasks with no parent and no inbound dependency edges, excluding `epic`/`scout`/`finding`/`theory`/`baseline`/`methodologist`/`review_stats`/`review_critic`/`synthesis` types),
+  - `sibling_cluster_max ≥ 5` (≥5 closed tasks share the same normalized first-3-word title prefix).
+The `swarm_degenerate` event MUST fire only on transitions into the degenerate verdict (idempotent across polls). The directive instructs the orchestrator to attach orphan tasks to a parent epic, restate laundered titles, or escalate to Methodologist; `spawn-agent.sh` blocks all non-methodologist/post-mortem/revise/restate dispatches until the verdict flips back to `healthy`. This catches the swarm-degenerate failure mode where Beads silently devolves from a DAG orchestrator into a flat work queue.

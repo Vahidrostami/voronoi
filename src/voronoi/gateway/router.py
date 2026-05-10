@@ -17,6 +17,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
+from voronoi.gateway.config import get_gateway_base_dir
 from voronoi.gateway.intent import ClassifiedIntent, WorkflowMode, classify, classify_for_new_investigation
 from voronoi.gateway.progress import MODE_EMOJI
 
@@ -35,6 +36,7 @@ from voronoi.gateway.handlers_query import (  # noqa: F401
     handle_belief,
     handle_finding,
     handle_claims,
+    handle_dead_ends,
     handle_ask,
     handle_deliberate,
     handle_ops,
@@ -48,15 +50,19 @@ from voronoi.gateway.handlers_mutate import (  # noqa: F401
     handle_complete,
     handle_complete_investigation,
     handle_review_investigation,
+    handle_review_negative,
+    handle_lock_negative,
     handle_continue_investigation,
     handle_abort,
     handle_pivot,
     handle_guide,
+    handle_extend,
 )
 from voronoi.gateway.handlers_workflow import (  # noqa: F401
     handle_discover,
     handle_prove,
     handle_demo,
+    handle_paper,
 )
 
 logger = logging.getLogger("voronoi.router")
@@ -69,9 +75,11 @@ __all__ = [
     "handle_resume_investigation",
     "handle_complete",
     "handle_complete_investigation",
-    "handle_review_investigation", "handle_continue_investigation", "handle_claims",
-    "handle_abort", "handle_pivot", "handle_guide",
-    "handle_discover", "handle_prove",
+    "handle_review_investigation", "handle_review_negative", "handle_lock_negative",
+    "handle_continue_investigation", "handle_claims",
+    "handle_dead_ends",
+    "handle_abort", "handle_pivot", "handle_guide", "handle_extend",
+    "handle_discover", "handle_prove", "handle_paper",
     "handle_recall", "handle_belief", "handle_finding", "handle_ops",
     "handle_results", "handle_demo", "handle_details",
     "handle_ask", "handle_deliberate",
@@ -144,14 +152,19 @@ _HELP_MESSAGE = (
     "`/voronoi progress` — metrics + criteria\n\n"
     "*Investigate*\n"
     "`/voronoi discover <question>`\n"
-    "`/voronoi prove <hypothesis>`\n\n"
+    "`/voronoi prove <hypothesis>`\n"
+    "`/voronoi paper <codename>` — write a manuscript for a completed investigation\n\n"
     "*Knowledge*\n"
     "`/voronoi belief` · `finding <id>` · `recall <query>`\n"
     "`/voronoi ask <question>` — ask about a running investigation\n\n"
     "*Review*\n"
+    "`/voronoi review [codename]` — inspect the Claim Ledger\n"
+    "`/voronoi review-negative <codename>` — record a lockable negative-result review\n"
+    "`/voronoi lock-negative <codename> <claim-id>` — lock that negative result\n"
     "`/voronoi deliberate [codename]` — reason about results interactively\n\n"
     "*Steer*\n"
-    "`/voronoi guide <msg>` · `pivot <msg>` · `abort`\n\n"
+    "`/voronoi guide <msg>` · `pivot <msg>` · `abort`\n"
+    "`/voronoi extend <codename> [minutes]` — grant +N min before partial review\n\n"
     "*Ops*\n"
     "`/voronoi ops` — server diagnostics (tmux, disk, logs)\n\n"
     "_In groups, @mention me or reply to my messages._"
@@ -243,6 +256,12 @@ class CommandRouter:
                 else:
                     txt = "Usage: `/voronoi demo list` or `/voronoi demo run <name>`"
                 return txt, None
+            elif sub == "paper" and args:
+                txt = handle_paper(self.project_dir, args[0], chat_id)
+                return txt, None
+            elif sub == "paper":
+                txt = handle_paper(self.project_dir, "", chat_id)
+                return txt, None
             elif sub == "recall" and args:
                 return handle_recall(self.project_dir, " ".join(args)), None
             elif sub == "belief":
@@ -279,9 +298,21 @@ class CommandRouter:
                 return handle_pivot(self.project_dir, " ".join(args)), None
             elif sub == "guide" and args:
                 return handle_guide(self.project_dir, " ".join(args)), None
+            elif sub == "extend" and args:
+                minutes_arg = args[1] if len(args) > 1 else ""
+                return handle_extend(
+                    self.project_dir, args[0], minutes_arg,
+                ), None
             elif sub == "review":
                 arg = args[0] if args else ""
                 return handle_review_investigation(self.project_dir, arg), None
+            elif sub == "review-negative":
+                arg = args[0] if args else ""
+                return handle_review_negative(self.project_dir, arg), None
+            elif sub == "lock-negative":
+                identifier = args[0] if args else ""
+                claim_id = args[1] if len(args) > 1 else ""
+                return handle_lock_negative(self.project_dir, identifier, claim_id), None
             elif sub == "continue" and args:
                 identifier = args[0]
                 feedback = " ".join(args[1:]) if len(args) > 1 else ""
@@ -289,6 +320,8 @@ class CommandRouter:
             elif sub == "claims":
                 arg = args[0] if args else ""
                 return handle_claims(self.project_dir, arg), None
+            elif sub in ("dead-ends", "deadends", "dead_ends"):
+                return handle_dead_ends(self.project_dir, " ".join(args)), None
             elif sub == "ask" and args:
                 return handle_ask(self.project_dir, " ".join(args)), None
             elif sub == "deliberate":
@@ -307,8 +340,7 @@ class CommandRouter:
         """Check if any investigations are currently running."""
         try:
             from voronoi.server.queue import InvestigationQueue
-            base = Path.home() / ".voronoi"
-            q = InvestigationQueue(base / "queue.db")
+            q = InvestigationQueue(get_gateway_base_dir() / "queue.db")
             return len(q.get_running()) > 0
         except Exception:
             return False

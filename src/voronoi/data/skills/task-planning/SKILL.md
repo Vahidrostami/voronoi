@@ -4,6 +4,8 @@ description: >
   Skill for decomposing high-level feature requests into structured epics and subtasks
   using Beads (bd). Covers dependency graph creation, priority assignment, scope definition,
   and agent dispatch planning.
+user-invocable: true
+disable-model-invocation: false
 ---
 
 # Task Planning with Beads

@@ -6,10 +6,13 @@ structured results.  Tools are registered with the MCP server in ``server.py``.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
-from pathlib import Path
+import tempfile
+from contextlib import contextmanager
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from voronoi.beads import run_bd, run_bd_json
@@ -30,6 +33,44 @@ from voronoi.mcp.validators import (
 
 logger = logging.getLogger("voronoi.mcp.tools_beads")
 
+VALID_ROBUST_VALUES = frozenset({"yes", "no"})
+
+# Task types whose closure represents a scientific work product. These MUST
+# declare PRODUCES at create-time (INV-56) and MUST link a FINDING task or
+# an honest FINDING:NULL rationale at close-time (INV-57).
+EXPERIMENT_TASK_TYPES = frozenset({
+    "experiment", "investigation", "evaluation",
+})
+
+# Task types that always need a non-empty PRODUCES contract (INV-56). Adds
+# build/paper to the experiment set — a build task without an output
+# artifact has nothing to integrate; a paper task without a manuscript
+# file is a phantom completion.
+PRODUCES_REQUIRED_TASK_TYPES = EXPERIMENT_TASK_TYPES | frozenset({
+    "build", "paper",
+})
+
+# Shared filenames that workers historically clobber across tasks (each
+# "Analyze business prompt" worker overwrote the previous answer). PRODUCES
+# paths matching these basenames are rejected anywhere in the workspace
+# (INV-56). Workers MUST namespace outputs under output/<task_id>/… or
+# findings/<task_id>/… and use task-specific artifact basenames.
+SHARED_PRODUCES_DENYLIST = frozenset({
+    "answer.json", "FINAL_ANSWER.json", "final_answer.json",
+    "output.json", "result.json", "results.json", "findings.json",
+})
+
+_FINDING_TITLE_RE = re.compile(r"^\s*FINDING\s*(?::|-|—)", re.IGNORECASE)
+
+# Marker tokens that turn an imperative-shaped task title from a "ghost
+# claim" into a concrete proposition. Mirrors science.claims._RELATIONAL_MARKERS.
+_TITLE_RELATIONAL_MARKERS = (
+    ">", "<", "=", "≥", "≤", "≠",
+    " vs ", " versus ", " causes ", " predicts ", " correlates ",
+    " increases ", " decreases ", " is ", " are ", " differs ",
+    " exceeds ", " outperforms ", " beats ",
+)
+
 
 def _workspace() -> str:
     return os.environ.get("VORONOI_WORKSPACE", ".")
@@ -48,6 +89,27 @@ def _write_task_notes(task_id: str, notes: str, workspace: str) -> None:
     code, stdout = run_bd("update", task_id, "--notes", notes, cwd=workspace)
     if code != 0:
         raise ValidationError(f"bd update failed: {stdout}")
+
+
+@contextmanager
+def _task_notes_lock(workspace: str):
+    """Serialize read-modify-write updates to Beads notes within one workspace."""
+    try:
+        import fcntl  # Unix-only; Voronoi dispatch runs on Unix-like hosts.
+    except ImportError:
+        yield
+        return
+
+    lock_root = Path(tempfile.gettempdir()) / "voronoi-mcp-locks"
+    lock_root.mkdir(parents=True, exist_ok=True)
+    lock_key = str(Path(workspace).resolve()).encode("utf-8")
+    lock_path = lock_root / f"{hashlib.sha256(lock_key).hexdigest()}.notes.lock"
+    with lock_path.open("w") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def _upsert_line_field(notes: str, field: str, line: str) -> tuple[str, bool]:
@@ -86,25 +148,178 @@ def _upsert_task_fields(
     require_existing: bool = True,
 ) -> str:
     """Merge structured fields into existing Beads notes without clobbering other metadata."""
-    task = _task_data(task_id, workspace)
-    if task is None and require_existing:
-        raise ValidationError(f"Cannot read task {task_id}")
+    with _task_notes_lock(workspace):
+        task = _task_data(task_id, workspace)
+        if task is None and require_existing:
+            raise ValidationError(f"Cannot read task {task_id}")
 
-    notes = task.get("notes", "") if task else ""
-    line_fields = line_fields or set()
-    for field, value in field_updates:
-        if field in line_fields:
-            notes, _ = _upsert_line_field(notes, field, value)
-        else:
-            notes, _ = _upsert_token_field(notes, field, value)
+        notes = task.get("notes", "") if task else ""
+        line_fields = line_fields or set()
+        for field, value in field_updates:
+            if field in line_fields:
+                notes, _ = _upsert_line_field(notes, field, value)
+            else:
+                notes, _ = _upsert_token_field(notes, field, value)
 
-    _write_task_notes(task_id, notes, workspace)
-    return notes
+        _write_task_notes(task_id, notes, workspace)
+        return notes
 
 
 def _bracket_safe(value: str) -> str:
     """Normalize text used in bracket-parsed pre-registration fields."""
     return value.replace("[", "(").replace("]", ")").strip()
+
+
+def _workspace_relative_path(path: str, workspace: str, field: str) -> Path:
+    """Resolve a workspace-relative path and reject absolute/escaping paths."""
+    path = require_non_empty(path, field)
+    candidate = Path(path)
+    if candidate.is_absolute() or PureWindowsPath(path).is_absolute():
+        raise ValidationError(f"{field}: path must be relative to workspace: {path}")
+    ws = Path(workspace).resolve()
+    full = (ws / candidate).resolve()
+    if not full.is_relative_to(ws):
+        raise ValidationError(f"{field}: path escapes workspace: {path}")
+    return full
+
+
+def _iter_artifact_paths(paths: str) -> list[str]:
+    """Split a comma-separated artifact path list and drop empty entries."""
+    return [path.strip() for path in paths.split(",") if path.strip()]
+
+
+def _validate_task_title(title: str) -> None:
+    """Reject laundered imperative-verb titles at create-time (INV-55).
+
+    Mirrors :func:`voronoi.science.claims.validate_claim_statement` but
+    enforces the shape at the *task creation* boundary — so ghost tasks
+    like "Analyze business prompt findings" never get dispatched in the
+    first place. The Claim Ledger gate (INV-47) remains as defence in
+    depth.
+    """
+    from voronoi.science.claims import _BANNED_PREFIX_RE  # type: ignore[attr-defined]
+    stripped = title.strip()
+    if not stripped:
+        raise ValidationError("title must not be empty")
+    m = _BANNED_PREFIX_RE.match(stripped)
+    if m is None:
+        return
+    lower = stripped.lower()
+    if any(marker in lower for marker in _TITLE_RELATIONAL_MARKERS):
+        return
+    raise ValidationError(
+        f"title begins with imperative verb {m.group(1)!r} and contains "
+        "no relational marker (>, <, vs, causes, predicts, …) — task "
+        "titles MUST be concrete propositions or be prefixed with their "
+        "type (e.g. 'FINDING:', 'THEORY:', 'BUILD:'). See INV-55."
+    )
+
+
+def _validate_produces_contract(
+    task_type: str,
+    produces: str,
+    workspace: str,
+) -> None:
+    """Enforce PRODUCES required + denylist for experiment-type tasks (INV-56)."""
+    type_key = task_type.strip().lower()
+    artifact_paths = _iter_artifact_paths(produces) if produces else []
+
+    if type_key in PRODUCES_REQUIRED_TASK_TYPES and not artifact_paths:
+        raise ValidationError(
+            f"task_type={type_key!r} MUST declare PRODUCES — declare at "
+            "least one output file under output/<task_id>/… or "
+            "findings/<task_id>/…. See INV-56."
+        )
+
+    for artifact in artifact_paths:
+        normalized = artifact.strip().lstrip("./")
+        basename = Path(normalized).name
+        if basename in SHARED_PRODUCES_DENYLIST:
+            raise ValidationError(
+                f"PRODUCES path {artifact!r} uses shared artifact "
+                f"basename {basename!r}; workers clobber each other's "
+                "outputs at this name. Namespace under output/<task_id>/… "
+                "or findings/<task_id>/… and use a task-specific filename "
+                "such as experiment_metrics.json. See INV-56."
+            )
+        # Path-escape and absolute-path validation (existing).
+        _workspace_relative_path(artifact, workspace, "produces")
+
+
+def _resolve_created_by(explicit: str) -> str:
+    """Resolve task provenance for the CREATED_BY note field (INV-55/56)."""
+    if explicit:
+        return explicit.strip()
+    env = os.environ.get("VORONOI_AGENT_ROLE", "").strip()
+    return env or "unknown"
+
+
+def _is_finding_task_title(title: str) -> bool:
+    return bool(_FINDING_TITLE_RE.match(title or ""))
+
+
+def _has_finding_linkage(
+    notes: str,
+    workspace: str,
+    current_task_id: str,
+) -> tuple[bool, str]:
+    """Check whether task notes carry FINDING_TASK_IDS or FINDING:NULL rationale."""
+    text = notes or ""
+    # Collect the line-blocks tagged with FINDING_TASK_IDS.
+    for line in text.splitlines():
+        s = line.strip()
+        if s.upper().startswith("FINDING_TASK_IDS:"):
+            payload = s.split(":", 1)[1].strip()
+            ids = [tok.strip() for tok in payload.split(",") if tok.strip()]
+            if ids:
+                for finding_id in ids:
+                    if finding_id == current_task_id:
+                        return False, (
+                            f"FINDING_TASK_IDS references closing task "
+                            f"{finding_id}; link a sibling FINDING task instead"
+                        )
+                    finding_task = _task_data(finding_id, workspace)
+                    if finding_task is None:
+                        return False, (
+                            f"FINDING_TASK_IDS references missing task "
+                            f"{finding_id}"
+                        )
+                    title = str(finding_task.get("title", ""))
+                    if not _is_finding_task_title(title):
+                        return False, (
+                            f"FINDING_TASK_IDS references {finding_id}, but "
+                            "that task title does not start with FINDING:, "
+                            "FINDING -, or FINDING —"
+                        )
+                return True, ""
+    # FINDING:NULL must carry a rationale of >= 40 chars on the same line
+    # (after the marker) or on the immediately following non-empty line.
+    lines = [l.rstrip() for l in text.splitlines()]
+    for idx, line in enumerate(lines):
+        s = line.strip()
+        upper = s.upper()
+        if upper == "FINDING:NULL" or upper.startswith("FINDING:NULL "):
+            inline = s[len("FINDING:NULL"):].strip(": -—\t ")
+            if len(inline) >= 40:
+                return True, ""
+            for follow in lines[idx + 1:]:
+                if follow.strip():
+                    if len(follow.strip()) >= 40:
+                        return True, ""
+                    return False, "FINDING:NULL rationale is too short (<40 chars)"
+            return False, "FINDING:NULL marker has no rationale"
+    return False, (
+        "experiment-type task closure requires either "
+        "FINDING_TASK_IDS:bd-X[,bd-Y…] linking to FINDING tasks, or "
+        "FINDING:NULL <rationale ≥40 chars> documenting an honest null "
+        "result. See INV-57."
+    )
+
+
+def _extract_task_type(notes: str) -> str:
+    pattern = re.compile(r"(?im)^\s*TASK_TYPE\s*[:=]\s*([A-Za-z_]+)")
+    m = pattern.search(notes or "")
+    return m.group(1).strip().lower() if m else ""
 
 
 # ---------------------------------------------------------------------------
@@ -117,31 +332,45 @@ def create_task(
     parent: str = "",
     produces: str = "",
     requires: str = "",
+    created_by: str = "",
 ) -> dict[str, Any]:
     """Create a new Beads task with validated artifact contracts.
 
     Parameters
     ----------
     title : str
-        Task title (required).
+        Task title (required). Rejected if it is a bare imperative-verb
+        ghost task with no relational marker (INV-55).
     task_type : str
-        Task type tag (e.g. 'build', 'investigation', 'scout').
+        Task type tag (e.g. 'build', 'investigation', 'scout'). For
+        experiment-type values (build, experiment, investigation,
+        evaluation, paper) PRODUCES is mandatory and must namespace
+        outputs (INV-56).
     parent : str
         Parent task/epic ID for subtask creation.
     produces : str
-        Comma-separated list of output files the task MUST create.
+        Comma-separated list of output files the task MUST create. Paths
+        with shared-namespace basenames (answer.json, FINAL_ANSWER.json,
+        …) are rejected to prevent worker-vs-worker clobbering.
     requires : str
         Comma-separated list of input files that must exist.
+    created_by : str
+        Provenance tag (e.g. ``orchestrator`` or ``worker:bd-42``). When
+        empty, falls back to ``$VORONOI_AGENT_ROLE`` or ``"unknown"``.
     """
     title = require_non_empty(title, "title")
+    _validate_task_title(title)
+
+    ws = _workspace()
 
     # Validate REQUIRES files exist before creating task
-    ws = _workspace()
     if requires:
         for req in requires.split(","):
             req = req.strip()
             if req:
                 require_file_exists(req, ws, "requires")
+
+    _validate_produces_contract(task_type, produces, ws)
 
     # Build bd create command
     args = ["create", title]
@@ -167,6 +396,7 @@ def create_task(
         notes_parts.append(f"PRODUCES:{produces}")
     if requires:
         notes_parts.append(f"REQUIRES:{requires}")
+    notes_parts.append(f"CREATED_BY:{_resolve_created_by(created_by)}")
 
     if notes_parts and task_id:
         _upsert_task_fields(
@@ -207,10 +437,21 @@ def close_task(task_id: str, reason: str = "") -> dict[str, Any]:
         if line.startswith("PRODUCES:"):
             for artifact in line[len("PRODUCES:"):].split(","):
                 artifact = artifact.strip()
-                if artifact and not (Path(ws) / artifact).exists():
+                if not artifact:
+                    continue
+                artifact_path = _workspace_relative_path(artifact, ws, "produces")
+                if not artifact_path.exists():
                     raise ValidationError(
                         f"Cannot close task: PRODUCES artifact missing: {artifact}"
                     )
+
+    # INV-57: experiment/investigation/evaluation tasks MUST link a
+    # FINDING task or carry a FINDING:NULL rationale before closing.
+    task_type = _extract_task_type(notes)
+    if task_type in EXPERIMENT_TASK_TYPES:
+        ok, gate_reason = _has_finding_linkage(notes, ws, task_id)
+        if not ok:
+            raise ValidationError(f"Cannot close task: {gate_reason}")
 
     args = ["close", task_id]
     if reason:
@@ -331,11 +572,13 @@ def record_finding(
     ]
     if p_value:
         field_updates.append(("P", f"P:{p_value}"))
-    if confidence:
+    if confidence is not None and confidence != "":
         conf = require_probability(confidence, "confidence")
         field_updates.append(("CONFIDENCE", f"CONFIDENCE:{conf}"))
     if robust:
-        field_updates.append(("ROBUST", f"ROBUST:{robust}"))
+        robust_value = require_enum(str(robust).strip().lower(),
+                                    VALID_ROBUST_VALUES, "robust")
+        field_updates.append(("ROBUST", f"ROBUST:{robust_value}"))
     if interpretation:
         field_updates.append(("INTERPRETATION", f"INTERPRETATION:{interpretation}"))
 

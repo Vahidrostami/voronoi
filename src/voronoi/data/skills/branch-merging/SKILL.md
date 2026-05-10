@@ -4,6 +4,8 @@ description: >
   Skill for safely merging completed agent branches back to main. Covers
   pre-merge checks, conflict resolution, post-merge cleanup, and promotion
   of newly unblocked tasks.
+user-invocable: true
+disable-model-invocation: false
 ---
 
 # Branch Merging

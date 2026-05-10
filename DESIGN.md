@@ -106,7 +106,7 @@ flowchart LR
 | Runtime agents/skills | ✅ `voronoi init` | ✅ `_ensure_github_files()` fallback |
 | Prompt builder | ✅ `prompt.py` | ✅ `prompt.py` (same function) |
 | Progress updates | stdout | Telegram messages every 30s |
-| Timeout detection | KeyboardInterrupt | Configurable (default 48h) |
+| Review budget | KeyboardInterrupt | Optional explicit wall-clock budget |
 | Completion | Agent exits | tmux dies OR deliverable.md + convergence.json |
 
 ---
@@ -168,9 +168,11 @@ The canonical location for all runtime content is `src/voronoi/data/`. The promp
 
 ```
 src/voronoi/data/
-├── agents/                          # Role definitions (12 roles)
+├── agents/                          # Role definitions (19 role files)
 │   ├── swarm-orchestrator.agent.md  # OODA loop, convergence, paradigm checks
 │   ├── worker-agent.agent.md        # Build tasks, artifact contracts
+│   ├── question-framer.agent.md     # DISCOVER question framing gate
+│   ├── assumption-auditor.agent.md  # PROVE assumption transparency audit
 │   ├── scout.agent.md               # Prior knowledge research
 │   ├── investigator.agent.md        # Pre-registration, sensitivity analysis
 │   ├── explorer.agent.md            # Option evaluation, comparison matrices
@@ -180,7 +182,12 @@ src/voronoi/data/
 │   ├── statistician.agent.md        # CI, effect sizes, data integrity
 │   ├── synthesizer.agent.md         # Consistency checks, deliverable
 │   ├── evaluator.agent.md           # Final scoring (CCSAN formula)
-│   └── scribe.agent.md              # LaTeX compilation, figures
+│   ├── scribe.agent.md              # LaTeX compilation, figures
+│   ├── outliner.agent.md            # Paper outline and citation slots
+│   ├── lit-synthesizer.agent.md     # Paper literature synthesis
+│   ├── figure-critic.agent.md       # Figure quality rubric
+│   ├── refiner.agent.md             # Peer-review refinement loop
+│   └── red-team.agent.md            # Cold-context adversarial review
 ├── prompts/                         # Invocable prompts
 │   ├── spawn.prompt.md              # /spawn — single agent dispatch
 │   ├── merge.prompt.md              # /merge — branch integration
@@ -261,7 +268,7 @@ flowchart LR
 
 ## 5. Role Registry
 
-All 12 roles are available in both DISCOVER and PROVE modes. The difference is **when** they activate:
+The 12 core roles are available in both DISCOVER and PROVE modes, with auxiliary gate/audit roles and paper-track roles activated by context. The difference is **when** they activate:
 - **PROVE**: Full role set from the start (pre-registration, methodologist review, etc.)
 - **DISCOVER**: Orchestrator casts roles dynamically as the investigation evolves
 
@@ -269,6 +276,8 @@ All 12 roles are available in both DISCOVER and PROVE modes. The difference is *
 |------|------|----------|-------|-------------------|
 | Builder 🔨 | `worker-agent.agent.md` | On demand | On demand | Implements code in isolated worktree |
 | Scout 🔍 | `scout.agent.md` | Always first | Always first | Problem positioning, prior knowledge, SOTA anchoring, novelty assessment |
+| Question Framer | `question-framer.agent.md` | Before Scout | Never | Assumption-aware framing and optional reframe confirmation |
+| Assumption Auditor | `assumption-auditor.agent.md` | Never | After Scout | Read-only hidden-assumption audit for transparency |
 | Investigator 🔬 | `investigator.agent.md` | When hypotheses emerge | From start | Pre-registered experiments, raw data + SHA-256 |
 | Explorer 🧭 | `explorer.agent.md` | When comparing options | When comparing options | Option evaluation with comparison matrices |
 | Statistician 📊 | `statistician.agent.md` | When rigor escalates | From start | CI, effect sizes, data integrity, p-hacking flags |
@@ -328,7 +337,7 @@ Pure plumbing — no decision logic. The orchestrator (copilot) makes all decisi
 | `merge-agent.sh` | `git merge` → push → clean worktree → `bd close` |
 | `convergence-gate.sh` | Multi-signal convergence validation + figure-lint |
 | `health-check.sh` | Agent health monitoring (tmux + git + process tree) |
-| `swarm-init.sh` | `git init` · `bd init` · tmux session · config |
+| `swarm-init.sh` | `git init` · `bd init --server` · tmux session · config |
 | `notify-telegram.sh` | Source this, call `notify_telegram "event" "message"` |
 | `figure-lint.sh` | Verify all `\includegraphics` refs resolve |
 | `teardown.sh` | Kill tmux, prune worktrees/branches |
@@ -382,9 +391,9 @@ stateDiagram-v2
     Running --> Complete : deliverable + convergence
     Running --> Complete : tmux exits
     Running --> Failed : launch error
-    Running --> Exhausted : timeout 48h
+    Running --> Review : explicit budget reached
     Complete --> [*] : teaser + PDF to Telegram
-    Exhausted --> [*] : partial results delivered
+    Review --> [*] : partial results delivered or continued
 ```
 
 **Dispatcher responsibilities:**
@@ -397,7 +406,7 @@ stateDiagram-v2
 - Reads `.swarm/experiments.tsv` and `.swarm/success-criteria.json` for track assessment
 - Reads `.swarm/eval-score.json` for evaluator score propagation
 - Detects completion: `deliverable.md` (standard) or `+ convergence.json` (analytical+)
-- Enforces timeout (configurable, default 48h)
+- Parks runs for review when an explicit wall-clock budget is configured and reached
 
 ### Telegram Notifications
 
@@ -517,9 +526,9 @@ The report generator uses these fields to produce interpreted findings (not just
 Tasks declare file-level dependencies in Beads notes:
 
 ```
-PRODUCES: src/encoder.py, output/results.json
+PRODUCES: src/encoder.py, output/bd-42/experiment_metrics.json
 REQUIRES: data/raw/transactions.csv
-GATE: output/validation_report.json
+GATE: output/bd-43/validation_report.json
 ```
 
 **Enforcement:** Dispatch blocked until REQUIRES/GATE exist. Merge rejected if PRODUCES missing. Worker agents check these at startup per `worker-agent.agent.md`.
@@ -749,7 +758,7 @@ timestamp	task_id	branch	metric_name	metric_value	status	description
 |----------|-----------|
 | Science-first | Engineering = science with gates off. Zero overhead for build-only. |
 | Single prompt builder (`prompt.py`) | CLI and Telegram produce identical orchestrator behavior. |
-| `.github/` as source of truth | Agent roles live in files copilot auto-discovers — not duplicated in code. |
+| `src/voronoi/data/` as source of truth | Runtime content lives in package data and is copied to `.github/` in investigation workspaces; roles are not duplicated in code. |
 | Prompt references not duplicates | Orchestrator told "read the file" — roles stay in sync automatically. |
 | Auto-classified rigor | Users don't configure. System infers and can escalate. |
 | OODA over linear pipeline | Investigations are iterative — hypothesis revision needs loops. |
@@ -758,7 +767,7 @@ timestamp	task_id	branch	metric_name	metric_value	status	description
 | tmux `; exit` | Session dies when agent finishes — dispatcher detects completion. |
 | Atomic queue claiming | `next_ready()` marks as running in same transaction — no double-dispatch. |
 | `.github/` fallback copy | `_ensure_github_files()` copies even if `voronoi init` subprocess fails. |
-| Timeout (48h default) | Prevents zombie investigations; writes exhaustion convergence. |
+| Optional review budget | Gives operators a wall-clock stop point without making long investigations fail by default. |
 | Inner verify loop before escalation | Workers retry against own errors (Ralph pattern) before bothering orchestrator. |
 | **Experimental Validity Audit (EVA)** | Catches experiments that run but don't test what they claim (truncation, caching, collapsed conditions). Prevents meaningless results from entering the evidence store. |
 | Metric contracts (shape at dispatch, fill at pre-reg) | Bridges open-ended investigations with comparable cross-agent metrics. |
@@ -803,12 +812,13 @@ voronoi/
     ├── queue.py            # Investigation queue (SQLite, atomic claiming)
     ├── dispatcher.py       # Progress poll · timeout · completion
     ├── tmux.py             # TMux session launch, auth, cleanup
-    ├── snapshot.py         # WorkspaceSnapshot — read-only .swarm/ state
+    ├── snapshot.py         # WorkspaceSnapshot + PI/operator status projection
     ├── workspace.py        # Provision lab/repo workspaces + .github/ fallback
     ├── runner.py           # Server config, slug generation
     ├── publisher.py        # GitHub repo publishing
     ├── compact.py          # Workspace state compaction
     ├── events.py           # Structured event log
     ├── sandbox.py          # Docker sandbox config
+    ├── provenance.py       # LLM-call provenance writer/reader
     └── repo_url.py         # GitHub URL extraction
 ```

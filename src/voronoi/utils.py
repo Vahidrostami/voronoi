@@ -22,12 +22,32 @@ def extract_field(notes: str, field_name: str) -> str:
     return m.group(1).strip() if m else ""
 
 
+#: Canonical prefixes that mark a Beads task title as a finding. The Claim
+#: Ledger, dispatcher progress events, and report extraction MUST all use
+#: ``is_finding_title`` rather than substring matching, so ghost titles like
+#: ``"Analyze pricing dataset for five action-changing findings"`` cannot
+#: launder into finding events or claims. See INV-47 / INV-57.
+FINDING_TITLE_PREFIXES: tuple[str, ...] = ("FINDING:", "FINDING -", "FINDING \u2014")
+
+
+def is_finding_title(title: str) -> bool:
+    """Return True only if *title* starts with a canonical FINDING marker.
+
+    Whitespace before the marker is tolerated; substring matches are not.
+    """
+    if not title:
+        return False
+    upper = title.upper().lstrip()
+    return any(upper.startswith(p) for p in FINDING_TITLE_PREFIXES)
+
+
 def clean_finding_title(title: str) -> str:
-    """Strip leading FINDING: prefix from a finding title."""
-    for prefix in ("FINDING:", "FINDING"):
-        if title.upper().startswith(prefix):
-            title = title[len(prefix):]
-            break
+    """Strip a leading canonical FINDING marker from a title."""
+    stripped = title.lstrip()
+    upper = stripped.upper()
+    for prefix in FINDING_TITLE_PREFIXES + ("FINDING",):
+        if upper.startswith(prefix):
+            return stripped[len(prefix):].strip()
     return title.strip()
 
 

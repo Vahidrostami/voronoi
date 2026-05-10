@@ -9,6 +9,7 @@ from pathlib import Path
 from voronoi.gateway.progress import (
     format_launch, format_complete, format_failure, format_alert,
     format_negative_result, format_restart, format_wake, format_pause,
+    format_learning_stalled,
     format_duration, progress_bar, estimate_remaining,
     build_digest, build_digest_whatsup, assess_track_status,
     phase_description, phase_position, _synthesize_narrative,
@@ -81,6 +82,11 @@ class TestBuddyFormatters:
         assert "Synapse" in msg
         assert "paused" in msg.lower()
         assert "0/0" not in msg  # should skip progress when total=0
+
+    def test_format_learning_stalled_uses_actual_codename(self):
+        msg = format_learning_stalled("Synapse", 62.4)
+        assert "/voronoi extend Synapse 60" in msg
+        assert "/voronoi extend <codename> 60" not in msg
 
     def test_format_duration(self):
         assert format_duration(300) == "5min"
@@ -199,6 +205,26 @@ class TestBuildDigest:
         assert "★" in msg
         assert msg_type == MSG_TYPE_MILESTONE
 
+    def test_synthesize_narrative_with_non_numeric_posterior(self, tmp_path):
+        """Bug fix: _synthesize_narrative should handle non-numeric posterior/prior without crashing."""
+        import json
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "belief-map.json").write_text(json.dumps({
+            "hypotheses": [
+                {"id": "H1", "name": "Valid hypothesis", "prior": 0.5, "posterior": "N/A"},
+                {"id": "H2", "name": "Another one", "prior": "TBD", "posterior": 0.7},
+            ]
+        }))
+        # Should not crash
+        narrative = _synthesize_narrative(
+            workspace=tmp_path,
+            phase="investigating",
+            task_snapshot={},
+            elapsed_sec=1800,
+        )
+        # Should return some valid output or empty string
+        assert isinstance(narrative, str)
+
     def test_digest_with_experiments_tsv(self, tmp_path):
         (tmp_path / ".swarm").mkdir()
         (tmp_path / ".swarm" / "experiments.tsv").write_text(
@@ -281,6 +307,90 @@ class TestBuildDigest:
         )
         assert "📐" in msg
         assert msg_type == MSG_TYPE_MILESTONE
+
+    def test_digest_with_claim_delta_new(self, tmp_path):
+        msg, msg_type = build_digest(
+            codename="Synapse",
+            mode="discover",
+            phase="investigating",
+            elapsed_sec=3600,
+            task_snapshot={"t1": {"status": "closed", "notes": ""}},
+            workspace=tmp_path,
+            events_since_last=[
+                {"type": "claim_delta", "kind": "new", "claim_id": "C7",
+                 "from_status": None, "to_status": "provisional",
+                 "statement": "EWC beats replay on CIFAR"},
+            ],
+        )
+        assert "C7" in msg
+        assert "New claim" in msg
+        # Provisional new claim is not a milestone
+        assert msg_type == MSG_TYPE_STATUS
+
+    def test_digest_with_claim_locked_is_milestone(self, tmp_path):
+        msg, msg_type = build_digest(
+            codename="Synapse",
+            mode="prove",
+            phase="reviewing",
+            elapsed_sec=7200,
+            task_snapshot={"t1": {"status": "closed", "notes": ""}},
+            workspace=tmp_path,
+            events_since_last=[
+                {"type": "claim_delta", "kind": "transition", "claim_id": "C3",
+                 "from_status": "asserted", "to_status": "locked",
+                 "statement": "EWC beats replay"},
+            ],
+        )
+        assert "C3" in msg
+        assert "🔒" in msg
+        assert "locked" in msg
+        assert msg_type == MSG_TYPE_MILESTONE
+
+    def test_digest_with_claim_retired(self, tmp_path):
+        msg, msg_type = build_digest(
+            codename="Synapse",
+            mode="prove",
+            phase="reviewing",
+            elapsed_sec=7200,
+            task_snapshot={"t1": {"status": "closed", "notes": ""}},
+            workspace=tmp_path,
+            events_since_last=[
+                {"type": "claim_delta", "kind": "transition", "claim_id": "C9",
+                 "from_status": "challenged", "to_status": "retired",
+                 "statement": "Dropout 0.5 hurts"},
+            ],
+        )
+        assert "C9" in msg
+        assert "✗" in msg
+        assert msg_type == MSG_TYPE_MILESTONE
+
+    def test_digest_suppresses_reassurance_when_stall_signal_present(
+        self, tmp_path,
+    ):
+        """Stall signal must override 'nothing to worry about' reassurance.
+
+        Regression test: previously the digest told the PI "Still setting up
+        — nothing to worry about yet." minutes before the stall escalator
+        parked the run for partial review. Digest and escalator must now agree.
+        """
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "stall-signal.json").write_text(
+            '{"level": 2, "directive": "pivot_or_declare", '
+            '"instruction": "Planning forbidden", '
+            '"elapsed_minutes": 65.0, "timestamp": "2026-04-24T00:00:00Z"}'
+        )
+        msg, _ = build_digest(
+            codename="Serotonin",
+            mode="discover",
+            phase="planning",  # is_early → would normally say "nothing to worry about"
+            elapsed_sec=65 * 60,
+            task_snapshot={"t1": {"status": "open", "notes": ""}},
+            workspace=tmp_path,
+            events_since_last=[],
+        )
+        assert "nothing to worry about" not in msg.lower()
+        assert "strike 2" in msg.lower() or "🪫🪫" in msg
+        assert "/voronoi extend" in msg
 
 
 class TestBuildDigestWhatsup:

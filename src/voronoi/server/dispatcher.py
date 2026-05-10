@@ -31,6 +31,7 @@ from voronoi.gateway.progress import (
     format_launch, format_complete, format_failure, format_alert,
     format_negative_result, format_restart, format_wake, format_pause,
     format_duration, phase_description,
+    format_learning_stalled,
     build_digest,
 )
 from voronoi.server.tmux import (
@@ -54,27 +55,42 @@ def _find_checkpoint(workspace: Path) -> Path | None:
     return find_checkpoint(workspace)
 
 
+from voronoi.utils import extract_field, is_finding_title  # noqa: E402
+
+
 @dataclass
 class DispatcherConfig:
     """Configuration for the dispatcher."""
     base_dir: Path = field(default_factory=lambda: Path.home() / ".voronoi")
     max_concurrent: int = 2
-    max_agents: int = 4
+    max_agents: int = 6
     agent_command: str = "copilot"
     agent_flags: str = "--allow-all"
     orchestrator_model: str = ""  # e.g. "claude-opus-4.6", "" = CLI default
     worker_model: str = ""        # e.g. "claude-sonnet-4.6", "" = CLI default
     progress_interval: int = 30  # seconds between progress updates
-    timeout_hours: int = 48      # max hours before marking investigation exhausted
+    timeout_hours: int | None = None  # no default wall-clock kill; positive values are review budgets
     max_retries: int = 2         # max times to restart a dead agent
     stall_minutes: int = 45      # warn/restart if 0 tasks after this long
-    pause_timeout_hours: int = 24  # auto-fail paused investigations after this
+    pause_timeout_hours: int | None = None  # no default missed-message expiry
     context_advisory_hours: int = 6    # "prioritize convergence" directive
     context_warning_hours: int = 10    # "delegate remaining work" directive
     context_critical_hours: int = 14   # "dispatch Scribe NOW" directive
     compact_interval_hours: int = 6    # workspace state compaction interval
     max_context_restarts: int = 2      # max proactive context refreshes
     park_timeout_hours: int = 4        # force-wake parked orchestrator after this
+    learning_stall_minutes: int = 20   # alert if no new findings/claims for this long
+    # Self-steer stall escalation (cumulative minutes without learning).
+    # Each strike writes a richer directive + belief-snapshot into
+    # .swarm/stall-signal.json which the next orchestrator prompt injects.
+    # Strike 1: directive = "diagnose_and_steer" (self-steer prompt #1)
+    # Strike 2: directive = "pivot_or_declare" (self-steer prompt #2)
+    # Strike 3: directive = "final_steer" (last self-steer, grace before partial review)
+    # Strike 4: directive = "partial_review" (durable PI decision point)
+    stall_strike1_minutes: int = 30
+    stall_strike2_minutes: int = 60
+    stall_strike3_minutes: int = 90
+    stall_final_grace_minutes: int = 20
 
 
 @dataclass
@@ -109,11 +125,21 @@ class RunningInvestigation:
     last_rigor: str = ""  # Track rigor escalation in DISCOVER mode
     pending_events: list[dict] = field(default_factory=list)  # Events accumulated while orchestrator is parked
     orchestrator_parked: bool = False  # True when orchestrator exited intentionally with active workers
+    park_entered_at: float = 0  # When the current park began (for park_timeout_hours safety net)
     last_parked_digest_at: float = 0  # Last Telegram digest while parked (throttle to 5min)
+    polling_strike_count: int = 0  # Consecutive polls where orchestrator pane was sleeping (BUG-003 watchdog)
     _criteria_alerts: set = field(default_factory=set)  # Track which criteria-progress alerts have fired
+    _last_graph_health_verdict: str = ""  # Last graph-health verdict (INV-58); fire event only on transition
     _sentinel_missing_contract_warned: bool = False  # Track sentinel missing-contract warning
     notified_reversed_hypotheses: set = field(default_factory=set)  # Track which reversed hypotheses have been alerted
     last_convergence_attempt_at: float = 0  # Throttle _try_convergence_check() calls
+    last_ledger_map: dict[str, str] = field(default_factory=dict)  # claim_id → status for delta detection
+    _ledger_baseline_seeded: bool = False  # First poll seeds baseline without emitting deltas
+    last_learning_activity_at: float = 0  # Last time a new finding/claim transition was observed
+    stall_strike_level: int = 0  # Self-steer escalation: 0/1/2/3/4 (4 = partial review)
+    stall_extension_expires_at: float = 0  # /extend grants stall immunity until this timestamp
+    # Evidence-gated scaling: belief-map snapshot for detecting moves
+    _prior_belief_snapshot: dict[str, str] = field(default_factory=dict)  # hypothesis_id → confidence tier
 
     @property
     def label(self) -> str:
@@ -237,11 +263,12 @@ class InvestigationDispatcher:
         # Auto-fail paused investigations that exceeded the timeout
         self._check_paused_timeouts()
 
-        # Skip claiming if we're already provisioning an investigation —
-        # the launch thread will add it to self.running when done.
-        if self._launching:
-            logger.debug("dispatch_next: launch in progress for %s", self._launching)
-            return
+        # Note: we do NOT bail if another launch is in flight.  ``next_ready()``
+        # atomically marks each claimed row ``running`` (INV-06), so concurrent
+        # launch threads cannot collide on the same investigation.  Gating on
+        # ``self._launching`` being non-empty would serialize every launch and
+        # defeat the operator's ``max_concurrent`` setting whenever one
+        # investigation is in the middle of a slow ``git clone``.
 
         inv = self.queue.next_ready(self.config.max_concurrent)
         if inv is None:
@@ -373,6 +400,56 @@ class InvestigationDispatcher:
                 logger.info("Re-adopted running investigation #%d (%s)",
                             inv.id, inv.codename)
 
+        # Sweep for completed/reviewed investigations that lack a run manifest
+        # (crash recovery for the race between status transition and manifest
+        # write — see INV-44).
+        self._sweep_missing_manifests()
+
+    def _sweep_missing_manifests(self) -> None:
+        """Write run manifests for completed investigations that are missing one.
+
+        Covers the crash window between the queue status transition
+        (review/complete) and ``_write_run_manifest()``.  Called once per
+        ``dispatch_next()`` cycle via ``_recover_running()``.
+        """
+        for status in ("review", "complete"):
+            try:
+                with self.queue._connect() as conn:
+                    rows = conn.execute(
+                        "SELECT * FROM investigations WHERE status=? "
+                        "ORDER BY completed_at DESC LIMIT 10",
+                        (status,),
+                    ).fetchall()
+                    invs = [self.queue._row_to_investigation(r) for r in rows]
+            except Exception:
+                continue
+            for inv in invs:
+                if not inv.workspace_path:
+                    continue
+                ws = Path(inv.workspace_path)
+                manifest_path = ws / ".swarm" / "run-manifest.json"
+                if manifest_path.exists():
+                    continue
+                if not (ws / ".swarm" / "deliverable.md").exists():
+                    continue  # not actually finished
+                logger.info("Sweeping missing run manifest for #%d (%s)",
+                            inv.id, inv.codename)
+                run = RunningInvestigation(
+                    investigation_id=inv.id,
+                    workspace_path=ws,
+                    tmux_session="",
+                    question=inv.question,
+                    mode=inv.mode,
+                    codename=inv.codename,
+                    chat_id=inv.chat_id,
+                    rigor=inv.rigor or "adaptive",
+                )
+                try:
+                    self._write_run_manifest(run)
+                except Exception as e:
+                    logger.warning("Failed to sweep manifest for #%d: %s",
+                                   inv.id, e)
+
     def _requeue_unprovisioned(self, investigation_id: int) -> None:
         """Reset a claimed-but-not-launched investigation back to queued.
 
@@ -448,8 +525,11 @@ class InvestigationDispatcher:
 
             self.queue.start(inv.id, ws.path)
 
+        # Resolve rigor once — Investigation.rigor is always a non-empty str
+        # (coerced by _row_to_investigation), no getattr/fallback needed.
+        rigor = inv.rigor
+
         # Patch .swarm-config.json with rigor-mapped effort level
-        rigor = getattr(inv, 'rigor', 'scientific') or 'scientific'
         self._patch_swarm_config(workspace_path, rigor)
 
         # For non-continuation launches, build the prompt now (continuations
@@ -461,7 +541,6 @@ class InvestigationDispatcher:
         prompt_file.write_text(prompt)
 
         tmux_session = f"voronoi-inv-{inv.id}"
-        rigor = getattr(inv, 'rigor', 'scientific') or 'scientific'
         self._launch_in_tmux(tmux_session, workspace_path, rigor=rigor)
 
         self.running[inv.id] = RunningInvestigation(
@@ -472,14 +551,13 @@ class InvestigationDispatcher:
             mode=inv.mode,
             codename=inv.codename,
             chat_id=inv.chat_id,
-            rigor=getattr(inv, 'rigor', 'scientific') or 'scientific',
+            rigor=rigor,
         )
 
         logger.info("Investigation %s (#%d) LIVE in tmux=%s workspace=%s",
                     inv.codename, inv.id, tmux_session, workspace_path)
 
         label = inv.codename or f"#{inv.id}"
-        rigor = getattr(inv, 'rigor', 'scientific') or 'scientific'
         self.send_message(format_launch(
             codename=label,
             mode=inv.mode,
@@ -490,13 +568,13 @@ class InvestigationDispatcher:
     def _build_prompt(self, inv, workspace_path: Path) -> str:
         from voronoi.server.prompt import build_orchestrator_prompt
 
-        rigor = getattr(inv, 'rigor', 'scientific') or 'scientific'
+        rigor = inv.rigor
         label = inv.codename or f"#{inv.id}"
 
         prior_context = None
         if inv.parent_id is not None:
             from voronoi.server.prompt import build_warm_start_context
-            pi_feedback = getattr(inv, 'pi_feedback', '') or ''
+            pi_feedback = inv.pi_feedback or ''
             lineage_id = inv.lineage_id or inv.parent_id
             prior_context = build_warm_start_context(
                 lineage_id=lineage_id,
@@ -626,6 +704,16 @@ class InvestigationDispatcher:
 
             events = self._check_progress(run, session_alive=session_alive)
             events.extend(self._check_event_log(run))
+
+            # BUG-002 FIX: Stall escalation must run on EVERY due poll, not just
+            # when events are sent. Synthesize claim deltas and evaluate learning
+            # activity before the `if events:` check so quiet polls still advance
+            # the stall escalator.
+            claim_events = self._synthesize_claim_deltas(run)
+            all_events = list(events) + claim_events
+            self._update_learning_activity(run, all_events)
+            self._write_status_snapshot(run, session_alive=session_alive)
+
             if events:
                 # If orchestrator is parked, accumulate events for resume prompt
                 # and throttle Telegram digests to every 5 minutes
@@ -635,16 +723,24 @@ class InvestigationDispatcher:
                         run.last_parked_digest_at = now
                         logger.info("Investigation #%d: %d events while parked (phase=%s)",
                                     inv_id, len(events), run.phase)
-                        self._send_progress_batch(run, events)
+                        self._send_progress_batch(run, events, claim_events)
                 else:
                     logger.info("Investigation #%d: %d events (phase=%s)",
                                 inv_id, len(events), run.phase)
-                    self._send_progress_batch(run, events)
+                    self._send_progress_batch(run, events, claim_events)
 
-            # Check for timeout (per-investigation override via .swarm/timeout_hours)
+            if inv_id not in self.running:
+                # A stall escalation may have parked the run into review.
+                continue
+
+            # Check for explicit wall-clock review budget (disabled by default;
+            # per-investigation override via .swarm/timeout_hours)
             elapsed_hours = (now - run.started_at) / 3600
             effective_timeout = self._effective_timeout(run)
-            timed_out = elapsed_hours >= effective_timeout
+            timed_out = (
+                effective_timeout is not None
+                and elapsed_hours >= effective_timeout
+            )
 
             # Stall detection: use checkpoint + event log + branches, not just task_snapshot
             if (session_alive and not run.stall_warned
@@ -671,22 +767,39 @@ class InvestigationDispatcher:
             if session_alive:
                 self._maybe_compact_workspace(run)
 
+            # Idle-pane polling watchdog (BUG-003): orchestrators must
+            # checkpoint-and-exit between OODA cycles, never sleep/poll
+            # inside the agent session.  Catch violators before they
+            # burn their context window.
+            if session_alive and not run.orchestrator_parked:
+                self._check_orchestrator_polling(run)
+
             if not session_alive or self._is_complete(run) or timed_out:
                 if timed_out and not self._is_complete(run):
-                    reason = f"timeout ({effective_timeout}h)"
-                    logger.warning("Investigation #%d timed out after %.1fh",
-                                   inv_id, elapsed_hours)
-                    # Kill tmux session if still alive
-                    if session_alive:
-                        subprocess.run(
-                            ["tmux", "kill-session", "-t", run.tmux_session],
-                            capture_output=True, timeout=10,
-                        )
-                    # Write exhaustion convergence
-                    self._write_timeout_convergence(run)
-                    self._handle_completion(run, failed=True,
-                                            failure_reason="Timed out")
-                elif not session_alive and not self._is_complete(run):
+                    budget = effective_timeout or 0
+                    reason = f"time budget reached ({budget}h)"
+                    logger.warning(
+                        "Investigation #%d reached explicit time budget after %.1fh",
+                        inv_id, elapsed_hours,
+                    )
+                    self.send_message(
+                        f"⏱ *{run.label}* — explicit time budget reached "
+                        f"after ~{elapsed_hours:.1f}h. Parked for review; "
+                        f"use `/voronoi review {run.label}` or "
+                        f"`/voronoi continue {run.label} <feedback>` when ready."
+                    )
+                    self._park_for_partial_review(
+                        run,
+                        reason=(
+                            f"Explicit time budget reached after "
+                            f"{elapsed_hours:.1f}h"
+                        ),
+                        blocker="time_budget",
+                        elapsed_min=elapsed_hours * 60,
+                    )
+                    logger.info("Investigation #%d finished (%s)", inv_id, reason)
+                    continue
+                elif not session_alive and not self._is_complete(run, session_dead=True):
                     # Check if a human gate is pending — do NOT crash-retry
                     if self._has_pending_human_gate(run):
                         logger.info("Investigation #%d paused at human gate",
@@ -703,10 +816,25 @@ class InvestigationDispatcher:
                     # If checkpoint has active_workers and any are still alive,
                     # defer restart until workers finish or an urgent event arrives.
                     if run.orchestrator_parked:
-                        # Already parked — check if workers are still running
-                        parked_hours = (now - run.last_parked_digest_at) / 3600 if run.last_parked_digest_at else 0
+                        # Already parked — check if workers are still running.
+                        # Use park_entered_at (not last_parked_digest_at, which
+                        # is the Telegram throttle timestamp and would reset
+                        # every time an event triggered a digest).
+                        parked_hours = (now - run.park_entered_at) / 3600 if run.park_entered_at else 0
                         if parked_hours >= self.config.park_timeout_hours:
-                            # Safety net: force-wake after timeout regardless of worker state
+                            # Safety net: only force-wake if workers are
+                            # actually dead.  If workers are still alive,
+                            # extend the timeout (exponential backoff) so
+                            # long-running experiments aren't interrupted.
+                            if self._has_active_workers(run):
+                                run.park_entered_at = now
+                                logger.info(
+                                    "Investigation #%d park timeout "
+                                    "(%.1fh) but workers alive — "
+                                    "extending park",
+                                    inv_id, parked_hours,
+                                )
+                                continue  # don't add to completed_ids
                             logger.warning("Investigation #%d force-waking — "
                                            "parked for %.1fh (limit %dh)",
                                            inv_id, parked_hours,
@@ -730,6 +858,7 @@ class InvestigationDispatcher:
                     elif self._has_active_workers(run):
                         # First time seeing park
                         run.orchestrator_parked = True
+                        run.park_entered_at = now
                         run.last_parked_digest_at = now
                         logger.info("Investigation #%d orchestrator parked — "
                                     "workers still running",
@@ -784,40 +913,61 @@ class InvestigationDispatcher:
                 logger.warning("Failed to read eval-score.json for #%d: %s",
                                run.investigation_id, e)
 
-    # Hard upper bound for timeout overrides (1 week)
-    _MAX_TIMEOUT_HOURS: int = 168
-
-    def _effective_timeout(self, run: RunningInvestigation) -> int:
-        """Return the effective timeout for an investigation.
+    def _effective_timeout(self, run: RunningInvestigation) -> int | None:
+        """Return the explicit wall-clock review budget for an investigation.
 
         Checks for a per-investigation override file at
         ``<workspace>/.swarm/timeout_hours``.  The file should contain a
-        single integer (the new total timeout in hours).  If the file is
+        single positive integer (the total review budget in hours).  Values
+        ``0``, ``off``, ``none``, and ``disabled`` turn the budget off for
+        the run. If the file is
         missing or unreadable, falls back to ``self.config.timeout_hours``.
-
-        Capped at ``_MAX_TIMEOUT_HOURS`` to prevent runaway investigations.
         """
         override_path = run.workspace_path / ".swarm" / "timeout_hours"
         if override_path.exists():
             try:
-                value = int(override_path.read_text().strip())
+                raw = override_path.read_text().strip()
+                if raw.lower() in {"", "0", "off", "none", "disabled"}:
+                    return None
+                value = int(raw)
                 if value > 0:
-                    return min(value, self._MAX_TIMEOUT_HOURS)
-            except (ValueError, OSError):
-                pass
+                    return value
+                logger.warning(
+                    "Invalid timeout override for #%d: value %r must be positive; "
+                    "falling back to config default %s",
+                    run.investigation_id, value, self.config.timeout_hours,
+                )
+            except (ValueError, OSError) as e:
+                logger.warning(
+                    "Failed to read timeout override at %s for #%d (%s); "
+                    "falling back to config default %s",
+                    override_path, run.investigation_id, e,
+                    self.config.timeout_hours,
+                )
         return self.config.timeout_hours
 
     def _write_timeout_convergence(self, run: RunningInvestigation) -> None:
-        """Write convergence.json indicating timeout exhaustion."""
+        """Write partial-review convergence for an explicit time budget."""
+        effective = self._effective_timeout(run)
+        self._write_partial_convergence(
+            run,
+            reason=f"Explicit time budget reached after {effective}h",
+            blocker="time_budget",
+        )
+
+    def _write_partial_convergence(
+        self, run: RunningInvestigation, *, reason: str, blocker: str,
+    ) -> None:
+        """Write convergence.json for a durable partial-review state."""
         conv_path = run.workspace_path / ".swarm" / "convergence.json"
         conv_path.parent.mkdir(parents=True, exist_ok=True)
-        effective = self._effective_timeout(run)
         data = {
-            "status": "exhausted",
+            "status": "partial",
             "converged": False,
-            "reason": f"Timed out after {effective}h",
+            "reason": reason,
             "score": run.eval_score,
-            "blockers": ["timeout"],
+            "blockers": [blocker],
+            "gate_passed": False,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
         conv_path.write_text(json.dumps(data, indent=2))
@@ -1036,6 +1186,7 @@ class InvestigationDispatcher:
         "context_advisory": 1,
         "context_warning": 2,
         "context_critical": 3,
+        "swarm_degenerate": 3,
         "sentinel_violation": 4,
     }
 
@@ -1074,6 +1225,8 @@ class InvestigationDispatcher:
             "message": message,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
+        if level in ("sentinel_violation", "swarm_degenerate"):
+            data["action"] = "stop_and_fix"
         try:
             directive_path.write_text(json.dumps(data, indent=2))
             logger.info("Wrote %s directive for %s", level, run.label)
@@ -1314,6 +1467,72 @@ class InvestigationDispatcher:
         except Exception as e:
             logger.debug("Workspace compaction failed for %s: %s", run.label, e)
 
+    # Number of consecutive polls where the orchestrator pane was observed
+    # running `sleep` before we classify the session as a polling violator.
+    # Default poll cadence is 30s, so 3 strikes ≈ 60–90s of confirmed idle.
+    POLLING_STRIKE_THRESHOLD = 3
+
+    def _orchestrator_pane_command(self, run: RunningInvestigation) -> str | None:
+        """Return the current foreground command in the orchestrator's pane.
+
+        Uses ``tmux display-message`` to read ``#{pane_current_command}``
+        for the session's active pane.  Returns ``None`` on error (timeout,
+        tmux missing, session gone) — callers must treat ``None`` as "no
+        signal", not "not polling".
+        """
+        try:
+            result = subprocess.run(
+                ["tmux", "display-message", "-p", "-t", run.tmux_session,
+                 "#{pane_current_command}"],
+                capture_output=True, text=True, timeout=5,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            return None
+        if result.returncode != 0:
+            return None
+        cmd = result.stdout.strip()
+        return cmd or None
+
+    def _check_orchestrator_polling(self, run: RunningInvestigation) -> None:
+        """Detect and recover from orchestrators stuck in a sleep/poll loop.
+
+        The orchestrator protocol requires write-checkpoint-and-exit between
+        OODA cycles.  An orchestrator running ``sleep`` inside its pane has
+        violated that protocol (e.g., old prompt telling it to poll a human
+        gate).  After ``POLLING_STRIKE_THRESHOLD`` consecutive confirmed
+        strikes, kill the session and force a context-refresh restart so
+        the new session starts with the current prompt and a fresh window.
+        """
+        cmd = self._orchestrator_pane_command(run)
+        if cmd is None:
+            return  # no signal — don't change strike state
+        if cmd.lower() == "sleep":
+            run.polling_strike_count += 1
+            logger.debug("Orchestrator polling strike %d/%d for %s",
+                         run.polling_strike_count,
+                         self.POLLING_STRIKE_THRESHOLD, run.label)
+            if run.polling_strike_count >= self.POLLING_STRIKE_THRESHOLD:
+                logger.warning("Investigation #%d caught polling "
+                               "(%d consecutive sleep observations) — "
+                               "killing session for context refresh",
+                               run.investigation_id,
+                               run.polling_strike_count)
+                self.send_message(
+                    f"⚠️ *{run.label}* — orchestrator caught polling "
+                    f"(`sleep` loop detected). Forcing a context refresh."
+                )
+                run.polling_strike_count = 0
+                # Context-refresh restart uses its own counter and writes
+                # a fresh resume prompt, so the reborn session does not
+                # inherit the polling directive from the old transcript.
+                self._force_context_restart(run)
+            return
+        # Any non-sleep command resets the counter — orchestrator is working.
+        if run.polling_strike_count:
+            logger.debug("Orchestrator polling strikes cleared for %s (cmd=%s)",
+                         run.label, cmd)
+        run.polling_strike_count = 0
+
     def _check_progress(self, run: RunningInvestigation, *,
                          session_alive: bool = False) -> list[dict]:
         events: list[dict] = []
@@ -1340,6 +1559,7 @@ class InvestigationDispatcher:
         events.extend(self._check_findings(run, tasks))
         events.extend(self._check_design_invalid(run, tasks))
         events.extend(self._check_sentinel(run))
+        events.extend(self._check_graph_health(run, tasks))
         events.extend(self._detect_phase(run))
 
         # Sync findings to cross-run Claim Ledger
@@ -1351,6 +1571,46 @@ class InvestigationDispatcher:
                              run.investigation_id, e)
 
         return events
+
+    def _write_status_snapshot(self, run: RunningInvestigation, *,
+                               session_alive: bool) -> None:
+        """Write the PI-facing status snapshot for the current poll."""
+        try:
+            from voronoi.server.snapshot import (
+                WorkspaceSnapshot,
+                build_investigation_status,
+                write_investigation_status,
+            )
+            tasks = [
+                {
+                    "id": task_id,
+                    "status": task.get("status", ""),
+                    "title": task.get("title", ""),
+                    "notes": task.get("notes", ""),
+                }
+                for task_id, task in run.task_snapshot.items()
+                if isinstance(task, dict)
+            ] or None
+            snapshot = WorkspaceSnapshot.from_workspace(
+                run.workspace_path,
+                tasks=tasks,
+                old_phase=run.phase,
+            )
+            status = build_investigation_status(
+                run.workspace_path,
+                snapshot,
+                investigation_id=run.investigation_id,
+                codename=run.codename,
+                mode=run.mode,
+                rigor=run.rigor,
+                question=run.question,
+                session_alive=session_alive,
+                orchestrator_parked=run.orchestrator_parked,
+            )
+            write_investigation_status(run.workspace_path, status)
+        except Exception as exc:
+            logger.debug("Failed to write status snapshot for #%d: %s",
+                         run.investigation_id, exc)
 
     def _diff_tasks(self, run: RunningInvestigation, tasks: list[dict]) -> list[dict]:
         events: list[dict] = []
@@ -1391,7 +1651,10 @@ class InvestigationDispatcher:
             tid = task.get("id", "")
             title = task.get("title", "")
             notes = task.get("notes", "")
-            if "FINDING" in title.upper() and tid not in run.notified_findings:
+            # Prefix-only check: a substring match would surface ghost
+            # titles like "Analyze ... findings" as real findings, reset
+            # learning-stall timers, and mislead the PI. See INV-47.
+            if is_finding_title(title) and tid not in run.notified_findings:
                 run.notified_findings.add(tid)
                 effect = ""
                 for line in notes.split("\n"):
@@ -1457,21 +1720,10 @@ class InvestigationDispatcher:
                     ),
                 })
                 # Write directive to force orchestrator to act
-                directive_path = run.workspace_path / ".swarm" / "dispatcher-directive.json"
-                directive_path.parent.mkdir(parents=True, exist_ok=True)
-                try:
-                    directive_path.write_text(json.dumps({
-                        "level": "sentinel_violation",
-                        "message": (
-                            "SENTINEL WARNING: No experiment contract found after 1+ hour. "
-                            "Write .swarm/experiment-contract.json before dispatching more workers. "
-                            "See the Experiment Contract section in your prompt for the schema."
-                        ),
-                        "action": "write_contract",
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                    }, indent=2))
-                except OSError:
-                    pass
+                self._write_directive(run, "sentinel_violation",
+                    "SENTINEL WARNING: No experiment contract found after 1+ hour. "
+                    "Write .swarm/experiment-contract.json before dispatching more workers. "
+                    "See the Experiment Contract section in your prompt for the schema.")
             return events
 
         # --- Phase transition detection via checkpoint ---
@@ -1588,25 +1840,34 @@ class InvestigationDispatcher:
 
             # Write a dispatcher directive so the orchestrator is FORCED to act
             # on its next OODA cycle (the orchestrator already obeys directives).
-            directive_path = run.workspace_path / ".swarm" / "dispatcher-directive.json"
-            directive_path.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                directive_path.write_text(json.dumps({
-                    "level": "sentinel_violation",
-                    "message": (
-                        "SENTINEL ALERT: Experiment contract violated. "
-                        "Read .swarm/sentinel-audit.json for details. "
-                        "This IS a DESIGN_INVALID event — do NOT create a separate "
-                        "DESIGN_INVALID task. The sentinel has already flagged it. "
-                        "Do NOT proceed to the next phase or dispatch new workers. "
-                        "Dispatch Methodologist for post-mortem, then create a REVISE task."
-                    ),
-                    "action": "stop_and_fix",
-                    "sentinel_failures": result.critical_failures,
-                    "timestamp": result.timestamp,
-                }, indent=2))
-            except OSError:
-                pass
+            schema_failure = any("CONTRACT_SCHEMA" in f
+                                 for f in result.critical_failures)
+            if schema_failure:
+                directive_msg = (
+                    "SENTINEL ALERT: experiment-contract.json has an unknown "
+                    "schema and is being rejected on every audit. "
+                    "Read .swarm/sentinel-audit.json. "
+                    "Rewrite .swarm/experiment-contract.json using the schema "
+                    "documented in your prompt §Experiment Contract — top-level "
+                    "keys MUST be from: experiment_id, independent_variable, "
+                    "conditions, manipulation_checks, required_outputs, "
+                    "degeneracy_checks, phase_gates. Do NOT use 'studies', "
+                    "'phases', 'hard_gates', 'primary_metric', 'runner' as "
+                    "top-level keys — they are silently ignored. "
+                    "This is a SCHEMA error, not a design failure: do NOT "
+                    "dispatch Methodologist; just fix the file."
+                )
+            else:
+                directive_msg = (
+                    "SENTINEL ALERT: Experiment contract violated. "
+                    "Read .swarm/sentinel-audit.json for details. "
+                    "This IS a DESIGN_INVALID event — do NOT create a separate "
+                    "DESIGN_INVALID task. The sentinel has already flagged it. "
+                    "Do NOT proceed to the next phase or dispatch new workers. "
+                    "Dispatch Methodologist for post-mortem, then create a "
+                    "REVISE task."
+                )
+            self._write_directive(run, "sentinel_violation", directive_msg)
         else:
             logger.info(
                 "Sentinel audit PASSED for #%d (trigger=%s, %d checks)",
@@ -1617,13 +1878,18 @@ class InvestigationDispatcher:
 
     def _has_experiment_tasks(self, run: RunningInvestigation) -> bool:
         """Check if task_snapshot contains experiment-type tasks."""
+        experiment_types = {"investigation", "experiment", "replication", "evaluation"}
         for t in run.task_snapshot.values():
             notes = t.get("notes", "")
             title = t.get("title", "").lower()
             if any(kw in title for kw in ("experiment", "phase", "baseline", "pilot",
                                            "factorial", "ablation", "benchmark")):
                 return True
-            if "TASK_TYPE=investigation" in notes or "TASK_TYPE=experiment" in notes:
+            # ``extract_field`` accepts both ``KEY:value`` and ``KEY=value``;
+            # the prior hand-rolled ``KEY=value`` check missed every task
+            # written by ``voronoi_create_task`` (which uses the colon form).
+            task_type = extract_field(notes, "TASK_TYPE").lower()
+            if task_type in experiment_types:
                 return True
         return False
 
@@ -1652,16 +1918,170 @@ class InvestigationDispatcher:
                 })
         return events
 
+    # Task types whose closure should be linked to a parent epic / hypothesis
+    # tranche. Orphaned closures of these types are the smoking gun of the
+    # swarm-degenerate failure mode (see INV-58).
+    _GRAPH_HEALTH_AUDITED_TYPES = frozenset({
+        "investigation", "experiment", "evaluation", "exploration", "build", "paper",
+    })
+    # Task types that are legitimately root-ready (no parent expected).
+    _GRAPH_HEALTH_EXEMPT_TYPES = frozenset({
+        "epic", "scout", "theory", "methodologist", "baseline", "finding",
+        "review_stats", "review_critic", "synthesis",
+    })
+    _GRAPH_ORPHAN_RATIO_THRESHOLD = 0.4
+    _GRAPH_SIBLING_CLUSTER_THRESHOLD = 5
+    _GRAPH_HEALTH_MIN_CLOSED = 5  # below this, signal is too noisy
+
+    def _check_graph_health(
+        self, run: RunningInvestigation, tasks: list[dict] | None,
+    ) -> list[dict]:
+        """Audit Beads DAG topology each OODA cycle (INV-58).
+
+        Detects the swarm-degenerate failure mode where Beads becomes a
+        flat work queue: many root-ready sibling tasks with shared
+        normalized title prefixes and no parent edges. Persists
+        ``.swarm/graph-health.json`` and emits a ``swarm-degenerate``
+        directive when the orphan ratio or sibling-cluster size cross
+        thresholds.
+        """
+        events: list[dict] = []
+        if tasks is None:
+            return events
+
+        # Only audit PROVE / Analytical+ runs — DISCOVER mode at low rigor
+        # legitimately produces many flat exploration tasks.
+        if run.mode != "prove" and run.rigor not in (
+            "analytical", "scientific", "experimental",
+        ):
+            return events
+
+        closed = [t for t in tasks if (t.get("status") or "") == "closed"]
+        if len(closed) < self._GRAPH_HEALTH_MIN_CLOSED:
+            return events
+
+        def _task_type(task: dict) -> str:
+            notes = task.get("notes", "") or ""
+            m = re.search(r"(?im)^\s*TASK_TYPE\s*[:=]\s*([A-Za-z_]+)", notes)
+            if m:
+                return m.group(1).strip().lower()
+            return (task.get("type") or "").strip().lower()
+
+        def _has_parent(task: dict) -> bool:
+            if task.get("parent_id") or task.get("parent"):
+                return True
+            deps = task.get("dependencies") or task.get("depends_on") or []
+            return bool(deps)
+
+        orphan_count = 0
+        auditable = 0
+        for t in closed:
+            ttype = _task_type(t)
+            if ttype in self._GRAPH_HEALTH_EXEMPT_TYPES:
+                continue
+            if self._GRAPH_HEALTH_AUDITED_TYPES and ttype and ttype not in self._GRAPH_HEALTH_AUDITED_TYPES:
+                # Unknown / scout-adjacent types — skip rather than over-audit.
+                continue
+            auditable += 1
+            if not _has_parent(t):
+                orphan_count += 1
+
+        orphan_ratio = (orphan_count / auditable) if auditable else 0.0
+
+        # Sibling-cluster detection: normalize the first 3 words of each
+        # closed title and count buckets. ≥5 tasks in one bucket indicates
+        # a laundering loop ("Analyze business prompt …").
+        clusters: dict[str, list[str]] = {}
+        for t in closed:
+            title = (t.get("title") or "").strip().lower()
+            if not title:
+                continue
+            words = re.findall(r"[a-z0-9]+", title)
+            if len(words) < 3:
+                continue
+            key = " ".join(words[:3])
+            clusters.setdefault(key, []).append(t.get("id", ""))
+        cluster_max = max((len(v) for v in clusters.values()), default=0)
+        cluster_titles = [k for k, v in clusters.items()
+                          if len(v) >= self._GRAPH_SIBLING_CLUSTER_THRESHOLD]
+
+        reasons: list[str] = []
+        if orphan_ratio > self._GRAPH_ORPHAN_RATIO_THRESHOLD:
+            reasons.append(
+                f"orphan_ratio {orphan_ratio:.2f} > "
+                f"{self._GRAPH_ORPHAN_RATIO_THRESHOLD}"
+            )
+        if cluster_max >= self._GRAPH_SIBLING_CLUSTER_THRESHOLD:
+            reasons.append(
+                f"sibling cluster of {cluster_max} tasks "
+                f"with normalized prefix {cluster_titles[0]!r}"
+            )
+
+        verdict = "degenerate" if reasons else "healthy"
+        report = {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "total_closed": len(closed),
+            "auditable_closed": auditable,
+            "orphan_count": orphan_count,
+            "orphan_ratio": round(orphan_ratio, 3),
+            "sibling_cluster_max": cluster_max,
+            "sibling_cluster_titles": cluster_titles,
+            "verdict": verdict,
+            "reasons": reasons,
+        }
+
+        try:
+            health_path = run.workspace_path / ".swarm" / "graph-health.json"
+            health_path.parent.mkdir(parents=True, exist_ok=True)
+            health_path.write_text(json.dumps(report, indent=2))
+        except OSError as exc:
+            logger.debug("Failed to write graph-health.json for #%d: %s",
+                         run.investigation_id, exc)
+
+        prior_verdict = run._last_graph_health_verdict
+        run._last_graph_health_verdict = verdict
+        if verdict == "degenerate" and prior_verdict != "degenerate":
+            msg = (
+                "🕸️ *SWARM DEGENERATE* — Beads DAG looks flat\n  "
+                + "; ".join(reasons)
+                + ". Restate laundered task titles, attach orphans to a "
+                "parent epic, or escalate to Methodologist before dispatching new workers."
+            )
+            events.append({"type": "swarm_degenerate", "msg": msg})
+            self._write_directive(
+                run, "swarm_degenerate",
+                "SWARM DEGENERATE: Beads DAG audit failed (INV-58). "
+                + "; ".join(reasons)
+                + ". Read .swarm/graph-health.json. "
+                "Do NOT dispatch additional analysis workers. Either "
+                "restate ghost tasks with concrete propositions / "
+                "FINDING: prefixes, attach orphan tasks to a parent "
+                "epic, or dispatch Methodologist for a plan audit."
+            )
+
+        return events
+
     def _detect_phase(self, run: RunningInvestigation) -> list[dict]:
         events: list[dict] = []
         ws = run.workspace_path
         old_phase = run.phase
         checkpoint = self._latest_checkpoint(run)
 
+        # Phases explicitly set by the orchestrator that must NOT be
+        # overridden by file-existence heuristics.  These represent
+        # intentional orchestrator states (gate pauses, design phases)
+        # that would be incorrectly clobbered by stale files.
+        _AUTHORITATIVE_PHASES = frozenset({
+            "awaiting-human-gate", "design-review", "experiment-running",
+            "pre-registration", "parked", "dispatching",
+        })
+
+        checkpoint_phase = ""
         if checkpoint:
             phase = checkpoint.get("phase", "")
             if isinstance(phase, str) and phase:
                 run.phase = phase
+                checkpoint_phase = phase
             try:
                 score = float(checkpoint.get("eval_score", 0.0))
                 if 0.0 <= score <= 1.0:
@@ -1696,32 +2116,36 @@ class InvestigationDispatcher:
                     logger.info("Effective rigor for #%d escalated: %s → %s",
                                 run.investigation_id, run.rigor, checkpoint_rigor)
 
-        if (ws / ".swarm" / "deliverable.md").exists():
-            run.phase = "complete"
-        elif (ws / ".swarm" / "convergence.json").exists():
-            run.phase = "converging"
-        elif (ws / ".swarm" / "belief-map.json").exists():
-            run.phase = "synthesizing"
-        elif (ws / ".swarm" / "scout-brief.md").exists() and run.phase == "scouting":
-            run.phase = "planning"
-        elif run.task_snapshot:
-            # Detect science-specific phases
-            titles = [t.get("title", "") for t in run.task_snapshot.values()]
-            has_scout = any("scout" in t.lower() for t in titles)
-            has_review = any(k in " ".join(titles).upper()
-                            for k in ("STAT_REVIEW", "CRITIC_REVIEW", "METHODOLOGIST"))
-
-            in_progress = sum(1 for t in run.task_snapshot.values() if t["status"] == "in_progress")
-            closed = sum(1 for t in run.task_snapshot.values() if t["status"] == "closed")
-
-            if has_scout and closed == 0 and in_progress > 0:
-                run.phase = "scouting"
-            elif has_review and in_progress > 0:
-                run.phase = "reviewing"
-            elif in_progress > 0 or closed > 0:
-                run.phase = "investigating"
-            elif len(run.task_snapshot) > 0:
+        # File-existence heuristics: only apply when the checkpoint did not
+        # report an authoritative phase.  Authoritative phases represent
+        # intentional orchestrator states that stale files must not clobber.
+        if checkpoint_phase not in _AUTHORITATIVE_PHASES:
+            if (ws / ".swarm" / "deliverable.md").exists():
+                run.phase = "complete"
+            elif (ws / ".swarm" / "convergence.json").exists():
+                run.phase = "converging"
+            elif (ws / ".swarm" / "belief-map.json").exists():
+                run.phase = "synthesizing"
+            elif (ws / ".swarm" / "scout-brief.md").exists() and run.phase == "scouting":
                 run.phase = "planning"
+            elif run.task_snapshot:
+                # Detect science-specific phases
+                titles = [t.get("title", "") for t in run.task_snapshot.values()]
+                has_scout = any("scout" in t.lower() for t in titles)
+                has_review = any(k in " ".join(titles).upper()
+                                for k in ("STAT_REVIEW", "CRITIC_REVIEW", "METHODOLOGIST"))
+
+                in_progress = sum(1 for t in run.task_snapshot.values() if t["status"] == "in_progress")
+                closed = sum(1 for t in run.task_snapshot.values() if t["status"] == "closed")
+
+                if has_scout and closed == 0 and in_progress > 0:
+                    run.phase = "scouting"
+                elif has_review and in_progress > 0:
+                    run.phase = "reviewing"
+                elif in_progress > 0 or closed > 0:
+                    run.phase = "investigating"
+                elif len(run.task_snapshot) > 0:
+                    run.phase = "planning"
 
         if run.phase != old_phase:
             phase_msg = phase_description(run.mode, run.phase)
@@ -1959,7 +2383,620 @@ class InvestigationDispatcher:
             logger.debug("Event log check failed: %s", e)
         return events
 
-    def _send_progress_batch(self, run: RunningInvestigation, events: list[dict]) -> None:
+    def _synthesize_claim_deltas(self, run: RunningInvestigation) -> list[dict]:
+        """Detect Claim Ledger changes since the last poll.
+
+        Returns a list of synthetic events with ``type='claim_delta'`` describing
+        new claims and status transitions.  The first invocation seeds
+        ``run.last_ledger_map`` without emitting any events so existing claims
+        are not re-surfaced after a dispatcher restart.
+        """
+        try:
+            from voronoi.science.claims import (
+                diff_ledger_states, ledger_state_map, load_ledger,
+            )
+        except Exception:
+            return []
+        try:
+            inv = self.queue.get(run.investigation_id)
+        except Exception:
+            inv = None
+        lineage_id = (inv.lineage_id if inv and inv.lineage_id is not None
+                      else run.investigation_id)
+        try:
+            ledger = load_ledger(lineage_id, base_dir=self.config.base_dir)
+        except Exception:
+            return []
+
+        current_map = ledger_state_map(ledger)
+        if not run._ledger_baseline_seeded:
+            run.last_ledger_map = current_map
+            run._ledger_baseline_seeded = True
+            return []
+
+        deltas = diff_ledger_states(run.last_ledger_map, current_map, ledger=ledger)
+        run.last_ledger_map = current_map
+
+        events: list[dict] = []
+        for d in deltas:
+            events.append({
+                "type": "claim_delta",
+                "kind": d["kind"],
+                "claim_id": d["claim_id"],
+                "from_status": d.get("from_status"),
+                "to_status": d["to_status"],
+                "statement": d.get("statement", ""),
+            })
+        return events
+
+    def _update_learning_activity(
+        self, run: RunningInvestigation, events: list[dict],
+    ) -> None:
+        """Track learning progress and escalate via self-steer directives.
+
+        A new finding or a claim status transition resets the activity timer
+        AND the strike level — learning has resumed.  New-provisional claims
+        alone do not reset it (a claim that never becomes asserted/locked is
+        not learning).
+
+        When the quiet window crosses a strike threshold, the dispatcher
+        injects an escalating **self-steer directive** into the next
+        orchestrator prompt (via ``.swarm/stall-signal.json``). Each strike
+        adds a richer belief-snapshot and a concrete set of alternatives
+        the orchestrator must choose between. Partial review only fires at a
+        fourth, internal level that requires an additional
+        ``stall_final_grace_minutes`` window of silence past strike 3 —
+        i.e. three explicit self-steer prompts had no effect.
+
+        Strike 1 is ``diagnose_and_steer``. Strike 2 is
+        ``pivot_or_declare``. Strike 3 is ``final_steer`` and the run is not
+        killed yet. Strike 4 is ``partial_review``: write partial deliverable
+        and diagnosis, then park into review instead of failing.
+
+        Each strike fires at most once per escalation sequence. Recovery
+        (a real finding / claim transition) drops the level back to 0, so
+        a later stall can escalate again from scratch.
+        """
+        now = time.time()
+        if run.last_learning_activity_at == 0:
+            run.last_learning_activity_at = now
+
+        has_finding = any(e.get("type") == "finding" for e in events)
+        has_claim_transition = any(
+            e.get("type") == "claim_delta" and e.get("kind") == "transition"
+            for e in events
+        )
+        has_task_done = any(e.get("type") == "task_done" for e in events)
+        if has_finding or has_claim_transition:
+            run.last_learning_activity_at = now
+            if run.stall_strike_level > 0:
+                run.stall_strike_level = 0
+                self._clear_stall_signal(run)
+            # Evidence-gated scaling: update epoch state on learning
+            self._update_epoch_on_learning(run, events)
+            return
+
+        # Infra-progress credit: a task_done event (worker branch merged /
+        # task closed) is productive work — reset the activity timer so the
+        # stall clock restarts, but keep ``stall_strike_level`` intact so a
+        # run that's been escalated still needs real learning to fully
+        # recover. This prevents premature partial review during hours-long build-out work
+        # (encoder + evaluator + runner merges) where findings legitimately
+        # cannot exist yet. See docs/SERVER.md §3.
+        if has_task_done:
+            run.last_learning_activity_at = now
+            return
+
+        # Do not cry stall before the orchestrator has produced anything at all
+        if run.phase in ("starting", "scouting", "planning") and not run.task_snapshot:
+            return
+
+        # Honour explicit stall extension from /voronoi extend command.
+        # The extension grants full immunity; findings during the extension
+        # period do NOT consume the budget (unlike the old future-timestamp
+        # hack).
+        if run.stall_extension_expires_at and now < run.stall_extension_expires_at:
+            return
+
+        elapsed_min = (now - run.last_learning_activity_at) / 60
+
+        # Phase-aware stall budgets: scale thresholds by a multiplier derived
+        # from the orchestrator-declared ``lifecycle_phase`` in the checkpoint.
+        multiplier = self._stall_phase_multiplier(run)
+        strike1 = self.config.stall_strike1_minutes * multiplier
+        strike2 = self.config.stall_strike2_minutes * multiplier
+        strike3 = self.config.stall_strike3_minutes * multiplier
+        # Strike 4 (partial review) fires only after an additional grace window
+        # past strike 3 — i.e. the orchestrator has had the final self-steer
+        # prompt and still produced no learning. Grace is NOT scaled by the
+        # phase multiplier: once in final-steer, every phase gets the same
+        # bounded tail before termination.
+        strike4 = strike3 + self.config.stall_final_grace_minutes
+
+        # Determine the highest strike level the elapsed time now warrants.
+        if elapsed_min >= strike4:
+            target_level = 4
+        elif elapsed_min >= strike3:
+            target_level = 3
+        elif elapsed_min >= strike2:
+            target_level = 2
+        elif elapsed_min >= strike1:
+            target_level = 1
+        else:
+            target_level = 0
+
+        # Escalate one step at a time so each strike's side-effects
+        # (signal file write, Telegram notification, partial-review parking) fire.
+        while run.stall_strike_level < target_level:
+            run.stall_strike_level += 1
+            self._fire_stall_strike(run, run.stall_strike_level, elapsed_min)
+            if run.stall_strike_level >= 4:
+                # Partial-review parking removes the run; do not escalate further.
+                break
+
+    # Phase-aware stall multipliers — applied to stall_strikeN_minutes at
+    # comparison time in ``_update_learning_activity``. Mirrors the table in
+    # docs/SERVER.md §3.
+    _STALL_PHASE_MULTIPLIERS = {
+        "setup": 3.0,
+        "explore": 1.0,
+        "test": 1.0,
+        "synthesize": 0.5,
+    }
+
+    def _stall_phase_multiplier(self, run: RunningInvestigation) -> float:
+        """Return the stall-threshold multiplier for the current lifecycle phase.
+
+        Reads ``OrchestratorCheckpoint.lifecycle_phase`` from the workspace
+        when set; otherwise infers a 2× grace for pre-task phases (starting,
+        scouting, planning) and 1× for everything else.
+        """
+        try:
+            from voronoi.science.convergence import load_checkpoint
+            cp = load_checkpoint(run.workspace_path)
+        except Exception:
+            cp = None
+        declared = (cp.lifecycle_phase or "").strip().lower() if cp else ""
+        if declared in self._STALL_PHASE_MULTIPLIERS:
+            return self._STALL_PHASE_MULTIPLIERS[declared]
+        # Inferred fallback: coarse ``phase`` hints at pre-task state.
+        if run.phase in ("starting", "scouting", "planning"):
+            return 2.0
+        return 1.0
+
+    _STALL_STRIKE_DIRECTIVE = {
+        1: {
+            "directive": "diagnose_and_steer",
+            "instruction": (
+                "Learning stall detected — no finding or claim transition "
+                "for the strike-1 window. This is your first self-steer "
+                "prompt. Review the belief snapshot below, then on THIS "
+                "OODA cycle pick exactly ONE action:\n"
+                "  (a) Split the hardest open task into smaller, independently "
+                "verifiable sub-tasks and dispatch them.\n"
+                "  (b) Mark the task currently blocking progress as BLOCKED "
+                "on its beads entry, then switch focus to an alternative "
+                "hypothesis from your belief map.\n"
+                "  (c) Declare a negative / null finding — evidence that the "
+                "current path is NOT productive IS learning and resets this "
+                "counter.\n"
+                "Do NOT dispatch new planning tasks this cycle."
+            ),
+        },
+        2: {
+            "directive": "pivot_or_declare",
+            "instruction": (
+                "Previous self-steer did not produce a finding or claim "
+                "transition. You must act decisively THIS cycle:\n"
+                "  (a) Pivot — pick an alternative hypothesis from your "
+                "belief map and dispatch an experiment task for it, OR\n"
+                "  (b) Declare partial findings with whatever evidence "
+                "currently exists on the ledger.\n"
+                "Planning tasks remain forbidden. Indecision on this cycle "
+                "escalates to the final self-steer directive."
+            ),
+        },
+        3: {
+            "directive": "final_steer",
+            "instruction": (
+                "FINAL self-steer. Two prior directives produced no learning. "
+                "Emit AT MINIMUM one of the following on this cycle — any of "
+                "these counts as learning and resets the escalator:\n"
+                "  • A negative finding (evidence a path does not work).\n"
+                "  • A claim status transition to BLOCKED or REFUTED on the "
+                "ledger.\n"
+                "  • A partial deliverable written to "
+                "`.swarm/deliverable-partial.md` summarising what IS known.\n"
+                "If no learning event is observed within the grace window "
+                "that follows, the dispatcher will park the run for partial review."
+            ),
+        },
+        4: {
+            "directive": "partial_review",
+            "instruction": (
+                "Parked for partial review by dispatcher after strike 3 + "
+                "grace window: zero learning despite three self-steer "
+                "directives. See .swarm/deliverable-partial.md and "
+                ".swarm/failure-diagnosis.json. The PI may review, "
+                "continue, or complete the reviewed partial state later."
+            ),
+        },
+    }
+
+    def _build_stall_diagnosis(
+        self, run: RunningInvestigation, elapsed_min: float,
+    ) -> dict:
+        """Assemble the belief-snapshot injected into every strike signal.
+
+        Mirrors what ``_write_partial_deliverable`` captures at partial-review
+        parking, but cheap enough to emit on every strike so the
+        orchestrator always has concrete state to reason about when it
+        reads the stall directive in its next prompt.
+        """
+        snapshot: dict = {
+            "elapsed_minutes": round(elapsed_min, 1),
+            "phase": run.phase,
+        }
+        try:
+            from voronoi.science.convergence import load_checkpoint
+            cp = load_checkpoint(run.workspace_path)
+        except Exception:
+            cp = None
+        if cp is not None:
+            if cp.lifecycle_phase:
+                snapshot["lifecycle_phase"] = cp.lifecycle_phase
+            if cp.active_workers:
+                snapshot["active_workers"] = list(cp.active_workers)
+            if cp.next_actions:
+                # Cap to the first few so the prompt stays compact.
+                snapshot["next_actions"] = list(cp.next_actions)[:5]
+        # Open-task count (coarse but informative): count in-progress
+        # and open tasks from the last task snapshot the dispatcher saw.
+        if run.task_snapshot:
+            open_count = 0
+            in_progress_count = 0
+            for t in run.task_snapshot.values():
+                status = (t or {}).get("status", "")
+                if status == "in_progress":
+                    in_progress_count += 1
+                elif status in ("open", "ready", "blocked"):
+                    open_count += 1
+            snapshot["tasks_in_progress"] = in_progress_count
+            snapshot["tasks_open"] = open_count
+        return snapshot
+
+    def _fire_stall_strike(
+        self, run: RunningInvestigation, level: int, elapsed_min: float,
+    ) -> None:
+        """Write stall-signal.json, notify, and (at level 4) partial-review.
+
+        Levels 1–3 are self-steer directives: they inject a belief snapshot
+        + concrete alternatives into the next orchestrator prompt. The run
+        keeps going. Only level 4 — strike 3 threshold plus the final grace
+        window — parks the run into review without marking it failed.
+        """
+        spec = self._STALL_STRIKE_DIRECTIVE.get(level)
+        if spec is None:
+            return
+        signal_path = run.workspace_path / ".swarm" / "stall-signal.json"
+        try:
+            signal_path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "level": level,
+                "directive": spec["directive"],
+                "instruction": spec["instruction"],
+                "elapsed_minutes": round(elapsed_min, 1),
+                "timestamp": datetime.now(timezone.utc).isoformat(
+                    timespec="seconds",
+                ),
+            }
+            # Belief snapshot: only meaningful for self-steer levels (1–3).
+            # At level 4 the run is being parked; the partial deliverable
+            # captures final state instead.
+            if level < 4:
+                payload["diagnosis"] = self._build_stall_diagnosis(
+                    run, elapsed_min,
+                )
+            signal_path.write_text(json.dumps(payload, indent=2))
+        except OSError as e:
+            logger.warning("Failed to write stall-signal.json for %s: %s",
+                           run.label, e)
+
+        if level == 1:
+            # First strike keeps the familiar LEARNING_STALLED notification
+            self.send_message(format_learning_stalled(run.label, elapsed_min))
+        elif level == 2:
+            self.send_message(
+                f"🪫🪫 *{run.label}* — stall escalated (strike 2, "
+                f"~{int(round(elapsed_min))}min). Self-steer directive: "
+                f"pivot to an alternative hypothesis or declare partial "
+                f"findings this cycle.\n\n"
+                f"Reply `/voronoi extend {run.label} 60` to grant +60 "
+                f"minutes before the final self-steer escalates."
+            )
+        elif level == 3:
+            grace = self.config.stall_final_grace_minutes
+            self.send_message(
+                f"🪫🪫🪫 *{run.label}* — final self-steer directive "
+                f"(strike 3, ~{int(round(elapsed_min))}min). "
+                f"Orchestrator must emit a negative finding, a BLOCKED "
+                f"declaration, or a partial deliverable this cycle. "
+                f"Partial review in ~{grace}min if no learning.\n\n"
+                f"Reply `/voronoi extend {run.label} 60` to grant more "
+                f"time."
+            )
+        elif level == 4:
+            self.send_message(
+                f"🪫🪫🪫🪫 *{run.label}* — no-learning partial review after "
+                f"~{int(round(elapsed_min))}min with zero findings despite "
+                f"three self-steer directives. Writing diagnosis and parking "
+                f"for PI review. Use `/voronoi review {run.label}` or "
+                f"`/voronoi continue {run.label} <feedback>` when ready."
+            )
+            try:
+                self._park_stalled_run_for_partial_review(run, elapsed_min)
+            except Exception as e:  # pragma: no cover - defensive
+                logger.warning("Failed to park stalled run for partial review %s: %s",
+                               run.label, e)
+
+    def _clear_stall_signal(self, run: RunningInvestigation) -> None:
+        """Remove .swarm/stall-signal.json when learning resumes."""
+        signal_path = run.workspace_path / ".swarm" / "stall-signal.json"
+        try:
+            if signal_path.exists():
+                signal_path.unlink()
+        except OSError:
+            pass
+
+    # ── Evidence-gated scaling ────────────────────────────────────────
+
+    def _update_epoch_on_learning(
+        self, run: RunningInvestigation, events: list[dict],
+    ) -> None:
+        """Update epoch state when evidence-producing events arrive.
+
+        Counts findings, detects belief-map confidence tier changes,
+        and auto-advances the epoch when sufficient evidence accumulates.
+        """
+        from voronoi.science.convergence import (
+            load_epoch_state, save_epoch_state, advance_epoch,
+            load_belief_map,
+        )
+
+        epoch = load_epoch_state(run.workspace_path)
+
+        # Count new findings
+        finding_count = sum(1 for e in events if e.get("type") == "finding")
+        epoch.findings_this_epoch += finding_count
+
+        # Detect belief-map moves: compare current confidence tiers to snapshot
+        bm = load_belief_map(run.workspace_path)
+        moves = 0
+        current_snapshot: dict[str, str] = {}
+        for h in bm.hypotheses:
+            current_snapshot[h.id] = h.confidence or "unknown"
+            prior = run._prior_belief_snapshot.get(h.id, "unknown")
+            if (h.confidence or "unknown") != prior:
+                moves += 1
+        run._prior_belief_snapshot = current_snapshot
+        epoch.belief_map_moves += moves
+
+        # Auto-advance epoch if we have evidence and haven't hit max cap
+        if epoch.has_evidence and epoch.max_tranches < self.config.max_agents:
+            epoch = advance_epoch(epoch, configured_max=self.config.max_agents)
+            logger.info(
+                "Investigation #%d advanced to epoch %d (cap: %d tranches)",
+                run.investigation_id, epoch.epoch, epoch.max_tranches,
+            )
+            self.send_message(
+                f"📈 *{run.label}* — evidence produced! "
+                f"Scaling to epoch {epoch.epoch} "
+                f"(now up to {epoch.max_tranches} parallel tranches)."
+            )
+
+        save_epoch_state(run.workspace_path, epoch)
+
+    def _write_failure_diagnosis(self, run: RunningInvestigation) -> None:
+        """Write structured failure diagnosis for stalled/failed investigations."""
+        from voronoi.science.convergence import (
+            build_failure_diagnosis, save_failure_diagnosis,
+        )
+        try:
+            diagnosis = build_failure_diagnosis(run.workspace_path)
+            save_failure_diagnosis(run.workspace_path, diagnosis)
+        except Exception as e:
+            logger.warning("Failed to write failure diagnosis for %s: %s",
+                           run.label, e)
+
+    def _write_partial_deliverable(
+        self, run: RunningInvestigation, elapsed_min: float, *, reason: str = "",
+    ) -> None:
+        """Emit ``.swarm/deliverable-partial.md`` for partial review.
+
+        Best-effort: list current claims from the ledger (if any) and the
+        success-criteria state so the PI has a record of what the run knew.
+        """
+        path = run.workspace_path / ".swarm" / "deliverable-partial.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        lines: list[str] = []
+        lines.append(f"# {run.label} — Partial Review Deliverable\n")
+        reason_text = reason or (
+            f"No new findings or claim transitions for "
+            f"~{int(round(elapsed_min))} minutes "
+            f"(stall_strike3_minutes={self.config.stall_strike3_minutes})."
+        )
+        lines.append(
+            f"**Reason:** {reason_text}\n"
+        )
+        lines.append(f"**Mode:** {run.mode}  |  **Phase:** {run.phase}\n")
+
+        # Ledger claims (if available)
+        inv = self.queue.get(run.investigation_id) if self._queue else None
+        if inv is not None and getattr(inv, "lineage_id", None):
+            try:
+                from voronoi.science.claims import load_ledger
+                ledger = load_ledger(inv.lineage_id, base_dir=self.config.base_dir)
+                if ledger.claims:
+                    lines.append("\n## Claims in Ledger\n")
+                    for c in ledger.claims:
+                        lines.append(f"- **{c.id}** ({c.status}): {c.statement}\n")
+                else:
+                    lines.append("\n## Claims in Ledger\n\n*None.*\n")
+            except Exception as e:  # pragma: no cover - defensive
+                logger.debug("Ledger load for partial deliverable failed: %s", e)
+
+        # Success criteria
+        sc_path = run.workspace_path / ".swarm" / "success-criteria.json"
+        if sc_path.exists():
+            try:
+                sc = json.loads(sc_path.read_text())
+                if isinstance(sc, list):
+                    met = sum(1 for s in sc if s.get("met"))
+                    lines.append(
+                        f"\n## Success Criteria\n\n{met}/{len(sc)} met at park time.\n"
+                    )
+                    for s in sc:
+                        mark = "x" if s.get("met") else " "
+                        lines.append(
+                            f"- [{mark}] **{s.get('id','?')}** — {s.get('description','')}\n"
+                        )
+            except (OSError, json.JSONDecodeError):
+                pass
+
+        # Orchestrator checkpoint — what was the agent about to do?
+        # This turns "the log is 391 lines, go dig" into a one-glance answer.
+        try:
+            from voronoi.science.convergence import load_checkpoint
+            cp = load_checkpoint(run.workspace_path)
+        except Exception:
+            cp = None
+        if cp is not None and (cp.active_workers or cp.next_actions):
+            lines.append("\n## Where The Run Was Headed\n")
+            if cp.active_workers:
+                lines.append(
+                    "\n**Active workers at park time:** "
+                    f"{', '.join(cp.active_workers)}\n"
+                )
+            if cp.next_actions:
+                lines.append("\n**Planned next actions:**\n")
+                for a in cp.next_actions:
+                    lines.append(f"- {a}\n")
+
+        path.write_text("".join(lines))
+
+    def extend_run(
+        self, identifier: str, minutes: int = 60,
+    ) -> str:
+        """Human-in-the-loop stall extension.
+
+        Pushes ``last_learning_activity_at`` forward by ``minutes`` minutes,
+        drops ``stall_strike_level`` back to 0, and clears
+        ``.swarm/stall-signal.json`` so the next prompt build contains no
+        stall directive. Invoked by ``handle_extend`` in response to
+        ``/voronoi extend <codename> [minutes]`` — the strike-2 notification
+        prompts the PI with this exact command. See docs/SERVER.md §3.
+        """
+        if minutes <= 0:
+            return "❌ `minutes` must be positive."
+        # Resolve the target run: match by codename (case-insensitive) or id.
+        needle = identifier.strip().lower()
+        target: Optional[RunningInvestigation] = None
+        for run in self.running.values():
+            if (run.codename or "").lower() == needle:
+                target = run
+                break
+            if f"#{run.investigation_id}" == needle or str(run.investigation_id) == needle:
+                target = run
+                break
+        if target is None:
+            return f"❌ No running investigation matches *{identifier}*."
+        # Grant the extension: set explicit immunity expiry, reset strikes,
+        # clear signal.  The activity timer is NOT pushed into the future —
+        # that would be silently consumed by the next finding event.
+        target.stall_extension_expires_at = time.time() + minutes * 60
+        target.last_learning_activity_at = time.time()
+        prior_level = target.stall_strike_level
+        target.stall_strike_level = 0
+        self._clear_stall_signal(target)
+        logger.info(
+            "Investigation #%d (%s): extended by %d min (strike level was %d)",
+            target.investigation_id, target.label, minutes, prior_level,
+        )
+        return (
+            f"⏱ *{target.label}* — granted +{minutes} min stall budget. "
+            f"Strike level reset (was {prior_level}). Agent will see a "
+            f"clean prompt on the next build."
+        )
+
+    def _park_stalled_run_for_partial_review(
+        self, run: RunningInvestigation, elapsed_min: float,
+    ) -> None:
+        reason = (
+            f"No learning for ~{int(round(elapsed_min))} minutes "
+            f"after three self-steer directives"
+        )
+        self._park_for_partial_review(
+            run,
+            reason=reason,
+            blocker="learning_stall",
+            elapsed_min=elapsed_min,
+        )
+
+    def _park_for_partial_review(
+        self,
+        run: RunningInvestigation,
+        *,
+        reason: str,
+        blocker: str,
+        elapsed_min: float,
+    ) -> None:
+        """Persist partial-review artifacts and transition running → review.
+
+        This is deliberately separate from ``_transition_to_review`` because
+        normal review means successful convergence and may promote provisional
+        claims. Partial review is a durable decision point: preserve evidence,
+        write diagnosis, but do not harden weak claims.
+        """
+        try:
+            self._sync_findings_to_ledger(run)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.debug("Partial-review ledger sync failed for %s: %s", run.label, e)
+        self._write_partial_convergence(run, reason=reason, blocker=blocker)
+        self._write_failure_diagnosis(run)
+        try:
+            self._write_partial_deliverable(run, elapsed_min, reason=reason)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("Failed to write partial deliverable for %s: %s",
+                           run.label, e)
+        try:
+            subprocess.run(
+                ["tmux", "kill-session", "-t", run.tmux_session],
+                capture_output=True, timeout=10,
+            )
+        except Exception:
+            pass
+        try:
+            if self.queue.review(run.investigation_id):
+                self._write_run_manifest(run)
+            else:
+                logger.warning(
+                    "queue.review() did not transition partial-review run %s",
+                    run.label,
+                )
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("Partial-review transition failed for %s: %s",
+                           run.label, e)
+        self.running.pop(run.investigation_id, None)
+
+    def _send_progress_batch(self, run: RunningInvestigation, events: list[dict], 
+                             claim_events: list[dict] | None = None) -> None:
+        # Claim deltas already synthesized and passed in from poll_progress
+        # (BUG-002 fix: moved synthesis upstream so stall evaluation happens
+        # every poll, not just when events are sent).
+        if claim_events:
+            events = list(events) + claim_events
+
         run.last_digest_events = events  # store for detail retrieval
         msg, msg_type = build_digest(
             codename=run.label,
@@ -2022,6 +3059,31 @@ class InvestigationDispatcher:
                 return True
         return False
 
+    def _has_open_design_invalid_hard_check(self, run: RunningInvestigation) -> bool:
+        """Hard check for open DESIGN_INVALID tasks against Beads source-of-truth.
+
+        Called from completion gate when the orchestrator session is already
+        dead and task_snapshot may be stale/empty (BUG-001). Returns True if
+        Beads reports any non-closed task with DESIGN_INVALID in its notes.
+        """
+        from voronoi.beads import run_bd_json
+        code, tasks = run_bd_json("list", "--json", cwd=str(run.workspace_path))
+        if code != 0 or not isinstance(tasks, list):
+            # bd call failed — treat as no signal (allow completion)
+            return False
+        for task in tasks:
+            if not isinstance(task, dict):
+                continue
+            status = task.get("status", "")
+            notes = task.get("notes", "")
+            if status != "closed" and "DESIGN_INVALID" in notes:
+                logger.warning(
+                    "Completion blocked for %s: DESIGN_INVALID in task %s (hard check)",
+                    run.label, task.get("id", "?")
+                )
+                return True
+        return False
+
     _CONVERGED_STATUSES = frozenset({
         "converged", "exhausted", "diminishing_returns", "negative_result",
     })
@@ -2039,6 +3101,17 @@ class InvestigationDispatcher:
             return status.lower() in InvestigationDispatcher._CONVERGED_STATUSES
         return False
 
+    def _convergence_signals_completion(self, run: RunningInvestigation) -> bool:
+        """Return True iff .swarm/convergence.json exists and signals completion."""
+        conv = run.workspace_path / ".swarm" / "convergence.json"
+        if not conv.exists():
+            return False
+        try:
+            data = json.loads(conv.read_text())
+        except (json.JSONDecodeError, OSError):
+            return False
+        return isinstance(data, dict) and self._convergence_status_ok(data)
+
     def _effective_rigor(self, run: RunningInvestigation) -> str:
         """Return the effective rigor for an investigation.
 
@@ -2050,53 +3123,49 @@ class InvestigationDispatcher:
             return run.last_rigor
         return run.rigor
 
-    def _is_complete(self, run: RunningInvestigation) -> bool:
-        # HARD GATE: never complete while DESIGN_INVALID tasks are open
+    def _is_complete(self, run: RunningInvestigation, *,
+                     session_dead: bool = False) -> bool:
+        # HARD GATE: never complete while DESIGN_INVALID tasks are open.
+        # First, do a quick cached check to avoid expensive Beads calls when
+        # completion is not plausible.
         if self._has_open_design_invalid(run):
             return False
 
         effective_rigor = self._effective_rigor(run)
+        completion_plausible = False
 
         if (run.workspace_path / ".swarm" / "deliverable.md").exists():
             # For adaptive rigor (not yet escalated), deliverable is sufficient
             if effective_rigor == "adaptive":
-                return True
-            # For higher rigor, also need convergence signal
-            conv = run.workspace_path / ".swarm" / "convergence.json"
-            if conv.exists():
-                try:
-                    data = json.loads(conv.read_text())
-                    if isinstance(data, dict) and self._convergence_status_ok(data):
-                        return True
-                except (json.JSONDecodeError, OSError):
-                    pass
-            # Deliverable exists but no convergence signal — attempt to
-            # generate one and re-check immediately (so we don't need to
-            # wait for the next poll cycle, which may never come if the
-            # agent already exited normally).
-            # Throttle to avoid running the convergence gate script every
-            # poll cycle (30s) when the gate consistently fails.
-            now = time.time()
-            if now - run.last_convergence_attempt_at >= 300:  # 5-minute cooldown
-                run.last_convergence_attempt_at = now
-                self._try_convergence_check(run)
-            if conv.exists():
-                try:
-                    data = json.loads(conv.read_text())
-                    if isinstance(data, dict) and self._convergence_status_ok(data):
-                        return True
-                except (json.JSONDecodeError, OSError):
-                    pass
+                completion_plausible = True
+            else:
+                # For higher rigor, also need convergence signal
+                completion_plausible = self._convergence_signals_completion(run)
+                if not completion_plausible:
+                    # Deliverable exists but no convergence — try to generate one
+                    # Throttle to avoid running the gate every poll cycle (30s).
+                    # When session_dead=True, bypass cooldown.
+                    now = time.time()
+                    cooldown_ok = (now - run.last_convergence_attempt_at >= 300)
+                    if cooldown_ok or session_dead:
+                        run.last_convergence_attempt_at = now
+                        self._try_convergence_check(run)
+                    completion_plausible = self._convergence_signals_completion(run)
+        else:
+            # No deliverable — check if convergence.json alone signals completion
+            completion_plausible = self._convergence_signals_completion(run)
+
+        if not completion_plausible:
             return False
-        conv = run.workspace_path / ".swarm" / "convergence.json"
-        if conv.exists():
-            try:
-                data = json.loads(conv.read_text())
-                if isinstance(data, dict) and self._convergence_status_ok(data):
-                    return True
-            except (json.JSONDecodeError, OSError):
-                pass
-        return False
+
+        # BUG-001 fix: completion signals exist, but task_snapshot may be stale
+        # (e.g., after dispatcher restart, or when session_alive=True and
+        # _check_progress skips bd to avoid lock contention). Do a final hard
+        # check against Beads source-of-truth before declaring completion.
+        if self._has_open_design_invalid_hard_check(run):
+            return False
+
+        return True
 
     def _try_convergence_check(self, run: RunningInvestigation) -> None:
         """Attempt to run a convergence check and write convergence.json.
@@ -2182,6 +3251,27 @@ class InvestigationDispatcher:
                     FileNotFoundError, OSError):
                 pass
 
+        # Second fallback: read .beads/ JSONL directly when bd CLI unavailable
+        if total_tasks == 0:
+            beads_dir = run.workspace_path / ".beads"
+            if beads_dir.is_dir():
+                try:
+                    for jsonl_file in beads_dir.glob("*.jsonl"):
+                        for line in jsonl_file.read_text(errors="replace").splitlines():
+                            line = line.strip()
+                            if not line:
+                                continue
+                            try:
+                                entry = json.loads(line)
+                                if isinstance(entry, dict) and "id" in entry:
+                                    total_tasks += 1
+                                    if entry.get("status") == "closed":
+                                        closed += 1
+                            except json.JSONDecodeError:
+                                continue
+                except OSError:
+                    pass
+
         # Always clean up tmux sessions on completion
         self._cleanup_tmux(run)
 
@@ -2190,6 +3280,9 @@ class InvestigationDispatcher:
                           run.label, run.investigation_id, failure_reason,
                           closed, total_tasks, elapsed)
             self.queue.fail(run.investigation_id, failure_reason)
+
+            # Write structured failure diagnosis for continuation rounds
+            self._write_failure_diagnosis(run)
 
             # Include log tail in the failure message for diagnostics
             log_tail = ""
@@ -2236,7 +3329,12 @@ class InvestigationDispatcher:
         # build-mode investigations complete immediately.
         is_science = run.mode in ("discover", "prove")
         if is_science:
-            self._transition_to_review(run)
+            if not self._transition_to_review(run):
+                # Review transition failed — fall back to complete so the
+                # investigation doesn't stay as a zombie "running" row.
+                logger.warning("Review transition failed for %s — falling back to complete",
+                               run.label)
+                self.queue.complete(run.investigation_id)
         else:
             self.queue.complete(run.investigation_id)
 
@@ -2244,8 +3342,9 @@ class InvestigationDispatcher:
         # of the run's claims, experiments, artifacts, and provenance.  Written
         # AFTER the status transition so the manifest captures the finalized
         # ledger state (promoted claims, self-critique objections, continuation
-        # proposals).  See ``_sweep_missing_manifests`` for crash recovery of
-        # the small write-after-transition race window (INV-44).
+        # proposals).  If the dispatcher crashes between the status transition
+        # and this write, _recover_running will sweep for the missing manifest
+        # on the next startup (INV-44).
         self._write_run_manifest(run)
 
         # Send appropriate completion message
@@ -2337,17 +3436,41 @@ class InvestigationDispatcher:
                     swarm_dir.rmdir()
                 else:
                     # Force remove — worktrees are expendable after completion
-                    shutil.rmtree(swarm_dir, ignore_errors=True)
+                    shutil.rmtree(swarm_dir)
             except OSError:
-                pass
+                from voronoi.server.workspace import describe_live_file_holders
+                holders = describe_live_file_holders([swarm_dir])
+                if holders:
+                    logger.warning(
+                        "Could not remove %s; live processes hold files: %s",
+                        swarm_dir, ", ".join(holders[:8]),
+                    )
+                else:
+                    logger.warning(
+                        "Could not remove %s; it may contain open NFS lock files",
+                        swarm_dir,
+                    )
 
             logger.info("Cleaned up worktrees for %s", run.label)
 
-        # 4. Clean secrets file from workspace
-        env_file = ws / ".swarm" / ".tmux-env"
+        # 4. Clean secrets env file (sibling of workspace, outside the git
+        # repo — see tmux.py / INV-31).  The shell also ``rm -f``s it
+        # immediately after sourcing, so this is belt-and-suspenders for
+        # crashes before that step runs.
+        env_file = ws.parent / f".tmux-env-{run.tmux_session}"
         if env_file.exists():
             try:
                 env_file.unlink()
+            except OSError:
+                pass
+
+        # Legacy cleanup: remove any residual secrets file from the old
+        # in-workspace location that may have been left by a prior
+        # dispatcher version.
+        legacy_env = ws / ".swarm" / ".tmux-env"
+        if legacy_env.exists():
+            try:
+                legacy_env.unlink()
             except OSError:
                 pass
 
@@ -2398,13 +3521,48 @@ class InvestigationDispatcher:
         lowered = self._normalize_log_tail(log_tail)
         if not lowered:
             return False
+        # Legacy markers (pre-2026 CLI) + current markers.
+        # Require >= 2 hits to avoid false positives from random log lines.
         markers = (
             "logout",
             "total session time",
             "total usage est",
             "breakdown by ai model",
+            # Current Copilot CLI (2026+) output format
+            "session exported to",
+            "requests",
+            "tokens",
         )
         return sum(marker in lowered for marker in markers) >= 2
+
+    def _bd_in_progress_task_ids(self, workspace: Path) -> list[str]:
+        """Return Beads task IDs currently marked ``in_progress``.
+
+        Used by ``_has_active_workers`` to reconcile a possibly-stale
+        ``orchestrator-checkpoint.json`` against ground-truth task state
+        (BUG-002).  Returns an empty list on any failure — the caller
+        treats absence of bd data as "no extra workers to track".
+        """
+        try:
+            from voronoi.beads import has_beads_dir, run_bd_json
+            if not has_beads_dir(str(workspace)):
+                return []
+            code, parsed = run_bd_json(
+                "list", "--status", "in_progress", "--json",
+                cwd=str(workspace),
+            )
+        except Exception:  # pragma: no cover — beads module optional
+            return []
+        if code != 0 or not isinstance(parsed, list):
+            return []
+        ids: list[str] = []
+        for task in parsed:
+            if not isinstance(task, dict):
+                continue
+            tid = task.get("id")
+            if isinstance(tid, str) and tid:
+                ids.append(tid)
+        return ids
 
     def _has_active_workers(self, run: RunningInvestigation) -> bool:
         """Check if the orchestrator exited with workers still running.
@@ -2415,6 +3573,11 @@ class InvestigationDispatcher:
         workspace (workers that survived after tmux cleanup).  If so,
         the orchestrator intentionally exited to conserve context and
         should NOT be restarted until the workers finish.
+
+        Reconciles the checkpoint against Beads in-progress tasks
+        (BUG-002): a stale checkpoint with ``active_workers=[]`` while
+        bd reports ``in_progress`` tasks used to produce duplicate
+        worker dispatch on restart.  We now cross-check both sources.
         """
         cp_path = _find_checkpoint(run.workspace_path)
         if cp_path is None:
@@ -2426,7 +3589,42 @@ class InvestigationDispatcher:
         except (json.JSONDecodeError, OSError):
             return False
 
-        workers = cp.get("active_workers", [])
+        # Coerce active_workers to list[str].  The spec types this as a list
+        # of task-id strings, but the orchestrator writes the checkpoint
+        # directly (bypassing MCP validation), and has been observed emitting
+        # list[dict] entries like [{"id": "bd-123", "branch": "..."}].  Such
+        # values would crash the downstream `worker in w` substring match
+        # with "'in <string>' requires string as left operand, not dict".
+        # Extract a string identifier from dict entries; drop anything else.
+        raw_workers = cp.get("active_workers", [])
+        workers: list[str] = []
+        if isinstance(raw_workers, list):
+            for item in raw_workers:
+                if isinstance(item, str) and item:
+                    workers.append(item)
+                elif isinstance(item, dict):
+                    for key in ("id", "task_id", "branch", "worker", "name"):
+                        v = item.get(key)
+                        if isinstance(v, str) and v:
+                            workers.append(v)
+                            break
+        if workers and not all(isinstance(w, str)
+                               for w in raw_workers if w is not None):
+            logger.warning(
+                "Investigation %s: checkpoint active_workers contained "
+                "non-string entries; coerced to %r",
+                run.label, workers,
+            )
+
+        # Reconcile with Beads: any in_progress task whose ID isn't already
+        # covered by the checkpoint means a worker was dispatched but the
+        # checkpoint is stale.  We add the task ID as a potential worker
+        # identifier — tmux window names typically encode the task ID, so
+        # the downstream substring match ("worker in w") will find it.
+        for tid in self._bd_in_progress_task_ids(run.workspace_path):
+            if tid and not any(tid in w for w in workers):
+                workers.append(tid)
+
         if not workers:
             return False
 
@@ -2457,11 +3655,18 @@ class InvestigationDispatcher:
 
         for worker in workers:
             try:
-                # Check for a window matching this worker AND verify the
-                # process inside the pane is still a copilot/agent process,
-                # not a dead shell.  tmux windows survive after the foreground
-                # process exits, leaving an idle bash prompt — we must not
-                # treat those as "alive".
+                # BUG-003 FIX: Check for a window matching this worker AND
+                # verify the process inside the pane is still a copilot/agent
+                # process, not a dead shell. tmux windows survive after the
+                # foreground process exits, leaving an idle bash prompt — we
+                # must not treat those as "alive".
+                #
+                # Previous bug: `worker` is the short Beads ID like "bd-66",
+                # but `list-windows` returns the full window name like
+                # "agent-scribe-bd-66". The substring check `worker in w`
+                # finds a match, but then `list-panes -t :bd-66` fails
+                # because tmux needs the full window name. Fix: preserve the
+                # matched window name and use tmux exact-match syntax.
                 result = subprocess.run(
                     ["tmux", "list-windows", "-t", swarm_session, "-F",
                      "#{window_name}"],
@@ -2470,13 +3675,23 @@ class InvestigationDispatcher:
                 if result.returncode != 0:
                     continue
                 windows = result.stdout.strip().splitlines()
-                if not any(worker in w for w in windows):
+                
+                # Find the full window name that matches this worker
+                matched_window = None
+                for w in windows:
+                    if worker in w:
+                        matched_window = w
+                        break
+                
+                if not matched_window:
                     continue
+                
                 # Window exists — now check if the pane process is still
-                # an agent (not just a leftover shell)
+                # an agent (not just a leftover shell). Use tmux exact-match
+                # syntax to target the specific window by its full name.
                 pane_result = subprocess.run(
                     ["tmux", "list-panes", "-t",
-                     f"{swarm_session}:{worker}", "-F",
+                     f"{swarm_session}:={matched_window}", "-F",
                      "#{pane_current_command}"],
                     capture_output=True, text=True, timeout=5,
                 )
@@ -2489,22 +3704,26 @@ class InvestigationDispatcher:
                     if any(c.strip() and c.strip() not in shell_names
                            for c in cmds):
                         logger.debug("Worker %s still alive for %s "
-                                     "(pane_cmd=%s)",
-                                     worker, run.label,
+                                     "(window=%s, pane_cmd=%s)",
+                                     worker, run.label, matched_window,
                                      cmds[0] if cmds else "?")
                         return True
                     else:
                         logger.debug("Worker %s window exists but process "
-                                     "exited (pane_cmd=%s) for %s",
-                                     worker,
+                                     "exited (window=%s, pane_cmd=%s) for %s",
+                                     worker, matched_window,
                                      cmds[0] if cmds else "?",
                                      run.label)
             except (subprocess.TimeoutExpired, OSError):
                 continue
 
-        # Fallback: check for orphaned copilot processes whose cwd is
-        # inside this workspace (workers that outlived their tmux window).
-        # Use `pgrep -f` (not `-fa`) — macOS BSD pgrep lacks the `-a` flag.
+        # Fallback: check for orphaned copilot processes associated with
+        # this workspace (workers that outlived their tmux window).  We
+        # first grep argv for the workspace path, then fall back to
+        # inspecting each PID's CWD via ``lsof`` — many agent CLIs
+        # (copilot, claude, gemini) get the workspace as CWD, not argv,
+        # so the argv-only check silently misses them (BUG-004).
+        # ``pgrep -f`` (not ``-fa``) — macOS BSD pgrep lacks the ``-a`` flag.
         ws_str = str(run.workspace_path)
         try:
             result = subprocess.run(
@@ -2512,8 +3731,6 @@ class InvestigationDispatcher:
                 capture_output=True, text=True, timeout=10,
             )
             if result.returncode == 0:
-                # pgrep -f returns only PIDs; read each process's full
-                # command line via ps to check workspace association.
                 pids = [p.strip() for p in result.stdout.strip().splitlines()
                         if p.strip()]
                 if pids:
@@ -2522,17 +3739,69 @@ class InvestigationDispatcher:
                         capture_output=True, text=True, timeout=10,
                     )
                     if ps_result.returncode == 0:
+                        candidate_pids: list[str] = []
                         for line in ps_result.stdout.strip().splitlines():
-                            if ws_str in line:
-                                logger.debug("Orphaned worker process for %s: %s",
+                            parts = line.strip().split(None, 1)
+                            if not parts:
+                                continue
+                            pid_str = parts[0]
+                            cmdline = parts[1] if len(parts) > 1 else ""
+                            if ws_str in cmdline:
+                                logger.debug("Orphaned worker process "
+                                             "(argv match) for %s: %s",
                                              run.label, line[:120])
                                 return True
+                            candidate_pids.append(pid_str)
+                        # argv didn't match — check CWD for each candidate.
+                        if candidate_pids and self._any_pid_cwd_in_workspace(
+                                candidate_pids, run.workspace_path):
+                            return True
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             pass
 
         # No live workers found — workers finished, proceed with restart
         logger.info("All active_workers done for %s, proceeding with restart",
                     run.label)
+        return False
+
+    def _any_pid_cwd_in_workspace(self, pids: list[str],
+                                   workspace_path: Path) -> bool:
+        """Return True if any PID's current working directory is inside
+        ``workspace_path`` (or a subdirectory, e.g. a worktree).
+
+        Uses ``lsof -a -p <pid> -d cwd -Fn`` which works on macOS and Linux
+        and emits ``n<path>`` lines for the CWD entry.  Missing ``lsof`` or
+        any per-PID failure is treated as "no match" — callers should
+        already have covered the common case via argv substring matching.
+        """
+        if not pids:
+            return False
+        ws_resolved = workspace_path.resolve()
+        for pid in pids:
+            try:
+                result = subprocess.run(
+                    ["lsof", "-a", "-p", pid, "-d", "cwd", "-Fn"],
+                    capture_output=True, text=True, timeout=5,
+                )
+            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                return False  # lsof unavailable — bail out of the fallback
+            if result.returncode != 0:
+                continue
+            for line in result.stdout.splitlines():
+                if not line.startswith("n"):
+                    continue
+                cwd_str = line[1:].strip()
+                if not cwd_str:
+                    continue
+                try:
+                    cwd = Path(cwd_str).resolve()
+                except OSError:
+                    continue
+                if cwd == ws_resolved or ws_resolved in cwd.parents:
+                    logger.debug("Orphaned worker process (cwd match) "
+                                 "pid=%s cwd=%s workspace=%s",
+                                 pid, cwd, ws_resolved)
+                    return True
         return False
 
     def _looks_like_auth_failure(self, log_tail: str) -> bool:
@@ -2569,9 +3838,10 @@ class InvestigationDispatcher:
         try:
             from voronoi.science import check_convergence
 
+            effective_rigor = self._effective_rigor(run)
             result = check_convergence(
                 run.workspace_path,
-                run.rigor,
+                effective_rigor,
                 eval_score=run.eval_score,
                 improvement_rounds=run.improvement_rounds,
             )
@@ -2664,6 +3934,8 @@ class InvestigationDispatcher:
         Returns True if the orchestrator was successfully relaunched.
         """
         run.orchestrator_parked = False
+        run.park_entered_at = 0
+        run.polling_strike_count = 0
 
         # Ensure original orchestrator prompt exists
         prompt_file = run.workspace_path / ".swarm" / "orchestrator-prompt.txt"
@@ -2821,6 +4093,11 @@ class InvestigationDispatcher:
         """Resume a paused or failed investigation.
 
         Validates workspace, rebuilds resume prompt, relaunches agent.
+        If workers are still running in the workspace, enters park mode
+        instead of launching a new orchestrator session — preventing the
+        common failure where a resumed orchestrator idle-polls while
+        waiting for active workers.
+
         Returns a status message for the user.
         """
         inv = self.queue.get(investigation_id)
@@ -2859,6 +4136,27 @@ class InvestigationDispatcher:
         # Restore task snapshot for accurate progress
         self._restore_task_snapshot(run)
 
+        label = inv.codename or f"#{inv.id}"
+
+        # Park-aware resume: if workers are still running, enter park
+        # mode instead of launching a new orchestrator that would just
+        # idle-poll for worker completion.
+        if self._has_active_workers(run):
+            run.orchestrator_parked = True
+            run.park_entered_at = time.time()
+            run.last_parked_digest_at = time.time()
+            self.running[inv.id] = run
+            self.send_message(
+                f"▶️ *{label}* resumed in monitor mode — "
+                f"workers still running, will wake when they finish."
+            )
+            logger.info("Investigation #%d (%s) resumed in park mode — "
+                        "workers still running", inv.id, label)
+            return (
+                f"▶️ *{label}* resumed in monitor mode — "
+                f"workers still running."
+            )
+
         # Build resume prompt and launch
         resume_file = self._build_resume_prompt(run)
         try:
@@ -2871,13 +4169,14 @@ class InvestigationDispatcher:
             return f"❌ Failed to launch #{investigation_id}: {e}"
 
         self.running[inv.id] = run
-        label = inv.codename or f"#{inv.id}"
         self.send_message(f"▶️ *{label}* resumed — agent relaunched.")
         logger.info("Investigation #%d (%s) resumed", inv.id, label)
         return f"▶️ *{label}* resumed."
 
     def _check_paused_timeouts(self) -> None:
-        """Auto-fail paused investigations that exceeded pause_timeout_hours."""
+        """Auto-fail paused investigations only when explicitly configured."""
+        if not self.config.pause_timeout_hours or self.config.pause_timeout_hours <= 0:
+            return
         try:
             paused = self.queue.get_paused()
         except Exception:
@@ -2937,6 +4236,26 @@ class InvestigationDispatcher:
         )
 
         lines.append("## Critical Rules for This Restart\n")
+
+        # Shared guidance injected into every resume prompt variant
+        _common_rules = (
+            "- Check `.swarm/dispatcher-directive.json` each OODA cycle.\n"
+            "- ALWAYS delegate manuscript writing to a Scribe worker.\n"
+            "- Use `bd query` for targeted task lookups, never `bd list --json`.\n"
+            "- Dispatch workers via `./scripts/spawn-agent.sh`.\n"
+            "- Merge completed work via `./scripts/merge-agent.sh`.\n"
+            "- Before convergence, run: `./scripts/convergence-gate.sh . " + effective_rigor + "`\n\n"
+            "**Do NOT:**\n"
+            "- Sleep, poll, or use `ps aux | grep` to monitor workers\n"
+            "- Launch experiments via `nohup` or background subprocesses\n"
+            "- Run long-running scripts inline — delegate to workers\n"
+            "- Run `sleep 600 && find .llm_cache | wc -l` loops — "
+            "they waste your entire context window for zero value\n\n"
+            "**If workers are still running**, write your checkpoint with "
+            "`active_workers` and EXIT immediately. The dispatcher will wake "
+            "you when they finish.\n"
+        )
+
         if run.context_restarts > 0 and run.retry_count == 0:
             lines.append(
                 "**CONTEXT REFRESH** — your previous session was healthy but ran out "
@@ -2945,12 +4264,7 @@ class InvestigationDispatcher:
                 "- Do NOT re-read files already summarized in the checkpoint/digest.\n"
                 "- Pick up EXACTLY where you left off from the checkpoint below.\n"
                 "- Read `.swarm/brief-digest.md` for compressed project state.\n"
-                "- Poll `.swarm/dispatcher-directive.json` each OODA cycle.\n"
-                "- ALWAYS delegate manuscript writing to a Scribe worker.\n"
-                "- Use `bd query` for targeted task lookups, never `bd list --json`.\n"
-                "- Dispatch workers via `./scripts/spawn-agent.sh`.\n"
-                "- Merge completed work via `./scripts/merge-agent.sh`.\n"
-                "- Before convergence, run: `./scripts/convergence-gate.sh . " + effective_rigor + "`\n"
+                + _common_rules
             )
         else:
             lines.append(
@@ -2958,12 +4272,7 @@ class InvestigationDispatcher:
                 "- Do NOT re-run experiments that already produced results.\n"
                 "- Read `.swarm/brief-digest.md` instead of re-reading full PROMPT.md.\n"
                 "- Work from the checkpoint and state digest below.\n"
-                "- Poll `.swarm/dispatcher-directive.json` each OODA cycle.\n"
-                "- ALWAYS delegate manuscript writing to a Scribe worker.\n"
-                "- Use `bd query` for targeted task lookups, never `bd list --json`.\n"
-                "- Dispatch workers via `./scripts/spawn-agent.sh`.\n"
-                "- Merge completed work via `./scripts/merge-agent.sh`.\n"
-                "- Before convergence, run: `./scripts/convergence-gate.sh . " + effective_rigor + "`\n"
+                + _common_rules
             )
 
         # Human gate status
@@ -3331,7 +4640,7 @@ class InvestigationDispatcher:
             load_ledger,
             save_ledger,
         )
-        from voronoi.utils import extract_field
+        from voronoi.utils import extract_field, is_finding_title
 
         ledger = load_ledger(inv.lineage_id, base_dir=self.config.base_dir)
         synced_ids = {f_id for c in ledger.claims for f_id in c.supporting_findings}
@@ -3342,7 +4651,12 @@ class InvestigationDispatcher:
             title = task.get("title", "")
             notes = task.get("notes", "")
 
-            if "FINDING" not in title.upper():
+            # Require the task title to START with a FINDING marker. The
+            # prior substring check matched "FINDINGS" anywhere in a title
+            # (e.g. "Analyze pricing dataset for five action-changing
+            # findings"), which laundered task titles into provisional
+            # claims.  See docs/SCIENCE.md §17 and docs/INVARIANTS.md INV-47.
+            if not is_finding_title(title):
                 continue
             if tid in synced_ids:
                 continue
@@ -3374,20 +4688,27 @@ class InvestigationDispatcher:
 
             # Clean statement from FINDING prefix
             statement = title
-            for prefix in ("FINDING:", "FINDING -", "FINDING"):
+            for prefix in ("FINDING:", "FINDING -", "FINDING —", "FINDING"):
                 if statement.upper().startswith(prefix):
                     statement = statement[len(prefix):].strip()
                     break
 
-            ledger.add_claim(
-                statement=statement,
-                provenance=provenance,
-                source_cycle=inv.cycle_number,
-                supporting_findings=[tid],
-                effect_summary=effect or None,
-                sample_summary=sample_summary,
-                artifacts=artifacts,
-            )
+            try:
+                ledger.add_claim(
+                    statement=statement,
+                    provenance=provenance,
+                    source_cycle=inv.cycle_number,
+                    supporting_findings=[tid],
+                    effect_summary=effect or None,
+                    sample_summary=sample_summary,
+                    artifacts=artifacts,
+                )
+            except ValueError as e:
+                logger.info(
+                    "Skipping ill-formed FINDING for task %s in %s: %s",
+                    tid, run.label, e,
+                )
+                continue
             new_claims = True
 
         if new_claims:
@@ -3429,15 +4750,18 @@ class InvestigationDispatcher:
         except Exception as e:
             logger.warning("Failed to write run manifest for %s: %s", run.label, e)
 
-    def _transition_to_review(self, run: RunningInvestigation) -> None:
+    def _transition_to_review(self, run: RunningInvestigation) -> bool:
         """Transition a completed science investigation to review status.
 
         Generates self-critique, continuation proposals, syncs final findings
         to ledger, and sends the review message to Telegram.
+
+        Returns True if the transition succeeded, False if it failed
+        (caller should fall back to queue.complete()).
         """
         inv = self.queue.get(run.investigation_id)
         if inv is None:
-            return
+            return False
 
         # Final sync of all findings
         self._sync_findings_to_ledger(run)
@@ -3480,7 +4804,7 @@ class InvestigationDispatcher:
             if not self.queue.review(run.investigation_id):
                 logger.warning("Review transition failed for #%d — status may have changed",
                                run.investigation_id)
-                return
+                return False
 
             # Build review message with claims
             review_text = self._build_review_message(run, ledger)
@@ -3489,11 +4813,12 @@ class InvestigationDispatcher:
             if not self.queue.review(run.investigation_id):
                 logger.warning("Review transition failed for #%d — status may have changed",
                                run.investigation_id)
-                return
+                return False
             self.send_message(
                 f"🔬 *{run.label}* converged — ready for review.\n"
                 f"Reply with feedback or send `/voronoi continue {run.label}` to iterate."
             )
+        return True
 
     def _build_review_message(self, run: RunningInvestigation,
                               ledger) -> str:
@@ -3572,6 +4897,8 @@ class InvestigationDispatcher:
             "success-criteria.json", "experiments.tsv", "eval-score.json",
             "convergence.json", "claim-evidence.json", "report.pdf",
             "state-digest.md", "scout-brief.md", "events.jsonl",
+            "stall-signal.json", "deliverable-partial.md",
+            "failure-diagnosis.json", "run-manifest.json",
         ]
         for fname in files_to_archive:
             src = swarm / fname
@@ -3588,7 +4915,8 @@ class InvestigationDispatcher:
             "deliverable.md", "events.jsonl", "orchestrator-checkpoint.json",
             "checkpoint.json",
             "convergence.json", "eval-score.json", "dispatcher-directive.json",
-            "human-gate.json",
+            "human-gate.json", "stall-signal.json", "deliverable-partial.md",
+            "failure-diagnosis.json",
         ]
         for fname in files_to_remove:
             p = swarm / fname

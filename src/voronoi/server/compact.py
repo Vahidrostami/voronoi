@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -163,8 +164,29 @@ def _compact_events(swarm: Path) -> bool:
     except OSError:
         pass  # best-effort; proceed with what we have
 
+    # Atomic write: write to a temp file then rename, so a concurrent
+    # append between our final size check and the write is not lost
+    # (the old file stays intact until os.replace swaps it in).
+    import tempfile
     try:
-        events_file.write_text("\n".join(recent) + "\n" if recent else "")
+        content = "\n".join(recent) + "\n" if recent else ""
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(swarm), suffix=".events.tmp",
+        )
+        closed = False
+        try:
+            os.write(fd, content.encode())
+            os.close(fd)
+            closed = True
+            os.replace(tmp_path, str(events_file))
+        except BaseException:
+            if not closed:
+                os.close(fd)
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
     except OSError as e:
         logger.warning("Failed to compact events.jsonl: %s", e)
         return False

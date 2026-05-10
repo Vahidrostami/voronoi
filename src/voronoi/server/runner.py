@@ -34,12 +34,13 @@ class ServerConfig:
     """Server configuration loaded from ~/.voronoi/config.json."""
 
     def __init__(self, base_dir: Optional[str] = None):
-        self.base_dir = Path(base_dir or Path.home() / ".voronoi")
+        selected_base = base_dir if base_dir is not None else os.environ.get("VORONOI_BASE_DIR")
+        self.base_dir = Path(selected_base).expanduser() if selected_base else Path.home() / ".voronoi"
         self.config_path = self.base_dir / "config.json"
 
         # Defaults
         self.max_concurrent = 2
-        self.max_agents_per_investigation = 4
+        self.max_agents_per_investigation = 6
         self.agent_command = "copilot"
         self.agent_flags = "--allow-all"
         self.orchestrator_model = ""  # e.g. "claude-opus-4.6"

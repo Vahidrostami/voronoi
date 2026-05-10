@@ -5,6 +5,8 @@ description: >
   Covers SHA-256 hashing protocol, raw data preservation, provenance
   tracking, and data-file validation. Use when creating, moving,
   or validating experimental data files.
+user-invocable: true
+disable-model-invocation: false
 ---
 
 # Data Integrity

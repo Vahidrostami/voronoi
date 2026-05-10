@@ -587,7 +587,7 @@ Design additional figures as needed. These ten are mandatory.
 11. **Token counts are mandatory.** Every run records input_tokens, output_tokens.
 12. **Parallelize LLM calls.** $\geq 4$ concurrent calls during Phase 2. For multi-agent cells, dispatch all 3 analysts in parallel.
 13. **Validate planted effects at scenario generation time.** Simpson's: aggregate vs within-group slopes differ. Interactions: main effects $p > 0.10$, joint $p < 0.05$. Constraints: CVR $> 0$.
-14. **No LLM call may generate results.json.** All statistics computed by deterministic Python code (scipy/numpy).
+14. **No LLM call may generate experiment metrics JSON.** All statistics computed by deterministic Python code (scipy/numpy).
 15. **Replace zero-information scenarios** where all cells produce identical regret within $\varepsilon = 0.001$.
 16. **Code pre-filter is mandatory gate.** No finding may score $> 0$ on the rubric unless it passes the code pre-filter.
 17. **Multi-agent analysts are independent.** No communication between analysts. They cannot see each other's findings. Only the synthesizer sees all findings.

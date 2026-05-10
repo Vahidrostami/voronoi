@@ -1,26 +1,20 @@
 #!/bin/bash
 set -euo pipefail
 
-# Sync optional files into src/voronoi/data/ for pip packaging.
+# Sync root .env.example → src/voronoi/data/.env.example
 #
-# All core runtime content (agents, prompts, skills, scripts, demos,
-# templates) is maintained in-tree under src/voronoi/data/ and does
-# NOT need syncing.  This script only copies supplementary files that
-# live at the repo root.
+# src/voronoi/data/.env.example is tracked in git and is the canonical
+# runtime copy shipped with pip install. Run this script only when the
+# repo-root .env.example is updated and you want to propagate it.
 #
-# Layout of src/voronoi/data/:
-#   ├── agents/        ← canonical (in-tree)
-#   ├── skills/        ← canonical (in-tree)
-#   ├── prompts/       ← canonical (in-tree)
-#   ├── scripts/       ← canonical (in-tree)
-#   ├── demos/         ← canonical (in-tree)
-#   ├── templates/     ← canonical (in-tree)
-#   └── .env.example   ← synced from repo root
+# All other runtime content (agents, prompts, skills, scripts, demos,
+# templates) is maintained in-tree under src/voronoi/data/ and never
+# needs syncing.
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DATA_DIR="$REPO_ROOT/src/voronoi/data"
 
-echo "Syncing supplementary files → $DATA_DIR"
+echo "Syncing .env.example → $DATA_DIR"
 
 # .env.example
 if [ -f "$REPO_ROOT/.env.example" ]; then
@@ -28,5 +22,4 @@ if [ -f "$REPO_ROOT/.env.example" ]; then
     echo "  ✓ .env.example"
 fi
 
-echo "✓ Done. All core content is maintained in-tree under data/."
-echo "  $(find "$DATA_DIR" -type f | wc -l | tr -d ' ') total files in data/"
+echo "✓ Done. Remember to commit src/voronoi/data/.env.example."

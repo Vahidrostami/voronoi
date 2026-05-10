@@ -16,14 +16,10 @@ headings in the deliverable.
 from __future__ import annotations
 
 import json
-import re
 import shutil
-import subprocess
 from pathlib import Path
 
-from voronoi.beads import run_bd as _run_bd
 from voronoi.utils import clean_finding_title as _clean_finding_title
-from voronoi.utils import extract_field as _parse_note_value
 from voronoi.gateway.evidence import (
     get_findings,
     render_findings_table,
@@ -44,8 +40,6 @@ from voronoi.gateway.pdf import (
     latex_to_markdown,
     try_pandoc_pdf,
     try_fpdf2,
-    latin1_safe as _latin1_safe,
-    which as _which,
 )
 
 
@@ -142,77 +136,18 @@ class ReportGenerator:
     @staticmethod
     def _render_findings_table(findings: list[dict], placeholder: str = "\u2014") -> list[str]:
         return render_findings_table(findings, placeholder)
-        return rows
 
     @staticmethod
     def _render_findings_interpreted(findings: list[dict]) -> list[str]:
-        """Render findings with interpretation and practical significance."""
-        lines: list[str] = []
-        for i, f in enumerate(findings, 1):
-            title = _clean_finding_title(f["title"])
-            valence = f.get("valence", "unknown")
-            effect = f.get("effect_size", "")
-            ci = f.get("ci_95", "")
-            p_val = f.get("p", "")
-            n = f.get("n", "")
-            practical = f.get("practical_significance", "")
-            strength = f.get("strength_label", "")
-            interp = f.get("interpretation", "")
-            supports = f.get("supports_hypothesis", "")
-
-            lines.append(f"### Finding {i}: {title}\n")
-
-            # Statistical summary
-            stat_parts = []
-            if effect:
-                stat_parts.append(f"**Effect size:** d={effect}")
-                if practical and practical != "unknown":
-                    stat_parts.append(f"({practical} practical effect)")
-            if ci:
-                stat_parts.append(f"**CI 95%:** {ci}")
-            if p_val:
-                stat_parts.append(f"**p:** {p_val}")
-            if n:
-                stat_parts.append(f"**N:** {n}")
-            if stat_parts:
-                lines.append(" | ".join(stat_parts) + "\n")
-
-            # Verdict and strength
-            lines.append(f"**Verdict:** {valence}")
-            if strength and strength not in ("unknown", "unreviewed"):
-                lines.append(f" | **Evidence strength:** {strength}")
-            lines.append("\n")
-
-            # Interpretation
-            if interp:
-                lines.append(f"**Interpretation:** {interp}\n")
-
-            # Hypothesis link
-            if supports:
-                lines.append(f"**Supports hypothesis:** {supports}\n")
-
-            lines.append("")
-        return lines
+        return render_findings_interpreted(findings)
 
     @staticmethod
     def _pick_headline(findings: list[dict]) -> dict:
-        """Pick the finding with the largest numeric effect size."""
-        best, best_val = None, -1.0
-        for f in findings:
-            es = f.get("effect_size", "")
-            try:
-                val = abs(float(es))
-                if val > best_val:
-                    best, best_val = f, val
-            except (ValueError, TypeError):
-                continue
-        if not findings:
-            return {}
-        return best if best is not None else findings[0]
+        return pick_headline(findings)
 
     @staticmethod
     def _valence_emoji(valence: str) -> str:
-        return {"positive": "\u2705", "negative": "\u274c"}.get(valence.lower(), "\u2753")
+        return valence_emoji(valence)
 
     # ------------------------------------------------------------------
     # Belief map rendering
@@ -328,38 +263,7 @@ class ReportGenerator:
 
     def _render_evidence_chain(self) -> str | None:
         """Render claim-evidence traceability from .swarm/claim-evidence.json."""
-        from voronoi.science import load_claim_evidence
-        reg = load_claim_evidence(self.ws)
-        if not reg.claims:
-            return None
-
-        lines = []
-        for c in reg.claims:
-            strength_badge = {"robust": "\u2705", "provisional": "\u26a0\ufe0f",
-                              "weak": "\u274c", "unsupported": "\u2b55"}.get(
-                c.strength, "\u2753")
-            lines.append(f"### {strength_badge} {c.claim_text}\n")
-            lines.append(f"**Evidence strength:** {c.strength}")
-            if c.finding_ids:
-                lines.append(f" | **Supported by:** {', '.join(c.finding_ids)}")
-            if c.hypothesis_ids:
-                lines.append(f" | **Tests:** {', '.join(c.hypothesis_ids)}")
-            lines.append("\n")
-            if c.interpretation:
-                lines.append(f"{c.interpretation}\n")
-            lines.append("")
-
-        # Audit warnings
-        if reg.unsupported_claims:
-            lines.append("\n**\u26a0\ufe0f Unsupported claims:** "
-                         f"{', '.join(reg.unsupported_claims)}\n")
-        if reg.orphan_findings:
-            lines.append("**\u2139\ufe0f Findings not cited in claims:** "
-                         f"{', '.join(reg.orphan_findings)}\n")
-
-        lines.append(f"\n**Evidence coverage:** {reg.coverage_score:.0%} of claims "
-                     f"have supporting evidence\n")
-        return "\n".join(lines)
+        return render_evidence_chain(self.ws)
 
     # ------------------------------------------------------------------
     # Auto-generated Limitations section
@@ -367,64 +271,7 @@ class ReportGenerator:
 
     def _render_limitations(self, findings: list[dict]) -> str | None:
         """Auto-generate limitations from fragile, contested, wide-CI findings."""
-        limitations: list[str] = []
-
-        # Fragile findings
-        fragile = [f for f in findings
-                   if f.get("robust", "").lower() == "no"]
-        for f in fragile:
-            title = _clean_finding_title(f["title"])
-            conditions = f.get("conditions", "conditions not documented")
-            limitations.append(
-                f"- **Fragile result:** {title} "
-                f"(not robust under sensitivity analysis; {conditions})"
-            )
-
-        # Wide confidence intervals
-        for f in findings:
-            ci_q = f.get("ci_quality", "")
-            if ci_q in ("wide", "very wide"):
-                title = _clean_finding_title(f["title"])
-                limitations.append(
-                    f"- **Imprecise estimate:** {title} "
-                    f"(CI quality: {ci_q} — interpret with caution)"
-                )
-
-        # Unreviewed findings
-        unreviewed = [f for f in findings
-                      if f.get("strength_label") in ("unreviewed", None)
-                      and not f.get("stat_review")]
-        if unreviewed:
-            titles = [_clean_finding_title(f["title"]) for f in unreviewed[:3]]
-            limitations.append(
-                f"- **Unreviewed evidence:** {len(unreviewed)} finding(s) "
-                f"not yet reviewed by Statistician ({', '.join(titles)})"
-            )
-
-        # Rejected findings
-        rejected = [f for f in findings
-                    if f.get("strength_label") == "rejected"]
-        for f in rejected:
-            title = _clean_finding_title(f["title"])
-            limitations.append(
-                f"- **Rejected by review:** {title} (failed statistical review)"
-            )
-
-        # Check for inconclusive hypotheses in belief map
-        belief_json = self._read_file(".swarm", "belief-map.json")
-        if belief_json:
-            try:
-                bm_data = json.loads(belief_json)
-                for h in bm_data.get("hypotheses", []):
-                    if h.get("status") == "inconclusive":
-                        limitations.append(
-                            f"- **Inconclusive hypothesis:** {h.get('name', '?')} "
-                            f"(insufficient evidence to confirm or refute)"
-                        )
-            except (json.JSONDecodeError, ValueError):
-                pass
-
-        return "\n".join(limitations) if limitations else None
+        return render_limitations(findings, self.ws)
 
     # ------------------------------------------------------------------
     # Cross-finding comparison
@@ -432,48 +279,7 @@ class ReportGenerator:
 
     @staticmethod
     def _render_cross_finding_comparison(findings: list[dict]) -> str | None:
-        """Rank findings by effect size and narrate relative magnitudes."""
-        scored: list[tuple[float, dict]] = []
-        for f in findings:
-            es = f.get("effect_size", "")
-            try:
-                val = abs(float(es))
-                scored.append((val, f))
-            except (ValueError, TypeError):
-                continue
-
-        if len(scored) < 2:
-            return None
-
-        scored.sort(key=lambda x: x[0], reverse=True)
-        lines = []
-        top = scored[0]
-        top_title = _clean_finding_title(top[1]["title"])
-        lines.append(f"The strongest effect observed was **{top_title}** "
-                     f"(d={top[1].get('effect_size', '?')}"
-                     f"{', ' + top[1].get('practical_significance', '') if top[1].get('practical_significance') else ''}).")
-
-        if len(scored) >= 2:
-            bot = scored[-1]
-            bot_title = _clean_finding_title(bot[1]["title"])
-            if top[0] > 0 and bot[0] > 0:
-                ratio = top[0] / bot[0]
-                lines.append(
-                    f"This is {ratio:.1f}x larger than the weakest effect, "
-                    f"**{bot_title}** (d={bot[1].get('effect_size', '?')}).")
-
-        # Note any findings with opposing valence
-        positive = [f for _, f in scored if f.get("valence", "").lower() == "positive"]
-        negative = [f for _, f in scored if f.get("valence", "").lower() == "negative"]
-        if positive and negative:
-            pos_titles = [_clean_finding_title(f["title"]) for f in positive[:2]]
-            neg_titles = [_clean_finding_title(f["title"]) for f in negative[:2]]
-            lines.append(
-                f"\nNotably, results were mixed: {', '.join(pos_titles)} showed "
-                f"positive effects while {', '.join(neg_titles)} showed negative effects."
-            )
-
-        return "\n".join(lines)
+        return render_cross_finding_comparison(findings)
 
     # ------------------------------------------------------------------
     # Negative results section
@@ -481,29 +287,7 @@ class ReportGenerator:
 
     @staticmethod
     def _render_negative_results(findings: list[dict]) -> str | None:
-        """Render a dedicated section for negative/inconclusive findings."""
-        negative = [f for f in findings
-                    if f.get("valence", "").lower() in ("negative", "inconclusive")]
-        if not negative:
-            return None
-
-        lines = ["The following hypotheses were tested and did not produce "
-                 "the expected positive result. These negative results are "
-                 "scientifically valuable as they narrow the solution space "
-                 "and prevent future wasted effort.\n"]
-        for f in negative:
-            title = _clean_finding_title(f["title"])
-            effect = f.get("effect_size", "")
-            p_val = f.get("p", "")
-            valence = f.get("valence", "")
-            stat_parts = []
-            if effect:
-                stat_parts.append(f"d={effect}")
-            if p_val:
-                stat_parts.append(f"p={p_val}")
-            stat_str = f" ({', '.join(stat_parts)})" if stat_parts else ""
-            lines.append(f"- **{title}**{stat_str} \u2014 {valence}")
-        return "\n".join(lines)
+        return render_negative_results(findings)
 
     # ------------------------------------------------------------------
     # Human-readable stat description for Telegram
@@ -511,38 +295,7 @@ class ReportGenerator:
 
     @staticmethod
     def _humanize_stats(finding: dict) -> str:
-        """Translate raw stats into a human-friendly description."""
-        parts: list[str] = []
-        p_val = finding.get("p", "")
-        effect = finding.get("effect_size", "")
-        try:
-            p_float = float(p_val)
-            if p_float < 0.001:
-                parts.append("very strong evidence")
-            elif p_float < 0.01:
-                parts.append("strong evidence")
-            elif p_float < 0.05:
-                parts.append("significant")
-            else:
-                parts.append("weak evidence")
-            parts.append(f"p={p_val}")
-        except (ValueError, TypeError):
-            pass
-        if effect:
-            try:
-                d = abs(float(effect))
-                if d >= 0.8:
-                    size = "large effect"
-                elif d >= 0.5:
-                    size = "medium effect"
-                elif d >= 0.2:
-                    size = "small effect"
-                else:
-                    size = "negligible effect"
-                parts.append(size)
-            except (ValueError, TypeError):
-                pass
-        return ", ".join(parts)
+        return humanize_stats(finding)
 
     # ------------------------------------------------------------------
     # Teaser (Telegram message)
@@ -776,41 +529,7 @@ class ReportGenerator:
         are filtered to exclude figure / chart PDFs that are not the
         main deliverable.
         """
-        canonical = self.swarm / "report.pdf"
-        if canonical.exists() and canonical.stat().st_size > 1000:
-            return canonical
-
-        _PAPER_NAMES = {"paper.pdf", "report.pdf", "manuscript.pdf"}
-
-        # Priority 1: files in targeted paper directories
-        targeted_patterns = [
-            "output/paper/*.pdf",
-            "demos/*/output/paper/*.pdf",
-            "paper/*.pdf",
-        ]
-        for pattern in targeted_patterns:
-            for pdf in self.ws.glob(pattern):
-                if pdf.stat().st_size > 1000:
-                    return pdf
-
-        # Priority 2: paper-named files in broader directories
-        broad_patterns = [
-            "output/*.pdf",
-            "demos/*/output/*.pdf",
-        ]
-        for pattern in broad_patterns:
-            for pdf in self.ws.glob(pattern):
-                if pdf.name in _PAPER_NAMES and pdf.stat().st_size > 1000:
-                    return pdf
-
-        # Priority 3: PDF sibling of the main .tex file
-        tex_main = self._find_latex_main()
-        if tex_main:
-            pdf_sibling = tex_main.with_suffix(".pdf")
-            if pdf_sibling.exists() and pdf_sibling.stat().st_size > 1000:
-                return pdf_sibling
-
-        return None
+        return find_precompiled_pdf(self.ws, self.swarm)
 
     # ------------------------------------------------------------------
     # LaTeX detection & compilation
@@ -818,84 +537,16 @@ class ReportGenerator:
 
     def _find_latex_main(self) -> Path | None:
         """Find the main LaTeX file in the workspace."""
-        candidates = [
-            self.ws / "paper.tex",
-            self.ws / "main.tex",
-            self.ws / "manuscript.tex",
-        ]
-        for d in self.ws.glob("demos/*/"):
-            candidates.append(d / "paper.tex")
-            candidates.append(d / "main.tex")
-        for tex in self.ws.glob("*.tex"):
-            if tex not in candidates:
-                candidates.append(tex)
-        for tex in self.ws.glob("*/*.tex"):
-            if tex not in candidates:
-                candidates.append(tex)
-
-        for c in candidates:
-            if c.exists():
-                try:
-                    content = c.read_text()
-                    if r"\documentclass" in content or r"\begin{document}" in content:
-                        return c
-                except OSError:
-                    continue
-        return None
+        return find_latex_main(self.ws)
 
     def _compile_latex(self, tex_path: Path) -> Path | None:
         """Compile a LaTeX file to PDF using latexmk, pdflatex, tectonic, or pandoc."""
-        tex_dir = tex_path.parent
-        stem = tex_path.stem
-        pdf_out = tex_dir / f"{stem}.pdf"
-
-        for compiler in [
-            ["latexmk", "-pdf", "-interaction=nonstopmode", str(tex_path)],
-            ["pdflatex", "-interaction=nonstopmode", str(tex_path)],
-            ["tectonic", str(tex_path)],
-        ]:
-            if not _which(compiler[0]):
-                continue
-            try:
-                passes = 2 if compiler[0] == "pdflatex" else 1
-                for _ in range(passes):
-                    subprocess.run(
-                        compiler, capture_output=True, timeout=120,
-                        cwd=str(tex_dir),
-                    )
-                if pdf_out.exists():
-                    return pdf_out
-            except (subprocess.TimeoutExpired, OSError):
-                continue
-
-        pandoc_cmd = self._find_pandoc()
-        if pandoc_cmd:
-            for engine in ["tectonic", "pdflatex", "xelatex"]:
-                if not _which(engine):
-                    continue
-                try:
-                    subprocess.run(
-                        [pandoc_cmd, str(tex_path), "-o", str(pdf_out),
-                         f"--pdf-engine={engine}"],
-                        capture_output=True, timeout=120, cwd=str(tex_dir),
-                    )
-                    if pdf_out.exists():
-                        return pdf_out
-                except (subprocess.TimeoutExpired, OSError):
-                    continue
-
-        return None
+        return compile_latex(tex_path)
 
     @staticmethod
     def _find_pandoc() -> str | None:
         """Find pandoc \u2014 system binary or pypandoc_binary."""
-        if _which("pandoc"):
-            return "pandoc"
-        try:
-            import pypandoc  # type: ignore[import-untyped]
-            return pypandoc.get_pandoc_path()
-        except (ImportError, OSError):
-            return None
+        return find_pandoc()
 
     # ------------------------------------------------------------------
     # LaTeX \u2192 Markdown (best-effort for fpdf2 fallback)
@@ -907,76 +558,7 @@ class ReportGenerator:
         Last-resort converter for when no LaTeX compiler or pandoc is
         available.
         """
-        tex_dir = tex_main.parent
-        ws_root = self.ws.resolve()
-
-        def _read_tex(path: Path) -> str:
-            try:
-                return path.read_text()
-            except OSError:
-                return ""
-
-        def _resolve_inputs(content: str, base: Path) -> str:
-            r"""Inline \input{file} and \include{file} \u2014 with path-traversal guard."""
-            def _replace(m: re.Match) -> str:
-                name = m.group(1)
-                if not name.endswith(".tex"):
-                    name += ".tex"
-                child = (base / name).resolve()
-                # Block escape from workspace
-                try:
-                    child.relative_to(ws_root)
-                except ValueError:
-                    return ""
-                if child.exists():
-                    return _read_tex(child)
-                return ""
-            content = re.sub(r"\\input\{([^}]+)\}", _replace, content)
-            content = re.sub(r"\\include\{([^}]+)\}", _replace, content)
-            return content
-
-        raw = _read_tex(tex_main)
-        if not raw:
-            return None
-
-        raw = _resolve_inputs(raw, tex_dir)
-
-        # Strip preamble
-        match = re.search(r"\\begin\{document\}", raw)
-        if match:
-            raw = raw[match.end():]
-        match = re.search(r"\\end\{document\}", raw)
-        if match:
-            raw = raw[:match.start()]
-
-        lines: list[str] = []
-        for line in raw.split("\n"):
-            s = line.strip()
-            if s.startswith("%"):
-                continue
-            s = re.sub(r"\\section\*?\{([^}]+)\}", r"# \1", s)
-            s = re.sub(r"\\subsection\*?\{([^}]+)\}", r"## \1", s)
-            s = re.sub(r"\\subsubsection\*?\{([^}]+)\}", r"### \1", s)
-            s = re.sub(r"\\textbf\{([^}]+)\}", r"**\1**", s)
-            s = re.sub(r"\\textit\{([^}]+)\}", r"*\1*", s)
-            s = re.sub(r"\\emph\{([^}]+)\}", r"*\1*", s)
-            s = re.sub(r"\\cite\{([^}]+)\}", r"[\1]", s)
-            s = re.sub(r"\\ref\{([^}]+)\}", r"[\1]", s)
-            s = re.sub(r"\\label\{[^}]+\}", "", s)
-            s = re.sub(r"\\maketitle", "", s)
-            s = re.sub(r"\\begin\{(abstract|itemize|enumerate|table|figure|center)\}", "", s)
-            s = re.sub(r"\\end\{(abstract|itemize|enumerate|table|figure|center)\}", "", s)
-            s = re.sub(r"\\item\s*", "- ", s)
-            s = re.sub(r"\\caption\{([^}]+)\}", r"*\1*", s)
-            s = re.sub(r"\$([^$]+)\$", r"\1", s)
-            s = re.sub(r"\\[a-zA-Z]+\{[^}]*\}", "", s)
-            s = re.sub(r"\\[a-zA-Z]+", "", s)
-            s = s.replace("{", "").replace("}", "")
-            s = s.strip()
-            lines.append(s if s else "")
-
-        content = "\n".join(lines).strip()
-        return content if len(content) > 200 else None
+        return latex_to_markdown(tex_main, self.ws)
 
     # ------------------------------------------------------------------
     # PDF \u2014 strategy chain
@@ -1014,77 +596,11 @@ class ReportGenerator:
 
     def _try_pandoc_pdf(self, md: str, pdf_path: Path) -> Path | None:
         """Strategy 3: markdown \u2192 PDF via pandoc."""
-        pandoc_cmd = self._find_pandoc()
-        if not pandoc_cmd or not md:
-            return None
-        md_tmp = self.swarm / "_tmp_report.md"
-        try:
-            md_tmp.parent.mkdir(parents=True, exist_ok=True)
-            md_tmp.write_text(md)
-            for engine in ["tectonic", "pdflatex", "xelatex"]:
-                if not _which(engine):
-                    continue
-                try:
-                    subprocess.run(
-                        [pandoc_cmd, str(md_tmp), "-o", str(pdf_path),
-                         f"--pdf-engine={engine}",
-                         "-V", "geometry:margin=1in"],
-                        capture_output=True, timeout=120,
-                        cwd=str(self.ws),
-                    )
-                    if pdf_path.exists():
-                        return pdf_path
-                except (subprocess.TimeoutExpired, OSError):
-                    continue
-        finally:
-            md_tmp.unlink(missing_ok=True)
-        return None
+        return try_pandoc_pdf(md, pdf_path, self.ws, self.swarm)
 
     def _try_fpdf2(self, md: str, pdf_path: Path) -> Path | None:
         """Strategy 4: markdown \u2192 PDF via fpdf2 (basic typesetting)."""
-        try:
-            from fpdf import FPDF  # type: ignore[import-untyped]
-        except ImportError:
-            return None
-
-        pdf = FPDF()
-        pdf.set_auto_page_break(auto=True, margin=15)
-        pdf.add_page()
-
-        for line in md.split("\n"):
-            stripped = line.strip()
-            if stripped.startswith("# "):
-                pdf.set_font("Helvetica", "B", 18)
-                pdf.cell(0, 12, _latin1_safe(stripped.lstrip("# ")), new_x="LMARGIN", new_y="NEXT")
-            elif stripped.startswith("## "):
-                pdf.set_font("Helvetica", "B", 14)
-                pdf.cell(0, 10, _latin1_safe(stripped.lstrip("# ")), new_x="LMARGIN", new_y="NEXT")
-            elif stripped.startswith("|"):
-                pdf.set_font("Courier", "", 7)
-                safe = _latin1_safe(stripped)[:120]
-                pdf.cell(0, 5, safe, new_x="LMARGIN", new_y="NEXT")
-            elif stripped.startswith("- ") or stripped.startswith("* "):
-                pdf.set_font("Helvetica", "", 10)
-                safe = _latin1_safe(f"  * {stripped.lstrip('-* ')}")
-                try:
-                    pdf.multi_cell(0, 6, safe)
-                except Exception:
-                    pdf.cell(0, 6, safe[:90], new_x="LMARGIN", new_y="NEXT")
-            elif stripped:
-                pdf.set_font("Helvetica", "", 10)
-                try:
-                    pdf.multi_cell(0, 6, _latin1_safe(stripped))
-                except Exception:
-                    pdf.cell(0, 6, _latin1_safe(stripped)[:90], new_x="LMARGIN", new_y="NEXT")
-            else:
-                pdf.ln(4)
-
-        try:
-            pdf_path.parent.mkdir(parents=True, exist_ok=True)
-            pdf.output(str(pdf_path))
-            return pdf_path
-        except Exception:
-            return None
+        return try_fpdf2(md, pdf_path)
 
     def _fallback_md_file(self, md: str, filename: str) -> Path | None:
         """Write markdown file as fallback when PDF generation fails."""

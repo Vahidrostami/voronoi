@@ -1,8 +1,8 @@
 # Agent Roles Specification
 
-> 12 agent roles, activation rules, verify loops, role interactions.
+> 12 core roles + 2 auxiliary gate/audit roles + 4 paper-track roles + Red Team, activation rules, verify loops, role interactions.
 
-**TL;DR**: 12 roles: Orchestrator (always), Builder+Critic (Standard+), Scout+Investigator+Explorer+Statistician+Synthesizer+Evaluator (Analytical+), Theorist+Methodologist (Scientific+), Scribe (LaTeX compilation). Each worker has a verify loop (test→retry→escalate). Roles defined in `src/voronoi/data/agents/*.agent.md`, never in Python.
+**TL;DR**: 12 core roles: Orchestrator (always), Builder+Critic (Standard+), Scout+Investigator+Explorer+Statistician+Synthesizer+Evaluator (Analytical+), Theorist+Methodologist (Scientific+), Scribe (LaTeX compilation). Plus **2 auxiliary gate/audit roles** (Question Framer for DISCOVER question framing; Assumption Auditor for PROVE assumption transparency), **4 paper-track roles** (Outliner, Lit-Synthesizer, Figure-Critic, Refiner) activated only when producing a submission-ready manuscript via `/voronoi paper <codename>`, and **Red Team** (cold-context adversarial reviewer invoked before Scientific+ convergence — INV-47). Each worker has a verify loop (test→retry→escalate). Roles defined in `src/voronoi/data/agents/*.agent.md`, never in Python.
 
 ## 1. Role Registry
 
@@ -16,10 +16,17 @@
 | 6 | Statistician | `statistician.agent.md` | Analytical+ | CI, effect sizes, data integrity, p-hacking flags, direction verification |
 | 7 | Critic | `critic.agent.md` | Standard+ | Adversarial review; partially blinded at Scientific+ |
 | 8 | Synthesizer | `synthesizer.agent.md` | Analytical+ | Consistency checks, claim-evidence registry, deliverable |
-| 9 | Evaluator | `evaluator.agent.md` | Analytical+ | Scores deliverable: CCSAN formula (includes Non-triviality) |
+| 9 | Evaluator | `evaluator.agent.md` | Analytical+ | Scores deliverable: CCSAN formula (+ MS_QUALITY rubric on paper-track) |
 | 10 | Theorist | `theorist.agent.md` | Scientific+ | Causal models, competing theories, paradigm stress, triviality screening, explanation audit |
 | 11 | Methodologist | `methodologist.agent.md` | Scientific+ | Experimental design review, power analysis |
-| 12 | Scribe | `scribe.agent.md` | Analytical+ | LaTeX paper compilation |
+| 12 | Scribe | `scribe.agent.md` | Analytical+ | LaTeX paper compilation; enforces citation-coverage gate on paper-track |
+| 13 | Question Framer | `question-framer.agent.md` | DISCOVER pre-Scout | Hidden-assumption scan, sibling/parent questions, confirmation before investigation starts |
+| 14 | Assumption Auditor | `assumption-auditor.agent.md` | PROVE post-Scout | Read-only hidden-assumption audit for Critic/Synthesizer transparency; never blocks or reframes |
+| 15 | Outliner | `outliner.agent.md` | Paper-track | Produces `.swarm/manuscript/outline.json` (sections, figures, citation slots) |
+| 16 | Lit-Synthesizer | `lit-synthesizer.agent.md` | Paper-track | Fills every citation slot with a Semantic Scholar-verified entry (Levenshtein ≥0.70) |
+| 17 | Figure-Critic | `figure-critic.agent.md` | Paper-track | Text-only rubric over plotting script + `.meta.json` sidecar — no VLM needed |
+| 18 | Refiner | `refiner.agent.md` | Paper-track + Scientific+ | Simulated peer review with safety halt rules; max 3 rounds |
+| 19 | Red Team | `red-team.agent.md` | Scientific+ (pre-convergence) | Cold-context adversarial review; reads only deliverable + claim ledger + artifacts; writes `.swarm/red-team-verdict.json` (INV-47) |
 
 ## 2. Activation Rules
 
@@ -28,9 +35,21 @@ Standard      → Builder, Critic, Worker
 Analytical    → + Scout, Investigator, Explorer, Statistician, Synthesizer, Evaluator
 Scientific    → + Theorist, Methodologist
 Experimental  → (all roles active + replication)
+
+Auxiliary gates/audits
+DISCOVER      → Question Framer before Scout (confirmation/reframe gate)
+PROVE         → Assumption Auditor after Scout (read-only transparency audit)
+
+Paper-track (orthogonal — activated by `/voronoi paper <codename>`)
+              → + Outliner, Lit-Synthesizer, Figure-Critic  (always)
+              → + Refiner                                   (Scientific+ only)
 ```
 
 The orchestrator selects roles based on the classified rigor level. Roles CANNOT be added after investigation start — only skipped.
+
+Question Framer and Assumption Auditor are auxiliary gate/audit roles, not substitutes for the core science roles. Question Framer is never invoked in PROVE because PROVE question immutability is part of the pre-registration contract (INV-54). Assumption Auditor is never invoked in DISCOVER because DISCOVER can still reframe before investigation; in PROVE it records hidden assumptions for later review without blocking or revising the question.
+
+**Paper-track is orthogonal to rigor.** It is activated when the enqueued investigation's question begins with `[PAPER-TRACK]` (produced by `handle_paper()` in `handlers_workflow.py`). Paper-track presupposes a completed parent investigation whose Claim Ledger contains at least one `locked` or `replicated` headline claim; otherwise `/voronoi paper <codename>` returns a Reviewer Defense Brief and does not enqueue manuscript production. The completed investigation's `.swarm/deliverable.md` + `.swarm/claim-evidence.json` remain inputs, but provisional/asserted claims are exploratory or limitations only, while challenged/retired claims are excluded from headline results. The Refiner only joins at Scientific+ because its simulated peer-review loop requires the full science-gate audit trail to enforce its halt rules safely.
 
 ## 3. Role Details
 
@@ -77,17 +96,19 @@ The orchestrator selects roles based on the classified rigor level. Roles CANNOT
 **Analytical+ activation.** Researches existing knowledge, SOTA, and research landscape positioning before investigation begins.
 
 **Problem Positioning (Phase 0 — MANDATORY):**
-Before any other research, the Scout:
+Before hypothesis generation or other agents begin investigation work, the Scout:
 1. Extracts the FIELD and sub-problem from the prompt
-2. Runs `/research` queries to find the frontier, closest prior work, and specific gap
-3. Performs deep methodology comparison with the closest published paper
-4. Assesses novelty: NOVEL (proceed) / INCREMENTAL (proceed with framing) / REDUNDANT (halt)
-5. If REDUNDANT: writes `.swarm/novelty-gate.json` and flags `NOVELTY_BLOCKED`
+2. Performs Cross-Investigation Recall against prior Voronoi findings
+3. Runs `/research` queries to find the frontier, closest prior work, and specific gap
+4. Performs deep methodology comparison with the closest published paper, using both prior Voronoi recall and external literature
+5. Assesses novelty: NOVEL (proceed) / INCREMENTAL (proceed with framing) / REDUNDANT (halt)
+6. Always writes `.swarm/novelty-gate.json` with `status` and `assessment`; if REDUNDANT, also flags `NOVELTY_BLOCKED`
 
-**Cross-Investigation Recall:** Before external search, queries prior Voronoi investigation findings to avoid re-testing confirmed claims.
+**Cross-Investigation Recall:** Before external `/research`, queries prior Voronoi investigation findings to avoid re-testing confirmed claims.
 
 **Outputs**:
 - Knowledge brief with Problem Positioning section (field context, gap, closest work comparison)
+- `.swarm/novelty-gate.json` with `status: clear|blocked` and `assessment: novel|incremental|redundant`
 - SOTA anchoring (what's the current best?)
 - Identification of gaps in existing knowledge
 - Novelty assessment grounded in live `/research` results
@@ -95,7 +116,8 @@ Before any other research, the Scout:
 **Deep Research**: The scout uses the `deep-research` skill for literature review, prior-art search, and problem positioning queries. This skill leverages Copilot CLI's `/research` command to search GitHub repos + live web sources, providing citation-backed evidence instead of relying on LLM training data. See `.github/skills/deep-research/SKILL.md`.
 
 **Verify Loop**:
-- Knowledge brief written + Problem Positioning section complete + sources cited + novelty assessed
+- Knowledge brief written + `.swarm/novelty-gate.json` written + Problem Positioning section complete + sources cited + novelty assessed
+- `novelty-gate.json` must contain valid `status` (`clear` or `blocked`) and valid `assessment` (`novel`, `incremental`, or `redundant`) before the Scout may report `SCOUT_COMPLETE`
 - Max iterations: **3**
 - Completion promise: `SCOUT_COMPLETE`
 
@@ -258,6 +280,79 @@ Ranked by information gain. Shown to PI during `/voronoi review` and `/voronoi d
 
 ---
 
+### 3.14 Outliner (Paper-track)
+
+**File**: `src/voronoi/data/agents/outliner.agent.md`
+
+**Paper-track activation.** First agent in the manuscript pipeline. Runs ONCE after the investigation converges and the user runs `/voronoi paper <codename>`.
+
+**Responsibilities**:
+- Decompose the original question + synthesizer's deliverable into a target abstract
+- Assign section structure (Abstract / Intro / Related Work / Methods / Results / Discussion / Conclusion)
+- Plan figures and tables from ROBUST findings in `.swarm/claim-evidence.json`
+- Declare citation slots (`claim`, `kind`, `needs_n`) — the contract Lit-Synthesizer must fill
+
+**Output**: `.swarm/manuscript/outline.json`
+
+**Verify Loop**:
+- `outline.json` validates as JSON; every `supports_claim` references a real claim-evidence entry
+- Max iterations: **2**
+- Completion promise: `OUTLINE_COMPLETE`
+
+### 3.15 Lit-Synthesizer (Paper-track)
+
+**File**: `src/voronoi/data/agents/lit-synthesizer.agent.md`
+
+**Paper-track activation.** Distinct from the Scout: Scout grounds the *investigation*; Lit-Synthesizer grounds the *manuscript*. Runs after the Outliner, parallel with Figure-Critic.
+
+**Responsibilities**:
+- For every `citation_slot` in `outline.json`, generate queries and run Copilot CLI `/research`
+- Verify each candidate via `literature.py` Semantic Scholar (free, unauthenticated) gated by `citation_coverage.fuzzy_match_title()` (Levenshtein ≥0.70)
+- Write `.swarm/manuscript/citation-ledger.json` + `references.bib`
+- Never fabricate: slots without verifiable candidates stay `"status": "unfilled"`
+
+**Verify Loop**:
+- ≥90% of citation slots filled with `verified: true` entries
+- Every `bibtex_key` in the ledger appears in `references.bib`
+- Max iterations: **3**
+- Completion promise: `LIT_SYNTHESIS_COMPLETE`
+
+### 3.16 Figure-Critic (Paper-track)
+
+**File**: `src/voronoi/data/agents/figure-critic.agent.md`
+
+**Paper-track activation.** Text-only figure quality rubric (no VLM needed — works with Copilot CLI alone). Reads the plotting script + mandatory `<fig>.meta.json` sidecar emitted by the producing agent.
+
+**Rubric** (8 checks, per-figure): axes labeled, units present, caption self-contained, baseline shown, uncertainty shown, scale defensible, effect-size/N annotated, colour-blind-safe palette.
+
+**Output**: `.swarm/manuscript/figure-ledger.json` with per-figure verdict ∈ {`accept`, `revise`, `reject`} and `required_fixes` list.
+
+**Verify Loop**:
+- Every figure in `outline.json` has a ledger entry
+- Max iterations: **2**
+- Completion promise: `FIGURE_CRITIC_COMPLETE`
+
+### 3.17 Refiner (Paper-track + Scientific+)
+
+**File**: `src/voronoi/data/agents/refiner.agent.md`
+
+**Paper-track activation, Scientific+ only.** Runs LAST, after Scribe emits `paper.tex` and citation-coverage passes.
+
+**Responsibilities**:
+- Simulate an adversarial peer review
+- For each proposed fix, screen against 5 safety halt rules (citation integrity, number integrity, claim consistency, evaluator-gaming, scope creep) before applying
+- Re-run citation-coverage gate after each round; revert the round if coverage regresses
+- Max **3 rounds total**
+
+**Output**: `.swarm/manuscript/review-rounds/${N}.json` per round
+
+**Verify Loop**:
+- Paper still compiles, coverage audit still passes, every claim-evidence claim still appears
+- Max iterations: **2 per round**
+- Completion promise: `REFINEMENT_COMPLETE`
+
+---
+
 ## 4. Verify Loop Protocol
 
 Every worker agent runs an internal verify loop before declaring success or failure to the orchestrator.
@@ -299,7 +394,7 @@ Each iteration appends to `.swarm/verify-log-<task-id>.jsonl`:
 |------|-------------|---------|----------|
 | Builder | Tests + lint + PRODUCES | `BUILD_COMPLETE` | 5 |
 | Investigator | Experiment + metric + EVA + data | `EXPERIMENT_COMPLETE` | 3/variant |
-| Scout | Brief written + sources cited | `SCOUT_COMPLETE` | 3 |
+| Scout | Brief + novelty gate written, sources cited | `SCOUT_COMPLETE` | 3 |
 | Critic | 5-check list evaluated | `REVIEW_COMPLETE` | 2 |
 | Synthesizer | Registry complete + no orphans | `SYNTHESIS_COMPLETE` | 3 |
 
@@ -348,3 +443,41 @@ When the orchestrator dispatches a worker, the prompt includes:
 6. Baseline finding value (if available)
 
 The prompt builder (`prompt.py`) tells the orchestrator to prepend role file content to every worker prompt.
+
+---
+
+## 7. Runtime Customization Compatibility
+
+Runtime agents and skills are copied verbatim into investigation workspaces under `.github/`. They must therefore remain valid GitHub Copilot customizations, while still being usable by Copilot CLI sessions launched inside those workspaces.
+
+### Agent Frontmatter
+
+Every `src/voronoi/data/agents/*.agent.md` file MUST start with YAML frontmatter containing:
+
+- `name` — lowercase hyphenated role name matching the filename stem before `.agent.md`
+- `description` — specific delegation/discovery text for the role
+- `tools` — the minimal Copilot tool aliases needed by the role
+- `disable-model-invocation` — explicit invocation policy
+- `user-invocable` — explicit visibility policy
+
+Use `user-invocable`, not `user-invokable`. The latter is not a Copilot customization key and makes role visibility ambiguous across runtimes.
+
+### Skill Entrypoints
+
+Every immediate child directory under `src/voronoi/data/skills/` MUST contain a `SKILL.md` entrypoint with YAML frontmatter containing:
+
+- `name` — lowercase hyphenated skill name matching the directory name
+- `description` — trigger-rich text explaining when to load the skill
+- `user-invocable` — whether the skill appears as a slash command
+- `disable-model-invocation` — whether the model may auto-load the skill
+
+Supporting scripts, templates, references, and assets must be reachable from `SKILL.md` by relative links so Copilot can progressively load them.
+
+### Drift Prevention
+
+Runtime customization files must not use stale workflow taxonomies that conflict with the queue contract. Public runtime language is:
+
+- Modes: `DISCOVER`, `PROVE`
+- Rigor: `adaptive`, `scientific`, `experimental`
+
+Older `Build/Investigate/Explore/Hybrid` mode language is not valid for runtime role or skill discovery text.

@@ -216,26 +216,22 @@ class KnowledgeStore:
         belief_file = Path(self.project_dir) / ".swarm" / "belief-map.md"
         if belief_file.exists():
             return belief_file.read_text().strip()
-        # Also check JSON variant
-        belief_json = Path(self.project_dir) / ".swarm" / "belief-map.json"
-        if belief_json.exists():
-            try:
-                data = json.loads(belief_json.read_text())
-                lines = ["*Belief Map*\n"]
-                for h in data.get("hypotheses", []):
-                    name = h.get("name") or h.get("id") or "?"
-                    confidence = h.get("confidence", "")
-                    status = h.get("status", "untested")
-                    label = confidence.upper() if confidence else f"P={h.get('prior', '?')}"
-                    entry = f"• {name}: {label} [{status}]"
-                    rationale = h.get("rationale", "")
-                    if rationale:
-                        entry += f"\n  {rationale}"
-                    lines.append(entry)
-                return "\n".join(lines)
-            except (json.JSONDecodeError, ValueError):
-                return belief_json.read_text().strip()
-        return None
+        # Use the canonical loader which handles schema migration
+        try:
+            from voronoi.science.convergence import load_belief_map
+            bm = load_belief_map(Path(self.project_dir))
+            if not bm.hypotheses:
+                return None
+            lines = ["*Belief Map*\n"]
+            for h in bm.hypotheses:
+                label = h.confidence.upper() if h.confidence else f"P={h.prior}"
+                entry = f"• {h.display_name}: {label} [{h.status}]"
+                if h.rationale:
+                    entry += f"\n  {h.rationale}"
+                lines.append(entry)
+            return "\n".join(lines)
+        except Exception:
+            return None
 
     def get_strategic_context(self) -> Optional[str]:
         """Read the strategic context document."""
@@ -265,14 +261,15 @@ class KnowledgeStore:
 
 
 def _default_knowledge_db() -> Path:
-    return Path.home() / ".voronoi" / "knowledge.db"
+    from voronoi.gateway.config import get_gateway_base_dir
+    return get_gateway_base_dir() / "knowledge.db"
 
 
 class FederatedKnowledge:
     """Persistent FTS5 index across all investigations.
 
     Stores findings from every completed investigation in a single
-    SQLite database at ``~/.voronoi/knowledge.db``, enabling cross-
+    SQLite database at ``<base-dir>/knowledge.db``, enabling cross-
     investigation search.
     """
 
@@ -464,3 +461,76 @@ class FederatedKnowledge:
             lines.append("")
 
         return "\n".join(lines)
+
+    def search_dead_ends(self, query: str = "", max_results: int = 10) -> list[Finding]:
+        """Return negative-valence findings across all investigations.
+
+        Used by the dead-ends query to surface refuted hypotheses and
+        approaches that did not work.  An empty ``query`` returns the most
+        recent negatives overall; a non-empty query filters by BM25/LIKE on
+        title+notes exactly as ``search``.
+        """
+        if not self.db_path.exists():
+            return []
+
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            query = query.strip()
+            if query:
+                words = [w.replace('"', '') for w in query.split() if w.replace('"', '')]
+                escaped = " ".join(f'"{w}"' for w in words)
+                if not escaped:
+                    return []
+                if self._fts_enabled:
+                    try:
+                        cursor = conn.execute(
+                            "SELECT f.id, f.title, f.notes, f.investigation, f.codename,"
+                            "       f.effect_size, f.valence, f.confidence, f.robust"
+                            "  FROM findings_fts"
+                            "  JOIN findings f ON findings_fts.rowid = f.rowid"
+                            "  WHERE findings_fts MATCH ? AND f.valence = 'negative'"
+                            "  ORDER BY bm25(findings_fts)"
+                            "  LIMIT ?",
+                            (escaped, max_results),
+                        )
+                    except sqlite3.OperationalError:
+                        return []
+                else:
+                    like_query = f"%{' '.join(words).lower()}%"
+                    cursor = conn.execute(
+                        "SELECT id, title, notes, investigation, codename,"
+                        "       effect_size, valence, confidence, robust"
+                        "  FROM findings"
+                        "  WHERE valence = 'negative' AND lower(title || ' ' || notes) LIKE ?"
+                        "  ORDER BY synced_at DESC"
+                        "  LIMIT ?",
+                        (like_query, max_results),
+                    )
+            else:
+                cursor = conn.execute(
+                    "SELECT id, title, notes, investigation, codename,"
+                    "       effect_size, valence, confidence, robust"
+                    "  FROM findings"
+                    "  WHERE valence = 'negative'"
+                    "  ORDER BY synced_at DESC"
+                    "  LIMIT ?",
+                    (max_results,),
+                )
+
+            results: list[Finding] = []
+            for row in cursor:
+                f = Finding(
+                    id=f"{row[4]}:{row[0]}" if row[4] else row[0],
+                    title=row[1],
+                    status="closed",
+                    priority=1,
+                    notes=row[2].split("\n") if row[2] else [],
+                    effect_size=row[5] or None,
+                    valence=row[6] or None,
+                    confidence=row[7] or None,
+                    robust=row[8] or None,
+                )
+                results.append(f)
+            return results
+        finally:
+            conn.close()

@@ -30,7 +30,7 @@ def build_orchestrator_prompt(
     codename: str = "",
     prompt_path: str = "PROMPT.md",
     output_dir: str = "",
-    max_agents: int = 4,
+    max_agents: int = 6,
     safe: bool = False,
     prior_context: dict | None = None,
 ) -> str:
@@ -75,6 +75,58 @@ def build_orchestrator_prompt(
     label = codename or "Voronoi"
 
     sections: list[str] = []
+
+    # -- Stall directive (highest priority — inject before anything else) --
+    # When the dispatcher escalates a learning stall, it writes
+    # .swarm/stall-signal.json. Surface the instruction at the very top so
+    # the orchestrator sees it before the rest of the prompt.
+    # Each strike (1-3) also carries a `diagnosis` block — a belief snapshot
+    # the orchestrator uses to self-steer on the next OODA cycle.
+    # See docs/SERVER.md §3 (Stall Escalation).
+    if workspace_path:
+        signal_path = Path(workspace_path) / ".swarm" / "stall-signal.json"
+        if signal_path.exists():
+            try:
+                import json as _json
+                signal = _json.loads(signal_path.read_text())
+                instruction = signal.get("instruction", "").strip()
+                level = signal.get("level")
+                directive = signal.get("directive", "")
+                diagnosis = signal.get("diagnosis") or {}
+                if instruction:
+                    block = (
+                        f"## ⚠ STALL DIRECTIVE — LEVEL {level} "
+                        f"({directive})\n\n"
+                        f"{instruction}\n\n"
+                    )
+                    if isinstance(diagnosis, dict) and diagnosis:
+                        block += "**Belief snapshot (from your last checkpoint):**\n"
+                        # Render a compact, stable-ordered view.
+                        _order = [
+                            "elapsed_minutes", "phase", "lifecycle_phase",
+                            "tasks_in_progress", "tasks_open",
+                            "active_workers", "next_actions",
+                        ]
+                        for key in _order:
+                            if key not in diagnosis:
+                                continue
+                            val = diagnosis[key]
+                            if isinstance(val, list):
+                                if not val:
+                                    continue
+                                block += f"- {key}:\n"
+                                for item in val:
+                                    block += f"  - {item}\n"
+                            else:
+                                block += f"- {key}: {val}\n"
+                        block += "\n"
+                    block += (
+                        "This directive overrides default OODA behaviour. "
+                        "Obey it on this cycle.\n\n"
+                    )
+                    sections.append(block)
+            except (OSError, ValueError):
+                pass
 
     # -- Identity & Lifecycle (top-level — read first) --------------------
     sections.append(
@@ -124,7 +176,38 @@ def build_orchestrator_prompt(
     sections.append(
         f"**Mode:** {mode}\n"
         f"**Rigor:** {rigor}\n"
-        f"**Max concurrent agents:** {max_agents}\n"
+        f"**Max parallel hypothesis-tranches:** {max_agents}\n"
+    )
+    sections.append(
+        "\n### Hypothesis-Tranche Parallelism — Evidence-Gated Scaling\n\n"
+        "Think in **tranches**, not in workers. A *tranche* is one hypothesis arm "
+        "(a lead hypothesis + its controls + its sensitivity variants) dispatched "
+        "as a coherent unit. A tranche may internally fan out to several worker "
+        "agents (e.g. one runner per variant), but scientifically it counts as "
+        "ONE arm of comparison.\n\n"
+        "**Evidence-gated scaling:** You operate in **epochs**. Each epoch earns "
+        "the right to scale by producing evidence.\n\n"
+        "- **Epoch 1** (start): Max 2 tranches. Prove the approach works.\n"
+        "- **Epoch 2** (after evidence): Max 4 tranches. Evidence supports scaling.\n"
+        "- **Epoch 3+** (validated): Full budget.\n\n"
+        "The dispatcher tracks epoch state in `.swarm/epoch-state.json` and "
+        "auto-advances when findings move the belief map. Read it each OODA cycle.\n\n"
+        "**CRITICAL:** Do NOT dispatch more tranches than `max_tranches` in "
+        "`epoch-state.json`. If the file says `max_tranches: 2`, you may NOT "
+        "run 6 hypotheses in parallel — even if you have ideas for all 6. "
+        "Pick the 2 highest information-gain hypotheses.\n\n"
+        "**Minimum viable experiment (epoch 1):** Your FIRST dispatch in a new "
+        "investigation MUST be a single concrete experiment that:\n"
+        "- Can complete in <30 minutes\n"
+        "- Produces ONE measurable outcome\n"
+        "- Tests the core assumption of the investigation\n\n"
+        "This is your pilot study. If it doesn't produce a result, diagnose why "
+        "before dispatching anything else. Do NOT scale to multiple tranches "
+        "until the MVE succeeds.\n\n"
+        f"**Hard cap:** {max_agents} tranches maximum (all epochs). "
+        "Prefer running hypotheses simultaneously on the same held-out data "
+        "and same seeds. When a tranche finishes, use its slot for a new "
+        "tranche rather than for a new variant of an already-finished arm.\n"
     )
     sections.append(f"\n**Project brief:** Read `{prompt_path}` completely — every line matters.\n")
     if output_dir:
@@ -168,6 +251,8 @@ def build_orchestrator_prompt(
                 sections.append(
                     "- If `.swarm/scout-brief.md` already exists, do NOT re-dispatch "
                     "the Scout — read the existing brief\n"
+                    "- If `.swarm/novelty-gate.json` is missing, treat Scout setup "
+                    "as BLOCKED and dispatch Scout follow-up before other work\n"
                     "- If `.swarm/belief-map.json` already exists, do NOT re-dispatch "
                     "Theorist — build on the existing belief map\n"
                     "- Only re-dispatch Methodologist if PI feedback requires design changes\n"
@@ -177,31 +262,45 @@ def build_orchestrator_prompt(
                 )
             else:
                 sections.append(
-                    "- Dispatch Scout first → wait for `.swarm/scout-brief.md`\n"
+                    "- Dispatch Scout first → wait for `.swarm/scout-brief.md` "
+                    "AND `.swarm/novelty-gate.json`\n"
                     "- Dispatch Theorist + Methodologist before investigators\n"
                     "- Every investigation task MUST have pre-registration\n"
                     "- Scientific rigor: Methodologist review is advisory; "
                     "Experimental rigor: approval required before dispatch\n"
                 )
-            # Human gate instructions for high-rigor investigations
+            # Human gate instructions for high-rigor investigations.
+            # The orchestrator MUST NOT poll — it writes the gate, writes a
+            # park checkpoint, and EXITS.  The dispatcher detects the gate
+            # via check_human_gates(), kills the session if still alive,
+            # and resumes the orchestrator after /approve or /revise.
             sections.append(
-                "\n**Human Review Gates (Scientific+ rigor):**\n"
+                "\n**Human Review Gates (Scientific+ rigor) — PARK, DO NOT POLL:**\n"
                 "At two key decision points, pause for human approval by writing "
-                "`.swarm/human-gate.json`:\n\n"
+                "`.swarm/human-gate.json`, then park and EXIT. The dispatcher wakes "
+                "you after the human approves or requests revision.\n\n"
+                "**Protocol (both gates):**\n"
+                "1. Write `.swarm/human-gate.json` with `status: \"pending\"`.\n"
+                "2. Write `.swarm/orchestrator-checkpoint.json` with "
+                "`active_workers: []`, `phase: \"awaiting-human-gate\"`, and a "
+                "`next_actions` list describing what to do once approved.\n"
+                "3. EXIT cleanly. Do NOT sleep, poll, `cat`, or re-read the gate "
+                "file. Your process must terminate — otherwise the dispatcher "
+                "cannot route the approval back to a fresh session.\n"
+                "4. On wake, read the gate file: if `status == \"approved\"` proceed; "
+                "if `status == \"revision_requested\"` read `feedback` and adjust.\n\n"
                 "**Gate 1: After pre-registration** (before running experiments):\n"
                 "```json\n"
                 '{\"gate\": \"pre-registration\", \"status\": \"pending\",\n'
                 ' \"summary\": \"Hypothesis: [X]. Method: [Y]. N=[Z]. Ready to run experiments.\"}\n'
-                "```\n"
-                "Then poll `.swarm/human-gate.json` every 30s until `status` changes to "
-                "`approved` or `revision_requested`.  If revision is requested, read `feedback` "
-                "field and adjust the pre-registration accordingly.\n\n"
+                "```\n\n"
                 "**Gate 2: Before convergence** (before finalizing deliverable):\n"
                 "```json\n"
                 '{\"gate\": \"convergence\", \"status\": \"pending\",\n'
                 ' \"summary\": \"[summary of findings]. Score: [X]. Ready to converge.\"}\n'
                 "```\n"
-                "Same polling protocol.  Do NOT write deliverable.md until approved.\n"
+                "Do NOT write deliverable.md until the gate is approved on a "
+                "subsequent session.\n"
             )
         if rigor in ("adaptive", "scientific", "experimental") or mode == "prove":
             sections.append(
@@ -227,9 +326,13 @@ def build_orchestrator_prompt(
             "and gap statement\n"
             "- If a result matches a cited paper's finding, acknowledge it as "
             "replication, not discovery\n\n"
-            "**Novelty gate:** If `.swarm/novelty-gate.json` exists with "
-            '`status: blocked`, HALT. Write `.swarm/human-gate.json` with '
-            '`gate: novelty` and wait for human decision (approved / pivot / abort).\n'
+            "**Novelty gate:** After Scout completes, `.swarm/novelty-gate.json` "
+            "is REQUIRED. If it is missing, this is BLOCKED setup — dispatch "
+            "Scout follow-up and do not proceed to other agents. If it exists "
+            "with `status: blocked`, HALT. Write `.swarm/human-gate.json` "
+            "with `gate: novelty` and wait for human decision "
+            "(approved / pivot / abort). Only proceed when the gate exists "
+            "with `status: clear`.\n"
         )
 
     # -- Creative Freedom (DISCOVER mode) ------------------------------------
@@ -238,10 +341,13 @@ def build_orchestrator_prompt(
             "\n## Creative Freedom Protocol (DISCOVER Mode)\n\n"
             "This is free scientific exploration. You are NOT locked into a rigid sequence.\n\n"
             "**What to do:**\n"
+            "- Start with Scout only. Wait for `.swarm/scout-brief.md` and "
+            "a clear `.swarm/novelty-gate.json` before dispatching other "
+            "investigation agents\n"
             "- Cast roles DYNAMICALLY based on what you find — don't pre-commit to a fixed team\n"
-            "- Let multiple agents pursue different hypotheses simultaneously\n"
+            "- After the novelty gate is clear, let multiple agents pursue "
+            "different hypotheses simultaneously\n"
             "- When an agent finds something unexpected, consider pivoting the investigation\n"
-            "- Start with Scout + any agents that seem useful — no mandatory sequence\n\n"
             "**Adaptive rigor:** Start light (no pre-registration, no human gates). "
             "When testable hypotheses crystallize in the belief map, ESCALATE:\n"
             "- Engage Methodologist to review experimental design\n"
@@ -369,8 +475,11 @@ def build_orchestrator_prompt(
         "When you see a `sentinel_violation` directive in `.swarm/dispatcher-directive.json`, "
         "this IS a DESIGN_INVALID event.  The sentinel has already detected and flagged it.  "
         "Do NOT create a separate DESIGN_INVALID task — the sentinel's alert is the flag.  "
-        "Your job: read `.swarm/sentinel-audit.json`, dispatch Methodologist, create REVISE task.  "
-        "Do NOT try to fix the code yourself — delegate to a worker agent.\n"
+        "Read `.swarm/sentinel-audit.json` first. If `critical_failures` contains "
+        "`CONTRACT_SCHEMA`, the contract file itself is malformed — rewrite it in the "
+        "schema documented in §Experiment Contract below. Do NOT dispatch Methodologist "
+        "for a schema error.  For any other failure: dispatch Methodologist, create "
+        "REVISE task, do NOT fix code yourself.\n"
     )
 
     # -- LLM calls (skill ref) --------------------------------------------
@@ -382,8 +491,9 @@ def build_orchestrator_prompt(
         "LLM calls. NEVER hardcode detection probabilities or effect sizes the "
         "experiment is supposed to measure.  If real results are disappointing, "
         "report them honestly — do NOT simulate better numbers.\n\n"
-        "**Provenance:** Every `results.json` MUST include a `runner` field "
-        "naming the script that produced it.\n"
+        "**Provenance:** Every declared experiment metrics artifact "
+        "(for example `output/<task_id>/experiment_metrics.json`) MUST "
+        "include a `runner` field naming the script that produced it.\n"
     )
 
     # -- Delegation rules (compact) ----------------------------------------
@@ -404,14 +514,45 @@ def build_orchestrator_prompt(
         "After experiment design, write `.swarm/experiment-contract.json` declaring "
         "structural validity checks. The dispatcher runs an autonomous Sentinel that "
         "verifies outputs against this contract.\n\n"
+        "**REQUIRED schema — top-level keys are FIXED.** The Sentinel parses ONLY "
+        "these keys; any other top-level shape (e.g. `studies`, `phases`, "
+        "`hard_gates`, `primary_metric`, `runner`) is rejected with "
+        "`CONTRACT_SCHEMA: unparseable or unknown shape` and writes a "
+        "`sentinel_violation` directive on every poll. Use this exact shape:\n\n"
+        "```json\n"
+        "{\n"
+        '  "experiment_id": "<id>",\n'
+        '  "independent_variable": "<name of the IV>",\n'
+        '  "conditions": ["<cond1>", "<cond2>", "..."],\n'
+        '  "manipulation_checks": [\n'
+        '    {"check_type": "hash_distinct", "target": "<file glob>", '
+        '"field": "<json path>", "conditions": ["<cond1>", "<cond2>"]}\n'
+        "  ],\n"
+        '  "required_outputs": [\n'
+        '    {"path": "<relative/path/to/output>", "description": "<what it is>"}\n'
+        "  ],\n"
+        '  "degeneracy_checks": [\n'
+        '    {"check_type": "min_variance", "target": "<file>", '
+        '"field": "<path>", "min_std": 0.01}\n'
+        "  ],\n"
+        '  "phase_gates": [\n'
+        '    {"from_phase": "<phase>", "to_phase": "<next>", "checks": [...]}\n'
+        "  ]\n"
+        "}\n"
+        "```\n\n"
+        "Encode multi-study or multi-phase designs by enumerating conditions and "
+        "using `phase_gates` — do NOT invent a nested `studies`/`phases` wrapper.\n\n"
         "Available check types: `hash_distinct`, `value_range`, `metric_range`, "
         "`not_identical`, `min_distinct_values`, `min_variance`.\n\n"
         "If the Sentinel detects a violation, it writes `.swarm/sentinel-audit.json` "
         "and a `sentinel_violation` directive. When you see this:\n"
         "1. STOP — do not dispatch new workers or cross phase gates\n"
         "2. Read `.swarm/sentinel-audit.json`\n"
-        "3. Dispatch Methodologist for post-mortem\n"
-        "4. Create a REVISE task — do NOT fix code yourself\n"
+        "3. If the failure is `CONTRACT_SCHEMA`, the contract itself is malformed "
+        "— rewrite `.swarm/experiment-contract.json` in the schema above. Do NOT "
+        "dispatch a Methodologist for a schema error; just fix the file.\n"
+        "4. For any other failure: dispatch Methodologist for post-mortem and "
+        "create a REVISE task — do NOT fix experiment code yourself.\n"
     )
 
     # -- Rules (compact) ---------------------------------------------------
@@ -423,7 +564,7 @@ def build_orchestrator_prompt(
         "- No overlapping file scopes between agents\n"
         "- Diagnose failures (check git log, tmux output) before retrying\n"
         "- Push all completed work to remote when done\n"
-        f"- Max concurrent agents: {max_agents}\n"
+        f"- Max parallel hypothesis-tranches: {max_agents}\n"
     )
     if safe:
         sections.append(
@@ -526,6 +667,31 @@ def build_orchestrator_prompt(
                 "\n## Reusable Artifacts from Prior Rounds\n\n"
                 + artifact_manifest + "\n"
             )
+
+        failure_diagnosis = prior_context.get("failure_diagnosis")
+        if isinstance(failure_diagnosis, dict):
+            sections.append(
+                "\n## Failure Diagnosis from Prior Round — READ CAREFULLY\n\n"
+                "The prior round's automated diagnosis identified these issues. "
+                "Your continuation plan MUST address them:\n\n"
+            )
+            systemic = failure_diagnosis.get("systemic_issues", [])
+            if systemic:
+                sections.append("**Systemic issues:**\n")
+                for issue in systemic:
+                    sections.append(f"- {issue}\n")
+            unmet = failure_diagnosis.get("unmet_criteria", [])
+            if unmet:
+                sections.append("\n**Unmet criteria:**\n")
+                for c in unmet:
+                    if isinstance(c, dict):
+                        cid = c.get("id", "?")
+                        diag = c.get("diagnosis", "unknown")
+                        rec = c.get("recommendation", "")
+                        sections.append(f"- **{cid}** ({diag}): {rec}\n")
+            proposed = failure_diagnosis.get("proposed_action", "")
+            if proposed:
+                sections.append(f"\n**Proposed action:** {proposed}\n")
 
     return "".join(sections)
 
@@ -659,6 +825,36 @@ def build_warm_start_context(
                         f"- `{data_dir}/`: {len(files)} files (DO NOT REGENERATE)"
                     )
 
+        # -- Failure diagnosis from prior round ---
+        # Continuation prep archives and removes active run-state files so the
+        # next orchestrator does not inherit stale terminal directives. Read
+        # the active diagnosis first for pre-cleanup callers, then fall back to
+        # the most recent archived run.
+        diag_candidates = [swarm / "failure-diagnosis.json"]
+        archive_root = swarm / "archive"
+        if archive_root.is_dir():
+            run_dirs = [p for p in archive_root.iterdir() if p.is_dir()]
+
+            def _run_num(path: Path) -> int:
+                try:
+                    return int(path.name.rsplit("-", 1)[1])
+                except (IndexError, ValueError):
+                    return -1
+
+            for run_dir in sorted(run_dirs, key=_run_num, reverse=True):
+                diag_candidates.append(run_dir / "failure-diagnosis.json")
+        for diag_path in diag_candidates:
+            if not diag_path.exists():
+                continue
+            try:
+                import json
+                diag = json.loads(diag_path.read_text())
+                if isinstance(diag, dict):
+                    context["failure_diagnosis"] = diag
+                    break
+            except (OSError, json.JSONDecodeError):
+                pass
+
         if manifest_lines:
             context["artifact_manifest"] = "\n".join(manifest_lines)
         if summary_lines:
@@ -674,55 +870,174 @@ def build_warm_start_context(
 # Role file mapping: task type → .github/agents/ filename
 ROLE_MAP: dict[str, str] = {
     "build": "worker-agent.agent.md",
+    "worker": "worker-agent.agent.md",
+    "builder": "worker-agent.agent.md",
     "implementation": "worker-agent.agent.md",
     "scout": "scout.agent.md",
     "investigation": "investigator.agent.md",
+    "investigator": "investigator.agent.md",
     "experiment": "investigator.agent.md",
     "exploration": "explorer.agent.md",
+    "explorer": "explorer.agent.md",
     "comparison": "explorer.agent.md",
     "review_stats": "statistician.agent.md",
+    "statistician": "statistician.agent.md",
     "review_critic": "critic.agent.md",
+    "critic": "critic.agent.md",
     "review_method": "methodologist.agent.md",
+    "methodologist": "methodologist.agent.md",
     "theory": "theorist.agent.md",
+    "theorist": "theorist.agent.md",
     "synthesis": "synthesizer.agent.md",
+    "synthesizer": "synthesizer.agent.md",
     "evaluation": "evaluator.agent.md",
+    "evaluator": "evaluator.agent.md",
     "scribe": "scribe.agent.md",
     "paper": "worker-agent.agent.md",
     "compilation": "worker-agent.agent.md",
+    # Paper-track roles (manuscript production pipeline)
+    "outline": "outliner.agent.md",
+    "lit_synthesis": "lit-synthesizer.agent.md",
+    "figure_critic": "figure-critic.agent.md",
+    "refine": "refiner.agent.md",
 }
+
+TASK_TYPE_ALIASES: dict[str, str] = {
+    "worker": "build",
+    "builder": "build",
+    "investigator": "investigation",
+    "explorer": "exploration",
+    "critic": "review_critic",
+    "statistician": "review_stats",
+    "methodologist": "review_method",
+    "theorist": "theory",
+    "synthesizer": "synthesis",
+    "evaluator": "evaluation",
+}
+
+INVESTIGATION_SKILLS = [
+    ".github/skills/investigation-protocol/SKILL.md",
+    ".github/skills/evidence-system/SKILL.md",
+    ".github/skills/context-management/SKILL.md",
+]
+COMPILATION_SKILLS = [
+    ".github/skills/figure-generation/SKILL.md",
+    ".github/skills/compilation-protocol/SKILL.md",
+]
+EXPLORATION_SKILLS = [
+    ".github/skills/deep-research/SKILL.md",
+    ".github/skills/context-management/SKILL.md",
+]
 
 # Skills to reference by task type
 SKILL_MAP: dict[str, list[str]] = {
-    "investigation": [
-        ".github/skills/investigation-protocol/SKILL.md",
-        ".github/skills/evidence-system/SKILL.md",
-        ".github/skills/context-management/SKILL.md",
-    ],
-    "experiment": [
-        ".github/skills/investigation-protocol/SKILL.md",
-        ".github/skills/evidence-system/SKILL.md",
-        ".github/skills/context-management/SKILL.md",
-    ],
+    "investigation": INVESTIGATION_SKILLS,
+    "investigator": INVESTIGATION_SKILLS,
+    "experiment": INVESTIGATION_SKILLS,
     "scribe": [
         ".github/skills/compilation-protocol/SKILL.md",
         ".github/skills/figure-generation/SKILL.md",
     ],
-    "paper": [
-        ".github/skills/figure-generation/SKILL.md",
-        ".github/skills/compilation-protocol/SKILL.md",
-    ],
-    "compilation": [
-        ".github/skills/figure-generation/SKILL.md",
-        ".github/skills/compilation-protocol/SKILL.md",
-    ],
+    "paper": COMPILATION_SKILLS,
+    "compilation": COMPILATION_SKILLS,
     "scout": [
         ".github/skills/deep-research/SKILL.md",
     ],
-    "exploration": [
-        ".github/skills/deep-research/SKILL.md",
+    "exploration": EXPLORATION_SKILLS,
+    "explorer": EXPLORATION_SKILLS,
+    "comparison": EXPLORATION_SKILLS,
+    # Paper-track skills
+    "outline": [
         ".github/skills/context-management/SKILL.md",
     ],
+    "lit_synthesis": [
+        ".github/skills/deep-research/SKILL.md",
+    ],
+    "figure_critic": [
+        ".github/skills/figure-generation/SKILL.md",
+    ],
+    "refine": [
+        ".github/skills/compilation-protocol/SKILL.md",
+    ],
 }
+
+
+def _normalize_task_type(task_type: str) -> str:
+    normalized = task_type.strip().lower().replace("-", "_")
+    canonical = TASK_TYPE_ALIASES.get(normalized, normalized)
+    if canonical not in ROLE_MAP:
+        known = ", ".join(sorted(ROLE_MAP))
+        raise ValueError(f"Unknown task_type '{task_type}'. Expected one of: {known}")
+    return canonical
+
+
+def build_red_team_prompt(
+    *,
+    workspace_path: str,
+    codename: str = "",
+    rigor: str = "scientific",
+) -> str:
+    """Build a COLD-CONTEXT prompt for the Red Team adversarial reviewer.
+
+    The Red Team is invoked once at the end of a Scientific+ investigation.
+    It must review the deliverable on its own merits, without having read
+    the investigation history, worker logs, orchestrator checkpoint, or
+    any agent chatter.  Therefore this prompt deliberately omits the
+    brief digest, belief map, OODA state, and task snapshots that the
+    orchestrator and worker prompts include.
+
+    The only inputs the Red Team receives beyond this prompt are:
+      - `.swarm/deliverable.md` (the final claims)
+      - `.swarm/claim-ledger.json` (asserted/locked claims with provenance)
+      - `output/**` (raw artifacts referenced by the deliverable)
+
+    Output: a single JSON verdict at `.swarm/red-team-verdict.json` that
+    gates convergence (see INV-47 and `science/convergence.py`).
+    """
+    label = codename or "Red Team"
+    sections: list[str] = [
+        "# Red Team Review — Cold Context\n\n",
+        (
+            "You are the **Red Team**, an independent adversarial reviewer. "
+            "You have NOT read the investigation history, worker logs, "
+            "orchestrator checkpoint, or agent discussions. This is "
+            "deliberate: judge the deliverable the way a skeptical peer "
+            "reviewer would judge a paper — on its own merits.\n\n"
+        ),
+        f"**Reviewer codename:** {label}\n",
+        f"**Workspace:** {workspace_path}\n",
+        f"**Rigor:** {rigor}\n\n",
+        "## Read ONLY These Files\n\n"
+        f"1. `{workspace_path}/.swarm/deliverable.md`\n"
+        f"2. `{workspace_path}/.swarm/claim-ledger.json`\n"
+        f"3. `{workspace_path}/output/**` (artifacts cited by the deliverable)\n\n"
+        "Do NOT read `.swarm/brief-digest.md`, `.swarm/checkpoint*.json`, "
+        "worker logs, or Beads task history. If the deliverable does not "
+        "stand on its own, that is itself a finding.\n\n"
+        "## Role File\n\n"
+        "Read `.github/agents/red-team.agent.md` for the full checklist "
+        "(EVIDENCE, PROVENANCE, ALTERNATIVES, CONFOUNDS, REPLICATION, "
+        "FABRICATION, STATISTICS, SCOPE).\n\n"
+        "## Output\n\n"
+        f"Write exactly one JSON file: `{workspace_path}/.swarm/red-team-verdict.json`\n\n"
+        "```json\n"
+        "{\n"
+        '  "verdict": "pass" | "pass_with_caveats" | "fatal_flaw",\n'
+        '  "reviewed_claims": ["..."],\n'
+        '  "findings": [\n'
+        '    {"claim_id": "...", "severity": "info|minor|major|fatal",\n'
+        '     "check": "EVIDENCE|PROVENANCE|ALTERNATIVES|CONFOUNDS|REPLICATION|FABRICATION|STATISTICS|SCOPE",\n'
+        '     "comment": "..."}\n'
+        "  ],\n"
+        '  "reason": "one-line summary",\n'
+        '  "reviewed_at": "<ISO-8601>"\n'
+        "}\n"
+        "```\n\n"
+        "A `fatal_flaw` verdict BLOCKS convergence. Err on the side of "
+        "calling out weaknesses: a minor finding costs the PI a few "
+        "minutes; a missed fatal flaw costs the PI a paper.\n",
+    ]
+    return "".join(sections)
 
 
 def build_tribunal_prompt(
@@ -881,8 +1196,10 @@ def build_worker_prompt(
     str
         The complete prompt text, ready to write to a file.
     """
+    canonical_task_type = _normalize_task_type(task_type)
+
     # 1. Read the role definition file
-    role_file = ROLE_MAP.get(task_type, "worker-agent.agent.md")
+    role_file = ROLE_MAP[canonical_task_type]
     role_content = _read_role_file(role_file, workspace_path)
 
     sections: list[str] = []
@@ -923,7 +1240,7 @@ def build_worker_prompt(
         )
 
     # 8. Skills to read
-    skills = SKILL_MAP.get(task_type, [])
+    skills = SKILL_MAP.get(canonical_task_type, [])
     if skills:
         sections.append("\n## Skills to Read\n\nBefore starting, read these:\n")
         for s in skills:
@@ -934,7 +1251,7 @@ def build_worker_prompt(
         sections.append(f"\n## Additional Instructions\n\n{extra_instructions}\n")
 
     # 9a. Scribe: LaTeX format enforcement (overrides any contradictory briefing)
-    if task_type == "scribe":
+    if canonical_task_type == "scribe":
         sections.append(
             "\n## Output Format — MANDATORY\n\n"
             "**Write LaTeX (`paper.tex`), NOT Markdown.**\n"
@@ -950,8 +1267,20 @@ def build_worker_prompt(
             "NOT the paper itself\n"
         )
 
-    # 9b. Experiment worker: anti-polling guidance
-    if task_type in ("investigation", "experiment"):
+    # 9b. Scout: reinforce mandatory artifact contract from the role file.
+    if canonical_task_type == "scout":
+        sections.append(
+            "\n## Scout Output Contract — MANDATORY\n\n"
+            "Before closing this task, you MUST produce both files:\n"
+            "1. `.swarm/scout-brief.md`\n"
+            "2. `.swarm/novelty-gate.json`\n\n"
+            "Verify `novelty-gate.json` contains `status` (`clear` or `blocked`) "
+            "and `assessment` (`novel`, `incremental`, or `redundant`). A missing "
+            "or malformed novelty gate means the Scout task is NOT complete.\n"
+        )
+
+    # 9c. Experiment worker: anti-polling guidance
+    if canonical_task_type in ("investigation", "experiment"):
         sections.append(
             "\n## Running Experiments — Block, Don't Poll\n\n"
             "When running a long experiment script:\n"

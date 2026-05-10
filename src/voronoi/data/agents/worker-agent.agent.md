@@ -3,7 +3,7 @@ name: worker-agent
 description: Individual worker agent that executes a single task in an isolated git worktree. Supports both build and investigation tasks with role-appropriate evidence standards. Tracks progress in Beads, commits frequently, and pushes completed work for merge.
 tools: ["execute", "read", "search", "edit"]
 disable-model-invocation: true
-user-invokable: false
+user-invocable: false
 ---
 
 # Worker Agent

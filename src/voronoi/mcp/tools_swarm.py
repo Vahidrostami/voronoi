@@ -147,7 +147,16 @@ def write_checkpoint(
     if criteria_status is not None:
         if not isinstance(criteria_status, dict):
             raise ValidationError(f"criteria_status must be a dict, got {type(criteria_status).__name__}")
-        checkpoint.criteria_status = {str(key): bool(value) for key, value in criteria_status.items()}
+        coerced: dict[str, bool] = {}
+        for key, value in criteria_status.items():
+            if value is True or value is False:
+                coerced[str(key)] = value
+            else:
+                raise ValidationError(
+                    f"criteria_status[{key!r}] must be a boolean (true/false), "
+                    f"got {value!r}. Do not pass status strings like 'pending'."
+                )
+        checkpoint.criteria_status = coerced
     if eval_score is not None and eval_score != "":
         checkpoint.eval_score = require_probability(eval_score, "eval_score")
     improvement_rounds_val = _optional_non_negative_int(improvement_rounds, "improvement_rounds")
@@ -231,6 +240,7 @@ def update_belief_map(
     from voronoi.science.convergence import (
         CONFIDENCE_TIERS,
         VALID_CONFIDENCE_TIERS,
+        VALID_HYPOTHESIS_STATUSES,
         Hypothesis,
         load_belief_map,
         save_belief_map,
@@ -244,6 +254,11 @@ def update_belief_map(
         raise ValidationError(
             f"confidence must be one of {sorted(VALID_CONFIDENCE_TIERS)}, "
             f"got '{confidence}'"
+        )
+    if status and status not in VALID_HYPOTHESIS_STATUSES:
+        raise ValidationError(
+            f"status must be one of {sorted(VALID_HYPOTHESIS_STATUSES)}, "
+            f"got '{status}'"
         )
     workspace = _workspace_path()
     validated_evidence: list[str] | None = None
@@ -284,10 +299,19 @@ def update_belief_map(
             hypothesis.name = name
         if posterior is not None:
             hypothesis.posterior = posterior
+            # Re-infer confidence from updated posterior when not explicitly set
+            if not confidence:
+                from voronoi.science.convergence import _infer_confidence_from_posterior
+                hypothesis.confidence = _infer_confidence_from_posterior(posterior)
         if status:
             hypothesis.status = status
         if validated_evidence is not None:
-            hypothesis.evidence = validated_evidence
+            # Append new evidence IDs, preserving existing ones (INV-15)
+            seen = set(hypothesis.evidence)
+            for eid in validated_evidence:
+                if eid not in seen:
+                    hypothesis.evidence.append(eid)
+                    seen.add(eid)
         if confidence:
             hypothesis.confidence = confidence
         if rationale:

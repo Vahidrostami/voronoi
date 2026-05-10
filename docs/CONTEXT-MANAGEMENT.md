@@ -83,6 +83,7 @@ Written after every OODA cycle. Read at the start of the next cycle.
 |-------|---------|
 | `cycle` | OODA cycle counter |
 | `phase` | Current investigation phase |
+| `lifecycle_phase` | Orchestrator-declared work mode: `"setup" \| "explore" \| "test" \| "synthesize" \| ""` (empty = inferred from `phase`). Dispatcher uses this to apply phase-aware stall budgets — `setup` scales stall thresholds by 3×, `synthesize` by 0.5×, others 1×. See SERVER.md §3. |
 | `hypotheses_summary` | Compact string: `"H1:confirmed, H2:testing"` |
 | `total_tasks` / `closed_tasks` | Progress count |
 | `active_workers` | Branch names of running agents |
@@ -125,6 +126,24 @@ On restart, the orchestrator reads the checkpoint and immediately knows:
 - What to avoid (dead_ends)
 
 Without checkpoint: orchestrator re-reads all history → wastes context → may re-explore dead ends.
+
+### 4.4 PI-Facing Status Snapshot
+
+**Files**: `.swarm/run-status.json`, `.swarm/health.md`<br>
+**Code**: `src/voronoi/server/snapshot.py`
+
+The dispatcher regenerates a status snapshot during progress polling. The
+snapshot is a projection over checkpoint, Beads task counts, success criteria,
+sentinel audit, and key artifact presence. It is the first file a human or UI
+should read when asking "where is this investigation now?"
+
+This is deliberately separate from Beads: Beads remains the task ledger, while
+`run-status.json` and `health.md` explain the scientific/operator state in one
+place. The snapshot prevents status drift by preferring the dispatcher's Beads
+task cache when available, then falling back to checkpoint task counters when
+live-session database locks make a fresh Beads read unavailable. The operator
+view reports the freshest counts available to the dispatcher and labels pending
+gates explicitly.
 
 ## 5. Targeted Beads Queries
 
@@ -186,6 +205,11 @@ prompt = build_worker_prompt(
 | `synthesis` | `synthesizer.agent.md` |
 | `evaluation` | `evaluator.agent.md` |
 | `paper` / `compilation` | `worker-agent.agent.md` |
+
+Natural role-name aliases are accepted for these canonical task types
+(`worker`/`builder`, `investigator`, `explorer`, `critic`, `statistician`,
+`methodologist`, `theorist`, `synthesizer`, `evaluator`). Unknown task types
+fail loudly instead of falling back to the generic worker role.
 
 Skills are auto-selected by task type (e.g., `investigation` → investigation-protocol + evidence-system).
 

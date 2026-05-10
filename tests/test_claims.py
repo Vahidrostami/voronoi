@@ -20,7 +20,10 @@ from voronoi.science.claims import (
     ClaimArtifact,
     ClaimLedger,
     Objection,
+    diff_ledger_states,
     generate_self_critique,
+    iter_all_ledgers,
+    ledger_state_map,
     load_ledger,
     resolve_lineage_id,
     save_ledger,
@@ -286,9 +289,11 @@ class TestLedgerFormatting:
 
     def test_format_for_review(self):
         ledger = ClaimLedger()
-        ledger.add_claim("x", PROVENANCE_RUN_EVIDENCE)
+        ledger.add_claim("x", PROVENANCE_RUN_EVIDENCE,
+                         supporting_findings=["bd-1"])
         text = ledger.format_for_review()
         assert "C1" in text
+        assert "Evidence refs: bd-1" in text
 
     def test_format_review_empty(self):
         ledger = ClaimLedger()
@@ -443,3 +448,310 @@ class TestLineageResolution:
         store = {3: FakeInv(3, parent_id=99)}
         # parent 99 not found → stop at 99
         assert resolve_lineage_id(3, store.get) == 99
+
+
+# ---------------------------------------------------------------------------
+# Forward-compatibility: extra keys in serialized data
+# ---------------------------------------------------------------------------
+
+class TestForwardCompatibility:
+    def test_load_ledger_with_extra_claim_keys(self, tmp_path):
+        """A ledger saved by a newer version may have extra fields on claims."""
+        data = {
+            "claims": [{
+                "id": "C1",
+                "statement": "L4 outperforms L1",
+                "provenance": "run_evidence",
+                "status": "provisional",
+                "supporting_findings": [],
+                "source_cycle": 1,
+                "artifacts": [],
+                "challenges": [],
+                "first_asserted": "2025-01-01T00:00:00+00:00",
+                "last_updated": "2025-01-01T00:00:00+00:00",
+                "future_field": "from_newer_version",
+            }],
+            "objections": [],
+            "_next_claim_id": 2,
+            "_next_objection_id": 1,
+        }
+        path = tmp_path / "ledgers" / "1" / "claim-ledger.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps(data))
+        ledger = load_ledger(1, base_dir=tmp_path)
+        assert len(ledger.claims) == 1
+        assert ledger.claims[0].id == "C1"
+
+    def test_load_ledger_with_extra_objection_keys(self, tmp_path):
+        """Extra fields on objections are silently dropped."""
+        data = {
+            "claims": [],
+            "objections": [{
+                "id": "O1",
+                "target_claim": "C1",
+                "concern": "N too small",
+                "objection_type": "power",
+                "raised_by": "PI",
+                "status": "pending",
+                "timestamp": "2025-01-01T00:00:00+00:00",
+                "new_field": 42,
+            }],
+            "_next_claim_id": 1,
+            "_next_objection_id": 2,
+        }
+        path = tmp_path / "ledgers" / "1" / "claim-ledger.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps(data))
+        ledger = load_ledger(1, base_dir=tmp_path)
+        assert len(ledger.objections) == 1
+        assert ledger.objections[0].id == "O1"
+
+    def test_load_ledger_with_extra_artifact_keys(self, tmp_path):
+        """Extra fields on artifacts are silently dropped."""
+        data = {
+            "claims": [{
+                "id": "C1",
+                "statement": "L4 outperforms L1",
+                "provenance": "run_evidence",
+                "status": "provisional",
+                "supporting_findings": [],
+                "source_cycle": 1,
+                "artifacts": [{"path": "x.csv", "artifact_type": "data",
+                               "future_tag": "v2"}],
+                "challenges": [],
+                "first_asserted": "2025-01-01T00:00:00+00:00",
+                "last_updated": "2025-01-01T00:00:00+00:00",
+            }],
+            "objections": [],
+            "_next_claim_id": 2,
+            "_next_objection_id": 1,
+        }
+        path = tmp_path / "ledgers" / "1" / "claim-ledger.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps(data))
+        ledger = load_ledger(1, base_dir=tmp_path)
+        assert len(ledger.claims[0].artifacts) == 1
+        assert ledger.claims[0].artifacts[0].path == "x.csv"
+
+
+class TestLegacyLedgerQuarantine:
+    """BUG-006: legacy ledgers with task-title claims must be quarantined."""
+
+    def test_imperative_claim_dropped_on_load(self, tmp_path):
+        data = {
+            "claims": [
+                {
+                    "id": "C1",
+                    "statement": "Analyze pricing dataset for findings",
+                    "provenance": "run_evidence",
+                    "status": "provisional",
+                    "supporting_findings": [], "source_cycle": 1,
+                    "artifacts": [], "challenges": [],
+                    "first_asserted": "2025-01-01T00:00:00+00:00",
+                    "last_updated": "2025-01-01T00:00:00+00:00",
+                },
+                {
+                    "id": "C2",
+                    "statement": "L4 outperforms L1",
+                    "provenance": "run_evidence",
+                    "status": "asserted",
+                    "supporting_findings": ["bd-17"], "source_cycle": 1,
+                    "artifacts": [], "challenges": [],
+                    "first_asserted": "2025-01-01T00:00:00+00:00",
+                    "last_updated": "2025-01-01T00:00:00+00:00",
+                },
+            ],
+            "objections": [],
+            "_next_claim_id": 3,
+            "_next_objection_id": 1,
+        }
+        path = tmp_path / "ledgers" / "1" / "claim-ledger.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps(data))
+        ledger = load_ledger(1, base_dir=tmp_path)
+        # Invalid claim dropped, valid one kept
+        assert [c.id for c in ledger.claims] == ["C2"]
+        # Next-ID must not collide with dropped claim's ID
+        assert ledger._next_claim_id >= 3
+
+
+# ---------------------------------------------------------------------------
+# Cross-lineage iteration (F1 — dead-ends query plumbing)
+# ---------------------------------------------------------------------------
+
+class TestIterAllLedgers:
+    def test_empty_base_dir(self, tmp_path):
+        assert list(iter_all_ledgers(base_dir=tmp_path)) == []
+
+    def test_skips_non_numeric_dirs(self, tmp_path):
+        (tmp_path / "ledgers" / "not-a-number").mkdir(parents=True)
+        assert list(iter_all_ledgers(base_dir=tmp_path)) == []
+
+    def test_yields_populated_ledgers_only(self, tmp_path):
+        # Lineage 1 has a claim, lineage 2 is empty (no file written)
+        ledger1 = ClaimLedger()
+        ledger1.add_claim("A holds", PROVENANCE_RUN_EVIDENCE)
+        save_ledger(1, ledger1, base_dir=tmp_path)
+        # Lineage 2: empty ledger saved to disk should be skipped
+        save_ledger(2, ClaimLedger(), base_dir=tmp_path)
+
+        results = list(iter_all_ledgers(base_dir=tmp_path))
+        assert len(results) == 1
+        assert results[0][0] == 1
+        assert results[0][1].claims[0].statement == "A holds"
+
+
+class TestGetRetired:
+    def test_returns_only_retired(self):
+        ledger = ClaimLedger()
+        ledger.add_claim("keep", PROVENANCE_RUN_EVIDENCE)
+        ledger.add_claim("drop", PROVENANCE_RUN_EVIDENCE)
+        ledger.retire_claim("C2")
+        retired = ledger.get_retired()
+        assert len(retired) == 1
+        assert retired[0].id == "C2"
+
+
+# ---------------------------------------------------------------------------
+# Claim-delta helpers (F5 — progress digest plumbing)
+# ---------------------------------------------------------------------------
+
+class TestLedgerDiff:
+    def test_new_claim_delta(self):
+        old: dict[str, str] = {}
+        ledger = ClaimLedger()
+        ledger.add_claim("X", PROVENANCE_RUN_EVIDENCE)
+        new = ledger_state_map(ledger)
+        deltas = diff_ledger_states(old, new, ledger=ledger)
+        assert len(deltas) == 1
+        assert deltas[0]["kind"] == "new"
+        assert deltas[0]["claim_id"] == "C1"
+        assert deltas[0]["to_status"] == STATUS_PROVISIONAL
+        assert deltas[0]["from_status"] is None
+        assert deltas[0]["statement"] == "X"
+
+    def test_transition_delta(self):
+        ledger = ClaimLedger()
+        ledger.add_claim("Y", PROVENANCE_RUN_EVIDENCE)
+        old = ledger_state_map(ledger)
+        ledger.assert_claim("C1")
+        ledger.lock_claim("C1")
+        new = ledger_state_map(ledger)
+        deltas = diff_ledger_states(old, new, ledger=ledger)
+        assert len(deltas) == 1
+        assert deltas[0]["kind"] == "transition"
+        assert deltas[0]["from_status"] == STATUS_PROVISIONAL
+        assert deltas[0]["to_status"] == STATUS_LOCKED
+
+    def test_no_delta_when_identical(self):
+        ledger = ClaimLedger()
+        ledger.add_claim("same", PROVENANCE_RUN_EVIDENCE)
+        snap = ledger_state_map(ledger)
+        assert diff_ledger_states(snap, snap, ledger=ledger) == []
+
+    def test_preview_truncates_long_statements(self):
+        ledger = ClaimLedger()
+        ledger.add_claim("Z" * 200, PROVENANCE_RUN_EVIDENCE)
+        deltas = diff_ledger_states({}, ledger_state_map(ledger), ledger=ledger)
+        assert len(deltas[0]["statement"]) <= 80
+        assert deltas[0]["statement"].endswith("…")
+
+
+# ---------------------------------------------------------------------------
+# validate_claim_statement — proposition-shape validation
+# ---------------------------------------------------------------------------
+
+class TestValidateClaimStatement:
+    """Regression tests for the claim-laundering fix (docs/INVARIANTS.md INV-47)."""
+
+    def test_accepts_propositional_statement(self):
+        from voronoi.science.claims import validate_claim_statement
+        ok, reason = validate_claim_statement("L4 > L1 on F1 (d=0.35)", ())
+        assert ok, reason
+
+    def test_accepts_hunch_without_effect_size(self):
+        # DISCOVER mode: hunches are legitimate propositions even without numbers
+        from voronoi.science.claims import validate_claim_statement
+        ok, reason = validate_claim_statement(
+            "Coupled decisions degrade calibration accuracy", (),
+        )
+        assert ok, reason
+
+    def test_rejects_empty(self):
+        from voronoi.science.claims import validate_claim_statement
+        ok, reason = validate_claim_statement("", ())
+        assert not ok
+        assert "empty" in reason.lower()
+
+    def test_rejects_whitespace_only(self):
+        from voronoi.science.claims import validate_claim_statement
+        ok, _ = validate_claim_statement("   \n  ", ())
+        assert not ok
+
+    def test_rejects_bare_imperative_analyze(self):
+        # The exact shape that produced the C50/C51/C52 bug
+        from voronoi.science.claims import validate_claim_statement
+        ok, reason = validate_claim_statement(
+            "Analyze pricing dataset for five action-changing findings", (),
+        )
+        assert not ok
+        assert "imperative" in reason.lower()
+
+    def test_rejects_bare_imperative_investigate(self):
+        from voronoi.science.claims import validate_claim_statement
+        ok, _ = validate_claim_statement("Investigate account churn drivers", ())
+        assert not ok
+
+    def test_rejects_bare_imperative_run(self):
+        from voronoi.science.claims import validate_claim_statement
+        ok, _ = validate_claim_statement("Run Phase 2 experiments", ())
+        assert not ok
+
+    def test_accepts_imperative_with_relational_marker(self):
+        # "Test whether L4 > L1" is imperative in form but carries a proposition
+        from voronoi.science.claims import validate_claim_statement
+        ok, reason = validate_claim_statement(
+            "Test whether L4 > L1 on calibration", (),
+        )
+        assert ok, reason
+
+    def test_rejects_exact_duplicate_after_normalization(self):
+        from voronoi.science.claims import (
+            PROVENANCE_RUN_EVIDENCE,
+            ClaimLedger,
+            validate_claim_statement,
+        )
+        ledger = ClaimLedger()
+        ledger.add_claim("L4 outperforms L1", PROVENANCE_RUN_EVIDENCE)
+        # Different casing + trailing punctuation should still match
+        ok, reason = validate_claim_statement(
+            "  l4 OUTPERFORMS l1.  ", ledger.claims,
+        )
+        assert not ok
+        assert "duplicate" in reason.lower()
+
+
+class TestAddClaimValidation:
+    """ClaimLedger.add_claim must reject ill-formed statements."""
+
+    def test_add_claim_rejects_imperative(self):
+        from voronoi.science.claims import PROVENANCE_RUN_EVIDENCE, ClaimLedger
+        ledger = ClaimLedger()
+        with pytest.raises(ValueError, match="imperative"):
+            ledger.add_claim(
+                "Analyze pricing dataset for five action-changing findings",
+                PROVENANCE_RUN_EVIDENCE,
+            )
+
+    def test_add_claim_rejects_duplicate(self):
+        from voronoi.science.claims import PROVENANCE_RUN_EVIDENCE, ClaimLedger
+        ledger = ClaimLedger()
+        ledger.add_claim("L4 outperforms L1", PROVENANCE_RUN_EVIDENCE)
+        with pytest.raises(ValueError, match="duplicate"):
+            ledger.add_claim("l4 outperforms l1.", PROVENANCE_RUN_EVIDENCE)
+
+    def test_add_claim_rejects_empty(self):
+        from voronoi.science.claims import PROVENANCE_RUN_EVIDENCE, ClaimLedger
+        ledger = ClaimLedger()
+        with pytest.raises(ValueError, match="empty"):
+            ledger.add_claim("", PROVENANCE_RUN_EVIDENCE)

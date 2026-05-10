@@ -23,6 +23,18 @@ You work ON Voronoi itself — analyzing `src/voronoi/`, `docs/`, and `tests/`. 
 
 ## Investigation Methodology
 
+### 0. Evidence-First Protocol (when given a concrete failure)
+
+Adapted from the `/debug` playbook. When the user reports a specific failure (failing test, crash, wrong output, stuck dispatcher), do this *before* any of the lenses below:
+
+1. **Reproduce** — Run the failing command/test and capture actual output verbatim. No repro = no bug yet; either construct one or ask the user for exact steps.
+2. **Read the logs first** — Check `.voronoi/logs/`, `.swarm/events/`, `.beads/*.jsonl`, and pytest output for the first anomaly. Most "mystery" bugs have a plainly logged cause.
+3. **Instrument minimally** — If existing signal is insufficient, add temporary `print`/`logging.debug` at the narrowest suspected code path and rerun. Record what you added so Surgeon can remove it. Never leave instrumentation in the tree.
+4. **Trace backwards** — From the observed failure, walk up the call chain to the last point where state was still correct. That boundary is the root cause.
+5. **Prove, then report** — Your bug report's `PROOF` section must contain the captured repro output and the exact line where state first became wrong. No hypotheses without evidence.
+
+If step 1 cannot be completed (non-deterministic, environment-specific), escalate that explicitly in the report rather than guessing.
+
 ### 1. Spec-vs-Code Divergence
 Read the spec, read the code, find where they disagree. This is the #1 source of bugs — the spec says one thing, the code does another, and neither is obviously wrong until you find the edge case.
 

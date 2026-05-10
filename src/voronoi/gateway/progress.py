@@ -413,7 +413,12 @@ def _synthesize_narrative(
             best_conf = -1.0
             for h in hyps:
                 if isinstance(h, dict):
-                    conf = float(h.get("posterior", h.get("prior", 0)))
+                    # Safe float conversion for legacy non-numeric posterior/prior
+                    raw_posterior = h.get("posterior", h.get("prior", 0))
+                    try:
+                        conf = float(raw_posterior) if raw_posterior not in ("", None) else 0.0
+                    except (ValueError, TypeError):
+                        conf = 0.0
                     if conf > best_conf:
                         best_conf = conf
                         best = h
@@ -511,8 +516,13 @@ def _build_narrative_paragraph(
         if remaining > 0:
             parts.append(f"{in_progress} {'agent' if in_progress == 1 else 'agents'} still working; {remaining} tasks to go.")
 
-    # Add "so what?" calibration — tell the user if things are normal
-    if is_early and total > 0:
+    # Add "so what?" calibration — tell the user if things are normal.
+    # Stall-signal overrides the default "nothing to worry about" voice so
+    # the digest cannot contradict the stall escalator (strike ≥ 1).
+    stall_warning = _stall_signal_warning(workspace)
+    if stall_warning:
+        parts.append(stall_warning)
+    elif is_early and total > 0:
         parts.append("Still setting up — nothing to worry about yet.")
     elif phase == "investigating" and closed == 0 and total > 0:
         parts.append("Experiments haven't reported back yet — normal at this stage.")
@@ -528,6 +538,178 @@ def _build_narrative_paragraph(
             parts.append(f"Averaging {format_duration(pace_min * 60)} per task.")
 
     return " ".join(parts)
+
+
+def _epoch_display(workspace: Path) -> str:
+    """Read epoch-state.json and return a compact display string for digests."""
+    try:
+        from voronoi.science.convergence import (
+            load_epoch_state, compute_learning_rate_display,
+        )
+        epoch = load_epoch_state(workspace)
+        return compute_learning_rate_display(epoch)
+    except Exception:
+        return ""
+
+
+def _stall_signal_warning(workspace: Path) -> str:
+    """Read `.swarm/stall-signal.json` and return a strike-aware warning.
+
+    The digest voice and the dispatcher's stall escalator must agree. When
+    a stall signal is active we replace the default "nothing to worry about"
+    reassurance with a warning whose urgency tracks the strike level. See
+    docs/SERVER.md §3.
+    """
+    try:
+        path = workspace / ".swarm" / "stall-signal.json"
+        if not path.exists():
+            return ""
+        data = json.loads(path.read_text())
+        level = int(data.get("level", 0))
+        elapsed = float(data.get("elapsed_minutes", 0))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return ""
+    elapsed_int = int(round(elapsed))
+    if level >= 4:
+        return (
+            f"🪫🪫🪫🪫 Parked for partial review after ~{elapsed_int}min "
+            "with no findings — review or continue when ready."
+        )
+    if level == 3:
+        return (
+            f"🪫🪫🪫 Stall strike 3 at ~{elapsed_int}min — final self-steer "
+            "directive issued. Reply `/voronoi extend` to grant more time "
+            "before partial review."
+        )
+    if level == 2:
+        return (
+            f"🪫🪫 Stall strike 2 at ~{elapsed_int}min — pivot-or-declare "
+            "directive issued. Reply `/voronoi extend` to grant more time "
+            "before the final self-steer."
+        )
+    if level == 1:
+        return (
+            f"🪫 Stall warning at ~{elapsed_int}min — no findings yet. "
+            "Diagnose-and-steer directive issued."
+        )
+    return ""
+
+
+def _digest_event_groups(events_since_last: list[dict]) -> dict[str, list[dict]]:
+    """Group recent dispatcher events by digest category."""
+    return {
+        "completed": [e for e in events_since_last if e.get("type") == "task_done"],
+        "findings": [e for e in events_since_last if e.get("type") == "finding"],
+        "new_tasks": [e for e in events_since_last if e.get("type") == "task_new"],
+        "design_invalids": [e for e in events_since_last if e.get("type") == "design_invalid"],
+        "serendipities": [e for e in events_since_last if e.get("type") == "serendipity"],
+        "rigor_changes": [e for e in events_since_last if e.get("type") == "rigor_escalation"],
+        "claim_deltas": [e for e in events_since_last if e.get("type") == "claim_delta"],
+    }
+
+
+def _digest_has_milestone(groups: dict[str, list[dict]]) -> bool:
+    """Return whether grouped events deserve a new milestone message."""
+    significant_claim_delta = any(
+        delta.get("to_status") in ("locked", "replicated", "challenged", "retired")
+        for delta in groups["claim_deltas"]
+    )
+    return bool(
+        groups["findings"] or groups["design_invalids"] or groups["serendipities"]
+        or groups["rigor_changes"] or significant_claim_delta
+    )
+
+
+def _digest_milestone_lines(groups: dict[str, list[dict]], compact: bool) -> list[str]:
+    """Render achievements and noteworthy events since the last digest."""
+    milestones: list[str] = []
+    completed = groups["completed"]
+    findings = groups["findings"]
+
+    if completed:
+        titles = [_extract_task_title(event) for event in completed[:5]]
+        if len(completed) <= 3:
+            for title in titles:
+                milestones.append(f"✓ {title}")
+        else:
+            milestones.append(f"✓ Completed {len(completed)} tasks")
+    for finding in findings:
+        raw = finding.get("msg", "")
+        if compact:
+            title = _compact_finding_line(raw)
+        else:
+            title = raw.replace("🔬 *NEW FINDING*\n", "").strip()
+        milestones.append(f"★ {title}")
+    for invalid in groups["design_invalids"]:
+        milestones.append(f"⚠ {_extract_task_title(invalid)}")
+    for serendipity in groups["serendipities"]:
+        raw = serendipity.get("msg", "")
+        desc = raw.replace("🔮 *Unexpected observation*\n", "").split("\n")[0].strip()
+        milestones.append(f"🔮 {desc}")
+    for rigor_change in groups["rigor_changes"]:
+        raw = rigor_change.get("msg", "")
+        desc = raw.replace("📐 *Rigor escalated*", "").split("\n")[0].strip()
+        milestones.append(f"📐 Rigor escalated{desc}")
+    for claim_delta in groups["claim_deltas"]:
+        milestones.append(_format_claim_delta(claim_delta))
+    if groups["new_tasks"] and not completed and not findings:
+        milestones.append(f"Planned {len(groups['new_tasks'])} new tasks")
+    return milestones
+
+
+def _digest_footer_parts(
+    *,
+    workspace: Path,
+    total: int,
+    closed: int,
+    elapsed_sec: float,
+    phase: str,
+    is_early: bool,
+    compact: bool,
+    events_since_last: list[dict],
+    eval_score: float,
+) -> list[str]:
+    """Build compact progress, artifact, criteria, and quality footer lines."""
+    footer_parts: list[str] = []
+
+    if total > 0 and closed > 0:
+        bar = progress_bar(closed, total)
+        eta = estimate_remaining(elapsed_sec, closed, total)
+        eta_suffix = f" · {eta}" if eta else ""
+        footer_parts.append(f"{bar}  {closed}/{total} tasks{eta_suffix}")
+    elif total > 0 and is_early:
+        footer_parts.append(f"{total} tasks planned")
+    elif total > 0:
+        footer_parts.append(f"{total} tasks in pipeline")
+
+    exp_summary = _experiment_summary(workspace)
+    if exp_summary:
+        footer_parts.append(exp_summary)
+
+    if not compact:
+        artifact_summary = _artifact_progress_summary(workspace)
+        if artifact_summary:
+            footer_parts.append(artifact_summary)
+
+    criteria_summary_text = _criteria_summary(
+        workspace, compact=compact, phase=phase,
+        events_since_last=events_since_last,
+    )
+    if criteria_summary_text:
+        footer_parts.append(criteria_summary_text)
+
+    if eval_score > 0:
+        label = VOICE_QUALITY_LABELS["high"] if eval_score >= 0.75 else (
+            VOICE_QUALITY_LABELS["ok"] if eval_score >= 0.50
+            else VOICE_QUALITY_LABELS["low"]
+        )
+        footer_parts.append(f"Quality: {eval_score:.2f} — {label}")
+
+    epoch_display = _epoch_display(workspace)
+    if epoch_display:
+        footer_parts.append(epoch_display)
+
+    return footer_parts
 
 
 def build_digest(
@@ -562,16 +744,8 @@ def build_digest(
     closed = sum(1 for t in task_snapshot.values() if t.get("status") == "closed")
     in_progress = sum(1 for t in task_snapshot.values() if t.get("status") == "in_progress")
 
-    # Categorize recent events
-    completed = [e for e in events_since_last if e.get("type") == "task_done"]
-    findings = [e for e in events_since_last if e.get("type") == "finding"]
-    new_tasks = [e for e in events_since_last if e.get("type") == "task_new"]
-    design_invalids = [e for e in events_since_last if e.get("type") == "design_invalid"]
-    serendipities = [e for e in events_since_last if e.get("type") == "serendipity"]
-    rigor_changes = [e for e in events_since_last if e.get("type") == "rigor_escalation"]
-
-    # Determine if this update contains a milestone worth a new notification
-    has_milestone = bool(findings or design_invalids or serendipities or rigor_changes)
+    groups = _digest_event_groups(events_since_last)
+    has_milestone = _digest_has_milestone(groups)
 
     lines: list[str] = []
     is_early = phase in ("starting", "scouting", "planning")
@@ -593,83 +767,19 @@ def build_digest(
     lines.append(narrative)
 
     # ── What happened since last update (achievements, not raw events) ──
-    milestones: list[str] = []
-    if completed:
-        titles = [_extract_task_title(e) for e in completed[:5]]
-        if len(completed) <= 3:
-            for t in titles:
-                milestones.append(f"✓ {t}")
-        else:
-            milestones.append(f"✓ Completed {len(completed)} tasks")
-    if findings:
-        for f in findings:
-            raw = f.get("msg", "")
-            if compact:
-                title = _compact_finding_line(raw)
-            else:
-                title = raw.replace("🔬 *NEW FINDING*\n", "").strip()
-            milestones.append(f"★ {title}")
-    if design_invalids:
-        for d in design_invalids:
-            milestones.append(f"⚠ {_extract_task_title(d)}")
-    if serendipities:
-        for s in serendipities:
-            raw = s.get("msg", "")
-            desc = raw.replace("🔮 *Unexpected observation*\n", "").split("\n")[0].strip()
-            milestones.append(f"🔮 {desc}")
-    if rigor_changes:
-        for r in rigor_changes:
-            raw = r.get("msg", "")
-            desc = raw.replace("📐 *Rigor escalated*", "").split("\n")[0].strip()
-            milestones.append(f"📐 Rigor escalated{desc}")
-    if new_tasks and not completed and not findings:
-        milestones.append(f"Planned {len(new_tasks)} new tasks")
-
+    milestones = _digest_milestone_lines(groups, compact)
     if milestones:
         lines.append("")
         for m in milestones:
             lines.append(m)
 
     # ── Metrics footer: compact progress section ──
-    footer_parts: list[str] = []
-
-    if total > 0 and closed > 0:
-        bar = progress_bar(closed, total)
-        eta = estimate_remaining(elapsed_sec, closed, total)
-        eta_suffix = f" · {eta}" if eta else ""
-        footer_parts.append(f"{bar}  {closed}/{total} tasks{eta_suffix}")
-    elif total > 0 and is_early:
-        footer_parts.append(f"{total} tasks planned")
-    elif total > 0:
-        footer_parts.append(f"{total} tasks in pipeline")
-
-    # Experiments — only add if not already covered in narrative
-    exp_summary = _experiment_summary(workspace)
-    if exp_summary:
-        footer_parts.append(exp_summary)
-
-    # Artifacts (detail view only)
-    if not compact:
-        artifact_summary = _artifact_progress_summary(workspace)
-        if artifact_summary:
-            footer_parts.append(artifact_summary)
-
-    # Success criteria — compact inline
-    criteria_summary_text = _criteria_summary(
-        workspace, compact=compact, phase=phase,
-        events_since_last=events_since_last,
+    footer_parts = _digest_footer_parts(
+        workspace=workspace, total=total, closed=closed,
+        elapsed_sec=elapsed_sec, phase=phase, is_early=is_early,
+        compact=compact, events_since_last=events_since_last,
+        eval_score=eval_score,
     )
-    if criteria_summary_text:
-        footer_parts.append(criteria_summary_text)
-
-    # Quality score
-    if eval_score > 0:
-        label = VOICE_QUALITY_LABELS["high"] if eval_score >= 0.75 else (
-            VOICE_QUALITY_LABELS["ok"] if eval_score >= 0.50
-            else VOICE_QUALITY_LABELS["low"]
-        )
-        footer_parts.append(f"Quality: {eval_score:.2f} — {label}")
-
     if footer_parts:
         lines.append("")
         lines.extend(footer_parts)
@@ -782,6 +892,33 @@ def _compact_finding_line(msg: str, max_len: int = 100) -> str:
     if len(text) > max_len:
         text = text[:max_len - 1] + "…"
     return text
+
+
+def _format_claim_delta(event: dict) -> str:
+    """Render a claim_delta event as a single milestone line.
+
+    Examples:
+      ✎ New claim C7 (provisional): EWC outperforms replay on TinyCIFAR
+      🔒 Claim C3 asserted → locked: EWC outperforms replay
+      ⚡ Claim C12 challenged: Dropout 0.5 hurts accuracy
+      ✗ Claim C5 retired: First-run baseline
+    """
+    claim_id = event.get("claim_id", "?")
+    to_status = event.get("to_status", "")
+    statement = event.get("statement", "") or ""
+    suffix = f": {statement}" if statement else ""
+    if event.get("kind") == "new":
+        return f"✎ New claim {claim_id} ({to_status}){suffix}"
+    from_status = event.get("from_status", "")
+    icon = {
+        "locked": "🔒",
+        "replicated": "🔒🔒",
+        "challenged": "⚡",
+        "retired": "✗",
+        "asserted": "✎",
+        "provisional": "✎",
+    }.get(to_status, "✎")
+    return f"{icon} Claim {claim_id} {from_status} → {to_status}{suffix}"
 
 
 def _experiment_summary(workspace: Path) -> str:
@@ -921,6 +1058,26 @@ def format_alert(codename: str, message: str) -> str:
     return f"⚠️ *{codename}* — heads up:\n{message}"
 
 
+def format_learning_stalled(codename: str, elapsed_min: float) -> str:
+    """Format a LEARNING_STALLED alert.
+
+    Fires when the swarm has run for a substantial window without a new
+    finding or a claim-status transition. The PI can intervene, but missed
+    messages are recoverable because later escalation parks to review.
+    """
+    minutes = int(round(elapsed_min))
+    return (
+        f"🪫 *{codename}* — learning stalled for ~{minutes} min.\n"
+        "No new findings or claim transitions in that window.\n\n"
+        "Options:\n"
+        "• `/voronoi pivot <new angle>` — redirect the investigation\n"
+        "• `/voronoi ask <question>` — interrogate the agents\n"
+        "• `/voronoi deliberate` — reason about what's next\n"
+        f"• `/voronoi extend {codename} 60` — give the run more time\n"
+        "• `/voronoi status` — show durable resume/review actions"
+    )
+
+
 def format_restart(codename: str, attempt: int, max_retries: int,
                    log_tail: str = "", clean_exit: bool = False) -> str:
     """Format a restart notification."""
@@ -953,7 +1110,7 @@ def format_pause(codename: str, reason: str, elapsed_sec: float,
     if total > 0:
         lines.append(f"Progress: {closed}/{total} tasks completed.")
     lines.append(
-        "\nFix the issue, then send `/voronoi resume` to continue."
+        f"\nFix the issue, then send `/voronoi resume {codename}` to continue."
     )
     return "\n".join(lines)
 

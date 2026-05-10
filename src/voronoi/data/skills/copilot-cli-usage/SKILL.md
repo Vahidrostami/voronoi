@@ -5,6 +5,8 @@ description: >
   Covers correct invocation patterns, model configuration, caching,
   and common error recovery. Use when any agent or script needs
   to call an LLM programmatically.
+user-invocable: true
+disable-model-invocation: false
 ---
 
 # Copilot CLI Usage

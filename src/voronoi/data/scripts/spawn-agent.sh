@@ -45,6 +45,34 @@ else
     AGENT_FLAGS=$(echo "$CONFIG" | jq -r '.agent_flags // "--allow-all"')
 fi
 
+quote_flag_words() {
+    local input="$1"
+    local -a words=()
+    read -r -a words <<< "$input"
+    if [[ ${#words[@]} -eq 0 ]]; then
+        return
+    fi
+    printf '%q ' "${words[@]}"
+}
+
+safe_role_permissions() {
+    local input="$1"
+    local -a words=()
+    local -a restrictive=()
+    local word
+    read -r -a words <<< "$input"
+    for word in "${words[@]}"; do
+        if [[ "$word" == "--allow-all" ]]; then
+            continue
+        fi
+        restrictive+=("$word")
+    done
+    if [[ ${#restrictive[@]} -eq 0 ]]; then
+        return
+    fi
+    printf '%s ' "${restrictive[@]}"
+}
+
 # Pre-flight: verify agent CLI exists
 AGENT_BIN="${AGENT_CMD%% *}"
 if ! command -v "$AGENT_BIN" >/dev/null 2>&1; then
@@ -54,6 +82,34 @@ if ! command -v "$AGENT_BIN" >/dev/null 2>&1; then
 fi
 
 WORKTREE_PATH="${SWARM_DIR}/${BRANCH_NAME}"
+
+resolve_workspace_artifact() {
+    local root="$1"
+    local artifact="$2"
+    local field="$3"
+    python3 - "$root" "$artifact" "$field" <<'PY'
+from pathlib import Path, PureWindowsPath
+import sys
+
+root = Path(sys.argv[1]).resolve()
+raw = sys.argv[2].strip()
+field = sys.argv[3]
+candidate = Path(raw)
+if not raw:
+    print(f"{field} path is empty", file=sys.stderr)
+    sys.exit(2)
+if candidate.is_absolute() or PureWindowsPath(raw).is_absolute():
+    print(f"{field} path must be workspace-relative: {raw}", file=sys.stderr)
+    sys.exit(2)
+resolved = (root / candidate).resolve()
+try:
+    resolved.relative_to(root)
+except ValueError:
+    print(f"{field} path escapes workspace: {raw}", file=sys.stderr)
+    sys.exit(2)
+print(resolved)
+PY
+}
 
 resolve_default_branch() {
     local branch
@@ -81,9 +137,56 @@ resolve_default_branch() {
 echo "--- Spawning agent: $BRANCH_NAME ---"
 
 # =========================================================================
+# Sentinel stop-and-fix gate (BUG-003)
+#
+# The dispatcher writes .swarm/dispatcher-directive.json with
+# {"action":"stop_and_fix"} when the Experiment Sentinel detects a
+# critical violation (contract schema invalid, collapsed manipulation,
+# missing contract).  Until a Methodologist post-mortem clears the
+# underlying fault, no new worker may be dispatched — otherwise the
+# orchestrator re-spawns Scribes/Evaluators on invalid data.  This
+# structural gate enforces INV-40 at dispatch time, not via prompt.
+# =========================================================================
+DIRECTIVE_PATH="${PROJECT_DIR}/.swarm/dispatcher-directive.json"
+if [ -f "$DIRECTIVE_PATH" ]; then
+    DIRECTIVE_ACTION=$(python3 -c "
+import sys, json
+try:
+    d = json.load(open('$DIRECTIVE_PATH'))
+    action = (d.get('action') or '').strip()
+    if not action and d.get('directive') == 'sentinel_violation':
+        action = 'stop_and_fix'
+    if not action and d.get('level') == 'sentinel_violation':
+        action = 'stop_and_fix'
+    print(action)
+except Exception:
+    print('')
+" 2>/dev/null || echo "")
+    if [[ "$DIRECTIVE_ACTION" == "stop_and_fix" ]]; then
+        # Allow Methodologist / post-mortem tasks through so the fault
+        # can actually be cleared; block everything else.
+        TASK_TITLE_LOWER=$(timeout 10s bd show "$TASK_ID" --json 2>/dev/null | python3 -c "
+import sys, json
+try:
+    print(json.load(sys.stdin).get('title','').lower())
+except Exception:
+    print('')
+" 2>/dev/null || echo "")
+        if ! echo "$TASK_TITLE_LOWER" | grep -qiE "methodologist|post.?mortem|revise|fix.*contract|sentinel|restate|graph.health"; then
+            echo "✗ Pre-dispatch BLOCKED by stop_and_fix directive"
+            echo "  See $DIRECTIVE_PATH (sentinel-audit.json or graph-health.json)"
+            echo "  Only methodologist/post-mortem/revise/restate tasks may run until cleared."
+            timeout 10s bd update "$TASK_ID" --notes "BLOCKED: stop_and_fix directive active" 2>/dev/null || true
+            exit 1
+        fi
+        echo "⚠ stop_and_fix directive active — allowing $TASK_ID (methodologist/post-mortem/restate)"
+    fi
+fi
+
+# =========================================================================
 # Pre-dispatch artifact validation (REQUIRES / GATE checks)
 # =========================================================================
-TASK_JSON=$(bd show "$TASK_ID" --json 2>/dev/null || echo "{}")
+TASK_JSON=$(timeout 10s bd show "$TASK_ID" --json 2>/dev/null || echo "{}")
 TASK_NOTES=$(echo "$TASK_JSON" | python3 -c "
 import sys, json
 try:
@@ -121,14 +224,18 @@ if [ -n "$REQUIRES_LIST" ]; then
     MISSING_REQUIRES=""
     while IFS= read -r req; do
         [ -z "$req" ] && continue
-        if [ ! -e "${PROJECT_DIR}/${req}" ]; then
+        if ! REQ_FULL=$(resolve_workspace_artifact "$PROJECT_DIR" "$req" "REQUIRES"); then
+            MISSING_REQUIRES="${MISSING_REQUIRES}  - ${req} (invalid path)\n"
+            continue
+        fi
+        if [ ! -e "$REQ_FULL" ]; then
             MISSING_REQUIRES="${MISSING_REQUIRES}  - ${req}\n"
         fi
     done <<< "$REQUIRES_LIST"
     if [ -n "$MISSING_REQUIRES" ]; then
         echo "✗ Pre-dispatch FAILED: Missing REQUIRES artifacts:"
         echo -e "$MISSING_REQUIRES"
-        bd update "$TASK_ID" --notes "BLOCKED: Missing required artifacts — dispatch deferred" 2>/dev/null || true
+        timeout 10s bd update "$TASK_ID" --notes "BLOCKED: Missing required artifacts — dispatch deferred" 2>/dev/null || true
         echo "  Task $TASK_ID marked BLOCKED. Fix upstream tasks first."
         exit 1
     fi
@@ -147,17 +254,21 @@ for line in notes.split('\n'):
 " 2>/dev/null || true)
 
 if [ -n "$GATE_PATH" ]; then
-    GATE_FULL="${PROJECT_DIR}/${GATE_PATH}"
+    if ! GATE_FULL=$(resolve_workspace_artifact "$PROJECT_DIR" "$GATE_PATH" "GATE"); then
+        echo "✗ Pre-dispatch FAILED: Invalid GATE path: $GATE_PATH"
+        timeout 10s bd update "$TASK_ID" --notes "BLOCKED: GATE artifact path invalid — dispatch deferred" 2>/dev/null || true
+        exit 1
+    fi
     if [ ! -f "$GATE_FULL" ]; then
         echo "✗ Pre-dispatch FAILED: GATE file missing: $GATE_PATH"
-        bd update "$TASK_ID" --notes "BLOCKED: GATE artifact missing — dispatch deferred" 2>/dev/null || true
+        timeout 10s bd update "$TASK_ID" --notes "BLOCKED: GATE artifact missing — dispatch deferred" 2>/dev/null || true
         exit 1
     fi
     # Verify GATE contains passing verdict
-    GATE_STATUS=$(python3 -c "
+    GATE_STATUS=$(python3 - "$GATE_FULL" 2>/dev/null <<'PY'
 import sys, json
 try:
-    data = json.load(open('$GATE_FULL'))
+    data = json.load(open(sys.argv[1]))
     status = data.get('status', '')
     converged = data.get('converged', False)
     if status in ('converged', 'pass', 'passed') or converged:
@@ -166,10 +277,11 @@ try:
         print('FAIL:' + status)
 except Exception as e:
     print('ERROR:' + str(e))
-" 2>/dev/null || echo "ERROR:parse_failed")
+PY
+)
     if [[ "$GATE_STATUS" != "PASS" ]]; then
         echo "✗ Pre-dispatch FAILED: GATE not passing: $GATE_PATH ($GATE_STATUS)"
-        bd update "$TASK_ID" --notes "BLOCKED: GATE validation not passing — dispatch deferred" 2>/dev/null || true
+        timeout 10s bd update "$TASK_ID" --notes "BLOCKED: GATE validation not passing — dispatch deferred" 2>/dev/null || true
         exit 1
     fi
     echo "✓ Pre-dispatch: GATE $GATE_PATH is passing"
@@ -188,7 +300,7 @@ except Exception:
 " 2>/dev/null || echo "")
 
 if echo "$TASK_TITLE" | grep -qiE "paper|scribe|write.*paper|compile|latex|deliverable"; then
-    DESIGN_INVALID_IDS=$(bd list --json 2>/dev/null | python3 -c "
+    DESIGN_INVALID_IDS=$(timeout 10s bd list --json 2>/dev/null | python3 -c "
 import sys, json
 try:
     tasks = json.load(sys.stdin)
@@ -202,7 +314,7 @@ except Exception:
 " 2>/dev/null || true)
     if [ -n "$DESIGN_INVALID_IDS" ]; then
         echo "✗ Pre-dispatch BLOCKED: Cannot start paper/compile task while DESIGN_INVALID experiments remain open: $DESIGN_INVALID_IDS"
-        bd update "$TASK_ID" --notes "BLOCKED: DESIGN_INVALID must be resolved before paper writing" 2>/dev/null || true
+        timeout 10s bd update "$TASK_ID" --notes "BLOCKED: DESIGN_INVALID must be resolved before paper writing" 2>/dev/null || true
         exit 1
     fi
     echo "✓ Pre-dispatch: No open DESIGN_INVALID experiments"
@@ -243,7 +355,7 @@ if [[ ! -d "$WORKTREE_PATH" ]]; then
 fi
 
 # 2. Claim the task in Beads
-bd update "$TASK_ID" --claim 2>/dev/null || echo "Warning: claim failed (may already be claimed)"
+timeout 10s bd update "$TASK_ID" --claim 2>/dev/null || echo "Warning: claim failed (may already be claimed)"
 
 # 2b. Enforce BLIND directive: remove blinded files from worktree
 if [ -n "$BLIND_LIST" ]; then
@@ -277,7 +389,7 @@ fi
 # 5. Launch agent CLI in the tmux pane
 # Quote config-derived values to prevent shell injection
 SAFE_CMD=$(printf '%q' "$AGENT_CMD")
-SAFE_FLAGS=$(printf '%q' "$AGENT_FLAGS")
+SAFE_FLAGS=$(quote_flag_words "$AGENT_FLAGS")
 SAFE_WP=$(printf '%q' "$WORKTREE_PATH")
 
 # Build --model flag for workers (if configured)
@@ -301,8 +413,15 @@ mkdir -p "$WORKTREE_PATH/.swarm"
 # that reviewers cannot modify code (belt + suspenders with .agent.md tools list).
 ROLE_PERMS=$(echo "$CONFIG" | jq -r ".role_permissions.\"$TASK_TYPE\" // \"\"" 2>/dev/null || true)
 if [[ -n "$ROLE_PERMS" && "$ROLE_PERMS" != "null" ]]; then
-    AGENT_FLAGS="$ROLE_PERMS"
-    SAFE_FLAGS=$(printf '%q' "$AGENT_FLAGS")
+    if [[ "$SAFE_MODE" == "true" ]]; then
+        ROLE_PERMS=$(safe_role_permissions "$ROLE_PERMS")
+        if [[ -n "$ROLE_PERMS" ]]; then
+            AGENT_FLAGS="$AGENT_FLAGS $ROLE_PERMS"
+        fi
+    else
+        AGENT_FLAGS="$ROLE_PERMS"
+    fi
+    SAFE_FLAGS=$(quote_flag_words "$AGENT_FLAGS")
 fi
 
 # 5c. Inject auth/state env via tmux set-environment (INV-31: no secrets in logs).
@@ -325,8 +444,10 @@ if [[ -d "${PROJECT_DIR}/.beads" ]]; then
 fi
 
 if [[ -f "$WORKTREE_PATH/.agent-prompt.txt" ]]; then
+    BOOTSTRAP_PROMPT="You are a Voronoi worker agent. The complete task prompt is stored at .agent-prompt.txt in this worktree. Before doing anything else, read .agent-prompt.txt completely and follow it exactly. Treat this bootstrap only as a pointer; the file is authoritative."
+    SAFE_BOOTSTRAP=$(printf '%s' "$BOOTSTRAP_PROMPT" | python3 -c 'import shlex, sys; print(shlex.quote(sys.stdin.read()))')
     tmux send-keys -t "$TMUX_SESSION:$BRANCH_NAME" \
-        "cd $SAFE_WP && $SAFE_CMD $SAFE_FLAGS$MODEL_FLAG$EFFORT_FLAG$SHARE_FLAG -p \"\$(cat .agent-prompt.txt)\"" Enter
+        "cd $SAFE_WP && $SAFE_CMD $SAFE_FLAGS$MODEL_FLAG$EFFORT_FLAG$SHARE_FLAG -p $SAFE_BOOTSTRAP" Enter
 else
     echo "⚠ No prompt file found — agent will start in interactive mode"
     tmux send-keys -t "$TMUX_SESSION:$BRANCH_NAME" \

@@ -12,6 +12,7 @@ from voronoi.science import (
     CalibrationResult,
     ConsistencyConflict,
     ConvergenceResult,
+    EpochState,
     FabricationFlag,
     Hypothesis,
     Invariant,
@@ -19,7 +20,9 @@ from voronoi.science import (
     PreRegistration,
     ReplicationNeed,
     SimulationBypassResult,
+    advance_epoch,
     audit_all_findings,
+    build_failure_diagnosis,
     check_calibration,
     check_consistency,
     check_convergence,
@@ -33,13 +36,16 @@ from voronoi.science import (
     format_fabrication_report,
     format_invariants_for_prompt,
     load_belief_map,
+    load_epoch_state,
     load_invariants,
     load_success_criteria,
     parse_pre_registration,
     parse_revise_context,
     save_belief_map,
+    save_epoch_state,
     save_invariants,
     save_success_criteria,
+    compute_learning_rate_display,
     validate_pre_registration,
     validate_data_invariants,
     verify_data_hash,
@@ -62,6 +68,19 @@ from voronoi.science import (
     validate_phase_gate,
 )
 from voronoi.science.consistency import _fetch_tasks
+
+
+def _write_red_team_pass(workspace: Path, verdict: str = "pass") -> None:
+    """Scientific+ convergence now requires .swarm/red-team-verdict.json (INV-47)."""
+    swarm = workspace / ".swarm"
+    swarm.mkdir(exist_ok=True)
+    (swarm / "red-team-verdict.json").write_text(json.dumps({
+        "verdict": verdict,
+        "reviewed_claims": [],
+        "findings": [],
+        "reason": "test fixture",
+        "reviewed_at": "2026-01-01T00:00:00Z",
+    }))
 
 
 # ---------------------------------------------------------------------------
@@ -423,6 +442,68 @@ class TestBeliefMap:
         bm2 = load_belief_map(tmp_path)
         assert len(bm2.hypotheses) == 1
 
+    def test_load_non_numeric_posterior_legacy(self, tmp_path):
+        """Bug fix: load_belief_map crashes on non-numeric posterior/prior like 'TBD' or 'N/A'."""
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "belief-map.json").write_text(json.dumps({
+            "hypotheses": [
+                {"id": "H1", "name": "LLM wrote TBD", "prior": 0.5, "posterior": "TBD"},
+                {"id": "H2", "name": "empty string", "prior": "", "posterior": "N/A"},
+                {"id": "H3", "name": "numeric ok", "prior": 0.3, "posterior": 0.7},
+            ]
+        }))
+        bm = load_belief_map(tmp_path)
+        assert len(bm.hypotheses) == 3
+        # Non-numeric values default to 0.5
+        assert bm.hypotheses[0].posterior == 0.5
+        assert bm.hypotheses[0].confidence == "unknown"  # inferred from default 0.5
+        assert bm.hypotheses[1].posterior == 0.5
+        assert bm.hypotheses[1].prior == 0.5
+        # Numeric value preserved
+        assert bm.hypotheses[2].posterior == 0.7
+        assert bm.hypotheses[2].prior == 0.3
+
+    def test_load_invalid_status_defaults_to_untested(self, tmp_path):
+        """Bug fix: unknown hypothesis status should default to 'untested' with warning."""
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "belief-map.json").write_text(json.dumps({
+            "hypotheses": [
+                {"id": "H1", "name": "valid", "prior": 0.5, "posterior": 0.5, "status": "confirmed"},
+                {"id": "H2", "name": "invalid", "prior": 0.5, "posterior": 0.5, "status": "maybe_true"},
+                {"id": "H3", "name": "empty", "prior": 0.5, "posterior": 0.5, "status": ""},
+            ]
+        }))
+        bm = load_belief_map(tmp_path)
+        assert len(bm.hypotheses) == 3
+        assert bm.hypotheses[0].status == "confirmed"
+        assert bm.hypotheses[1].status == "untested"  # invalid status defaulted
+        assert bm.hypotheses[2].status == "untested"  # empty string defaulted
+
+    def test_all_resolved_rejects_unknown_status(self, tmp_path):
+        """Bug fix: all_resolved should return False for unknown statuses to avoid false positives."""
+        bm = BeliefMap()
+        bm.add_hypothesis(Hypothesis(id="H1", name="a", prior=0.5, posterior=0.9,
+                                      status="confirmed"))
+        # Manually set an unknown status (bypassing validation)
+        h2 = Hypothesis(id="H2", name="b", prior=0.5, posterior=0.5)
+        h2.status = "weird_status"
+        bm.add_hypothesis(h2)
+        # Should return False because H2 has unknown status
+        assert bm.all_resolved() is False
+
+    def test_all_resolved_valid_statuses(self):
+        """all_resolved should work correctly with all valid resolved statuses."""
+        bm = BeliefMap()
+        bm.add_hypothesis(Hypothesis(id="H1", name="a", prior=0.5, posterior=0.9,
+                                      status="confirmed"))
+        bm.add_hypothesis(Hypothesis(id="H2", name="b", prior=0.5, posterior=0.1,
+                                      status="refuted"))
+        bm.add_hypothesis(Hypothesis(id="H3", name="c", prior=0.5, posterior=0.5,
+                                      status="merged"))
+        bm.add_hypothesis(Hypothesis(id="H4", name="d", prior=0.5, posterior=0.5,
+                                      status="refuted_reversed"))
+        assert bm.all_resolved() is True
+
 
 # ---------------------------------------------------------------------------
 # Convergence
@@ -604,6 +685,35 @@ class TestParadigmStress:
         assert r.stressed is True
         assert r.contradiction_count == 3
 
+    def test_refuted_hypotheses_count_as_stress(self, tmp_path):
+        """BUG-004: ≥3 refuted hypotheses must trigger paradigm stress."""
+        import json as _json
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "belief-map.json").write_text(_json.dumps({
+            "hypotheses": [
+                {"id": "H1", "name": "a", "status": "refuted"},
+                {"id": "H2", "name": "b", "status": "refuted"},
+                {"id": "H3", "name": "c", "status": "refuted"},
+                {"id": "H4", "name": "d", "status": "confirmed"},
+            ]
+        }))
+        result = check_paradigm_stress(tmp_path)
+        assert result.stressed is True
+        assert result.contradiction_count == 3
+        assert set(result.contradicting_findings) == {"H1", "H2", "H3"}
+
+    def test_two_refuted_is_not_stress(self, tmp_path):
+        """Below-threshold refutations should NOT trigger."""
+        import json as _json
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "belief-map.json").write_text(_json.dumps({
+            "hypotheses": [
+                {"id": "H1", "status": "refuted"},
+                {"id": "H2", "status": "refuted"},
+            ]
+        }))
+        assert check_paradigm_stress(tmp_path).stressed is False
+
 
 # ---------------------------------------------------------------------------
 # Consistency Gate
@@ -753,15 +863,16 @@ class TestMergeGates:
         assert ok is True
 
     def test_produces_missing(self, tmp_path):
-        task = {"notes": "PRODUCES:output/results.json", "title": "Run experiments"}
+        task = {"notes": "PRODUCES:output/bd-42/experiment_metrics.json", "title": "Run experiments"}
         ok, blockers = check_merge_gates(task, tmp_path, "adaptive")
         assert ok is False
         assert any("PRODUCES missing" in b for b in blockers)
 
     def test_produces_present(self, tmp_path):
-        (tmp_path / "output").mkdir()
-        (tmp_path / "output" / "results.json").write_text("{}")
-        task = {"notes": "PRODUCES:output/results.json", "title": "Run experiments"}
+        metrics_dir = tmp_path / "output" / "bd-42"
+        metrics_dir.mkdir(parents=True)
+        (metrics_dir / "experiment_metrics.json").write_text("{}")
+        task = {"notes": "PRODUCES:output/bd-42/experiment_metrics.json", "title": "Run experiments"}
         ok, blockers = check_merge_gates(task, tmp_path, "adaptive")
         assert ok is True
 
@@ -1700,6 +1811,7 @@ class TestConvergenceScientificCriteriaOverride:
             {"id": "SC2", "description": "Pipeline 10x", "met": True},
         ])
         self._stub_helpers(monkeypatch)
+        _write_red_team_pass(tmp_path)
         # Provide a resolved belief map
         from voronoi.science import BeliefMap, Hypothesis, save_belief_map
         bm = BeliefMap(hypotheses=[
@@ -2135,6 +2247,7 @@ class TestNegativeResultConvergence:
                  "posterior": 0.2, "status": "refuted"},
             ],
         }))
+        _write_red_team_pass(tmp_path)
         # Valid negative: deliver + eval score + contradiction + improvement done
         result = check_convergence(tmp_path, "scientific", eval_score=0.60,
                                     improvement_rounds=1)
@@ -2642,3 +2755,269 @@ class TestSentinelEmptyResolve:
         )
         result = validate_experiment_contract(tmp_path, contract=contract, trigger="test")
         assert result.passed is True
+
+
+# ---------------------------------------------------------------------------
+# Red Team Gate (INV-47) — Scientific+ requires .swarm/red-team-verdict.json
+# ---------------------------------------------------------------------------
+
+class TestRedTeamConvergenceGate:
+    """Scientific+ convergence must be gated by an independent Red Team verdict."""
+
+    def _stub_clear_other_blockers(self, monkeypatch):
+        monkeypatch.setattr("voronoi.science.consistency._fetch_tasks", lambda ws: [])
+        monkeypatch.setattr("voronoi.science.consistency._find_theories",
+                            lambda ws, tasks: [{"status": "refuted"}])
+        monkeypatch.setattr("voronoi.science.consistency._find_tested_predictions",
+                            lambda ws, tasks: [{"id": "pred-1"}])
+
+    def _setup_converging_workspace(self, tmp_path, monkeypatch):
+        (tmp_path / ".swarm").mkdir()
+        save_success_criteria(tmp_path, [
+            {"id": "SC1", "description": "x", "met": True},
+        ])
+        from voronoi.science import BeliefMap, Hypothesis, save_belief_map
+        save_belief_map(tmp_path, BeliefMap(hypotheses=[
+            Hypothesis(id="H1", name="h", prior=0.5, posterior=0.9, status="confirmed"),
+        ]))
+        self._stub_clear_other_blockers(monkeypatch)
+
+    def test_scientific_blocks_without_verdict(self, tmp_path, monkeypatch):
+        self._setup_converging_workspace(tmp_path, monkeypatch)
+        result = check_convergence(tmp_path, "scientific", eval_score=0.80)
+        assert result.converged is False
+        assert any("red team" in b.lower() and "missing" in b.lower()
+                   for b in result.blockers)
+
+    def test_scientific_blocks_on_fatal_flaw(self, tmp_path, monkeypatch):
+        self._setup_converging_workspace(tmp_path, monkeypatch)
+        (tmp_path / ".swarm" / "red-team-verdict.json").write_text(json.dumps({
+            "verdict": "fatal_flaw",
+            "reason": "primary claim lacks replication",
+            "findings": [], "reviewed_claims": [],
+            "reviewed_at": "2026-01-01T00:00:00Z",
+        }))
+        result = check_convergence(tmp_path, "scientific", eval_score=0.80)
+        assert result.converged is False
+        assert any("red team blocked" in b.lower() for b in result.blockers)
+        assert any("lacks replication" in b.lower() for b in result.blockers)
+
+    def test_scientific_passes_with_pass_verdict(self, tmp_path, monkeypatch):
+        self._setup_converging_workspace(tmp_path, monkeypatch)
+        _write_red_team_pass(tmp_path, verdict="pass")
+        result = check_convergence(tmp_path, "scientific", eval_score=0.80)
+        assert result.converged is True
+
+    def test_pass_with_caveats_is_not_a_blocker(self, tmp_path, monkeypatch):
+        self._setup_converging_workspace(tmp_path, monkeypatch)
+        _write_red_team_pass(tmp_path, verdict="pass_with_caveats")
+        result = check_convergence(tmp_path, "scientific", eval_score=0.80)
+        rt_blockers = [b for b in result.blockers if "red team" in b.lower()]
+        assert rt_blockers == []
+
+    def test_invalid_verdict_blocks(self, tmp_path, monkeypatch):
+        self._setup_converging_workspace(tmp_path, monkeypatch)
+        (tmp_path / ".swarm" / "red-team-verdict.json").write_text(json.dumps({
+            "verdict": "looks_fine",  # not a valid verdict
+        }))
+        result = check_convergence(tmp_path, "scientific", eval_score=0.80)
+        assert any("invalid" in b.lower() for b in result.blockers)
+
+    def test_unreadable_verdict_blocks(self, tmp_path, monkeypatch):
+        self._setup_converging_workspace(tmp_path, monkeypatch)
+        (tmp_path / ".swarm" / "red-team-verdict.json").write_text("{not json")
+        result = check_convergence(tmp_path, "scientific", eval_score=0.80)
+        assert any("unreadable" in b.lower() for b in result.blockers)
+
+    def test_adaptive_rigor_skips_gate(self, tmp_path):
+        """Adaptive rigor does NOT require Red Team review (cost / speed)."""
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "deliverable.md").write_text("# Done")
+        result = check_convergence(tmp_path, "adaptive", eval_score=0.80)
+        rt_blockers = [b for b in result.blockers if "red team" in b.lower()]
+        assert rt_blockers == []
+
+
+# ===================================================================
+# Evidence-Gated Epoch Tracking
+# ===================================================================
+
+
+class TestEpochState:
+    """Tests for EpochState dataclass, save/load, and advance logic."""
+
+    def test_default_epoch_state(self):
+        state = EpochState()
+        assert state.epoch == 1
+        assert state.max_tranches == 2
+        assert state.findings_this_epoch == 0
+        assert state.belief_map_moves == 0
+        assert not state.has_evidence
+        assert state.learning_rate == 0.0
+
+    def test_learning_rate_calculation(self):
+        state = EpochState(findings_this_epoch=3, tokens_this_epoch=1_000_000)
+        assert state.learning_rate == 3.0
+
+    def test_learning_rate_zero_tokens(self):
+        state = EpochState(findings_this_epoch=3, tokens_this_epoch=0)
+        assert state.learning_rate == 0.0
+
+    def test_has_evidence(self):
+        state = EpochState(belief_map_moves=0)
+        assert not state.has_evidence
+        state.belief_map_moves = 1
+        assert state.has_evidence
+
+    def test_save_load_roundtrip(self, tmp_path):
+        state = EpochState(
+            epoch=2, max_tranches=4, findings_this_epoch=5,
+            belief_map_moves=3, tokens_this_epoch=500_000,
+            epoch_started_at="2026-01-01T00:00:00",
+            history=[{"epoch": 1, "findings": 2}],
+        )
+        save_epoch_state(tmp_path, state)
+        loaded = load_epoch_state(tmp_path)
+        assert loaded.epoch == 2
+        assert loaded.max_tranches == 4
+        assert loaded.findings_this_epoch == 5
+        assert loaded.belief_map_moves == 3
+        assert len(loaded.history) == 1
+
+    def test_load_missing_file(self, tmp_path):
+        state = load_epoch_state(tmp_path)
+        assert state.epoch == 1
+        assert state.max_tranches == 2
+
+    def test_load_corrupt_file(self, tmp_path):
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "epoch-state.json").write_text("{bad json")
+        state = load_epoch_state(tmp_path)
+        assert state.epoch == 1
+
+    def test_advance_epoch(self):
+        state = EpochState(
+            epoch=1, max_tranches=2, findings_this_epoch=3,
+            belief_map_moves=2, tokens_this_epoch=100_000,
+            epoch_started_at="2026-01-01T00:00:00",
+        )
+        state = advance_epoch(state, configured_max=6)
+        assert state.epoch == 2
+        assert state.max_tranches == 4  # epoch 2 → cap 4
+        assert state.findings_this_epoch == 0  # reset
+        assert state.belief_map_moves == 0  # reset
+        assert len(state.history) == 1
+        assert state.history[0]["epoch"] == 1
+        assert state.history[0]["findings"] == 3
+
+    def test_advance_epoch_respects_configured_max(self):
+        state = EpochState(epoch=2, max_tranches=4, belief_map_moves=1)
+        state = advance_epoch(state, configured_max=3)
+        assert state.epoch == 3
+        # epoch 3 default cap is 6, but configured_max=3 limits it
+        assert state.max_tranches == 3
+
+    def test_advance_epoch_beyond_table(self):
+        state = EpochState(epoch=3, max_tranches=6, belief_map_moves=1)
+        state = advance_epoch(state, configured_max=8)
+        assert state.epoch == 4
+        # epoch 4 not in EPOCH_AGENT_CAP table → uses configured_max
+        assert state.max_tranches == 8
+
+    def test_compute_learning_rate_display_with_data(self):
+        state = EpochState(
+            epoch=2, max_tranches=4,
+            findings_this_epoch=5, tokens_this_epoch=2_000_000,
+        )
+        display = compute_learning_rate_display(state)
+        assert "2.5" in display  # 5/2M = 2.5
+        assert "epoch 2" in display
+        assert "cap 4" in display
+
+    def test_compute_learning_rate_display_zero_tokens(self):
+        state = EpochState(epoch=1, max_tranches=2, tokens_this_epoch=0)
+        display = compute_learning_rate_display(state)
+        assert display == ""
+
+    def test_compute_learning_rate_display_zero_findings(self):
+        state = EpochState(
+            epoch=1, max_tranches=2,
+            findings_this_epoch=0, tokens_this_epoch=1_000_000,
+        )
+        display = compute_learning_rate_display(state)
+        assert "0 findings" in display
+
+
+class TestFailureDiagnosis:
+    """Tests for build_failure_diagnosis()."""
+
+    def test_empty_workspace(self, tmp_path):
+        (tmp_path / ".swarm").mkdir()
+        diag = build_failure_diagnosis(tmp_path)
+        assert isinstance(diag, dict)
+        assert "met_criteria" in diag
+        assert "unmet_criteria" in diag
+        assert "systemic_issues" in diag
+
+    def test_with_success_criteria(self, tmp_path):
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "success-criteria.json").write_text(json.dumps([
+            {"id": "SC1", "description": "Test 1", "met": True},
+            {"id": "SC2", "description": "Test 2", "met": False},
+            {"id": "SC3", "description": "Test 3", "met": False},
+        ]))
+        diag = build_failure_diagnosis(tmp_path)
+        assert "SC1" in diag["met_criteria"]
+        assert len(diag["unmet_criteria"]) == 2
+        assert diag["unmet_criteria"][0]["id"] == "SC2"
+
+    def test_zero_experiments_detected(self, tmp_path):
+        (tmp_path / ".swarm").mkdir()
+        # experiments.tsv with only header = 0 experiments
+        (tmp_path / ".swarm" / "experiments.tsv").write_text(
+            "timestamp\ttask_id\tbranch\tmetric_name\tmetric_value\tstatus\tdescription\n"
+        )
+        diag = build_failure_diagnosis(tmp_path)
+        assert any("Zero experiments" in i for i in diag["systemic_issues"])
+
+    def test_all_crashed_experiments(self, tmp_path):
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "experiments.tsv").write_text(
+            "timestamp\ttask_id\tbranch\tmetric_name\tmetric_value\tstatus\tdescription\n"
+            "2026-01-01\tbd-1\tbranch1\tmetric\t0.0\tcrash\texp1\n"
+            "2026-01-01\tbd-2\tbranch2\tmetric\t0.0\tcrash\texp2\n"
+        )
+        diag = build_failure_diagnosis(tmp_path)
+        assert any("crashed" in i for i in diag["systemic_issues"])
+
+    def test_never_past_epoch_1(self, tmp_path):
+        (tmp_path / ".swarm").mkdir()
+        # epoch-state at epoch 1 with 0 findings
+        save_epoch_state(tmp_path, EpochState(epoch=1, findings_this_epoch=0))
+        diag = build_failure_diagnosis(tmp_path)
+        assert any("epoch 1" in i.lower() for i in diag["systemic_issues"])
+        assert diag["proposed_action"]  # should have a recommendation
+
+    def test_untested_hypotheses_detected(self, tmp_path):
+        (tmp_path / ".swarm").mkdir()
+        bm = BeliefMap(hypotheses=[
+            Hypothesis(id="H1", name="test", prior=0.5, posterior=0.5,
+                      status="untested"),
+            Hypothesis(id="H2", name="test2", prior=0.5, posterior=0.5,
+                      status="untested"),
+        ])
+        save_belief_map(tmp_path, bm)
+        diag = build_failure_diagnosis(tmp_path)
+        assert any("untested" in i.lower() for i in diag["systemic_issues"])
+
+    def test_tested_but_unmet_criteria(self, tmp_path):
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "success-criteria.json").write_text(json.dumps([
+            {"id": "SC1", "description": "Test 1", "met": False},
+        ]))
+        (tmp_path / ".swarm" / "experiments.tsv").write_text(
+            "timestamp\ttask_id\tbranch\tmetric_name\tmetric_value\tstatus\tdescription\n"
+            "2026-01-01\tbd-1\tbranch1\tmetric\t0.5\tkeep\texp1\n"
+        )
+        diag = build_failure_diagnosis(tmp_path)
+        assert diag["unmet_criteria"][0]["diagnosis"] == "TESTED_BUT_UNMET"

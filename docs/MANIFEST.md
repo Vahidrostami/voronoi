@@ -158,7 +158,9 @@ description: str
 
 Discovered automatically — canonical candidates (`paper.pdf`, `paper.tex`,
 `submission.csv`, `pred.py`, figures under `output/figures/`), plus any
-`DATA_FILE` referenced in finding notes.
+`DATA_FILE` referenced in finding notes. `DATA_FILE` values are resolved
+against the workspace, absolute in-workspace paths are stored as relative
+paths, and escaped/non-file paths are ignored.
 
 ### `ProvenanceInfo`
 
@@ -242,7 +244,7 @@ The manifest never invents data. Every field traces to a source:
 | `experiments` | Beads `FINDING` tasks (via `gateway.evidence.get_findings`) |
 | `pending_objections` | `ClaimLedger.objections` with status in `{pending, investigating, surfaced}` |
 | `continuation_proposals` | `.swarm/continuation-proposals.json` |
-| `artifacts` | Filesystem scan + finding `DATA_FILE` notes |
+| `artifacts` | Filesystem scan + finding `DATA_FILE` notes, normalized to workspace-relative paths |
 | `caveats` | Derived: convergence blockers + `ROBUST=no` findings + non-APPROVED stat review |
 | `answer` | Derived: strongest-status claim, ranked `replicated > locked > asserted > provisional` |
 | `provenance.git_commit` | `.git/HEAD` (best-effort) |

@@ -201,19 +201,45 @@ class TestKnowledgeStoreFiles:
         swarm = tmp_path / ".swarm"
         swarm.mkdir()
         data = {"hypotheses": [
-            {"name": "H1", "prior": 0.7, "status": "confirmed"},
-            {"name": "H2", "prior": 0.3, "status": "refuted"},
+            {"name": "H1", "prior": 0.7, "status": "confirmed", "confidence": "strong"},
+            {"name": "H2", "prior": 0.3, "status": "refuted", "confidence": "supported"},
         ]}
         (swarm / "belief-map.json").write_text(json.dumps(data))
         ks = KnowledgeStore(tmp_path)
         belief = ks.get_belief_map()
         assert "H1" in belief
-        assert "0.7" in belief
+        assert "STRONG" in belief
         assert "confirmed" in belief
 
     def test_get_belief_map_missing(self, tmp_path):
         ks = KnowledgeStore(tmp_path)
         assert ks.get_belief_map() is None
+
+    def test_get_belief_map_dict_keyed(self, tmp_path):
+        """BUG-002/003 regression: dict-keyed hypotheses should not crash."""
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        data = {"hypotheses": {
+            "H1": {"name": "Encoding helps", "prior": 0.6, "status": "confirmed"},
+            "H2": {"name": "No effect", "prior": 0.4, "status": "refuted"},
+        }}
+        (swarm / "belief-map.json").write_text(json.dumps(data))
+        ks = KnowledgeStore(tmp_path)
+        belief = ks.get_belief_map()
+        assert belief is not None
+        assert "Encoding helps" in belief
+        assert "No effect" in belief
+
+    def test_get_belief_map_dict_keyed_string_values(self, tmp_path):
+        """BUG-003 regression: string-valued dict hypotheses should not crash."""
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        data = {"hypotheses": {"H1": "Encoding helps", "H2": "No effect"}}
+        (swarm / "belief-map.json").write_text(json.dumps(data))
+        ks = KnowledgeStore(tmp_path)
+        belief = ks.get_belief_map()
+        assert belief is not None
+        assert "Encoding helps" in belief
 
     def test_get_strategic_context(self, tmp_path):
         swarm = tmp_path / ".swarm"
@@ -351,3 +377,51 @@ class TestFederatedKnowledge:
         response = fk.format_search_response("nonexistent")
         assert "🌐" in response
         assert "No cross-investigation" in response
+
+
+# ---------------------------------------------------------------------------
+# Dead-ends / negative findings (F1 — Negative-results corpus)
+# ---------------------------------------------------------------------------
+
+class TestSearchDeadEnds:
+    @patch("voronoi.gateway.knowledge._run_bd")
+    def test_returns_only_negative_findings(self, mock_bd, tmp_path):
+        db_path = tmp_path / "knowledge.db"
+        fk = FederatedKnowledge(db_path)
+
+        mock_bd.return_value = (0, json.dumps([
+            {"id": "bd-1", "title": "FINDING: Cache improves throughput",
+             "notes": "VALENCE:positive\nEFFECT_SIZE:2.3"},
+            {"id": "bd-2", "title": "FINDING: Dropout beyond 0.5 hurts accuracy",
+             "notes": "VALENCE:negative\nEFFECT_SIZE:-0.4"},
+            {"id": "bd-3", "title": "FINDING: No effect of batch size",
+             "notes": "VALENCE:negative\nEFFECT_SIZE:0.02"},
+        ]))
+        fk.sync_findings("inv-1", "Alpha", tmp_path)
+
+        results = fk.search_dead_ends(query="", max_results=10)
+        valences = {f.valence for f in results}
+        assert valences == {"negative"}
+        assert len(results) == 2
+
+    @patch("voronoi.gateway.knowledge._run_bd")
+    def test_filters_by_query(self, mock_bd, tmp_path):
+        db_path = tmp_path / "knowledge.db"
+        fk = FederatedKnowledge(db_path)
+
+        mock_bd.return_value = (0, json.dumps([
+            {"id": "bd-1", "title": "FINDING: Dropout hurts accuracy",
+             "notes": "VALENCE:negative"},
+            {"id": "bd-2", "title": "FINDING: Batch size irrelevant",
+             "notes": "VALENCE:negative"},
+        ]))
+        fk.sync_findings("inv-1", "Alpha", tmp_path)
+
+        results = fk.search_dead_ends(query="dropout", max_results=10)
+        assert len(results) == 1
+        assert "Dropout" in results[0].title
+
+    def test_empty_db_returns_empty(self, tmp_path):
+        db_path = tmp_path / "knowledge.db"
+        fk = FederatedKnowledge(db_path)
+        assert fk.search_dead_ends(query="") == []

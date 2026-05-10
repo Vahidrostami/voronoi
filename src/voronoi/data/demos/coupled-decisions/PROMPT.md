@@ -354,7 +354,7 @@ This converts the compression claim from "we select 15 from N" (trivially achiev
 18. **Deterministic metrics are primary evidence.** The paper MUST report Decision Regret and Constraint Violation Rate as co-primary. MBRS is descriptive only. If deterministic metrics contradict MBRS, the MBRS result is suspect — investigate the judge.
 19. **Code pre-filter is mandatory gate.** No finding may score >0 on the rubric unless it passes the code pre-filter (correct variables AND correct direction). This prevents the LLM judge from awarding credit to plausible-sounding but factually wrong findings.
 20. **Zero-information scenario gate.** If any scenario produces identical Decision Regret across all 4 cells (within ε=0.001), replace it — these waste budget and add noise. Check after Phase 1 pilot and after Phase 2 generation.
-21. **No LLM call may generate results.json.** The ANOVA, Cohen's d, CIs, and all statistical tests must be computed by deterministic Python code (scipy/numpy) from the cached rubric scores. The LLM is used only for (a) discovery calls and (b) judge calls — never for statistical computation.
+21. **No LLM call may generate experiment_metrics.json.** The ANOVA, Cohen's d, CIs, and all statistical tests must be computed by deterministic Python code (scipy/numpy) from the cached rubric scores. The LLM is used only for (a) discovery calls and (b) judge calls — never for statistical computation.
 22. **Decision Regret computation is deterministic.** Forward-simulation through the known DAG uses only numpy arithmetic. No LLM involvement. The DAG and SEM coefficients are stored in `ground_truth.json` per scenario.
 
 ---
@@ -417,7 +417,8 @@ Prior runs found these anti-patterns. Not hard rules, but documented traps:
 ```
 demos/coupled-decisions/
   output/
-    results.json            # Per-scenario per-cell per-run Decision Regret + Constraint Violation Rate + ANOVA
+    runner/
+      experiment_metrics.json # Per-scenario per-cell per-run Decision Regret + Constraint Violation Rate + ANOVA
     deterministic_metrics.json  # Variable Recall, Direction Accuracy, Rule Match, Scope Precision, Edge Recovery F1 per cell
     reliability_metrics.json    # Cross-run σ, failure rate per cell
     pipeline_scores.json    # Pipeline + random baseline comparison
@@ -443,7 +444,7 @@ When complete: delete agent branches, remove worktrees, kill tmux sessions.
 1. Phase 2 HARD GATE passed (at least one p<0.017 among the three planned tests)
 2. E3 pipeline compression + random baseline results logged to `output/pipeline_scores.json`
 3. Paper compiles with all figures from actual experimental data
-4. `output/results.json` contains complete per-scenario per-cell per-run Decision Regret + Constraint Violation Rate + ANOVA results
+4. `output/runner/experiment_metrics.json` contains complete per-scenario per-cell per-run Decision Regret + Constraint Violation Rate + ANOVA results
 5. `output/deterministic_metrics.json` contains Variable Recall, Direction Accuracy, Rule Match, Scope Precision, Edge Recovery F1 per cell
 6. `output/reliability_metrics.json` contains cross-run σ and failure rate per cell
 7. All 13 Success Criteria verified

@@ -18,10 +18,11 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Iterable, Optional
 
 logger = logging.getLogger("voronoi.science.claims")
 
@@ -59,6 +60,97 @@ _TRANSITIONS: dict[str, set[str]] = {
 OBJECTION_TYPES = {"confound", "power", "methodology", "interpretation", "scope", "other"}
 OBJECTION_STATUSES = {"pending", "investigating", "resolved", "dismissed", "surfaced"}
 ARTIFACT_TYPES = {"data", "code", "result", "figure", "model"}
+
+
+# ---------------------------------------------------------------------------
+# Claim statement validation
+# ---------------------------------------------------------------------------
+#
+# A Claim is a *proposition* about the world (testable assertion), not a task
+# directive. Without this distinction, the dispatcher's Beads-to-Ledger sync
+# has been observed to launder task titles like "Analyze pricing dataset for
+# five action-changing findings" into provisional claims, inflating the
+# ledger with verb-phrase ghost-claims that satisfy success criteria and
+# mask genuine learning stalls. See docs/SCIENCE.md §17 ("Claim Statement
+# Shape") and docs/INVARIANTS.md (INV-47).
+
+# Bare imperative verbs that signal "task directive, not proposition".
+# Matched case-insensitively at the start of the statement (word boundary).
+_BANNED_IMPERATIVE_PREFIXES = (
+    "analyze", "analyse", "investigate", "run", "check", "explore",
+    "examine", "study", "review", "assess", "evaluate", "test", "verify",
+    "look", "find", "identify", "determine", "survey",
+)
+
+# Relational markers that, if present, rescue an imperative-looking
+# statement (e.g. "test whether L4 > L1" — imperative form but carries a
+# concrete proposition). Matched with simple substring/word checks.
+_RELATIONAL_MARKERS = (
+    ">", "<", "=", "≥", "≤", "≠",
+    " vs ", " versus ", " causes ", " predicts ", " correlates ",
+    " increases ", " decreases ", " is ", " are ", " differs ",
+    " exceeds ", " outperforms ", " beats ",
+)
+
+_BANNED_PREFIX_RE = re.compile(
+    r"^\s*(" + "|".join(_BANNED_IMPERATIVE_PREFIXES) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def _normalize_statement(s: str) -> str:
+    """Normalize a statement for exact-match duplicate detection.
+
+    Lowercases, collapses whitespace, strips trailing punctuation. No
+    stemming, no embeddings — deterministic exact-match only.
+    """
+    if not s:
+        return ""
+    normalized = " ".join(s.lower().split())
+    return normalized.rstrip(".?!,; ")
+
+
+def validate_claim_statement(
+    statement: str,
+    existing: Iterable["Claim"] = (),
+) -> tuple[bool, str]:
+    """Check whether *statement* is a well-formed claim proposition.
+
+    Returns ``(True, "")`` if valid, else ``(False, reason)``.
+
+    Rejects:
+      - Empty or whitespace-only statements.
+      - Statements that start with a bare imperative verb (Analyze, Run,
+        Investigate, ...) AND contain no relational marker (``>``, ``vs``,
+        ``causes``, ...). Such statements are task directives, not claims.
+      - Exact duplicates (after normalization) of any existing claim.
+
+    Effect-size anchoring is *encouraged* but not required — hunches
+    without quantitative backing are still propositions.
+    """
+    if not statement or not statement.strip():
+        return False, "empty statement"
+
+    stripped = statement.strip()
+
+    m = _BANNED_PREFIX_RE.match(stripped)
+    if m:
+        lower = stripped.lower()
+        has_relational = any(marker in lower for marker in _RELATIONAL_MARKERS)
+        if not has_relational:
+            return (
+                False,
+                f"statement begins with imperative verb {m.group(1)!r} "
+                "and contains no relational marker — claims must be "
+                "propositions, not task directives",
+            )
+
+    normalized = _normalize_statement(stripped)
+    for c in existing:
+        if _normalize_statement(c.statement) == normalized:
+            return False, f"duplicate of existing claim {c.id}"
+
+    return True, ""
 
 
 # ---------------------------------------------------------------------------
@@ -171,7 +263,15 @@ class ClaimLedger:
         model_basis: str | None = None,
         artifacts: list[ClaimArtifact] | None = None,
     ) -> Claim:
-        """Add a new claim to the ledger. Returns the created Claim."""
+        """Add a new claim to the ledger. Returns the created Claim.
+
+        Raises ``ValueError`` if *statement* is not a well-formed claim
+        proposition (empty, bare-imperative task directive, or exact
+        duplicate). See ``validate_claim_statement`` for the rules.
+        """
+        ok, reason = validate_claim_statement(statement, self.claims)
+        if not ok:
+            raise ValueError(f"Invalid claim statement: {reason}")
         claim = Claim(
             id=f"C{self._next_claim_id}",
             statement=statement,
@@ -291,6 +391,10 @@ class ClaimLedger:
         """Get all challenged claims."""
         return [c for c in self.claims if c.status == STATUS_CHALLENGED]
 
+    def get_retired(self) -> list[Claim]:
+        """Get all retired claims (superseded/refuted)."""
+        return [c for c in self.claims if c.status == STATUS_RETIRED]
+
     def get_pending_objections(self) -> list[Objection]:
         """Get all unresolved objections."""
         return [o for o in self.objections
@@ -402,7 +506,7 @@ class ClaimLedger:
             lines.append(f"{badge} *{c.id}*: {c.statement}{ev}")
             lines.append(f"   Source: {prov_badge} | Cycle {c.source_cycle}")
             if c.supporting_findings:
-                lines.append(f"   Evidence: {', '.join(c.supporting_findings[:5])}")
+                lines.append(f"   Evidence refs: {', '.join(c.supporting_findings[:5])}")
             if c.challenges:
                 active = [ch for ch in c.challenges if ch.status in ("pending", "investigating")]
                 if active:
@@ -503,19 +607,38 @@ def _claim_to_dict(claim: Claim) -> dict:
     return d
 
 
+def _known_fields(cls: type) -> set[str]:
+    """Return the set of field names for a dataclass (for forward-compat filtering)."""
+    from dataclasses import fields as _fields
+    return {f.name for f in _fields(cls)}
+
+
+def _filter_keys(d: dict, cls: type) -> dict:
+    """Return *d* with only the keys that *cls* accepts."""
+    allowed = _known_fields(cls)
+    return {k: v for k, v in d.items() if k in allowed}
+
+
 def _dict_to_claim(d: dict) -> Claim:
-    """Reconstruct a Claim from a dict."""
-    # Reconstruct nested dataclasses
-    d["artifacts"] = [ClaimArtifact(**a) if isinstance(a, dict) else a
+    """Reconstruct a Claim from a dict.
+
+    Unknown keys (from future schema versions) are silently dropped so that
+    older code can still load newer ledger files without crashing.
+    """
+    # Reconstruct nested dataclasses (filter unknown keys there too)
+    d["artifacts"] = [ClaimArtifact(**_filter_keys(a, ClaimArtifact)) if isinstance(a, dict) else a
                       for a in d.get("artifacts", [])]
-    d["challenges"] = [Objection(**o) if isinstance(o, dict) else o
+    d["challenges"] = [Objection(**_filter_keys(o, Objection)) if isinstance(o, dict) else o
                        for o in d.get("challenges", [])]
-    return Claim(**d)
+    return Claim(**_filter_keys(d, Claim))
 
 
 def _dict_to_objection(d: dict) -> Objection:
-    """Reconstruct an Objection from a dict."""
-    return Objection(**d)
+    """Reconstruct an Objection from a dict.
+
+    Unknown keys are silently dropped for forward-compatibility.
+    """
+    return Objection(**_filter_keys(d, Objection))
 
 
 def _ledger_to_dict(ledger: ClaimLedger) -> dict:
@@ -529,12 +652,52 @@ def _ledger_to_dict(ledger: ClaimLedger) -> dict:
 
 
 def _dict_to_ledger(d: dict) -> ClaimLedger:
-    """Reconstruct a ClaimLedger from a dict."""
+    """Reconstruct a ClaimLedger from a dict.
+
+    Applies the :func:`validate_claim_statement` shape check to every
+    incoming claim (BUG-006).  Legacy ledgers — produced before the
+    Beads-to-Ledger launderer was fixed — contain entries whose
+    statements are bare imperatives like ``"Analyze pricing dataset"``.
+    Those entries have ``effect_summary=None`` and no challenges and
+    merely pollute the Telegram "new claim" stream.  They are dropped
+    on load with a WARNING that tells operators to inspect the ledger.
+
+    IDs of surviving claims are preserved, so existing references
+    (``supporting_findings``, objections) stay valid.
+    """
     ledger = ClaimLedger()
-    ledger.claims = [_dict_to_claim(c) for c in d.get("claims", [])]
+    dropped = 0
+    for raw in d.get("claims", []):
+        try:
+            claim = _dict_to_claim(raw)
+        except (TypeError, ValueError) as e:
+            logger.warning("Skipping malformed claim in ledger: %s", e)
+            dropped += 1
+            continue
+        ok, reason = validate_claim_statement(claim.statement, ledger.claims)
+        if not ok:
+            # Allow exact-duplicates-of-existing through if this is a
+            # legacy ledger where the SAME imperative was recorded many
+            # times; but drop the duplicate itself.  Shape violations
+            # (imperative-prefix) are dropped unconditionally.
+            logger.warning(
+                "Dropping legacy/invalid claim %s on load: %s (statement=%r)",
+                claim.id, reason, claim.statement[:80],
+            )
+            dropped += 1
+            continue
+        ledger.claims.append(claim)
     ledger.objections = [_dict_to_objection(o) for o in d.get("objections", [])]
-    ledger._next_claim_id = d.get("_next_claim_id", len(ledger.claims) + 1)
+    # Preserve next-id counters from disk so new claims never collide
+    # with dropped-but-referenced IDs.
+    ledger._next_claim_id = d.get("_next_claim_id", len(ledger.claims) + 1 + dropped)
     ledger._next_objection_id = d.get("_next_objection_id", len(ledger.objections) + 1)
+    if dropped:
+        logger.warning(
+            "Claim ledger: quarantined %d invalid/legacy entries on load. "
+            "Run `voronoi ledger prune` to persist the cleanup.",
+            dropped,
+        )
     return ledger
 
 
@@ -593,3 +756,82 @@ def resolve_lineage_id(investigation_id: int, get_fn) -> int:
             return current_id
         current_id = inv.parent_id
     return current_id
+
+
+# ---------------------------------------------------------------------------
+# Cross-lineage iteration (dead-ends query + observability)
+# ---------------------------------------------------------------------------
+
+def iter_all_ledgers(base_dir: Path | None = None):
+    """Yield ``(lineage_id, ClaimLedger)`` for every ledger on disk.
+
+    Used by the dead-ends query and cross-lineage knowledge recall.  Lineages
+    whose ledger file is missing or corrupt are skipped silently.
+    """
+    base = base_dir or (Path.home() / ".voronoi")
+    ledgers_dir = base / "ledgers"
+    if not ledgers_dir.is_dir():
+        return
+    for child in sorted(ledgers_dir.iterdir()):
+        if not child.is_dir():
+            continue
+        try:
+            lineage_id = int(child.name)
+        except ValueError:
+            continue
+        ledger = load_ledger(lineage_id, base_dir=base)
+        if ledger.claims or ledger.objections:
+            yield lineage_id, ledger
+
+
+# ---------------------------------------------------------------------------
+# Snapshot / diff helpers (progress-digest claim-delta surfacing)
+# ---------------------------------------------------------------------------
+
+def ledger_state_map(ledger: ClaimLedger) -> dict[str, str]:
+    """Return ``{claim_id: status}`` for cheap diffing across polls."""
+    return {c.id: c.status for c in ledger.claims}
+
+
+def diff_ledger_states(
+    old: dict[str, str],
+    new: dict[str, str],
+    ledger: ClaimLedger | None = None,
+) -> list[dict]:
+    """Return a list of claim-delta events for use in progress digests.
+
+    Each delta is a dict with keys: ``kind`` (``new`` | ``transition``),
+    ``claim_id``, ``from_status`` (or None for ``new``), ``to_status``,
+    ``statement`` (if ``ledger`` provided — first 80 chars for display).
+    Retirements are emitted so the digest can mark dead ends.
+    """
+    deltas: list[dict] = []
+    claim_lookup: dict[str, Claim] = (
+        {c.id: c for c in ledger.claims} if ledger is not None else {}
+    )
+    for claim_id, new_status in new.items():
+        old_status = old.get(claim_id)
+        if old_status is None:
+            deltas.append({
+                "kind": "new",
+                "claim_id": claim_id,
+                "from_status": None,
+                "to_status": new_status,
+                "statement": _statement_preview(claim_lookup.get(claim_id)),
+            })
+        elif old_status != new_status:
+            deltas.append({
+                "kind": "transition",
+                "claim_id": claim_id,
+                "from_status": old_status,
+                "to_status": new_status,
+                "statement": _statement_preview(claim_lookup.get(claim_id)),
+            })
+    return deltas
+
+
+def _statement_preview(claim: Claim | None, max_len: int = 80) -> str:
+    if claim is None:
+        return ""
+    stmt = claim.statement or ""
+    return stmt if len(stmt) <= max_len else stmt[: max_len - 1] + "…"

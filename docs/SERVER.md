@@ -2,7 +2,7 @@
 
 > Investigation queue, dispatcher, workspace provisioning, sandbox isolation, prompt building, publishing.
 
-**TL;DR**: `queue.py` = SQLite lifecycle (queued→running→complete). `dispatcher.py` polls queue, provisions workspaces, monitors progress; delegates tmux to `tmux.py`. `snapshot.py` = read-only workspace state capture (shared by dispatcher + gateway). `prompt.py` = single source of truth for all orchestrator prompts. `workspace.py` provisions with git clone/worktree. `sandbox.py` = optional Docker. All in `src/voronoi/server/`.
+**TL;DR**: `queue.py` = SQLite lifecycle (queued→running→complete). `dispatcher.py` polls queue, provisions workspaces, monitors progress; delegates tmux to `tmux.py`. `snapshot.py` = read-only workspace state capture (shared by dispatcher + gateway). `prompt.py` = single source of truth for all orchestrator prompts. `workspace.py` provisions with git clone/worktree. `provenance.py` writes LLM-call provenance records for experiment runners. `sandbox.py` = optional Docker. All in `src/voronoi/server/`.
 
 ## 1. Module Map
 
@@ -15,6 +15,7 @@ src/voronoi/server/
 ├── snapshot.py       # WorkspaceSnapshot — read-only .swarm/ state capture
 ├── prompt.py         # Unified orchestrator prompt builder
 ├── workspace.py      # Workspace provisioning (clone, worktree, init)
+├── provenance.py     # LLM-call provenance writer/reader
 ├── sandbox.py        # Docker sandbox isolation
 ├── runner.py         # Server config, queue runner, slug generation
 ├── publisher.py      # GitHub publishing of investigation results
@@ -27,7 +28,7 @@ src/voronoi/server/
 
 ### Purpose
 
-SQLite-backed investigation lifecycle management. Global queue (`~/.voronoi/queue.db`) shared across all investigations.
+SQLite-backed investigation lifecycle management. Global queue (`<base-dir>/queue.db`, default `~/.voronoi/queue.db`) shared across all investigations.
 
 ### Investigation Data Structure
 
@@ -130,6 +131,7 @@ class InvestigationQueue:
     def get_queued(self) -> list[Investigation]: ...
     def queue_position(self, investigation_id: int) -> int: ...  # 0-based, -1 if not queued
     def find_by_repo(self, repo: str, status: str | None = None) -> list[Investigation]: ...
+    def find_by_codename(self, codename: str, statuses: tuple[str, ...] | None = None) -> list[Investigation]: ...
 
     # Display
     def format_status(self) -> str: ...  # Telegram-formatted
@@ -187,24 +189,92 @@ The dispatcher is the server's main loop. It polls the queue, provisions workspa
 ```python
 @dataclass
 class DispatcherConfig:
-    base_dir: Path           # ~/.voronoi (default)
+    base_dir: Path           # ~/.voronoi unless overridden
     max_concurrent: int      # 2 — max simultaneous investigations
-    max_agents: int          # 4 — max agents per investigation
+    max_agents: int          # 6 — max parallel hypothesis-tranches per investigation (see INV-46)
     agent_command: str       # "copilot" (default)
     agent_flags: str         # "--allow-all" (default)
     orchestrator_model: str  # "" — use default
     worker_model: str        # "" — use default
     progress_interval: int   # 30 seconds between progress checks
-    timeout_hours: int       # 48 — max investigation runtime
+    timeout_hours: int | None # None — no default wall-clock kill; positive values are explicit review budgets
     max_retries: int         # 2 — retry failed launches
     stall_minutes: int       # 45 — minutes without progress before warning
-    pause_timeout_hours: int # 24 — auto-fail paused investigations after this
+    learning_stall_minutes: int   # 20 — legacy knob, retained for digest context
+    stall_strike1_minutes: int    # 30 — strike 1: diagnose_and_steer directive
+    stall_strike2_minutes: int    # 60 — strike 2: pivot_or_declare directive
+    stall_strike3_minutes: int    # 90 — strike 3: final_steer directive (no kill yet)
+    stall_final_grace_minutes: int # 20 — extra quiet window past strike 3 before partial review
+    pause_timeout_hours: int | None # None — paused investigations wait indefinitely by default
     context_advisory_hours: int   # 6 — "prioritize convergence" directive
     context_warning_hours: int    # 10 — "delegate remaining work" + force compact
     context_critical_hours: int   # 14 — force context restart
     compact_interval_hours: int   # 6 — workspace state compaction interval
     max_context_restarts: int     # 2 — max proactive context refreshes
 ```
+
+### Progress Event Synthesis
+
+Every progress poll writes an **investigation status snapshot** to
+`.swarm/run-status.json` and `.swarm/health.md` from the current
+`WorkspaceSnapshot`, dispatcher state, checkpoint, sentinel audit, and Beads
+task snapshot. This is the canonical PI/operator status surface: current phase,
+active/ready work, gate states, expected next action, and short human-readable
+summary. It does not replace Beads; it projects Beads plus `.swarm/` state into
+a single concise view. When a live agent session keeps the embedded Beads
+database locked and the dispatcher cannot refresh the task list, the snapshot
+uses the last dispatcher task cache or checkpoint task counters instead of
+publishing zero visible work.
+
+Beyond the worker-emitted event stream, the dispatcher synthesizes three classes of events on every poll:
+
+1. **Claim deltas** (`_synthesize_claim_deltas`) — diffs the persistent claim ledger at `~/.voronoi/ledgers/<lineage_id>/claim-ledger.json` against the last-seen state stored on `RunningInvestigation.last_ledger_map`. Emits synthetic `{"type": "claim_delta", "kind": "new"|"transition", "claim_id", "from_status", "to_status", "statement"}` events. The first call after dispatcher start seeds the baseline without emitting events (`_ledger_baseline_seeded`), so restarts do not re-announce the full ledger. Consumed by `build_digest` — see GATEWAY.md §8.
+2. **Learning-stall escalation** (`_update_learning_activity`) — resets `RunningInvestigation.last_learning_activity_at` AND `stall_strike_level` on any `finding` event or any `claim_delta` with `kind="transition"`. New-provisional claims alone do NOT count as learning. A `task_done` event resets only the activity timer (not the strike level) so productive merges of infra worker-branches give the orchestrator budget headroom without declaring the stall "solved." **BUG-002 fix:** Stall evaluation now runs **every due poll cycle**, not just when events are sent. The dispatcher synthesizes claim deltas and calls `_update_learning_activity()` in `poll_progress()` before checking if events are non-empty, so quiet polls (no task changes, no findings, no event log entries) still advance the stall escalator. This fixes the class of bugs where an investigation could hang silently past strike thresholds without triggering self-steer directives because `_send_progress_batch()` — the old location of stall evaluation — was never called. Stall escalation is a **self-steer feedback loop**, not a death spiral: each strike injects a richer diagnostic directive (plus a belief-snapshot drawn from the orchestrator checkpoint) back into the next orchestrator prompt. If three self-steer prompts still produce no learning, strike 4 parks the run into durable **partial review** instead of failing it: the dispatcher writes diagnosis artifacts, stops the stale tmux session, transitions the queue row to `review`, and surfaces review/continue/complete commands so the PI can act later.
+3. **Graph-health audit** (`_check_graph_health`) — for `mode="prove"` or Analytical+ rigor, audits the closed Beads DAG every poll, persists `.swarm/graph-health.json`, and emits a `swarm_degenerate` event plus dispatcher directive when orphan ratio or sibling-title clustering crosses INV-58 thresholds.
+
+   | Strike | Threshold | Directive | Side effects |
+   |:-:|---|---|---|
+   | 1 | `stall_strike1_minutes` (default 30) × phase multiplier | `diagnose_and_steer` — stall observed; orchestrator receives a belief snapshot (lifecycle phase, active workers, next actions, open-task count) and must pick ONE action next cycle: (a) split the hardest open task into smaller verifiable sub-tasks, (b) mark the stuck task BLOCKED and switch focus to an alternative hypothesis, or (c) declare a negative / null finding (evidence that a path does not work IS learning). No new planning tasks. | Writes `.swarm/stall-signal.json` with `diagnosis` block; fires `format_learning_stalled(...)` Telegram notification |
+   | 2 | `stall_strike2_minutes` (default 60) × phase multiplier | `pivot_or_declare` — previous self-steer did not yield learning. Orchestrator must act decisively this cycle: pivot to an alternative hypothesis from the belief map and dispatch an experiment task for it, OR declare partial findings with whatever evidence exists. Planning tasks remain forbidden. | Overwrites `.swarm/stall-signal.json` with refreshed `diagnosis`; fires strike-2 Telegram notification including an extend-budget hint |
+   | 3 | `stall_strike3_minutes` (default 90) × phase multiplier | `final_steer` — final self-steer prompt. Orchestrator must emit at minimum one of: a negative finding, a BLOCKED declaration on the stuck claim, or a partial deliverable at `.swarm/deliverable-partial.md`. Run is **not** killed at this level — the dispatcher gives an additional `stall_final_grace_minutes` window for the orchestrator to produce any learning event or declared partial deliverable. | Overwrites `.swarm/stall-signal.json` with refreshed `diagnosis`; fires strike-3 Telegram notification including the grace window and an extend-budget hint |
+    | 4 | strike 3 + `stall_final_grace_minutes` (default 20) | `partial_review` — durable decision point. Internal level; never surfaced to the orchestrator because the stale session is being parked. | Writes `.swarm/deliverable-partial.md`, `.swarm/failure-diagnosis.json`, and `.swarm/convergence.json` with `status="partial"`; kills the stale tmux session; calls `queue.review(...)` without promoting provisional claims; writes a run manifest; fires a Telegram notification with review/continue/complete guidance |
+
+   **Phase-aware stall budgets.** The three thresholds above are multiplied at comparison time by a factor derived from `OrchestratorCheckpoint.lifecycle_phase`:
+
+   | `lifecycle_phase` | Multiplier | Use case |
+   |---|:-:|---|
+   | `"setup"` | 3.0 | Infra build-out — long-running worker tasks writing experiment harnesses, evaluators, runners. Findings are not expected yet. |
+   | `"explore"` / `"test"` | 1.0 | Normal hypothesis-driven work. |
+   | `"synthesize"` | 0.5 | Wrap-up — if findings have dried up here, close fast. |
+   | `""` (unset) | 2.0 if `phase ∈ {starting, scouting, planning}` else 1.0 | Inferred fallback so pre-existing runs still get setup grace. |
+
+   The orchestrator declares its lifecycle phase in `.swarm/orchestrator-checkpoint.json` (field `lifecycle_phase`). The declaration is advisory — the dispatcher reads it each poll but the multipliers are fixed by the table above; an orchestrator cannot lengthen its setup grace beyond 3× or its synthesize grace below 0.5× by choice of label.
+
+   `.swarm/stall-signal.json` has the shape `{"level": int, "directive": str, "instruction": str, "elapsed_minutes": float, "timestamp": str, "diagnosis": {...}}`. The `diagnosis` block is populated on every strike (1–3) and mirrors the orchestrator checkpoint (`lifecycle_phase`, `active_workers`, `next_actions`) plus the current open-task count — this is the belief-snapshot the next prompt injects. The orchestrator prompt builder (`server/prompt.py::build_orchestrator_prompt`) reads this file on every build and renders the `instruction` plus a bulleted view of the `diagnosis` under a `## ⚠ STALL DIRECTIVE` heading at the top of the prompt so the orchestrator sees it before anything else. Escalation is walked one strike at a time even when the run has been stalled long enough to warrant multiple strikes — each level's side effects fire exactly once.
+
+    **Human override (`/voronoi extend`).** The strike-2 and strike-3 Telegram messages prompt the PI with the extend command. Calling `/voronoi extend <codename> [minutes]` (default 60) invokes `InvestigationDispatcher.extend_run(...)`, which (a) grants explicit stall immunity for the requested window, (b) drops `stall_strike_level` back to 0, and (c) deletes `.swarm/stall-signal.json` so the next prompt build contains no stall directive. This is a convenience affordance, not the only rescue path: if the PI misses the message, strike 4 parks to review and `/voronoi status`, `/voronoi review <codename>`, `/voronoi continue <codename> [feedback]`, and `/voronoi complete <codename>` remain valid later. `/voronoi resume` remains scoped to paused or failed rows, not review-state rows.
+
+    **Wall-clock budget.** `timeout_hours` is disabled by default (`None`). Long-running scientific jobs are expected to run until convergence, explicit operator action, or a durable partial-review transition. A positive configured value or `.swarm/timeout_hours` file is treated as an explicit review budget: when reached, the dispatcher writes partial-review artifacts and transitions to `review` instead of failing the run. `0`, `off`, `none`, or `disabled` in `.swarm/timeout_hours` disable the budget for that run.
+
+   The progress digest (`gateway/progress.py::build_digest`) consumes `.swarm/stall-signal.json` on every build: while any stall level ≥ 1 is active, the "Still setting up — nothing to worry about yet." narrative line is suppressed and replaced with a strike-aware warning so the digest voice and the stall escalator agree.
+
+   During pre-task phases (`starting`, `scouting`, `planning` with empty `task_snapshot`) the escalator keeps quiet: early idle is expected.
+
+   Keeps quiet during pre-task phases (`starting`, `scouting`, `planning` with empty `task_snapshot`).
+
+3. **Evidence-gated epoch scaling** (`_update_epoch_on_learning`) — when a learning event (finding or claim transition) fires, the dispatcher also updates `.swarm/epoch-state.json` which tracks the current epoch, findings count, belief-map confidence tier changes, and the adaptive agent cap. When `EpochState.has_evidence` becomes true (at least one belief-map move in the current epoch) and the cap is below `max_agents`, the epoch auto-advances:
+
+   | Epoch | Max Tranches | Unlocked by |
+   |:-----:|:------------:|-------------|
+   | 1 | 2 | Default — prove the approach works |
+   | 2 | 4 | Epoch 1 produced evidence (belief map moved) |
+   | 3+ | 6 (or `max_agents`) | Epoch 2 produced evidence |
+
+   The orchestrator prompt (`server/prompt.py`) injects the current epoch constraints and instructs the orchestrator to read `epoch-state.json` each OODA cycle and respect the `max_tranches` cap. The progress digest (`gateway/progress.py`) shows the learning rate and epoch info.
+
+   Belief-map moves are detected by snapshotting each hypothesis's confidence tier on `RunningInvestigation._prior_belief_snapshot` and comparing to the current belief map on each learning event.
+
+4. **Structured failure diagnosis** (`_write_failure_diagnosis`) — on partial-review parking (stall strike 4 or explicit review budget) and on `_handle_completion(failed=True)`, the dispatcher writes `.swarm/failure-diagnosis.json` via `convergence.build_failure_diagnosis()`. This contains: met/unmet criteria with per-criterion diagnosis (NOT_TESTED vs TESTED_BUT_UNMET), systemic issues (zero experiments, all crashed, never past epoch 1, untested hypotheses), epoch history, and a proposed action. The warm-start builder (`build_warm_start_context`) reads this file and injects it into continuation prompts so the next round's orchestrator knows exactly what failed and why.
 
 ### Copilot CLI Flags
 
@@ -218,7 +288,7 @@ The dispatcher injects several Copilot CLI flags at launch time:
 
 Both orchestrator and worker tmux launches also propagate Copilot CLI auth/state environment needed for durable restarts: `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`, `COPILOT_HOME`, and `GH_HOST`. This ensures a resumed agent uses the same stored Copilot state directory and GitHub host selection as the parent server process, rather than falling back to a fresh login prompt.
 
-Server runtime also reserves `~/.voronoi/tmp` as the shared temp root. `voronoi server start` exports `TMPDIR`, `TMP`, and `TEMP` to that directory, and `_launch_in_tmux()` relays the same values into orchestrator sessions so worker-side tests and scratch files stay under server state instead of falling back to the system `/tmp`.
+Server runtime also reserves `<base-dir>/tmp` as the shared temp root (default `~/.voronoi/tmp`). `voronoi server start` exports `TMPDIR`, `TMP`, and `TEMP` to that directory, and `_launch_in_tmux()` relays the same values into orchestrator sessions so worker-side tests and scratch files stay under server state instead of falling back to the system `/tmp`.
 
 **Effort-by-rigor mapping** (applied in `_launch_in_tmux()` and `spawn-agent.sh`):
 
@@ -238,6 +308,13 @@ Server runtime also reserves `~/.voronoi/tmp` as the shared temp root. `voronoi 
 | `review_stats` | `--allow-all --deny-tool=write` |
 | `review_method` | `--allow-all --deny-tool=write` |
 | All others | `--allow-all` (default) |
+
+When `spawn-agent.sh --safe` is used, safe deny-list flags from
+`agent_flags_safe` remain active and role permissions are composed on top of
+them. Role permissions MUST NOT replace the safe flag set; broadening flags
+such as `--allow-all` are ignored in safe mode while restrictive role flags
+such as `--deny-tool=write` are preserved. Without `--safe`, role permissions
+continue to replace the default worker permission profile.
 
 ### RunningInvestigation
 
@@ -297,6 +374,7 @@ class InvestigationDispatcher:
 3. Call `queue.next_ready(max_concurrent)` to claim the next queued investigation
 4. Spawn a **background thread** (`_launch_investigation_safe`) for the potentially slow provisioning + launch — this prevents the 10-second scheduler tick from being blocked by `git clone` (which can take minutes for large repos)
 5. The background thread provisions workspace via `workspace_mgr`, copies demo files, builds prompt, launches in tmux, adds to `self.running`, and clears `_launching` when done
+    - The full orchestrator prompt is written to `.swarm/orchestrator-prompt.txt`; the Copilot CLI `-p` argument receives only a short bootstrap instruction telling the agent to read that file first. This keeps large prompts out of OS argv while preserving Copilot's documented `-p <text>` interface.
 6. `_recover_running()` skips investigations in `_launching` to avoid interfering with in-progress launches
 
 ### Progress Polling
@@ -346,10 +424,15 @@ Wake conditions (`_needs_orchestrator()`):
 
 Worker liveness (`_has_active_workers()`):
 1. Reads the swarm tmux session name from `.swarm-config.json` (`tmux_session` field, written by `swarm-init.sh`). Falls back to `{orchestrator_session}-swarm` if the config file is missing.
-2. Checks if any workers listed in the checkpoint have a matching tmux window in the swarm session **with an active agent process** — uses `tmux list-panes -F #{pane_current_command}` to verify the pane is running an agent (not a leftover shell like `bash`/`zsh`).
-3. Falls back to `pgrep` for orphaned processes whose cwd is inside the workspace.
+2. **Reconciles checkpoint against Beads (INV-49).** `active_workers` in the checkpoint is orchestrator self-report — it can be stale or simply wrong when the orchestrator crashed mid-update. The dispatcher calls `_bd_in_progress_task_ids()` (`bd list --status in_progress --json` scoped to the workspace) and augments the worker-candidate list with any task IDs that are in-progress in Beads but absent from the checkpoint. This closes the class of bugs where a stale `active_workers=[]` caused the dispatcher to restart the orchestrator and spawn a duplicate Scribe/Evaluator on identical data.
+3. Checks if any candidate worker has a matching tmux window in the swarm session **with an active agent process** — uses `tmux list-panes -F #{pane_current_command}` to verify the pane is running an agent (not a leftover shell like `bash`/`zsh`). **Window/pane targeting (BUG-003 fix):** Because `active_workers` contains short task IDs like `bd-66`, but tmux window names are full like `agent-scribe-bd-66`, the dispatcher performs a substring match to find the correct window, then **preserves the matched full window name** for the subsequent `list-panes` call. The dispatcher uses tmux exact-match syntax (`session:=window` form) to target the specific window — the old substring-match target `:bd-66` would fail with "window not found" because tmux requires the full name.
+4. Falls back to `pgrep` for orphaned processes associated with this workspace. Association is confirmed either by argv substring (common when the workspace path is passed as a CLI arg) **or** by inspecting each candidate PID's working directory via `lsof -a -p <pid> -d cwd -Fn` (agents launched with `tmux new-window -c <workspace>` get the workspace as CWD, not argv — the argv-only check would otherwise miss them).
 
-**Park timeout safety net**: If the orchestrator remains parked longer than `park_timeout_hours` (default 4h), the dispatcher force-wakes it regardless of worker state. This prevents indefinite stall if liveness detection has a false positive.
+**Park timeout safety net**: If the orchestrator remains parked longer than `park_timeout_hours` (default 4h), the dispatcher checks worker liveness before force-waking. If workers are still alive, the park is extended (the timeout resets) — this prevents premature wake during long-running experiments. If workers are dead, the dispatcher force-wakes normally. This avoids the pathological case where a force-woken orchestrator enters a `sleep && poll` loop waiting for a healthy worker to finish.
+
+The timeout is measured from `park_entered_at` (set once when the orchestrator first parks and on explicit extensions), **not** from `last_parked_digest_at` (which is a Telegram-digest throttle that resets every 5 minutes). Using the digest timestamp would defeat the safety net for any investigation generating events more often than every 5 minutes.
+
+**Polling watchdog**: On every progress poll for a live, non-parked orchestrator, the dispatcher samples `tmux display-message -p '#{pane_current_command}'` on the orchestrator's pane via `_check_orchestrator_polling()`. The orchestrator protocol requires checkpoint-and-exit between OODA cycles, so a pane running `sleep` has violated the protocol (e.g., because of stale prompt text telling it to poll a human gate). After `POLLING_STRIKE_THRESHOLD` consecutive strikes (default 3 ≈ 60–90s), the dispatcher kills the session and calls `_force_context_restart()`, which uses the dedicated `context_restarts` counter (not `retry_count`) and writes a fresh resume prompt so the reborn session does not inherit the polling directive.
 
 Findings and serendipity are accumulated and delivered in the resume prompt — they do NOT trigger immediate wake because they are not time-sensitive. The orchestrator evaluates them with fresh context.
 
@@ -378,10 +461,14 @@ When a science investigation completes, `_transition_to_review()`:
 
 ### Human Review Gates (Scientific+ Rigor)
 
-At Scientific and Experimental rigor, the orchestrator can pause for human approval by writing `.swarm/human-gate.json` with `status: "pending"`. The dispatcher detects this via `check_human_gates()`, **kills the tmux session** to truly pause execution, and sends a Telegram message with `/approve <id>` or `/revise <id> <feedback>` options. On approval, the dispatcher **restarts the agent** with a resume prompt. A gate-pending dead session is NEVER routed through crash-retry logic. Methods:
+At Scientific and Experimental rigor, the orchestrator can pause for human approval by writing `.swarm/human-gate.json` with `status: "pending"`. The orchestrator prompt instructs it to **park and exit** at the gate — write the gate file, write a checkpoint with `active_workers: []` and `phase: "awaiting-human-gate"`, and terminate. It must NOT poll the gate file in-session; a polling orchestrator violates the checkpoint-and-exit invariant and burns its context window while the dispatcher waits for it to die.
+
+The dispatcher detects the pending gate via `check_human_gates()`, **kills the tmux session** if still alive to truly pause execution (INV-32), and sends a Telegram message with `/approve <id>` or `/revise <id> <feedback>` options. On approval, the dispatcher **restarts the agent** with a resume prompt on a fresh session. A gate-pending dead session is NEVER routed through crash-retry logic. Methods:
 
 - `approve_human_gate(investigation_id, feedback)` — approves the gate and restarts the agent
 - `revise_human_gate(investigation_id, feedback)` — requests revision with feedback and restarts the agent
+
+If an older orchestrator binary is still running with a pre-park-and-exit prompt, the polling watchdog described above will catch it and force a context refresh with the current prompt.
 
 ### Structured Event Log
 
@@ -435,6 +522,15 @@ The completion gate uses the **effective rigor** (`_effective_rigor()`): if an a
 
 The convergence status check (`_convergence_status_ok`) accepts `converged`, `CONVERGED`, or any case variant for all valid statuses (`converged`, `exhausted`, `diminishing_returns`, `negative_result`). It also checks the legacy `converged: true` boolean field.
 
+**Hard DESIGN_INVALID gate (BUG-001 fix):** When `_is_complete()` is about to declare completion (deliverable + convergence signals are present), the dispatcher performs a **hard check against Beads source-of-truth** via `_has_open_design_invalid_hard_check()` instead of trusting the cached `task_snapshot`. This prevents the class of bugs where:
+- Orchestrator session dies with DESIGN_INVALID tasks open in Beads, OR
+- Orchestrator session is alive but `_check_progress(session_alive=True)` skipped `bd list --json` to avoid lock contention
+- `task_snapshot` is stale/empty (e.g., after dispatcher restart or no recent task updates)
+- The cached `_has_open_design_invalid()` check passes because the snapshot has no DESIGN_INVALID flags
+- The investigation is incorrectly marked complete despite unresolved experimental validity failures
+
+The hard check calls `bd list --json` and scans for any non-closed task with "DESIGN_INVALID" in its notes. If found, completion is blocked and the investigation is marked failed with a diagnostic message. The check is deferred until completion is otherwise plausible (deliverable + convergence exist) to minimize lock contention — DESIGN_INVALID tasks are not checked on every poll cycle, only when completion signals indicate the investigation should be marked complete.
+
 ### Criteria Synchronization
 
 The dispatcher syncs `criteria_status` from the orchestrator checkpoint into `success-criteria.json` on each poll cycle via `_sync_criteria_from_checkpoint()`. This sync is promotion-only: checkpoint entries can mark a criterion as met, but they do not clear a criterion that is already marked met in the canonical file. That prevents stale or partial checkpoints from regressing canonical criteria state when the orchestrator updates its checkpoint but does not write back the full criteria file. The state digest generator also cross-references both sources, preferring whichever has more "met" values.
@@ -448,11 +544,12 @@ The dispatcher syncs `criteria_status` from the orchestrator checkpoint into `su
 3. **Negative result detection**: If convergence.json status is `negative_result`, send `format_negative_result()` instead of the standard teaser. This presents valid null findings as legitimate science rather than failure.
 4. On success: generate teaser via `ReportGenerator.build_teaser()`, generate PDF via `build_pdf()`, send teaser + document to Telegram
 5. On failure: extract log tail, send failure message via `format_failure()`
-6. **Federated knowledge sync**: Sync findings to `~/.voronoi/knowledge.db` for cross-investigation search
+6. **Federated knowledge sync**: Sync findings to `<base-dir>/knowledge.db` for cross-investigation search
 7. Try GitHub publish if `gh` CLI available
 8. Clean up agent worktrees — prune git worktrees, remove worktree directories, remove the `-swarm/` directory
-9. Remove `.swarm/.tmux-env` secrets file from workspace
-10. Clean `~/.voronoi/tmp` if no other investigations are running
+    - If removal is blocked, cleanup logs likely live lock holders using `lsof` (for example lingering `bd`, MCP, or agent processes) and leaves the main workspace intact for operator follow-up.
+9. Remove the per-session secrets env file (sibling of the workspace at `<base_dir>/active/.tmux-env-<session>`, outside the git repo — see INV-31). Also unlink any legacy `.swarm/.tmux-env` left over from prior dispatcher versions.
+10. Clean `<base-dir>/tmp` if no other investigations are running
 
 ### Agent Restart
 
@@ -503,18 +600,23 @@ The dispatcher exposes `resume_investigation(investigation_id)` for resuming `pa
 2. Validates the workspace still exists with an orchestrator prompt
 3. Transitions the queue status back to `running` via `queue.resume()`
 4. Resets `retry_count` to 0
-5. Builds a fresh resume prompt via `_build_resume_prompt()`
-6. Launches in tmux
-7. Adds back to `self.running` for monitoring
+5. **Park-aware check**: calls `_has_active_workers()` on the workspace
+   - If workers are still running → enters **park mode** (`orchestrator_parked = True`) without launching a new orchestrator. The dispatcher monitors and wakes the orchestrator when workers finish. Returns "resumed in monitor mode."
+   - If no workers running → proceeds to step 6
+6. Builds a fresh resume prompt via `_build_resume_prompt()`
+7. Launches in tmux
+8. Adds back to `self.running` for monitoring
 
-Paused investigations auto-fail after `pause_timeout_hours` (default 24h).
+The resume prompt includes anti-polling guidance identical to the cold orchestrator prompt: explicit prohibition of `sleep`, `ps aux | grep`, and inline long-running scripts. The orchestrator is instructed to write a checkpoint with `active_workers` and EXIT if it discovers workers are still running.
+
+Paused investigations do not auto-fail by default. If an operator explicitly sets `pause_timeout_hours` to a positive value, the dispatcher may fail paused rows after that window, but the default product behavior assumes the PI can miss Telegram messages and return later.
 
 ### Abort Handling
 
 `_handle_abort(inv_id)` aborts a specific running investigation (or all if no ID given):
 - Reads `.swarm/abort-signal` file written by `handle_abort()` in router
 - Each signal file aborts only the investigation whose workspace contains it
-- Global signal file (`~/.voronoi/.swarm/abort-signal`) aborts all running investigations
+- Global signal file (`<base-dir>/.swarm/abort-signal`, default `~/.voronoi/.swarm/abort-signal`) aborts all running investigations
 - Kills tmux sessions
 - Marks investigations as **cancelled** via `queue.abort()` (`running → cancelled`)
 - Cancelled investigations are NOT resumable (unlike failed ones)
@@ -562,8 +664,8 @@ The prompt is intentionally compact (~190 lines) to preserve context budget for 
 | 3 | Mission | Mode/rigor, workspace, project brief path |
 | 4 | Personality | Excitement, brain metaphors, factual focus |
 | 5 | Science | Mode + rigor-aware sections (human gates for scientific+) |
-| 5b | Problem Positioning | **DO NOT REPEAT KNOWN SCIENCE** — references scout brief, novelty gate |
-| 6 | Creative Freedom | DISCOVER mode: dynamic roles, serendipity, adaptive rigor escalation |
+| 5b | Problem Positioning | **DO NOT REPEAT KNOWN SCIENCE** — requires scout brief and novelty gate; missing gate after Scout is blocked setup |
+| 6 | Creative Freedom | DISCOVER mode: dynamic roles after Scout novelty gate clears, serendipity, adaptive rigor escalation |
 | 7 | Investigation invariants | `.swarm/invariants.json` enforcement |
 | 8 | REVISE task support | References `revise-calibration` skill |
 | 9 | OODA Protocol | Compact — references role file, dispatcher directives |
@@ -601,6 +703,15 @@ The prompt **references** `.github/agents/*.agent.md` files in the target worksp
 | `exploration` | `deep-research`, `context-management` |
 
 Skills are referenced as paths (e.g., `.github/skills/deep-research/SKILL.md`) in the worker prompt. The agent reads them at task start.
+
+Task type selection is strict: `build_worker_prompt()` accepts the documented
+task types and natural role-name aliases, and raises `ValueError` for truly
+unknown values instead of silently falling back to the generic worker role.
+Aliases share the canonical role and skill behavior: `worker`/`builder` →
+`build`, `investigator` → `investigation`, `explorer` → `exploration`,
+`critic` → `review_critic`, `statistician` → `review_stats`, `methodologist`
+→ `review_method`, `theorist` → `theory`, `synthesizer` → `synthesis`, and
+`evaluator` → `evaluation`.
 
 ### Scribe Format Enforcement
 
@@ -674,9 +785,14 @@ class WorkspaceManager:
     def provision_lab(self, investigation_id: int, slug: str,
                       question: str) -> WorkspaceInfo: ...
     def get_workspace_path(self, investigation_id: int, slug: str) -> Path | None: ...
-    def cleanup(self, investigation_id: int, slug: str) -> bool: ...
+    def cleanup(self, investigation_id: int, slug: str,
+                diagnostics: list[str] | None = None) -> bool: ...
+    def cleanup_path(self, workspace_path: str | Path,
+                     diagnostics: list[str] | None = None) -> bool: ...
     def list_active(self) -> list[str]: ...  # Excludes -swarm directories
 ```
+
+`cleanup_path()` canonicalizes the requested target and `active/` root before deleting anything. It only accepts direct `inv-{id}-{slug}/` children of `active/`, refuses nested paths or paths outside `active/`, refuses direct `*-swarm` targets as the main cleanup target, and only removes the sibling `*-swarm/` directory constructed from a validated workspace path.
 
 ### Provisioning Steps
 
@@ -690,7 +806,7 @@ class WorkspaceManager:
 2. Initialize git repo
 3. Write `PROMPT.md` with user question
 4. Run `voronoi init`
-5. Initialize Beads in **server mode** (`bd init --quiet --server`) so the dispatcher can query tasks concurrently while the agent's MCP server holds the database open
+5. Initialize Beads in **server mode** (`bd init --quiet --server`) so the dispatcher can query tasks concurrently while the agent's MCP server holds the database open. A Beads CLI without `--server` support is not a supported server-workspace dependency; provisioning fails with an upgrade message instead of launching an investigation with embedded-mode locks.
 
 ### Workspace Naming Convention
 
@@ -772,7 +888,7 @@ class ServerConfig:
     def __init__(self, base_dir: str | None = None): ...
 
     # Server settings
-    base_dir: Path                        # ~/.voronoi
+    base_dir: Path                        # ~/.voronoi unless overridden
     max_concurrent: int                   # 2
     max_agents_per_investigation: int     # 4
     agent_command: str                    # "copilot"
@@ -794,12 +910,13 @@ class ServerConfig:
 
 ### Config File Location
 
-`~/.voronoi/config.json` — JSON with sections: `server`, `github`, `sandbox`.
+`<base-dir>/config.json` — JSON with sections: `server`, `github`, `sandbox`. The base directory is `~/.voronoi` unless explicitly passed by the CLI or set with `VORONOI_BASE_DIR`.
 
 ### Environment Variable Overrides
 
 | Env Var | Config Key |
 |---------|-----------|
+| `VORONOI_BASE_DIR` | `base_dir` |
 | `VORONOI_AGENT_COMMAND` | `agent_command` |
 | `VORONOI_ORCHESTRATOR_MODEL` | `orchestrator_model` |
 | `VORONOI_WORKER_MODEL` | `worker_model` |

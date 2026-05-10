@@ -128,6 +128,7 @@ Central dispatch point for all user actions. Every Telegram command and programm
 | `handle_belief(project_dir) -> str` | Current belief map |
 | `handle_finding(project_dir, finding_id) -> str` | Single finding detail |
 | `handle_claims(project_dir, identifier) -> str` | Current claim ledger state |
+| `handle_dead_ends(project_dir, query) -> str` | Cross-lineage retired/challenged claims + negative findings (see §-dead-ends) |
 | `handle_results(project_dir) -> str` | Recent investigation results |
 | `handle_ops(project_dir, sub, *, ops_allowed) -> str` | Ops diagnostics (see §13) |
 
@@ -138,24 +139,31 @@ Central dispatch point for all user actions. Every Telegram command and programm
 | `handle_reprioritize(project_dir, task_id, priority) -> str` | Changes task priority |
 | `handle_pause(project_dir, task_id) -> str` | Pauses a task |
 | `handle_resume(project_dir, task_id) -> str` | Resumes a paused task |
-| `handle_resume_investigation(project_dir, inv_id_or_codename) -> str` | Resumes a paused/failed investigation |
+| `handle_resume_investigation(project_dir, inv_id_or_codename) -> str` | Resumes a paused/failed investigation; review/partial-review investigations use `continue` or `complete` |
 | `handle_add(project_dir, task_desc) -> str` | Creates new task |
 | `handle_complete(project_dir, task_id, reason) -> str` | Closes a Beads task (bd-xxx) |
 | `handle_complete_investigation(project_dir, id_or_codename) -> str` | Accepts and closes a reviewed investigation |
 | `handle_abort(project_dir, inv_id) -> str` | Aborts investigation |
 | `handle_pivot(project_dir, inv_id, new_question) -> str` | Pivots investigation question |
 | `handle_guide(project_dir, message) -> str` | Writes operator guidance to active workspaces |
+| `handle_extend(project_dir, codename, minutes) -> str` | Grants additional stall budget — clears `.swarm/stall-signal.json`, resets the learning timer, and resets strike level. Surfaced by strike Telegram notifications, but missed notifications remain recoverable because strike 4 parks to `review`. Default 60 minutes. See SERVER.md §3. |
 
 ### Iterative Science Handlers
 
 | Function | Effect |
 |----------|--------|
 | `handle_review_investigation(project_dir, id_or_codename) -> str` | Show Claim Ledger in review format |
+| `handle_review_negative(project_dir, id_or_codename) -> str` | Record and show a lockable Negative Result Review for retired/falsified claims |
+| `handle_lock_negative(project_dir, id_or_codename, claim_id) -> str` | Lock a generated negative-result review claim |
 | `handle_continue_investigation(project_dir, id_or_codename, feedback) -> str` | Create continuation run with PI feedback |
 | `handle_complete_investigation(project_dir, id_or_codename) -> str` | Accept and close a reviewed investigation |
 | `handle_claims(project_dir, id_or_codename) -> str` | Show current claim ledger state |
 
-These handlers interact with the Claim Ledger (`~/.voronoi/ledgers/<lineage_id>/claim-ledger.json`). The `continue` handler parses natural-language feedback for `lock C1`, `challenge C2: reason` patterns and updates the ledger before creating the continuation investigation. PI feedback is stored in the `pi_feedback` field on `Investigation` — it is NOT appended to the question text. The dispatcher reads `pi_feedback` to build the warm-start prompt context.
+These handlers interact with the Claim Ledger (`<base-dir>/ledgers/<lineage_id>/claim-ledger.json`, default `~/.voronoi/ledgers/...`). The gateway resolves `<base-dir>` from `VORONOI_BASE_DIR` with fallback to `~/.voronoi`, matching `voronoi server --base-dir` once the CLI exports the environment variable to the bridge. The same base directory is used for `queue.db`, `active/`, global abort state, and federated knowledge. The `continue` handler parses natural-language feedback for `lock C1`, `challenge C2: reason` patterns and updates the ledger before creating the continuation investigation. PI feedback is stored in the `pi_feedback` field on `Investigation` — it is NOT appended to the question text. The dispatcher reads `pi_feedback` to build the warm-start prompt context.
+
+`review-negative` is PI-driven and never launches agents. It creates an idempotent `run_evidence` review claim only when the ledger already contains retired/falsified source claims, then returns three explicit actions: `lock-negative` for durability, `deliberate` for successor-theory discussion, and `continue` with concrete feedback for a new round. Challenged-only claims are not durable negative evidence: the handler asks the PI to resolve or retire them before a lockable negative-result review can be recorded. `lock-negative` only locks generated negative-result review claims whose source claim references are retired, not arbitrary ledger claims.
+
+**No-info guard (INV-48):** `handle_continue_investigation` refuses to enqueue a new round when the prior run already converged (`.swarm/convergence.json` has `gate_passed=true`), a manuscript exists, feedback is empty, and the ledger has no pending objections. Partial-review runs are not blocked by this guard: `.swarm/failure-diagnosis.json`, `.swarm/deliverable-partial.md`, or unconverged `convergence.json` are treated as continuation signal. The refusal surfaces `/voronoi deliberate`, explicit `challenge Cn: <reason>`, scope-change feedback, or `/voronoi complete` as the legitimate next moves. This prevents the zero-information rerun that would otherwise just replay the Scribe/Evaluator finisher chain on identical data.
 
 ### Workflow Handlers
 
@@ -164,6 +172,20 @@ These handlers interact with the Claim Ledger (`~/.voronoi/ledgers/<lineage_id>/
 | `handle_discover(project_dir, question, chat_id) -> str` | DISCOVER | ADAPTIVE |
 | `handle_prove(project_dir, hypothesis, chat_id) -> str` | PROVE | SCIENTIFIC |
 | `handle_demo(project_dir, demo_name, chat_id, dry_run, safe) -> str` | (from demo) | (from demo) |
+| `handle_paper(project_dir, codename, chat_id) -> str` | PROVE + paper-track | SCIENTIFIC |
+
+#### Paper-track (`handle_paper`)
+
+Invoked via `/voronoi paper <codename>`. Looks up a **completed** (`status ∈ {complete, review}`) investigation by case-insensitive codename and enqueues a sub-investigation with:
+
+- `mode = "prove"`, `rigor = "scientific"`
+- `parent_id` = parent investigation id
+- `lineage_id` = parent's `lineage_id` or `parent.id`
+- `question` = `"[PAPER-TRACK] Produce a submission-ready LaTeX manuscript ..."` (see `handlers_workflow._PAPER_QUESTION_TEMPLATE`). The dispatcher and orchestrator detect the `[PAPER-TRACK]` prefix and activate the paper-track role sequence: **Outliner → (Lit-Synthesizer ∥ Figure-Critic) → Scribe → Refiner**. See [AGENT-ROLES.md](AGENT-ROLES.md) §2.
+
+Before enqueueing, `handle_paper` runs a deterministic pre-paper PI gate against the lineage Claim Ledger. Paper-track proceeds only when the ledger contains at least one `locked` or `replicated` claim, which becomes the headline-claim set for manuscript production. `provisional` and `asserted` claims may be used only as exploratory context or limitations, and `challenged` / `retired` claims are excluded from headline results. If no accepted headline claim exists, the handler returns a compact Reviewer Defense Brief instead of enqueueing: readiness verdict, paper-worthy claim count, fragile/challenged counts, likely reviewer objection, and command guidance (`/voronoi review <codename>`, `/voronoi continue <codename> challenge Cn: ...`, `/voronoi complete <codename>`). If the Claim Ledger is empty, it may summarize `.swarm/claim-evidence.json` as fragile pre-ledger evidence, but it does not invent claim IDs and still asks the PI to review/lock claims first.
+
+Duplicate paper-track runs for the same parent are blocked with a user-visible warning. This includes `queued`, `running`, and `paused` states. Failed paper-track runs produce an informational warning with resume instructions. Codename lookup uses a direct SQL query (`find_by_codename`) so it is not limited to recent investigations.
 
 ### Internal Helpers
 
@@ -189,8 +211,8 @@ These handlers interact with the Claim Ledger (`~/.voronoi/ledgers/<lineage_id>/
 ### Loading Hierarchy (lowest to highest priority)
 
 1. `.env` in current directory
-2. `~/.voronoi/.env`
-3. `.swarm-config.json` in current dir / repo root / `~/.voronoi/`
+2. `<base-dir>/.env` (default `~/.voronoi/.env`; `<base-dir>` comes from `VORONOI_BASE_DIR`)
+3. `.swarm-config.json` in current dir / repo root / `<base-dir>/`
 4. Environment variables (highest priority — always win)
 
 ### Config Keys
@@ -325,13 +347,23 @@ class FederatedKnowledge:
     def __init__(self, db_path: Path | None = None): ...
     def sync_findings(self, investigation_id: str, codename: str, workspace: Path) -> int: ...
     def search(self, query: str, max_results: int = 10) -> list[Finding]: ...
+    def search_dead_ends(self, query: str = "", max_results: int = 10) -> list[Finding]: ...
     def format_search_response(self, query: str, max_results: int = 5) -> str: ...
 ```
 
-**Cross-investigation search**: Persistent SQLite index at `~/.voronoi/knowledge.db`. The dispatcher syncs findings from every completed investigation via `sync_findings()`. `/recall` first searches the active workspace, then appends non-duplicate cross-investigation findings from the federated index. Search queries return findings with `codename:task_id` composite IDs. The index prefers FTS5 when available and falls back to `LIKE` search on SQLite builds without FTS5. This enables:
+**Cross-investigation search**: Persistent SQLite index at `<base-dir>/knowledge.db` (default `~/.voronoi/knowledge.db`). The dispatcher syncs findings from every completed investigation via `sync_findings()`. `/recall` first searches the active workspace, then appends non-duplicate cross-investigation findings from the federated index. Search queries return findings with `codename:task_id` composite IDs. The index prefers FTS5 when available and falls back to `LIKE` search on SQLite builds without FTS5. This enables:
 - Detecting redundant work across investigations
 - Surfacing prior findings when starting new investigations
 - Building a cumulative knowledge base that grows with each completed study
+
+### Dead-Ends Query (`/voronoi dead-ends`)
+
+`handle_dead_ends(project_dir, query="")` is the institutional memory of what did NOT work. It fuses two sources:
+
+1. **Retired/challenged claims** across all lineages via `iter_all_ledgers(base_dir)` and `ClaimLedger.get_retired()` — claims that were once asserted or locked and later removed or pushed back.
+2. **Negative findings** from the federated index via `FederatedKnowledge.search_dead_ends(query)` — findings whose `valence` column is `"negative"`.
+
+An empty query returns the most recent negatives (no FTS match required). The intent classifier maps `/voronoi dead-ends`, `/voronoi deadends`, and `/voronoi dead_ends` to `WorkflowMode.RECALL` so the handler runs in read-only mode. This view exists so PIs can see "what hypothesis arms are already cold" before dispatching a new run against an already-explored dead end.
 
 ---
 
@@ -494,6 +526,7 @@ def format_complete(codename: str, mode: str, total_tasks: int, closed_tasks: in
 def format_failure(codename: str, reason: str, elapsed_sec: float, closed: int,
                    total: int, log_tail: str, retry_count: int, max_retries: int) -> str
 def format_alert(codename: str, message: str) -> str
+def format_learning_stalled(codename: str, elapsed_min: float) -> str
 def format_restart(codename: str, attempt: int, max_retries: int, log_tail: str) -> str
 def format_wake(codename: str, n_events: int = 0) -> str
 def format_pause(codename: str, reason: str, elapsed_sec: float,
@@ -509,6 +542,26 @@ def estimate_remaining(elapsed_sec: float, done: int, total: int) -> str
 def phase_description(mode: str, phase: str, codename: str = "") -> str  # VOICE-rotated or static
 def phase_position(phase: str) -> tuple[int, int]     # Journey position (step, total)
 ```
+
+### Claim-Delta Milestones
+
+`build_digest` accepts synthetic `{"type": "claim_delta", ...}` events (emitted by the dispatcher — see SERVER.md §3). Each delta renders as a milestone line with an icon keyed to the target status:
+
+| Status transition | Icon | Meaning |
+|---|:-:|---|
+| `locked` | 🔒 | Claim now immutable evidence |
+| `replicated` | 🔒🔒 | Locked claim confirmed on fresh data |
+| `challenged` | ⚡ | PI or red-team pushed back |
+| `retired` | ✗ | Claim removed from the ledger |
+| `asserted` / `provisional` (new) | ✎ | Fresh hypothesis entered the ledger |
+
+Transitions into `locked`, `replicated`, `challenged`, or `retired` escalate the whole digest to `MSG_TYPE_MILESTONE`, guaranteeing a notification.
+
+### LEARNING_STALLED Alert
+
+`format_learning_stalled(codename, elapsed_min)` produces a stand-alone notification sent when the dispatcher detects that no new findings and no claim-status transitions have arrived for `DispatcherConfig.stall_strike1_minutes` (default 30). The message lists the PI's options: `pivot`, `ask`, `deliberate`, or `complete`. New-provisional claims alone do NOT reset the stall timer — a claim that never becomes asserted/locked is not learning.
+
+The alert is the **first of four escalation strikes**. If the stall persists through `stall_strike2_minutes` (default 60), the dispatcher sends a strike-2 notification and switches the orchestrator's directive to `pivot_or_declare`; at `stall_strike3_minutes` (default 90), it sends the `final_steer` directive and gives the run one final grace window to produce a negative finding, a BLOCKED declaration, or a partial deliverable. If no learning arrives after that grace window, strike 4 writes partial artifacts and parks the row to `review`. Each strike fires at most once per sequence; a real finding or claim transition resets the level to 0, removes `.swarm/stall-signal.json`, and allows a later stall to escalate again. See SERVER.md §3 for the detection loop and `.swarm/stall-signal.json` shape.
 
 ---
 
@@ -772,7 +825,7 @@ This eliminates the old regex-based ASK classification, which missed natural phr
 
 ### Inline Button Callbacks
 
-Handles button presses from previous messages. Routes to appropriate handler (status, health, tasks, abort, belief, results, guide).
+Handles button presses from previous messages. Routes to appropriate handler (status, health, tasks, abort, belief, results, guide) and codename-scoped durable actions (`review:<codename>`, `continue:<codename>`, `complete:<codename>`, `resume:<codename>`, `extend:<codename>`). Callback data is stateless and replay-safe; the same commands are also printed in `/voronoi status` so a missed Telegram alert does not strand the run.
 
 ### Contextual Inline Buttons
 
@@ -783,6 +836,9 @@ Buttons change based on message content:
 | Workflow launch | [📊 Status] [🛑 Abort] |
 | Status command | [📋 Tasks] [⚡ Ready] [🩺 Health] |
 | Digest update | [Progress] [Guide] [Abort] |
+| Stall warning | [Extend 60m] [Details] [Abort] |
+| Partial review / review | [Review] [Continue] [Complete] |
+| Paused / failed | [Resume] [Details] [Status] |
 | Completion | [Details] [Belief Map] |
 
 ### Dispatcher Integration
@@ -820,7 +876,7 @@ Read-only server diagnostics exposed via `/voronoi ops <command>`. Gives operato
 |------------|------------|-------------|
 | `tmux` | `tmux list-sessions` | List active tmux sessions |
 | `agents` | `ps aux \| grep -E 'copilot\|claude'` | Show agent-related processes |
-| `disk` | `du -sh ~/.voronoi/active/*` | Disk usage per investigation workspace |
+| `disk` | `du -sh <base-dir>/active/*` | Disk usage per investigation workspace |
 | `logs` | `tail -30 <latest agent.log>` | Last 30 lines of most recent agent log |
 | *(no args)* | — | Show available ops subcommands |
 

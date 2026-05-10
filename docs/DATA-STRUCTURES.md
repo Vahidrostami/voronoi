@@ -193,7 +193,7 @@ class FixSpec:
 ```python
 @dataclass
 class DispatcherConfig:
-    base_dir: Path              # ~/.voronoi
+    base_dir: Path              # ~/.voronoi unless overridden
     max_concurrent: int         # 2
     max_agents: int             # 4
     agent_command: str          # "copilot"
@@ -201,9 +201,10 @@ class DispatcherConfig:
     orchestrator_model: str     # ""
     worker_model: str           # ""
     progress_interval: int      # 30 (seconds)
-    timeout_hours: int          # 8
+    timeout_hours: int | None   # None; positive values are explicit review budgets
     max_retries: int            # 2
     stall_minutes: int          # 45
+    pause_timeout_hours: int | None  # None; no default missed-message expiry
     park_timeout_hours: int     # 4 (force-wake parked orchestrator after this)
 ```
 
@@ -233,7 +234,18 @@ class RunningInvestigation:
     notified_design_invalid: set
     last_event_ts: float          # For event log polling
     status_message_id: int | None # Telegram message ID for edit-in-place
+    orchestrator_parked: bool     # True when orchestrator exited with workers still running
+    park_entered_at: float        # When the current park began (for park_timeout_hours)
+    last_parked_digest_at: float  # Telegram digest throttle while parked (5-min window)
+    polling_strike_count: int     # Consecutive polls where orchestrator pane was sleeping
 ```
+
+> `park_entered_at` and `last_parked_digest_at` intentionally track distinct
+> timelines: the former is the single "when we parked" timestamp used by the
+> `park_timeout_hours` safety net, the latter is a Telegram-digest throttle
+> that resets every 5 minutes while parked events arrive. Conflating them
+> defeats the safety net for investigations that generate frequent events
+> (see `tests/test_dispatcher.py::TestBug002ParkTimeoutField`).
 
 ### WorkspaceInfo (`server/workspace.py`)
 
@@ -307,7 +319,7 @@ class Hypothesis:
     name: str
     prior: float
     posterior: float
-    status: str                 # untested | testing | confirmed | refuted | merged
+    status: str                 # untested | testing | confirmed | refuted | inconclusive | merged
     evidence: list[str]
     testability: float
     impact: float
@@ -316,7 +328,7 @@ class Hypothesis:
     next_test: str              # What would change confidence
 ```
 
-**Hypothesis status values**: `untested | testing | confirmed | refuted | refuted_reversed | merged`
+**Hypothesis status values**: `untested | testing | confirmed | refuted | refuted_reversed | inconclusive | merged`
 
 `refuted_reversed` indicates a statistically significant result in the **opposite** direction of the prediction. This triggers the Judgment Tribunal.
 
@@ -413,7 +425,7 @@ class Claim:
     statement: str                # Paper-level assertion
     provenance: str               # model_prior | retrieved_prior | run_evidence
     status: str                   # provisional | asserted | locked | challenged | replicated | retired
-    supporting_findings: list[str]  # Beads finding IDs
+    supporting_findings: list[str]  # Evidence refs: Beads finding IDs; source claim IDs for negative-result reviews
     source_cycle: int             # Which run produced this
     effect_summary: str | None    # e.g. "d=0.8, p=0.003"
     sample_summary: str | None    # e.g. "N=200 across 3 experiments"
@@ -465,7 +477,9 @@ class ClaimLedger:
     #          format_for_review, summary
 ```
 
-**Storage**: `~/.voronoi/ledgers/<lineage_id>/claim-ledger.json`
+`supporting_findings` stores evidence references, usually Beads finding IDs (`bd-*`). For claims with `model_basis="negative_result_review"`, it stores source Claim IDs (`C*`) for the claims the negative review summarizes. Gateway-created lockable negative reviews only use retired/falsified source claim IDs.
+
+**Storage**: `<base-dir>/ledgers/<lineage_id>/claim-ledger.json` (default `~/.voronoi/ledgers/...`)
 
 ### ConsistencyConflict (`science/_helpers.py`)
 
@@ -510,7 +524,7 @@ class AntiFabricationResult:
 
 ## 6. Database Schemas
 
-### Investigation Queue (`~/.voronoi/queue.db`)
+### Investigation Queue (`<base-dir>/queue.db`, default `~/.voronoi/queue.db`)
 
 ```sql
 CREATE TABLE investigations (
@@ -569,6 +583,202 @@ CREATE TABLE conversation_state (
 ---
 
 ## 7. File Formats
+
+### `.swarm/run-status.json` and `.swarm/health.md` — PI-facing status snapshot
+
+The dispatcher writes a concise investigation status snapshot during progress
+polling. It projects the existing task/checkpoint/artifact state into one
+human-readable authority so operators do not have to reconcile Beads,
+checkpoint files, git history, and output artifacts by hand.
+
+`run-status.json` is machine-readable and has this shape:
+
+```json
+{
+  "investigation_id": 17,
+  "codename": "computational-triage",
+  "mode": "prove",
+  "rigor": "scientific",
+  "question": "...",
+  "phase": "phase1_study2",
+  "status": "running",
+  "session_alive": true,
+  "orchestrator_parked": false,
+  "generated_at": "2026-04-25T12:00:00+00:00",
+  "tasks": {
+    "total": 18,
+    "closed": 14,
+    "in_progress": 1,
+    "ready": 3,
+    "in_progress_items": [{"id": "inv17-xl7", "title": "Phase 1 pilot"}],
+    "ready_items": [{"id": "inv17-gko", "title": "Missing artifact"}]
+  },
+  "science": {
+    "criteria_met": 0,
+    "criteria_total": 12,
+    "eval_score": 0.0,
+    "active_workers": ["agent-phase1-study2"],
+    "next_actions": ["finish Study 2"],
+    "recent_events": ["Study 1 merged"]
+  },
+  "gates": {
+    "deliverable": "pending",
+    "convergence": "pending",
+    "belief_map": "present",
+    "eval_score": "pending",
+    "success_criteria": "0/12",
+    "sentinel": "passed"
+  },
+  "operator_summary": "Running phase1_study2 with 14/18 tasks closed.",
+  "recommended_action": "wait_for_active_work"
+}
+```
+
+`health.md` is the companion PI-facing Markdown view. It summarizes current
+phase, task counts, active/ready work, gate state, and the recommended next
+operator action. Both files are regenerated from existing state and are not a
+replacement for Beads; Beads remains the durable task ledger.
+
+### `.swarm/graph-health.json` — Beads DAG health snapshot (INV-58)
+
+Written by `InvestigationDispatcher._check_graph_health` once per OODA poll
+for PROVE / Analytical+ runs. Detects the swarm-degenerate failure mode where
+Beads becomes a flat work queue: many root-ready sibling tasks with shared
+output paths, no DAG topology, no link to hypotheses.
+
+```json
+{
+  "generated_at": "2026-04-26T12:00:00+00:00",
+  "total_closed": 46,
+  "orphan_count": 33,
+  "orphan_ratio": 0.717,
+  "sibling_cluster_max": 33,
+  "sibling_cluster_titles": ["analyze business prompt"],
+  "verdict": "degenerate",
+  "reasons": [
+    "orphan_ratio 0.72 > 0.4",
+    "sibling cluster of 33 tasks with normalized prefix 'analyze business prompt'"
+  ]
+}
+```
+
+A `verdict` of `degenerate` triggers a `swarm_degenerate` dispatcher directive
+with `action: stop_and_fix` (INV-50): `spawn-agent.sh` then refuses any new
+worker dispatch except for methodologist / post-mortem / revise / restate
+tasks. A `verdict` of `healthy` is written without a directive. The dispatcher
+emits the `swarm_degenerate` event only on transitions into the degenerate
+verdict (idempotent across polls).
+
+### `.swarm/manuscript/` — Paper-track state (INV-04, manuscript sub-tree)
+
+All manuscript production artefacts live under `.swarm/manuscript/` so they
+survive `/compact` and investigation resume alongside the rest of `.swarm/`.
+Written by the paper-track agents (Outliner, Lit-Synthesizer, Figure-Critic,
+Scribe, Refiner) and consumed by the citation-coverage gate and dual-rubric
+Evaluator.
+
+```
+.swarm/manuscript/
+  outline.json            # Outliner          — sections, figures, citation slots
+  citation-ledger.json    # Lit-Synthesizer   — verified refs + integration status
+  figure-ledger.json      # Figure-Critic     — per-figure rubric verdicts
+  coverage-audit.json     # citation_coverage — auto-written by Scribe + Refiner
+  review-rounds/
+    1.json                # Refiner round 1
+    2.json                # Refiner round 2
+    3.json                # Refiner round 3 (max)
+  paper.tex               # Scribe            — manuscript source
+  paper.pdf               # Scribe            — compiled artefact
+```
+
+#### `outline.json` (Outliner)
+
+```json
+{
+  "codename": "Dopamine",
+  "target_abstract": "We study ...",
+  "venue": {"name": "NeurIPS 2026", "page_limit": 9, "format": "neurips_2024.tex"},
+  "sections": [
+    {
+      "id": "intro",
+      "title": "Introduction",
+      "target_words": 600,
+      "paragraphs": [
+        {
+          "id": "intro-p1",
+          "claim": "Motivation: X is unsolved",
+          "citation_slots": [
+            {"id": "C1", "claim": "prior work on X",
+             "kind": "motivation", "needs_n": 2}
+          ]
+        }
+      ]
+    }
+  ],
+  "figures": [
+    {"id": "fig1", "caption_draft": "...", "supports_claim": "H1",
+     "source": "figures/fig1.pdf", "needs_generation": false}
+  ],
+  "tables": [],
+  "citation_slots_total": 12
+}
+```
+
+#### `citation-ledger.json` (Lit-Synthesizer)
+
+```json
+{
+  "entries": [
+    {
+      "bibtex_key": "smith2024xyz",
+      "slot_id": "C1",
+      "paper_id": "S2:abc123",
+      "title": "...",
+      "authors": ["Smith, J."],
+      "year": 2024,
+      "url": "https://...",
+      "verified": true,
+      "match_score": 0.87,
+      "integration_status": "pending"
+    }
+  ],
+  "unfilled_slots": ["C7"],
+  "coverage_target": 0.90
+}
+```
+
+#### `figure-ledger.json` (Figure-Critic)
+
+Per-figure verdicts from the 8-check rubric. See [AGENT-ROLES.md](AGENT-ROLES.md)
+§3.16 for the rubric. `verdict ∈ {"accept", "revise", "reject"}`.
+
+#### `coverage-audit.json` (from `voronoi.science.citation_coverage.CoverageResult`)
+
+```json
+{
+  "integration_rate": 0.94,
+  "verified_count": 17,
+  "integrated_count": 16,
+  "unintegrated_keys": ["doe2022abc"],
+  "orphan_cites": [],
+  "target": 0.9,
+  "passes": true
+}
+```
+
+#### `review-rounds/${N}.json` (Refiner)
+
+Simulated peer review report per round with per-issue `applied` / `halt_reason`
+fields — see [AGENT-ROLES.md](AGENT-ROLES.md) §3.17.
+
+#### Figure `.meta.json` sidecar (MANDATORY on paper-track)
+
+Every figure file must have a sibling `<fig>.meta.json` emitted by the
+plotting script, containing: `figure_id`, `path`, `supports_claim`,
+`axes.{xlabel,ylabel,xscale,yscale}`, `n_series`, `has_errorbars`,
+`caption_draft`, `data_file`, `data_sha256`, `n_samples`, `palette`. Missing
+fields auto-fail the Figure-Critic. See
+`src/voronoi/data/skills/figure-generation/SKILL.md` Phase 4b.
 
 ### `.swarm/belief-map.json`
 
@@ -726,7 +936,11 @@ Human response options: `approved` (proceed as replication/extension), `pivot` (
 
 ### `.swarm/novelty-gate.json`
 
-Written by the Scout after Problem Positioning (Phase 0). Records the novelty assessment for all three states.
+Written by the Scout after Problem Positioning (Phase 0). This file is mandatory for every Scout completion and records the novelty assessment for all three states. If Scout has completed but this file is missing, the orchestrator treats the run as BLOCKED setup, dispatches Scout follow-up, and does not proceed to hypothesis or experiment work.
+
+Required fields for every assessment:
+- `status`: `clear` or `blocked`
+- `assessment`: `novel`, `incremental`, or `redundant`
 
 **NOVEL:**
 ```json
@@ -802,11 +1016,53 @@ Canonical, machine-readable summary of a completed run. **Derived** from other `
 
 Validated by `validate_manifest(m, rigor)` against rigor-tiered requirements (standard < adaptive < analytical < scientific < experimental).
 
+### `.swarm/llm_provenance/manifest.json`
+
+Index of LLM-call provenance records written by external experiment runners or
+agent-side tooling. The directory is append-only from Voronoi's perspective:
+each call record lives in its own `.swarm/llm_provenance/<uuid>.json` file, and
+the manifest lists the records for discovery.
+
+```json
+{
+  "schema_version": "1.0",
+  "updated_at_utc": "2026-04-26T12:20:00+00:00",
+  "records": [{
+    "path": ".swarm/llm_provenance/9f4c....json",
+    "source_id": "K4_seed102__L4-A__run03__discovery",
+    "content_sha256": "...",
+    "recorded_at_utc": "2026-04-26T12:19:57+00:00"
+  }]
+}
+```
+
+Each record file uses the minimal schema:
+
+```json
+{
+  "schema_version": "1.0",
+  "recorded_at_utc": "2026-04-26T12:19:57+00:00",
+  "source_id": "K4_seed102__L4-A__run03__discovery",
+  "content_sha256": "...",
+  "metadata": {
+    "model_id": "gpt-5-mini",
+    "prompt_sha256": "...",
+    "response_sha256": "...",
+    "response_text": "..."
+  }
+}
+```
+
+`content_sha256` is the SHA-256 of the caller-provided metadata object encoded
+as canonical JSON. Voronoi does not automatically capture prompts in this
+slice; external runners decide whether metadata includes full prompt text,
+redacted prompt text, or a prompt-reconstruction recipe.
+
 ---
 
 ## 8. Configuration Files
 
-### `~/.voronoi/config.json`
+### `<base-dir>/config.json` (default `~/.voronoi/config.json`)
 
 ```json
 {
@@ -891,9 +1147,9 @@ Structured note writers MUST upsert only the fields they own and preserve unrela
 ### Artifact Contracts
 
 ```
-PRODUCES: src/encoder.py, output/results.json
+PRODUCES: src/encoder.py, output/bd-42/experiment_metrics.json
 REQUIRES: data/raw/transactions.csv
-GATE: output/validation_report.json
+GATE: output/bd-42/validation_report.json
 ```
 
 ### Finding Metadata
@@ -939,3 +1195,44 @@ PRE_REG_SENSITIVITY: lambda=[100, 400, 1000]
 ```
 
 These line formats are the canonical forms consumed by `parse_pre_registration()` and the science gates.
+
+### `.swarm/epoch-state.json`
+
+Evidence-gated epoch tracking. Written by dispatcher, read by orchestrator each OODA cycle.
+
+```json
+{
+  "epoch": 2,
+  "max_tranches": 4,
+  "findings_this_epoch": 3,
+  "belief_map_moves": 2,
+  "tokens_this_epoch": 500000,
+  "epoch_started_at": "2026-01-15T10:30:00+00:00",
+  "history": [
+    {"epoch": 1, "findings": 2, "belief_map_moves": 1, "tokens": 200000,
+     "started_at": "2026-01-15T08:00:00+00:00", "advanced_at": "2026-01-15T10:30:00+00:00"}
+  ]
+}
+```
+
+See SCIENCE.md §21 for epoch advancement rules and agent cap tiers.
+
+### `.swarm/failure-diagnosis.json`
+
+Structured failure diagnosis written on investigation failure or partial-review parking. Consumed by `build_warm_start_context()` for continuation prompts.
+
+```json
+{
+  "met_criteria": ["SC1", "SC3"],
+  "unmet_criteria": [
+    {"id": "SC2", "diagnosis": "NOT_TESTED", "description": "CVR reduction at high K",
+     "recommendation": "Run calibration experiments first"}
+  ],
+  "systemic_issues": ["Zero experiments ran — plan likely overscoped"],
+  "epoch_history": [],
+  "proposed_action": "Start with a single MVE testing the core assumption",
+  "timestamp": "2026-01-15T12:00:00+00:00"
+}
+```
+
+See SCIENCE.md §22 for diagnosis categories and when this file is written.

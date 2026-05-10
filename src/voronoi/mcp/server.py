@@ -48,12 +48,13 @@ def _build_registry() -> None:
             "parent": {"type": "string", "description": "Parent task/epic ID"},
             "produces": {"type": "string", "description": "Comma-separated output files the task MUST create"},
             "requires": {"type": "string", "description": "Comma-separated input files that must exist"},
+            "created_by": {"type": "string", "description": "Provenance tag (orchestrator | worker:<id> | gateway:<chat_id>); defaults to $VORONOI_AGENT_ROLE"},
         },
         required=["title"],
     )
     _register_tool(
         "voronoi_close_task", tools_beads.close_task,
-        "Close a task after validating PRODUCES artifacts exist.",
+        "Close a task after validating PRODUCES artifacts exist; for experiment/investigation/evaluation tasks, also requires FINDING_TASK_IDS or FINDING:NULL rationale (INV-57).",
         {
             "task_id": {"type": "string", "description": "Beads task ID to close"},
             "reason": {"type": "string", "description": "Closing reason/summary"},
@@ -77,7 +78,7 @@ def _build_registry() -> None:
             "n": {"type": "integer", "description": "Sample size (positive)"},
             "stat_test": {"type": "string", "description": "Statistical test used"},
             "valence": {"type": "string", "description": "positive | negative | inconclusive"},
-            "data_file": {"type": "string", "description": "Path to raw data file"},
+            "data_file": {"type": "string", "description": "Workspace-relative path to raw data file; absolute paths and .. escapes are rejected"},
             "data_hash": {"type": "string", "description": "SHA-256 hash (computed if omitted)"},
             "p_value": {"type": "string", "description": "P-value (optional)"},
             "confidence": {"type": "number", "description": "Subjective confidence 0.0-1.0 (optional)"},
@@ -105,13 +106,19 @@ def _build_registry() -> None:
             "hypothesis": {"type": "string", "description": "Expected outcome/prediction"},
             "method": {"type": "string", "description": "Experimental method/design"},
             "controls": {"type": "string", "description": "Control conditions"},
+            "expected_result": {"type": "string", "description": "Concrete expected outcome/prediction"},
             "sample_size": {"type": "integer", "description": "Planned sample size"},
             "stat_test": {"type": "string", "description": "Planned statistical test"},
+            "effect_size": {"type": "string", "description": "Planned effect size for power analysis"},
             "alpha": {"type": "number", "description": "Significance level (default 0.05)"},
             "power": {"type": "number", "description": "Power target (default 0.80)"},
+            "confounds": {"type": "string", "description": "Known confounds or threats to validity"},
             "sensitivity_plan": {"type": "string", "description": "Sensitivity analysis plan"},
         },
-        required=["task_id", "hypothesis", "method", "controls", "sample_size", "stat_test"],
+        required=[
+            "task_id", "hypothesis", "method", "controls",
+            "expected_result", "sample_size", "stat_test", "effect_size",
+        ],
     )
     _register_tool(
         "voronoi_write_checkpoint", tools_swarm.write_checkpoint,
@@ -140,7 +147,10 @@ def _build_registry() -> None:
             "name": {"type": "string", "description": "Hypothesis description"},
             "posterior": {"type": "number", "description": "Updated probability 0.0-1.0"},
             "evidence_ids": {"type": "array", "description": "Supporting/refuting finding IDs"},
-            "status": {"type": "string", "description": "Hypothesis status (testing, confirmed, refuted)"},
+            "status": {"type": "string", "description": "Hypothesis status: untested, testing, confirmed, refuted, refuted_reversed, inconclusive, merged"},
+            "confidence": {"type": "string", "description": "Ordinal confidence tier: unknown, hunch, supported, strong, resolved"},
+            "rationale": {"type": "string", "description": "Evidence-linked reasoning for current confidence"},
+            "next_test": {"type": "string", "description": "What experiment/analysis would change confidence"},
         },
         required=["hypothesis_id"],
     )

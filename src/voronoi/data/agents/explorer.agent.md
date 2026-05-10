@@ -3,7 +3,7 @@ name: explorer
 description: Structured exploration agent that generates options, defines evaluation criteria, builds comparison matrices, and produces ranked recommendations with evidence for each option.
 tools: ["execute", "read", "search", "edit"]
 disable-model-invocation: true
-user-invokable: false
+user-invocable: false
 ---
 
 # Explorer Agent 🧭

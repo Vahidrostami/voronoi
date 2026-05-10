@@ -158,6 +158,29 @@ class TestScienceSections:
         assert "Scientific rigor: Methodologist review is advisory" in prompt
         assert "Methodologist approval required before dispatch" not in prompt
 
+    def test_scientific_human_gate_is_park_not_poll(self):
+        """BUG-001 regression: the human-gate instruction must tell the
+        orchestrator to write the gate, park, and EXIT — never to poll
+        the gate file in-session."""
+        prompt = build_orchestrator_prompt(
+            question="test", mode="prove", rigor="scientific",
+        )
+        # Must describe the park-and-exit protocol
+        assert "PARK, DO NOT POLL" in prompt
+        assert "awaiting-human-gate" in prompt
+        assert "EXIT" in prompt
+        # Must NOT include the old poll-every-30s directive
+        assert "poll `.swarm/human-gate.json`" not in prompt
+        assert "every 30s" not in prompt
+        assert "Same polling protocol" not in prompt
+
+    def test_experimental_human_gate_is_park_not_poll(self):
+        prompt = build_orchestrator_prompt(
+            question="test", mode="prove", rigor="experimental",
+        )
+        assert "PARK, DO NOT POLL" in prompt
+        assert "poll `.swarm/human-gate.json`" not in prompt
+
     def test_prove_has_eval_score(self):
         prompt = build_orchestrator_prompt(
             question="test", mode="prove", rigor="scientific",
@@ -171,6 +194,23 @@ class TestScienceSections:
         assert "DO NOT REPEAT KNOWN SCIENCE" in prompt
         assert "scout-brief.md" in prompt
         assert "novelty-gate.json" in prompt
+
+    def test_discover_requires_scout_gate_before_other_agents(self):
+        prompt = build_orchestrator_prompt(
+            question="test", mode="discover", rigor="adaptive",
+        )
+        assert "Start with Scout only" in prompt
+        assert "clear `.swarm/novelty-gate.json`" in prompt
+        assert "Start with Scout + any agents" not in prompt
+        assert "no mandatory sequence" not in prompt
+
+    def test_missing_novelty_gate_after_scout_is_blocked(self):
+        prompt = build_orchestrator_prompt(
+            question="test", mode="discover", rigor="adaptive",
+        )
+        assert "After Scout completes, `.swarm/novelty-gate.json` is REQUIRED" in prompt
+        assert "If it is missing, this is BLOCKED setup" in prompt
+        assert "Only proceed when the gate exists with `status: clear`" in prompt
 
     def test_prove_has_positioning_rule(self):
         prompt = build_orchestrator_prompt(
@@ -345,9 +385,22 @@ class TestRoleMapping:
             "exploration", "review_stats", "review_critic",
             "review_method", "theory", "synthesis", "evaluation",
             "scribe", "paper", "compilation",
+            # Paper-track roles
+            "outline", "lit_synthesis", "figure_critic", "refine",
         ]
         for t in expected_types:
             assert t in ROLE_MAP, f"Missing task type {t} in ROLE_MAP"
+
+    def test_paper_track_role_files_exist(self):
+        """Every paper-track ROLE_MAP entry must point at a real .agent.md file."""
+        from voronoi.server.prompt import ROLE_MAP
+        from voronoi.cli import find_data_dir
+        agents_dir = find_data_dir() / "agents"
+        for task_type in ("outline", "lit_synthesis", "figure_critic", "refine"):
+            fname = ROLE_MAP[task_type]
+            assert (agents_dir / fname).is_file(), (
+                f"paper-track role file missing: {agents_dir / fname}"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -752,6 +805,7 @@ class TestContinuationPromptConditionals:
             question="test", mode="prove", rigor="scientific",
         )
         assert "Dispatch Scout first" in prompt
+        assert "AND `.swarm/novelty-gate.json`" in prompt
 
     def test_continuation_preserves_success_criteria(self):
         """Continuation should read existing SC, not overwrite."""
@@ -847,3 +901,232 @@ class TestTribunalPrompt:
         )
         assert "encoding → accessibility → reasoning" in prompt
         assert "Causal Model Context" in prompt
+
+
+class TestBuildRedTeamPrompt:
+    """Red Team prompt must be cold-context: no investigation history leaks in."""
+
+    def test_instructs_cold_context(self):
+        from voronoi.server.prompt import build_red_team_prompt
+        prompt = build_red_team_prompt(
+            workspace_path="/tmp/ws",
+            codename="Vermillion",
+            rigor="scientific",
+        )
+        # Identity and workspace
+        assert "Red Team" in prompt
+        assert "Vermillion" in prompt
+        assert "/tmp/ws" in prompt
+        # Cold-context discipline
+        assert "cold" in prompt.lower()
+        # Points at the ONLY three allowed inputs
+        assert "deliverable.md" in prompt
+        assert "claim-ledger.json" in prompt
+        assert "output/" in prompt
+        # And tells the reviewer what to write
+        assert "red-team-verdict.json" in prompt
+        assert "fatal_flaw" in prompt
+
+    def test_forbids_reading_investigation_history(self):
+        from voronoi.server.prompt import build_red_team_prompt
+        prompt = build_red_team_prompt(workspace_path="/tmp/ws")
+        # Must explicitly tell the reviewer not to read these
+        assert "brief-digest" in prompt or "checkpoint" in prompt
+
+    def test_no_task_snapshot_or_belief_map_injected(self):
+        """The cold prompt must not interpolate investigation state."""
+        from voronoi.server.prompt import build_red_team_prompt
+        prompt = build_red_team_prompt(workspace_path="/tmp/ws")
+        # Signals from warm-start context that should NOT appear
+        assert "Current tasks" not in prompt
+        assert "Belief map" not in prompt
+        assert "OODA cycle" not in prompt
+
+
+# ---------------------------------------------------------------------------
+# Stall directive injection (F2 — 3-strike stall escalation)
+# ---------------------------------------------------------------------------
+
+class TestStallDirectiveInjection:
+    """When .swarm/stall-signal.json exists, surface it at the top of the prompt."""
+
+    def test_no_directive_when_signal_missing(self, tmp_path):
+        prompt = build_orchestrator_prompt(
+            question="x",
+            mode="discover",
+            rigor="adaptive",
+            workspace_path=str(tmp_path),
+        )
+        assert "STALL DIRECTIVE" not in prompt
+
+    def test_directive_injected_when_signal_exists(self, tmp_path):
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "stall-signal.json").write_text(json.dumps({
+            "level": 2,
+            "directive": "pivot_or_declare",
+            "instruction": "Planning tasks are FORBIDDEN until the stall clears.",
+            "elapsed_minutes": 65.0,
+        }))
+        prompt = build_orchestrator_prompt(
+            question="x",
+            mode="discover",
+            rigor="adaptive",
+            workspace_path=str(tmp_path),
+        )
+        assert "STALL DIRECTIVE" in prompt
+        assert "LEVEL 2" in prompt
+        assert "pivot_or_declare" in prompt
+        assert "Planning tasks are FORBIDDEN" in prompt
+
+    def test_malformed_signal_is_ignored(self, tmp_path):
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "stall-signal.json").write_text("not-json")
+        prompt = build_orchestrator_prompt(
+            question="x",
+            mode="discover",
+            rigor="adaptive",
+            workspace_path=str(tmp_path),
+        )
+        assert "STALL DIRECTIVE" not in prompt
+
+    def test_diagnosis_block_rendered_when_present(self, tmp_path):
+        """Strike 1-3 carry a belief-snapshot; prompt must render it so the
+        orchestrator can self-steer with concrete state."""
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "stall-signal.json").write_text(json.dumps({
+            "level": 1,
+            "directive": "diagnose_and_steer",
+            "instruction": "Self-steer now.",
+            "elapsed_minutes": 32.0,
+            "diagnosis": {
+                "phase": "investigating",
+                "lifecycle_phase": "explore",
+                "tasks_in_progress": 2,
+                "tasks_open": 5,
+                "active_workers": ["agent-encoder", "agent-evaluator"],
+                "next_actions": ["Verify encoder", "Run baseline"],
+            },
+        }))
+        prompt = build_orchestrator_prompt(
+            question="x",
+            mode="discover",
+            rigor="adaptive",
+            workspace_path=str(tmp_path),
+        )
+        assert "Belief snapshot" in prompt
+        assert "lifecycle_phase: explore" in prompt
+        assert "tasks_in_progress: 2" in prompt
+        assert "agent-encoder" in prompt
+        assert "Verify encoder" in prompt
+
+
+class TestEvidenceGatedScaling:
+    """Tests for evidence-gated scaling prompt sections."""
+
+    def test_epoch_constraints_in_prompt(self):
+        prompt = build_orchestrator_prompt(
+            question="Why does X fail?",
+            mode="discover",
+            rigor="adaptive",
+            max_agents=6,
+        )
+        assert "Evidence-Gated Scaling" in prompt
+        assert "Epoch 1" in prompt
+        assert "minimum viable experiment" in prompt.lower()
+        assert "epoch-state.json" in prompt
+
+    def test_epoch_cap_mentioned(self):
+        prompt = build_orchestrator_prompt(
+            question="test",
+            mode="discover",
+            rigor="adaptive",
+            max_agents=8,
+        )
+        assert "8 tranches maximum" in prompt
+
+    def test_failure_diagnosis_in_continuation_prompt(self):
+        from voronoi.server.prompt import build_orchestrator_prompt
+        prompt = build_orchestrator_prompt(
+            question="test",
+            mode="discover",
+            rigor="adaptive",
+            prior_context={
+                "cycle_number": 2,
+                "ledger_summary": "",
+                "pi_feedback": "",
+                "failure_diagnosis": {
+                    "systemic_issues": ["Zero experiments ran"],
+                    "unmet_criteria": [
+                        {"id": "SC1", "diagnosis": "NOT_TESTED",
+                         "recommendation": "Run calibration first"},
+                    ],
+                    "proposed_action": "Start with MVE",
+                },
+            },
+        )
+        assert "Failure Diagnosis" in prompt
+        assert "Zero experiments ran" in prompt
+        assert "SC1" in prompt
+        assert "NOT_TESTED" in prompt
+        assert "Start with MVE" in prompt
+
+    def test_no_diagnosis_section_without_data(self):
+        prompt = build_orchestrator_prompt(
+            question="test",
+            mode="discover",
+            rigor="adaptive",
+            prior_context={
+                "cycle_number": 2,
+                "ledger_summary": "",
+                "pi_feedback": "",
+            },
+        )
+        assert "Failure Diagnosis" not in prompt
+
+
+class TestWarmStartFailureDiagnosis:
+    """Tests for failure diagnosis in build_warm_start_context."""
+
+    def test_picks_up_failure_diagnosis_file(self, tmp_path):
+        import json
+        from voronoi.server.prompt import build_warm_start_context
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "failure-diagnosis.json").write_text(json.dumps({
+            "systemic_issues": ["Never past epoch 1"],
+            "unmet_criteria": [],
+            "proposed_action": "Run MVE first",
+        }))
+        ctx = build_warm_start_context(
+            lineage_id=1, cycle_number=2,
+            workspace=tmp_path,
+        )
+        assert "failure_diagnosis" in ctx
+        assert ctx["failure_diagnosis"]["proposed_action"] == "Run MVE first"
+
+    def test_picks_up_latest_archived_failure_diagnosis(self, tmp_path):
+        import json
+        from voronoi.server.prompt import build_warm_start_context
+
+        archive = tmp_path / ".swarm" / "archive"
+        old_run = archive / "run-1"
+        latest_run = archive / "run-2"
+        old_run.mkdir(parents=True)
+        latest_run.mkdir(parents=True)
+        (old_run / "failure-diagnosis.json").write_text(json.dumps({
+            "proposed_action": "old action",
+        }))
+        (latest_run / "failure-diagnosis.json").write_text(json.dumps({
+            "proposed_action": "latest action",
+        }))
+
+        ctx = build_warm_start_context(
+            lineage_id=1, cycle_number=3,
+            workspace=tmp_path,
+        )
+
+        assert "failure_diagnosis" in ctx
+        assert ctx["failure_diagnosis"]["proposed_action"] == "latest action"

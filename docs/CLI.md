@@ -24,16 +24,16 @@ voronoi
 │   ├── list                   # List available demos
 │   ├── run <name>             # Run a demo
 │   │   ├── --safe             # Safe mode (resource limits)
-│   │   ├── --dry-run          # Show what would happen
-│   │   └── --all              # Run all demos
+│   │   └── --dry-run          # Show what would happen
 │   └── clean                  # Remove demo artifacts
+│       └── --all              # Remove the entire demo directory
 └── server
-    ├── init                   # Initialize ~/.voronoi/
+    ├── init                   # Initialize server base directory
     ├── start                  # Start dispatcher + Telegram bridge
     ├── status                 # Show server status
     ├── prune                  # Clean stale investigations
     ├── config                 # View/edit server config
-    └── extend-timeout         # Extend timeout for a running investigation
+    └── extend-timeout         # Set review budget for a running investigation
 ```
 
 ## 3. `voronoi init`
@@ -46,7 +46,7 @@ Scaffolds Voronoi framework into the current directory. Makes a project agent-re
 
 ```
 .github/
-├── agents/           # 12 role definitions
+├── agents/           # 19 role files
 ├── prompts/          # 6 invocable prompts
 ├── skills/           # Domain knowledge packages
 ├── instructions/     # Per-path instruction files
@@ -67,6 +67,7 @@ AGENTS.md             # Compatibility alias
 4. Copies `CLAUDE.md` and `AGENTS.md` (skips if already exist — user-owned)
 5. Copies `.env.example`
 6. Initializes git repo if not already initialized
+7. Runs `swarm-init.sh`, which initializes Beads with `bd init --quiet --server`; if the installed `bd` CLI does not support server mode, the command prints an upgrade warning because worker and dispatcher processes must share one `.beads/` store
 
 ### User-Owned Files
 
@@ -102,6 +103,7 @@ Updates framework files while preserving user edits.
 | Name | Description | Mode | Rigor |
 |------|-------------|------|-------|
 | `computational-triage` | Evidence encoding as a scaling axis for multi-agent LLM reasoning | PROVE | SCIENTIFIC |
+| `compilation-threshold-hunt` | Same hypothesis as `epistemic-trajectories` — swarm designs the experiment, surprise-budget protocol | PROVE | SCIENTIFIC |
 | `coupled-decisions` | 5 coupled levers, planted ground truth in 100K transactions | DISCOVER | SCIENTIFIC |
 | `emergent-ecosystem` | 4 species on 100×100 grid, each agent builds one | DISCOVER | ADAPTIVE |
 | `epistemic-trajectories` | Phase transitions in LLM multi-source reasoning across capability tiers | PROVE | SCIENTIFIC |
@@ -116,83 +118,97 @@ Lists available demos with name, description, and whether a `PROMPT.md` exists.
 1. Copies demo files to target directory (or current dir)
 2. Reads `PROMPT.md` from demo
 3. Builds orchestrator prompt via `build_orchestrator_prompt()`
-4. Launches Copilot CLI with the prompt
+4. Writes the full orchestrator prompt to `.swarm/orchestrator-prompt.txt`
+5. Launches Copilot CLI with a short bootstrap prompt that tells the agent to read `.swarm/orchestrator-prompt.txt` first, avoiding OS argv limits for large demo prompts
 
 **Flags**:
 - `--safe` — Enables resource limits (passed to prompt builder)
 - `--dry-run` — Prints the prompt that would be sent, doesn't execute
-- `--all` — Runs all demos sequentially
 
 ### `voronoi demo clean`
 
 Removes demo artifacts from the current directory.
 
+**Flags**:
+- `--all` — Removes the entire demo directory, not just output
+
 ---
 
 ## 6. `voronoi server`
 
+All server subcommands accept `--base-dir <path>`. When omitted, the server uses `VORONOI_BASE_DIR` if set, otherwise `~/.voronoi`.
+
 ### `voronoi server init`
 
-1. Creates `~/.voronoi/` directory
+1. Creates the server base directory (`~/.voronoi/` by default)
 2. Creates `config.json` with defaults
-3. Copies `.env.example` to `~/.voronoi/.env`
+3. Copies `.env.example` to the base directory
 4. Creates `objects/`, `active/`, and `tmp/` directories
 
 Beads is **not** initialized at the server level — each investigation workspace gets its own `.beads/` directory when provisioned (see §5 Workspace in SERVER.md).
 
 ### `voronoi server start`
 
-1. Loads config from `~/.voronoi/config.json`
+1. Loads config from `<base-dir>/config.json`
 2. Loads `.env` for bot token
-3. Exports `TMPDIR`, `TMP`, and `TEMP` to `~/.voronoi/tmp`
+3. Exports `TMPDIR`, `TMP`, and `TEMP` to `<base-dir>/tmp`
 4. Starts Telegram bridge (`telegram-bridge.py`) if token present
 5. Starts dispatcher loop (10s poll interval)
 
-By default this runs in the foreground. Use `voronoi server start --daemon` on remote hosts or SSH sessions to detach the bridge and write logs to `~/.voronoi/logs/telegram-bridge.log`.
+By default this runs in the foreground. Use `voronoi server start --daemon` on remote hosts or SSH sessions to detach the bridge and write logs to `<base-dir>/logs/telegram-bridge.log` (default `~/.voronoi/logs/telegram-bridge.log`).
 
 The bridge now auto-restarts after unexpected transient polling failures with exponential backoff. Fatal configuration errors such as invalid bot tokens still fail fast.
+
+### Telegram Review Commands
+
+When `voronoi server start` runs the Telegram bridge, the `/voronoi` command surface includes iterative-science review commands: `/voronoi review [codename]`, `/voronoi review-negative <codename>`, `/voronoi lock-negative <codename> <claim-id>`, `/voronoi deliberate [codename]`, and `/voronoi continue <codename> [feedback]`. `review-negative` is PI-driven: it records a lockable negative-result review claim only after the ledger already contains retired/falsified claims, then points the PI to lock, deliberate, or continue actions. Challenged-only claims must be resolved or retired before they can become durable negative evidence.
 
 ### `voronoi server status`
 
 Shows:
 - Running investigations (count, names)
 - Queued investigations
-- Disk usage in `~/.voronoi/`
+- Disk usage in the server base directory
 - tmux sessions
 
 ### `voronoi server prune`
 
 Cleans up:
 - Completed investigations older than `workspace_retention_days`
-- Orphaned worktrees
+- Their sibling `*-swarm/` worktree directories
+- Orphaned `*-swarm/` directories whose main workspace has already gone away
 - Stale tmux sessions
+
+`--force` is required before anything is removed. Running, queued, paused, and review-state investigations are preserved; prune only removes terminal investigations (`complete`, `failed`, or `cancelled`) past the retention window. If cleanup is blocked by live `bd`, MCP, or agent processes, prune reports the likely locking PIDs instead of silently leaving the directory behind.
 
 ### `voronoi server config`
 
-View and edit `~/.voronoi/config.json`.
+View and edit `<base-dir>/config.json`.
 
 ### `voronoi server extend-timeout`
 
-Extend (or set) the timeout for a running investigation **without restarting** the server.
+Set an explicit wall-clock review budget for a running investigation **without restarting** the server. Investigations have no default wall-clock kill; this command is an operator opt-in budget. When the budget is reached, the dispatcher parks the run for partial review rather than marking it failed.
 
 ```bash
 voronoi server extend-timeout <investigation> <hours>
 ```
 
 - `<investigation>`: Investigation ID (e.g. `3` or `#3`) or workspace name substring.
-- `<hours>`: New **total** timeout in hours (not additional hours).
+- `<hours>`: Total review budget in hours (not additional hours).
 
-Writes `<workspace>/.swarm/timeout_hours` which the dispatcher reads on the next poll cycle.
+Writes `<workspace>/.swarm/timeout_hours` which the dispatcher reads on the next poll cycle. Writing `0`, `off`, `none`, or `disabled` manually disables the budget for that run.
 
-**Example:** Extend a 48h investigation to 72h while it's running:
+**Example:** Set a 72h review budget while an investigation is running:
 ```bash
 voronoi server extend-timeout coupled-decisions 72
 ```
 
 You can also write the file manually:
 ```bash
-echo 72 > ~/.voronoi/active/<workspace-name>/.swarm/timeout_hours
+echo 72 > <base-dir>/active/<workspace-name>/.swarm/timeout_hours
 ```
+
+The default `<base-dir>` is `~/.voronoi`.
 
 ---
 

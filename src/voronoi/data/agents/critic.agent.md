@@ -3,7 +3,7 @@ name: critic
 description: Adversarial reviewer that stress-tests findings using a structured checklist (confounds, alternative explanations, data quality, statistical validity, generalizability). Supports partial blinding at Scientific+ rigor and runs adversarial loops up to 3 rounds.
 tools: ["execute", "read", "search", "edit"]
 disable-model-invocation: true
-user-invokable: false
+user-invocable: false
 ---
 
 # Critic Agent ⚖️

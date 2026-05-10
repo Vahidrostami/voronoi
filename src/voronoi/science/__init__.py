@@ -11,20 +11,29 @@
 All public symbols re-exported here for ``from voronoi.science import X``.
 """
 
-# --- Convergence (+ belief map + checkpoint) ---
+# --- Convergence (+ belief map + checkpoint + epoch tracking) ---
 from voronoi.science.convergence import (
     CONFIDENCE_TIERS,
+    EPOCH_AGENT_CAP,
     VALID_CONFIDENCE_TIERS,
+    VALID_HYPOTHESIS_STATUSES,
     BeliefMap,
     ConvergenceResult,
+    EpochState,
     Hypothesis,
     OrchestratorCheckpoint,
+    advance_epoch,
+    build_failure_diagnosis,
     check_convergence,
+    compute_learning_rate_display,
     format_checkpoint_for_prompt,
     load_belief_map,
     load_checkpoint,
+    load_epoch_state,
     save_belief_map,
     save_checkpoint,
+    save_epoch_state,
+    save_failure_diagnosis,
     write_convergence,
 )
 
@@ -45,6 +54,17 @@ from voronoi.science.consistency import (
     load_success_criteria,
     save_claim_evidence,
     save_success_criteria,
+)
+
+# --- Citation coverage (manuscript paper-track) ---
+from voronoi.science.citation_coverage import (
+    CoverageResult,
+    DEFAULT_COVERAGE_TARGET,
+    DEFAULT_TITLE_THRESHOLD,
+    check_coverage,
+    extract_cite_keys,
+    fuzzy_match_title,
+    write_coverage_audit,
 )
 
 # --- Fabrication ---
@@ -111,6 +131,16 @@ from voronoi.science.claims import (
     save_ledger,
 )
 
+# --- Lab-KG (per-PI institutional memory across lineages) ---
+from voronoi.science.lab_kg import (
+    DeadEnd,
+    DEFAULT_HALF_LIFE_DAYS,
+    DURABLE_STATUSES,
+    LabEntry,
+    LabKG,
+    default_store_path as default_lab_kg_path,
+)
+
 # --- Manifest (structured deliverable) ---
 from voronoi.science.manifest import (
     MANIFEST_FILENAME,
@@ -139,6 +169,7 @@ from voronoi.science.interpretation import (
     DirectionResult,
     Explanation,
     InterpretationRequest,
+    NEGATIVE_RESULT_MODEL_BASIS,
     TribunalResult,
     TribunalVerdict,
     TrivialityClass,
@@ -147,6 +178,7 @@ from voronoi.science.interpretation import (
     classify_direction,
     generate_continuation_proposals,
     generate_interpretation_request,
+    record_negative_result,
     has_reversed_hypotheses,
     load_continuation_proposals,
     load_interpretation_request,
@@ -208,6 +240,7 @@ __all__ = [
     "TribunalVerdict", "Explanation", "InterpretationRequest", "TribunalResult",
     "check_tribunal_clear", "has_reversed_hypotheses",
     "generate_interpretation_request",
+    "NEGATIVE_RESULT_MODEL_BASIS", "record_negative_result",
     "save_interpretation_request", "load_interpretation_request",
     "save_tribunal_result", "load_tribunal_results",
     "ContinuationProposal", "generate_continuation_proposals",

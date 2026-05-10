@@ -25,9 +25,11 @@ import logging
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger("voronoi.science")
+
+NEGATIVE_RESULT_MODEL_BASIS = "negative_result_review"
 
 
 # ===================================================================
@@ -361,6 +363,52 @@ class ContinuationProposal:
     experiment_type: str = "targeted"  # targeted | replication | exploration
     information_gain: float = 0.5      # Estimated information gain [0, 1]
     effort: str = "moderate"           # trivial | moderate | substantial
+
+
+def record_negative_result(
+    ledger,
+    summary_sentence: str,
+    *,
+    codename: str = "",
+    primary_claim_ids: list[str] | None = None,
+    reason_summary: str = "",
+    source_cycle: int = 1,
+) -> Any:
+    """Record a negative/falsifying run outcome as an ordinary ledger claim.
+
+    The Claim Ledger has no separate negative-result schema. This helper keeps
+    the first slice reversible by storing the review record as a run-evidence
+    claim with a deterministic statement, source claim IDs in
+    ``supporting_findings``, and a marker in ``model_basis``.
+    Repeated calls with the same summary return the existing claim.
+    """
+    summary = " ".join((summary_sentence or "").split())
+    if not summary:
+        raise ValueError("summary_sentence is required")
+
+    label = " ".join((codename or "").split())
+    statement = summary
+    if label and label.lower() not in summary.lower():
+        statement = f"{label} produced a negative result: {summary}"
+
+    normalized = _normalize_negative_statement(statement)
+    for claim in ledger.claims:
+        if _normalize_negative_statement(claim.statement) == normalized:
+            return claim
+
+    return ledger.add_claim(
+        statement,
+        "run_evidence",
+        source_cycle=source_cycle,
+        supporting_findings=primary_claim_ids or [],
+        effect_summary=reason_summary or None,
+        model_basis=NEGATIVE_RESULT_MODEL_BASIS,
+    )
+
+
+def _normalize_negative_statement(statement: str) -> str:
+    normalized = " ".join(statement.lower().split())
+    return normalized.rstrip(".?!,; ")
 
 
 def generate_continuation_proposals(
