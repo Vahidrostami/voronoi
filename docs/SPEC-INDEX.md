@@ -32,6 +32,7 @@
 | EVA (experiment validity) | [SCIENCE.md](SCIENCE.md) | §8 |
 | Metric contracts, baselines | [SCIENCE.md](SCIENCE.md) | §9 |
 | Anti-fabrication checks | [SCIENCE.md](SCIENCE.md) | §10 |
+| Locked-claim schema, PROVE question-locking, fidelity gate | [SCIENCE.md](SCIENCE.md) | §24 |
 | Agent roles, who does what | [AGENT-ROLES.md](AGENT-ROLES.md) | §1-3 |
 | Verify loop protocol | [AGENT-ROLES.md](AGENT-ROLES.md) | §4 |
 | Any dataclass or schema | [DATA-STRUCTURES.md](DATA-STRUCTURES.md) | §1-5 (by layer) |
@@ -44,7 +45,7 @@
 | Targeted Beads queries | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §5 |
 | Code-assembled worker prompts | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §6 |
 | Per-agent context budget | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §3 |
-| System rules, code review | [INVARIANTS.md](INVARIANTS.md) | All (58 invariants) |
+| System rules, code review | [INVARIANTS.md](INVARIANTS.md) | All (59 invariants) |
 | Worker self-verification protocol | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §8 |
 | Token budget tracking | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §9 |
 | Structured event log | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §10 |
@@ -136,6 +137,7 @@
 | `src/voronoi/science/manifest.py` | SCIENCE.md / MANIFEST.md | §19 / all | `test_manifest.py` |
 | `src/voronoi/science/citation_coverage.py` | SCIENCE.md | §20 | `test_citation_coverage.py` |
 | `src/voronoi/science/lab_kg.py` | SCIENCE.md | §23 | `test_lab_kg.py` |
+| `src/voronoi/science/locked_claim.py` | SCIENCE.md | §24 | `test_locked_claim.py` |
 | `src/voronoi/mcp/server.py` | ARCHITECTURE.md | §8 | `test_mcp.py` |
 | `src/voronoi/mcp/tools_beads.py` | ARCHITECTURE.md | §8 | `test_mcp.py` |
 | `src/voronoi/mcp/tools_swarm.py` | ARCHITECTURE.md | §8 | `test_mcp.py` |

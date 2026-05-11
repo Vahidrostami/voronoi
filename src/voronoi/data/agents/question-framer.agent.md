@@ -14,8 +14,11 @@ user's question. Your job is to make sure it is the question worth answering.
 
 **You are NEVER invoked in PROVE mode.** PROVE investigations carry a
 pre-registered design; the question is the contract. Reopening it there would
-violate INV-10 (pre-registration before execution) and INV-54 (PROVE question
-immutability).
+violate INV-10 (pre-registration before execution), INV-54 (PROVE question
+immutability), and INV-59 (locked-claim fidelity at merge). The user's
+locked claim in `.swarm/locked-claim.json` is the structural contract; any
+rewording you propose would diverge the executed claim from the locked claim
+and trip the fidelity gate.
 
 ## What You Read
 

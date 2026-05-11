@@ -1319,3 +1319,172 @@ Each follow-up has its own spec section when implemented; this section is the su
 
 See `docs/INVARIANTS.md` INV-53 (KG provenance & durability).
 
+
+## 24. Locked Claim — PROVE-Mode Question-Locking Schema
+
+> **What this section adds.** A claim-locking layer for PROVE investigations that
+> structurally enforces INV-54 (question immutability) and INV-59 (claim-locking
+> fidelity). The existing science gates (pre-registration, claim ledger,
+> fabrication, citation coverage) verify that the **evidence** the agents produce
+> is honest — but none of them compares the **question** the agents executed
+> against the **question** the user asked. This section closes that gap.
+>
+> Complementary to EviBound (Chen 2025, arXiv:2511.05524): EviBound binds claims
+> to artifacts ("the file exists, the metric is in range"); the locked claim
+> binds claims to the scientific question those artifacts answer.
+
+### 24.1 Failure Mode This Targets
+
+**Silent claim substitution**: in a PROVE investigation, the agents produce
+internally consistent, evidence-backed outputs that answer a *different*
+scientific question from the one the user posed (e.g. silently swapping the
+target variable, narrowing the scope, weakening the decision rule, or relaxing
+inclusion criteria when data does not cooperate). Artifact-level evidence gates
+do not detect this — the wrong question produces perfectly valid artifacts.
+
+This is distinct from EviBound's hallucinated-completion failure mode and
+distinct from the pre-registration deviation check in `gates.audit_pre_registration_compliance`,
+which only compares declared vs actual *valence* and *sample size*.
+
+### 24.2 The Five-Slot Schema
+
+Every PROVE question is represented as a `LockedClaim` with five textual slots
+(generalising PICO with falsification-card and pre-registration discipline):
+
+| Slot | Captures | Drift it catches |
+|---|---|---|
+| `claim` | The falsifiable proposition (subject, contrast, measure, relation, effect-size, direction collapsed into one line). | Target / measure / contrast substitution. |
+| `scope` | Boundary conditions, inclusion criteria, study population. | Post-hoc population restriction. |
+| `decision_rule` | Machine-checkable predicate that determines support / refute / inconclusive (e.g. `Δ ≥ 0.05 AND p < 0.0033 AND both models agree in sign`). | Decision-rule re-narration. |
+| `falsifier` | What observation would refute the claim. | Confirmation-only framings; non-falsifiable claims. |
+| `preconditions` | Data preconditions that MUST hold for the test to be valid. A violated precondition triggers STOP-and-escalate, not silent rescoping. | Silent target/scope swap forced by unavailable data. |
+
+The schema is domain-general: comparison-form claims (`A vs B`), parameter-form
+claims (`θ vs θ₀`), and threshold-form claims (`θ vs bound`) all fit. Questions
+that cannot be slotted (pure existence, unoperationalised mechanism, gestalt
+classification) are correctly **not** PROVE questions and MUST be routed to
+DISCOVER mode at intake.
+
+### 24.3 Lifecycle
+
+```
+Intake (gateway)               Execution (server)             Merge (dispatcher)
+─────────────────              ─────────────────              ─────────────────
+free-text user prompt
+        │
+        ▼
+ LLM extraction
+ → LockedClaim (5 slots)
+        │
+        ▼
+ user confirmation (one
+ message, fill missing
+ slots, or auto-demote
+ to DISCOVER)
+        │
+        ▼
+ .swarm/locked-claim.json  ──►  agents read, build           agents declare the
+ (immutable for the run)        pre-registration and          executed claim from
+                                 experiment plan from it      the claim ledger
+                                                              into
+                                                              .swarm/executed-claim.json
+                                                                       │
+                                                                       ▼
+                                                              fidelity gate:
+                                                              compare_claims(
+                                                                locked, executed)
+                                                                       │
+                                                                       ▼
+                                                              PASS → merge
+                                                              FAIL → halt + escalate
+```
+
+The gate at merge time calls `compare_claims(locked, executed)` from
+`voronoi.science.locked_claim`. It returns a `FidelityResult` with one
+`FidelityDiff` per slot. The default equivalence function is normalised string
+equality (lowercase, whitespace-collapsed, trailing-punctuation-stripped); the
+function is injectable so a future LLM-based semantic-equivalence check can be
+plugged in without touching call sites.
+
+Metadata fields (`locked_at`, `locked_by`, `source_prompt`, `schema_version`)
+are NOT part of the fidelity comparison.
+
+### 24.4 STOP-on-Precondition-Failure
+
+When the agents discover that a `preconditions` slot cannot be satisfied by the
+available data, they MUST NOT silently rescope the claim to fit. The required
+behaviour is:
+
+1. Write an explicit `precondition_violation` event into the claim ledger with
+   the locked precondition and the observed reality.
+2. Halt the investigation phase.
+3. Escalate to the user with three structured options:
+   (a) reject and retry on the original locked claim,
+   (b) approve a re-lock with the relaxed precondition (which auto-demotes the
+       investigation from PROVE to DISCOVER, per INV-54),
+   (c) abandon.
+
+Agents are forbidden from picking any of these themselves. This is the single
+biggest structural change relative to today's gates and is what closes the
+target-substitution failure mode observed in the Allen trimodal demo.
+
+### 24.5 Failure Surface on the Fidelity Gate
+
+| `FidelityResult` shape | Meaning | Action |
+|---|---|---|
+| `passed=True, divergent_slots=[]` | Executed claim matches locked claim on all five slots. | Proceed to merge. |
+| `passed=False, divergent_slots=["claim"]` | Target / measure / contrast was silently substituted. | Halt, emit `locked_claim_divergence` event, escalate to user. |
+| `passed=False, divergent_slots=["decision_rule"]` | Decision rule was re-narrated post hoc. | Halt + escalate. |
+| `passed=False, divergent_slots=["scope"]` | Population restricted after seeing data. | Halt + escalate. |
+| `passed=False, divergent_slots=["preconditions"]` | Preconditions were not met; agents must use the STOP-on-precondition path (§24.4), not produce a divergent claim. | Treated as an INV-59 violation by the agents, not a user-facing prompt. |
+
+### 24.6 File Layout
+
+```
+.swarm/
+  locked-claim.json     # written at intake, immutable for the run
+  executed-claim.json   # written by the agents from the claim ledger at merge
+  locked-claim-divergence.json   # written when fidelity gate fails (follow-up)
+```
+
+`locked-claim.json` and `executed-claim.json` share the same on-disk schema
+(`LockedClaim.to_dict()`).
+
+### 24.7 Functions (Public API)
+
+Exposed from `voronoi.science.locked_claim` and re-exported by
+`voronoi.science`:
+
+- `LockedClaim` — dataclass with the five slots plus provenance metadata.
+- `save_locked_claim(claim, workspace, filename=LOCKED_CLAIM_FILENAME)` — persist
+  to `.swarm/<filename>`. Auto-stamps `locked_at` if empty.
+- `load_locked_claim(workspace, filename=LOCKED_CLAIM_FILENAME)` — load from
+  disk, returning `None` if absent and dropping unknown keys.
+- `compare_claims(locked, executed, *, equivalence_fn=normalized_equivalence)`
+  → `FidelityResult` — slot-by-slot comparator with injectable equivalence.
+- `normalized_equivalence(a, b)` — default deterministic equivalence.
+
+### 24.8 Out of Scope (Follow-Up PRs)
+
+This section defines the substrate. Three follow-ups remain:
+
+- **Gateway extractor**: on PROVE classification, the gateway LLM populates a
+  `LockedClaim` from the user's free-text prompt, asks the user to confirm or
+  fill missing slots, and writes `.swarm/locked-claim.json` before workspace
+  provisioning. Either an LLM-based semantic-equivalence function or a stricter
+  structured-slot match replaces the default normaliser at this point.
+- **Agent declared-claim contract**: orchestrator prompt must instruct the
+  agents to emit `.swarm/executed-claim.json` from the claim ledger at the
+  same point they emit the run manifest.
+- **Dispatcher merge-gate hookup**: at merge time, the dispatcher calls
+  `compare_claims` and on `passed=False` emits `locked_claim_divergence` and
+  halts merge. Approval-to-override auto-demotes to DISCOVER (INV-54).
+
+Each follow-up has its own spec section when implemented; this section is the
+substrate contract.
+
+### 24.9 Invariants
+
+See `docs/INVARIANTS.md` INV-54 (PROVE question immutability — strengthened to
+reference the locked-claim schema) and INV-59 (claim-locking fidelity at
+merge).

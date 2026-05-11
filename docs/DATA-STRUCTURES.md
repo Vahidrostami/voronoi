@@ -669,6 +669,33 @@ tasks. A `verdict` of `healthy` is written without a directive. The dispatcher
 emits the `swarm_degenerate` event only on transitions into the degenerate
 verdict (idempotent across polls).
 
+### `.swarm/locked-claim.json` and `.swarm/executed-claim.json` — PROVE question lock (INV-59)
+
+Written at intake (gateway) and at merge (agents) respectively for PROVE-mode
+investigations. Both files share the same on-disk schema (`LockedClaim.to_dict()`
+from `voronoi.science.locked_claim`, SCIENCE.md §24). `compare_claims(locked,
+executed)` runs at merge and fails on any slot divergence (INV-59).
+
+```json
+{
+  "claim": "E∪M features predict T-type with ΔBalAcc ≥ 0.05 vs M-only",
+  "scope": "mouse cortical neurons with paired E+M+T data, donor-grouped CV",
+  "decision_rule": "ΔBalAcc ≥ 0.05 AND p < 0.0033 AND both models agree in sign",
+  "falsifier": "ΔBalAcc < 0 OR models disagree post-residualization",
+  "preconditions": "T-type labels available for ≥20 cells per type after join",
+  "locked_at": "2026-05-11T14:32:00+00:00",
+  "locked_by": "gateway-extractor",
+  "source_prompt": "prove that E adds to M for T-type prediction",
+  "schema_version": 1
+}
+```
+
+Only the five claim slots (`claim`, `scope`, `decision_rule`, `falsifier`,
+`preconditions`) are compared by the fidelity gate; the four metadata fields
+(`locked_at`, `locked_by`, `source_prompt`, `schema_version`) are provenance
+only. Failure of the gate produces a future `.swarm/locked-claim-divergence.json`
+(follow-up PR; spec slot reserved in SCIENCE.md §24.6).
+
 ### `.swarm/manuscript/` — Paper-track state (INV-04, manuscript sub-tree)
 
 All manuscript production artefacts live under `.swarm/manuscript/` so they
