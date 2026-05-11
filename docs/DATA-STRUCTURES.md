@@ -188,7 +188,7 @@ class FixSpec:
 
 ## 4. Server Dataclasses
 
-### DispatcherConfig (`server/dispatcher.py`)
+### DispatcherConfig (`server/dispatcher/__init__.py`)
 
 ```python
 @dataclass
@@ -208,7 +208,7 @@ class DispatcherConfig:
     park_timeout_hours: int     # 4 (force-wake parked orchestrator after this)
 ```
 
-### RunningInvestigation (`server/dispatcher.py`)
+### RunningInvestigation (`server/dispatcher/__init__.py`)
 
 ```python
 @dataclass

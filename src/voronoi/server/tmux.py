@@ -120,6 +120,14 @@ def launch_in_tmux(
         capture_output=True, timeout=10,
     )
 
+    # INV-31: unlink any orphan env file from a prior crashed launch with
+    # the same session name before we (potentially) write a new one.
+    stale_env = workspace_path.parent / f".tmux-env-{session}"
+    try:
+        stale_env.unlink()
+    except (FileNotFoundError, OSError):
+        pass
+
     result = subprocess.run(
         ["tmux", "new-session", "-d", "-s", session, "-c", str(workspace_path)],
         capture_output=True,
@@ -255,6 +263,14 @@ def cleanup_tmux(
                 capture_output=True, timeout=10,
             )
         except (subprocess.TimeoutExpired, OSError):
+            pass
+        # INV-31: best-effort unlink the env file we may have written for
+        # this session. The shell's ``rm -f`` should have removed it long
+        # ago; this is a backstop for crashed launches.
+        env_file = workspace_path.parent / f".tmux-env-{session}"
+        try:
+            env_file.unlink()
+        except (FileNotFoundError, OSError):
             pass
 
     logger.info("Cleaned up tmux sessions for %s (killed %d)",

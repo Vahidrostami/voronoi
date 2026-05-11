@@ -12,6 +12,7 @@ import logging
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from voronoi.utils import extract_field
 from voronoi.science import consistency as _helpers
@@ -37,7 +38,7 @@ VALID_HYPOTHESIS_STATUSES = frozenset([
 ])
 
 
-def _safe_float(value: any, default: float = 0.5) -> float:
+def _safe_float(value: Any, default: float = 0.5) -> float:
     """Safely coerce value to float, returning default if conversion fails.
 
     Handles legacy belief-map data with non-numeric posterior/prior values

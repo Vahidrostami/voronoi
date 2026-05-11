@@ -109,7 +109,13 @@
 | `src/voronoi/data/scripts/spawn-agent.sh` | ARCHITECTURE.md | §6 | `test_runtime_scripts.py` |
 | `src/voronoi/data/scripts/merge-agent.sh` | ARCHITECTURE.md | §6 | `test_runtime_scripts.py` |
 | `src/voronoi/server/queue.py` | SERVER.md | §2 | `test_queue.py` |
-| `src/voronoi/server/dispatcher.py` | SERVER.md | §3 | `test_dispatcher.py` |
+| `src/voronoi/server/dispatcher/_launch.py` | SERVER.md | §3 | `test_dispatcher.py` |
+| `src/voronoi/server/dispatcher/_recovery.py` | SERVER.md | §3 | `test_dispatcher.py` |
+| `src/voronoi/server/dispatcher/_progress.py` | SERVER.md | §3 | `test_dispatcher.py` |
+| `src/voronoi/server/dispatcher/_audits.py` | SERVER.md | §3 | `test_dispatcher.py` |
+| `src/voronoi/server/dispatcher/_stalls.py` | SERVER.md | §3 | `test_dispatcher.py` |
+| `src/voronoi/server/dispatcher/_liveness.py` | SERVER.md | §3 | `test_dispatcher.py` |
+| `src/voronoi/server/dispatcher/_completion.py` | SERVER.md | §3 | `test_dispatcher.py` |
 | `src/voronoi/server/tmux.py` | SERVER.md | §3 | `test_dispatcher.py` |
 | `src/voronoi/server/snapshot.py` | SERVER.md | §3 | `test_snapshot.py` |
 | `src/voronoi/server/prompt.py` | SERVER.md | §4 | `test_unified_prompt.py`, `test_worker_prompt.py` |

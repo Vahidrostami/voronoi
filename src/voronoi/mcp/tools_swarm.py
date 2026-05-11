@@ -10,7 +10,7 @@ import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from voronoi.beads import run_bd_json
 from voronoi.mcp.validators import (
@@ -336,22 +336,32 @@ def update_belief_map(
 
 def update_success_criteria(
     criteria_id: str,
-    met: bool = False,
+    met: Optional[bool] = None,
     evidence: str = "",
     description: str = "",
 ) -> dict[str, Any]:
     """Update a success criterion status.
 
+    Partial update semantics: only fields explicitly supplied by the caller
+    are written. Omitting ``met`` leaves the existing ``met`` value alone
+    (so attaching new evidence to an already-met criterion does not silently
+    demote it). Omitting ``description`` leaves the existing description
+    alone. For new criteria, ``met`` defaults to ``False`` and
+    ``description`` falls back to ``criteria_id``.
+
     Parameters
     ----------
     criteria_id : str
         Criterion identifier (e.g. 'SC1').
-    met : bool
-        Whether the criterion is met.
+    met : bool, optional
+        Whether the criterion is met. Omit to leave the existing value
+        unchanged on an existing criterion.
     evidence : str
-        Evidence or finding that satisfies the criterion.
+        Evidence or finding that satisfies the criterion. Empty string
+        leaves the existing value unchanged.
     description : str
-        Criterion description (for initial creation).
+        Criterion description (for initial creation). Empty string leaves
+        the existing description unchanged.
     """
     criteria_id = require_non_empty(criteria_id, "criteria_id")
 
@@ -370,7 +380,8 @@ def update_success_criteria(
     found = False
     for c in criteria:
         if isinstance(c, dict) and c.get("id") == criteria_id:
-            c["met"] = bool(met)
+            if met is not None:
+                c["met"] = bool(met)
             if evidence:
                 c["evidence"] = evidence
             if description:
@@ -382,13 +393,21 @@ def update_success_criteria(
         criteria.append({
             "id": criteria_id,
             "description": description or criteria_id,
-            "met": bool(met),
+            "met": bool(met) if met is not None else False,
             "evidence": evidence,
         })
 
     path.write_text(json.dumps(criteria, indent=2))
 
-    return {"criteria_id": criteria_id, "met": met, "status": "updated"}
+    # Report the canonical post-write state of `met` so callers can confirm
+    # what was actually persisted (matters for partial updates where `met`
+    # was omitted).
+    final_met = next(
+        (bool(c.get("met")) for c in criteria
+         if isinstance(c, dict) and c.get("id") == criteria_id),
+        False,
+    )
+    return {"criteria_id": criteria_id, "met": final_met, "status": "updated"}
 
 
 # ---------------------------------------------------------------------------

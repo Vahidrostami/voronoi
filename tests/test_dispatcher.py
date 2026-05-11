@@ -6333,15 +6333,19 @@ class TestIsCompleteSessionDead:
 
 
 # ---------------------------------------------------------------------------
-# BUG-003: task count fallback reads .beads/ JSONL when bd CLI unavailable
+# BUG-003 (fixed): task count fallback uses run_bd_json only.
+# .beads/*.jsonl is Beads' append-only event log (multiple lines per task id),
+# not an issue export — counting lines would inflate task totals and
+# closed-event history would over-count "closed".  When bd is unavailable,
+# we report 0/0 honestly.
 # ---------------------------------------------------------------------------
 
 class TestTaskCountFallback:
-    """_handle_completion should read .beads/ JSONL as fallback when task_snapshot
-    is empty and bd CLI is unavailable."""
+    """_handle_completion uses run_bd_json for fallback task counts;
+    on bd failure it reports 0/0 rather than parsing the event log."""
 
-    def test_beads_jsonl_fallback(self, dispatcher_setup):
-        """When task_snapshot and bd CLI both fail, read .beads/*.jsonl directly."""
+    def test_no_jsonl_event_log_parsing(self, dispatcher_setup):
+        """When bd CLI fails, do NOT parse .beads/*.jsonl — report 0/0."""
         d, msgs, docs, tmp_path = dispatcher_setup
         mock_queue = MagicMock()
         d._queue = mock_queue
@@ -6353,28 +6357,31 @@ class TestTaskCountFallback:
             question="test",
             mode="discover",
         )
-        # task_snapshot intentionally empty
         run.task_snapshot = {}
 
-        # Create .beads/ with JSONL tasks
+        # Populate .beads/ with what looks like an event log — multiple
+        # entries per task id, including historical "closed" events.
+        # The buggy fallback used to count these as 5 tasks/2 closed.
         beads_dir = tmp_path / ".beads"
         beads_dir.mkdir()
-        tasks_jsonl = "\n".join([
+        events_jsonl = "\n".join([
+            json.dumps({"id": "t-1", "status": "open", "title": "Baseline"}),
             json.dumps({"id": "t-1", "status": "closed", "title": "Baseline"}),
+            json.dumps({"id": "t-2", "status": "open", "title": "Experiment"}),
+            json.dumps({"id": "t-2", "status": "in_progress", "title": "Experiment"}),
             json.dumps({"id": "t-2", "status": "closed", "title": "Experiment"}),
-            json.dumps({"id": "t-3", "status": "in_progress", "title": "Write-up"}),
         ])
-        (beads_dir / "tasks.jsonl").write_text(tasks_jsonl)
+        (beads_dir / "tasks.jsonl").write_text(events_jsonl)
 
-        # Make bd CLI fail
-        with patch("voronoi.server.dispatcher.subprocess.run",
+        # Force bd unavailable
+        with patch("voronoi.beads.subprocess.run",
                    side_effect=FileNotFoundError("bd")):
             d._handle_completion(run, failed=True,
                                  failure_reason="Agent exited unexpectedly")
 
-        # The failure message should show real counts, not 0/0
+        # Honest 0/0, never inflated 5/2 from event-log parsing.
         assert len(msgs) >= 1
-        assert "2/3" in msgs[0]  # 2 closed out of 3 total
+        assert "0/0" in msgs[0]
 
     def test_zero_task_count_when_no_fallbacks(self, dispatcher_setup):
         """When all fallbacks fail, still report 0/0 (graceful degradation)."""
@@ -6391,7 +6398,7 @@ class TestTaskCountFallback:
         )
         run.task_snapshot = {}
 
-        with patch("voronoi.server.dispatcher.subprocess.run",
+        with patch("voronoi.beads.subprocess.run",
                    side_effect=FileNotFoundError("bd")):
             d._handle_completion(run, failed=True,
                                  failure_reason="Agent exited unexpectedly")

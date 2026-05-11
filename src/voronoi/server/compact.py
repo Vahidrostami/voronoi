@@ -225,9 +225,18 @@ def _write_state_digest(workspace: Path) -> bool:
                                 cp_cs = {}
                     except (json.JSONDecodeError, OSError):
                         pass
-                # Merge: if checkpoint says met, override
+                # Merge: only the literal boolean True in checkpoint
+                # criteria_status promotes a criterion. This matches the
+                # strict semantics in
+                # ``Dispatcher._sync_criteria_from_checkpoint`` — see
+                # SERVER.md §"Criteria Synchronization" and SCIENCE.md §10
+                # (anti-fabrication). Truthy non-bool values such as
+                # "pending data" must NOT silently mark a criterion met,
+                # otherwise the state digest would disagree with the
+                # canonical success-criteria.json that the dispatcher
+                # writes.
                 for c in criteria:
-                    if isinstance(c, dict) and cp_cs.get(c.get("id")):
+                    if isinstance(c, dict) and cp_cs.get(c.get("id")) is True:
                         c["met"] = True
                 met = sum(1 for c in criteria if c.get("met"))
                 lines.append(f"## Success Criteria: {met}/{len(criteria)} met\n")

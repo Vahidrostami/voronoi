@@ -955,6 +955,73 @@ class TestUpdateSuccessCriteria:
         assert sc[0]["met"] is True
         assert sc[0]["evidence"] == "bd-42"
 
+    def test_partial_update_preserves_met(self, tmp_path):
+        """Omitting `met` must NOT demote an already-met criterion.
+
+        Regression test: previously the tool defaulted ``met=False`` and
+        unconditionally wrote ``c["met"] = bool(met)``, so a follow-up
+        call attaching new evidence silently flipped a met criterion
+        back to unmet.
+        """
+        from voronoi.mcp.tools_swarm import update_success_criteria
+
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "success-criteria.json").write_text(json.dumps([
+            {"id": "SC1", "description": "L4 > L1 on F1",
+             "met": True, "evidence": "bd-17"},
+        ]))
+
+        with patch.dict(os.environ, {"VORONOI_WORKSPACE": str(tmp_path)}):
+            result = update_success_criteria(
+                criteria_id="SC1",
+                evidence="bd-42 replication: F1=0.79",
+            )
+
+        sc = json.loads((swarm / "success-criteria.json").read_text())
+        assert sc[0]["met"] is True, "partial update must not demote"
+        assert sc[0]["evidence"] == "bd-42 replication: F1=0.79"
+        assert sc[0]["description"] == "L4 > L1 on F1", \
+            "partial update must not overwrite description"
+        assert result["met"] is True, \
+            "return value must reflect the persisted met state, not the arg"
+
+    def test_partial_update_preserves_description(self, tmp_path):
+        """Omitting `description` must NOT clobber an existing one."""
+        from voronoi.mcp.tools_swarm import update_success_criteria
+
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "success-criteria.json").write_text(json.dumps([
+            {"id": "SC2", "description": "Pipeline compresses >=10x",
+             "met": False},
+        ]))
+
+        with patch.dict(os.environ, {"VORONOI_WORKSPACE": str(tmp_path)}):
+            update_success_criteria(criteria_id="SC2", met=True,
+                                    evidence="bd-30")
+
+        sc = json.loads((swarm / "success-criteria.json").read_text())
+        assert sc[0]["description"] == "Pipeline compresses >=10x"
+        assert sc[0]["met"] is True
+
+    def test_explicit_false_can_demote(self, tmp_path):
+        """Explicit met=False must still demote (e.g. retraction)."""
+        from voronoi.mcp.tools_swarm import update_success_criteria
+
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        (swarm / "success-criteria.json").write_text(json.dumps([
+            {"id": "SC1", "description": "x", "met": True, "evidence": "bd-1"},
+        ]))
+
+        with patch.dict(os.environ, {"VORONOI_WORKSPACE": str(tmp_path)}):
+            update_success_criteria(criteria_id="SC1", met=False,
+                                    evidence="retracted: design invalid")
+
+        sc = json.loads((swarm / "success-criteria.json").read_text())
+        assert sc[0]["met"] is False
+
 
 class TestLogExperiment:
     def test_valid_log(self, tmp_path):

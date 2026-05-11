@@ -287,7 +287,7 @@ Convenience functions: `log_tool_call()`, `log_finding()`, `log_test_result()`, 
 
 ## 11. Context Pressure & Dispatcher Directives
 
-**Code**: `src/voronoi/server/dispatcher.py` — `_check_context_pressure()`, `_write_directive()`
+**Code**: `src/voronoi/server/dispatcher/_progress.py` — `_check_context_pressure()`, `_write_directive()`
 
 The dispatcher monitors session age and self-reported context pressure. When thresholds are crossed, it writes `.swarm/dispatcher-directive.json` for the orchestrator to poll.
 
@@ -344,7 +344,7 @@ Environment: `VORONOI_CONTEXT_ADVISORY_HOURS`, `VORONOI_CONTEXT_WARNING_HOURS`, 
 
 ### Ground-Truth Context Snapshots via `/context`
 
-**Code**: `OrchestratorCheckpoint.context_snapshot` in `src/voronoi/science/convergence.py`, `_check_token_budget()` in `src/voronoi/server/dispatcher.py`, `log_context_snapshot()` in `src/voronoi/server/events.py`
+**Code**: `OrchestratorCheckpoint.context_snapshot` in `src/voronoi/science/convergence.py`, `_check_token_budget()` in `src/voronoi/server/dispatcher/_progress.py`, `log_context_snapshot()` in `src/voronoi/server/events.py`
 
 The orchestrator runs Copilot CLI's `/context` command at each OODA cycle start and writes the structured output into the checkpoint's `context_snapshot` field:
 
@@ -412,7 +412,7 @@ This digest is re-read at each OODA cycle start, preventing design violations wh
 
 ## 14. Restart Recovery — Minimal Resume Prompt
 
-**Code**: `src/voronoi/server/dispatcher.py` — `_build_resume_prompt()`
+**Code**: `src/voronoi/server/dispatcher/_recovery.py` — `_build_resume_prompt()`
 
 When the agent crashes and is restarted, the dispatcher writes a **new** minimal prompt (`orchestrator-prompt-resume.txt`) instead of appending to the original:
 
