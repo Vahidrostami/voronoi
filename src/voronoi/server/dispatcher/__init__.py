@@ -707,7 +707,14 @@ class InvestigationDispatcher(_CoreMixin, _LaunchMixin, _RecoveryMixin, _Progres
         "setup": 3.0,
         "explore": 1.0,
         "test": 1.0,
-        "synthesize": 0.5,
+        # Synthesize is the phase most likely to be a single long quiet
+        # block: Scribe writes the full LaTeX manuscript and Evaluator
+        # scores multi-dimensional rubrics — both routinely exceed the
+        # default 30-min strike-1 window without producing findings or
+        # ledger transitions because the deliverable IS the output. A
+        # sub-1× multiplier here aborts converging runs minutes before
+        # they finish; grant extra grace instead.
+        "synthesize": 1.5,
     }
 
     _STALL_STRIKE_DIRECTIVE = {

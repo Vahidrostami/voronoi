@@ -5940,9 +5940,12 @@ class TestLearningStalled:
     def test_strike2_escalates_and_updates_signal(self, dispatcher_setup):
         d, msgs, _, base = dispatcher_setup
         run = self._mk_active_run(base)
-        # Skip directly to stale-past-strike-2; escalation walks through
-        # strike 1 first, then strike 2 in the same call.
+        # Escalation is one strike per tick — each call to
+        # _update_learning_activity advances at most one level so the
+        # orchestrator gets a real OODA cycle to react between strikes.
         run.last_learning_activity_at = self._stale_past_strike(d, 2)
+        d._update_learning_activity(run, [])
+        assert run.stall_strike_level == 1
         d._update_learning_activity(run, [])
         assert run.stall_strike_level == 2
         data = json.loads((base / ".swarm" / "stall-signal.json").read_text())
@@ -5968,6 +5971,9 @@ class TestLearningStalled:
         d.running[run.investigation_id] = run
         run.last_learning_activity_at = self._stale_past_strike(d, 3)
 
+        # One strike per tick: walk 0 → 1 → 2 → 3.
+        d._update_learning_activity(run, [])
+        d._update_learning_activity(run, [])
         d._update_learning_activity(run, [])
 
         assert run.stall_strike_level == 3
@@ -5998,8 +6004,11 @@ class TestLearningStalled:
         # Past strike 3 + stall_final_grace_minutes.
         run.last_learning_activity_at = self._stale_past_strike(d, 4)
 
+        # One strike per tick: walk 0 → 1 → 2 → 3 → 4. Final tick
+        # parks the run for partial review.
         with patch("subprocess.run"):
-            d._update_learning_activity(run, [])
+            for _ in range(4):
+                d._update_learning_activity(run, [])
 
         assert run.stall_strike_level == 4
         data = json.loads((base / ".swarm" / "stall-signal.json").read_text())
@@ -6034,12 +6043,15 @@ class TestLearningStalled:
         d.running[run.investigation_id] = run
 
         # First poll: firmly past strike 3 but before strike 4.
+        # One strike per tick \u2014 walk 0 \u2192 1 \u2192 2 \u2192 3 across three polls.
         run.last_learning_activity_at = self._stale_past_strike(d, 3)
+        d._update_learning_activity(run, [])
+        d._update_learning_activity(run, [])
         d._update_learning_activity(run, [])
         assert run.stall_strike_level == 3
         assert run.investigation_id in d.running
 
-        # Second poll: push the stale clock past strike 3 + grace.
+        # Next poll: push the stale clock past strike 3 + grace.
         run.last_learning_activity_at = self._stale_past_strike(d, 4)
         with patch("subprocess.run"):
             d._update_learning_activity(run, [])
@@ -6138,14 +6150,27 @@ class TestLearningStalled:
         d._update_learning_activity(run, [])
         assert run.stall_strike_level >= 1
 
-    def test_synthesize_lifecycle_phase_tightens_budget(self, dispatcher_setup):
-        """lifecycle_phase='synthesize' halves the stall thresholds."""
+    def test_synthesize_lifecycle_phase_extends_budget(self, dispatcher_setup):
+        """lifecycle_phase='synthesize' multiplies stall thresholds by 1.5×.
+
+        Synthesize is the phase most likely to be a single long quiet block
+        (Scribe writing the manuscript, Evaluator scoring) so it gets MORE
+        grace, not less — a sub-1× multiplier here aborts converging runs
+        minutes before they would finish.
+        """
         d, msgs, _, base = dispatcher_setup
         run = self._mk_active_run(base)
         self._write_checkpoint(base, lifecycle_phase="synthesize")
-        # Halfway to strike 1 under normal thresholds should fire at 0.5×
+        # Just past the unscaled strike-1 threshold but well under 1.5× —
+        # the strike must NOT fire because synthesize gets extra grace.
         run.last_learning_activity_at = time.time() - (
-            d.config.stall_strike1_minutes * 60 // 2 + 60
+            d.config.stall_strike1_minutes * 60 + 60
+        )
+        d._update_learning_activity(run, [])
+        assert run.stall_strike_level == 0
+        # Past 1.5× the threshold — strike should now fire.
+        run.last_learning_activity_at = time.time() - int(
+            d.config.stall_strike1_minutes * 60 * 1.5 + 60
         )
         d._update_learning_activity(run, [])
         assert run.stall_strike_level == 1
@@ -6210,8 +6235,10 @@ class TestLearningStalled:
         # Past strike 3 + final grace window triggers partial review at level 4.
         run.last_learning_activity_at = self._stale_past_strike(d, 4)
 
+        # One strike per tick: walk 0 → 1 → 2 → 3 → 4.
         with patch("subprocess.run"):
-            d._update_learning_activity(run, [])
+            for _ in range(4):
+                d._update_learning_activity(run, [])
 
         partial_txt = (base / ".swarm" / "deliverable-partial.md").read_text()
         assert "agent-runner" in partial_txt

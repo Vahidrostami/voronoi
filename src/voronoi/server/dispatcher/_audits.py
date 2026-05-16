@@ -636,6 +636,7 @@ class _AuditsMixin:
             total_failures = 0
             latest_ts = run.last_event_ts
             serendipity_events: list = []
+            finding_events: list = []
 
             roots = [run.workspace_path]
             swarm_dir = self._swarm_dir(run.workspace_path)
@@ -658,12 +659,31 @@ class _AuditsMixin:
                         total_failures += 1
                     if e.event == "serendipity":
                         serendipity_events.append(e)
+                    elif e.event == "finding_committed":
+                        finding_events.append(e)
                 latest_ts = max(latest_ts, raw[-1].ts)
                 run.last_event_ts_by_path[key] = raw[-1].ts
 
             if total_count == 0:
                 return events
             run.last_event_ts = latest_ts
+
+            # Surface finding_committed events as `type: "finding"` so the
+            # stall escalator's learning-activity timer resets even when
+            # the agent session holds the Dolt lock and the dispatcher
+            # cannot run `bd list --json`. Dedupe by task_id against the
+            # set already used by `_check_findings` so a finding announced
+            # via the event log is not re-announced after the session ends
+            # and bd becomes readable again.
+            for fev in finding_events:
+                tid = fev.task_id or fev.detail.split(":", 1)[0]
+                if not tid or tid in run.notified_findings:
+                    continue
+                run.notified_findings.add(tid)
+                events.append({
+                    "type": "finding",
+                    "msg": f"🔬 *NEW FINDING*\n{fev.detail or tid}",
+                })
 
             # Surface serendipity events as milestone notifications
             for sev in serendipity_events:

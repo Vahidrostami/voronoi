@@ -238,6 +238,8 @@ def write_convergence(workspace: Path, result: ConvergenceResult) -> Path
 | 0.50 – 0.74 | Improvement round (max 2) |
 | < 0.50 | Deliver with quality disclosure |
 
+**Success-criteria override (adaptive rigor):** when *every* entry in `.swarm/success-criteria.json` has `met: true` and no other blockers remain, the run converges regardless of evaluator score. Success criteria are the PI's contract; the evaluator score is a secondary quality signal. A strict evaluator must not force unnecessary improvement rounds on a deliverable that already satisfies the PI's stated criteria. The override is gated on `_all_criteria_met()` — a missing or empty criteria file does NOT override.
+
 ### Structured Evaluator Feedback
 
 The evaluator produces section-level scores and concrete remediations:
@@ -1167,6 +1169,7 @@ def compute_learning_rate_display(state: EpochState) -> str
 ### Epoch Advancement Rules
 
 - Epoch auto-advances when `has_evidence` is True and `max_tranches < configured_max`
+- The dispatcher's `_update_epoch_on_learning()` advances **as many epochs as the current learning batch supports** (one belief-map move per epoch transition, with remaining moves carried over). A single rich learning batch can therefore unlock multiple tiers in one tick instead of throttling parallelism for several poll cycles.
 - Each epoch's findings/moves/tokens are archived into `history`
 - Cap never exceeds `DispatcherConfig.max_agents`
 - The orchestrator prompt instructs the LLM to respect `max_tranches` from the file

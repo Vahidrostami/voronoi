@@ -361,14 +361,17 @@ class _StallsMixin:
         else:
             target_level = 0
 
-        # Escalate one step at a time so each strike's side-effects
-        # (signal file write, Telegram notification, partial-review parking) fire.
-        while run.stall_strike_level < target_level:
+        # Escalate at most ONE strike level per poll tick. Each strike's
+        # purpose is to give the orchestrator a fresh OODA cycle to react;
+        # firing 1 → 2 → 3 → 4 in a single tick (no orchestrator wake in
+        # between) defeats the entire self-steer design. If the elapsed
+        # window already crosses several thresholds (e.g. after a long
+        # dispatcher outage), we still only advance one level — subsequent
+        # ticks will continue the escalation, leaving real time for the
+        # orchestrator to respond between levels.
+        if run.stall_strike_level < target_level:
             run.stall_strike_level += 1
             self._fire_stall_strike(run, run.stall_strike_level, elapsed_min)
-            if run.stall_strike_level >= 4:
-                # Partial-review parking removes the run; do not escalate further.
-                break
 
     def _stall_phase_multiplier(self, run: RunningInvestigation) -> float:
         """Return the stall-threshold multiplier for the current lifecycle phase.
@@ -546,13 +549,22 @@ class _StallsMixin:
         run._prior_belief_snapshot = current_snapshot
         epoch.belief_map_moves += moves
 
-        # Auto-advance epoch if we have evidence and haven't hit max cap
-        if epoch.has_evidence and epoch.max_tranches < self.config.max_agents:
+        # Auto-advance epochs while we have evidence and headroom remains.
+        # Each epoch transition consumes one belief-map move; remaining
+        # moves carry over so a single learning batch with N moves can
+        # unlock up to N epochs in one tick instead of throttling
+        # parallelism for N more poll cycles.
+        advanced = False
+        while epoch.belief_map_moves > 0 and epoch.max_tranches < self.config.max_agents:
+            carryover = epoch.belief_map_moves - 1
             epoch = advance_epoch(epoch, configured_max=self.config.max_agents)
+            epoch.belief_map_moves = carryover
+            advanced = True
             logger.info(
                 "Investigation #%d advanced to epoch %d (cap: %d tranches)",
                 run.investigation_id, epoch.epoch, epoch.max_tranches,
             )
+        if advanced:
             self.send_message(
                 f"📈 *{run.label}* — evidence produced! "
                 f"Scaling to epoch {epoch.epoch} "

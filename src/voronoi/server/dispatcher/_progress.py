@@ -660,6 +660,19 @@ class _ProgressMixin:
         except Exception:
             pass
 
+        # Clear any stale dispatcher directive — the new session starts
+        # with a fresh context window, so any pre-restart context_critical
+        # / context_warning advisory is no longer accurate. Leaving it in
+        # place causes the reborn agent to immediately spend its first
+        # OODA cycle on emergency convergence steps that aren't needed.
+        try:
+            (run.workspace_path / ".swarm" / "dispatcher-directive.json").unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            logger.debug("Failed to clear dispatcher-directive for %s: %s",
+                         run.label, e)
+
         # Kill the current agent session
         subprocess.run(
             ["tmux", "kill-session", "-t", run.tmux_session],

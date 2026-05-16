@@ -584,6 +584,23 @@ def record_finding(
 
     _upsert_task_fields(task_id, ws, field_updates)
 
+    # Emit a structured event so the dispatcher can detect new findings
+    # without needing bd access (the active agent session holds an
+    # exclusive Dolt lock that blocks dispatcher polls). Also feeds the
+    # stall escalator's learning-activity timer. Best-effort: never fail
+    # the recording if logging breaks.
+    try:
+        from voronoi.server.events import log_finding
+        log_finding(
+            Path(ws),
+            agent=os.environ.get("VORONOI_AGENT", "worker"),
+            task_id=task_id,
+            finding_id=task_id,
+            detail=f"{effect_size} valence={valence}",
+        )
+    except Exception:  # pragma: no cover - defensive
+        logger.debug("log_finding emit failed for %s", task_id, exc_info=True)
+
     return {
         "task_id": task_id,
         "effect_size": effect_size,

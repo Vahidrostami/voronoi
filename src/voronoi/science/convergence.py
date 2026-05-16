@@ -664,9 +664,12 @@ def check_convergence(workspace: Path, rigor: str,
         # Adaptive rigor: basic convergence if eval score present, otherwise just deliverable
         if eval_score >= 0.75 and not blockers:
             return ConvergenceResult(True, "converged", "Evaluator PASS", score=eval_score)
-        # If score is moderate but ALL success criteria are met, allow convergence
-        # rather than blocking indefinitely for a higher score
-        if eval_score >= 0.50 and _all_criteria_met(workspace):
+        # Success criteria are the PI's contract; the evaluator score is a
+        # secondary quality signal. When the contract is met and no blockers
+        # remain, converge regardless of score — otherwise a strict evaluator
+        # can force two unnecessary improvement rounds on a deliverable that
+        # already satisfies the PI's stated criteria.
+        if _all_criteria_met(workspace):
             return ConvergenceResult(
                 True, "converged",
                 f"All success criteria met (score={eval_score:.2f})",

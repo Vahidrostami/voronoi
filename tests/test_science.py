@@ -2211,17 +2211,41 @@ class TestConvergenceSuccessCriteriaOverride:
         assert result.converged is False
 
     def test_score_below_050_not_overridden(self, tmp_path):
-        """Score < 0.50 with improvement rounds remaining should request improvement."""
+        """Score < 0.50 with criteria UNMET should request improvement.
+
+        Success criteria are the PI's contract; when ALL criteria are met
+        the run converges regardless of score (otherwise a strict evaluator
+        forces unnecessary improvement rounds on a deliverable that already
+        satisfies the PI's stated criteria). When criteria are NOT met,
+        a low score still demands improvement.
+        """
+        (tmp_path / ".swarm").mkdir()
+        (tmp_path / ".swarm" / "deliverable.md").write_text("# Done")
+        save_success_criteria(tmp_path, [
+            {"id": "SC1", "description": "L4 > L1", "met": False},
+        ])
+        # Score 0.40 with criteria unmet and rounds remaining → not_ready
+        result = check_convergence(tmp_path, "adaptive", eval_score=0.40,
+                                    improvement_rounds=0)
+        assert result.converged is False
+        assert result.status == "not_ready"
+
+    def test_low_score_converges_when_all_criteria_met(self, tmp_path):
+        """A low evaluator score does NOT block convergence when criteria are met.
+
+        Prevents wasted improvement rounds on deliverables whose PI-stated
+        criteria are already satisfied even if the evaluator is strict.
+        """
         (tmp_path / ".swarm").mkdir()
         (tmp_path / ".swarm" / "deliverable.md").write_text("# Done")
         save_success_criteria(tmp_path, [
             {"id": "SC1", "description": "L4 > L1", "met": True},
         ])
-        # Score 0.40 with rounds remaining should NOT converge
         result = check_convergence(tmp_path, "adaptive", eval_score=0.40,
                                     improvement_rounds=0)
-        assert result.converged is False
-        assert result.status == "not_ready"
+        assert result.converged is True
+        assert result.status == "converged"
+        assert "success criteria" in result.reason.lower()
 
 
 class TestNegativeResultConvergence:
