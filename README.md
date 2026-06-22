@@ -49,7 +49,7 @@
 <h2 id="install">Install</h2>
 
 ```bash
-pip install voronoi
+pip install git+https://github.com/Vahidrostami/voronoi
 ```
 
 **Telegram** (recommended) — set up once, text questions from your phone:
@@ -144,10 +144,10 @@ graph TD
     H --> Rev["⚖️ Review Gate"]
     Rev --> D["📄 Report"]
 
-    style B fill:#161b22,stroke:#3fb950
-    style E fill:#161b22,stroke:#3fb950
-    style R fill:#161b22,stroke:#3fb950
-    style H fill:#161b22,stroke:#d29922
+    style B stroke:#3fb950,stroke-width:2px
+    style E stroke:#3fb950,stroke-width:2px
+    style R stroke:#3fb950,stroke-width:2px
+    style H stroke:#d29922,stroke-width:2px
 ```
 
 <sup>**Baseline**, **EWC**, and **Replay** run in parallel. **Hybrid** is automatically blocked until all three finish — its experiment depends on their results. The orchestrator tracks this via the [Beads](https://github.com/gastownhall/beads) dependency graph.</sup>
@@ -192,8 +192,10 @@ voronoi demo run emergent-ecosystem --safe
 
 | Demo | What it does |
 |------|-------------|
-| **computational-triage** | Evidence encoding as a scaling axis for multi-agent LLM reasoning |
+| **allen-trimodal-celltypes** | Does ephys + morphology predict transcriptomic cell type better than morphology alone? (Allen Cell Types DB) |
 | **compilation-threshold-hunt** | Same hypothesis as `epistemic-trajectories`, but the swarm designs the experiment (surprise-budget protocol) |
+| **computational-triage** | Evidence encoding as a scaling axis for multi-agent LLM reasoning |
+| **conflict-surfacing-rgm** | Do LLMs over-weight the last / most-verbose source under conflicting evidence? Typed conflict ledger as the fix |
 | **coupled-decisions** | 5 coupled levers, planted ground truth in 100K transactions |
 | **emergent-ecosystem** | 4 species on a 100×100 grid, each agent builds one in isolation |
 | **epistemic-trajectories** | Phase transitions in LLM multi-source reasoning across capability tiers |
@@ -208,7 +210,7 @@ voronoi demo run emergent-ecosystem --safe
 
 **19 Role Files** — 12 core roles plus auxiliary gates, paper-track roles, and Red Team:
 
-Builder 🔨 · Scout 🔍 · Investigator 🔬 · Critic ⚖️ · Synthesizer 🧩 · Evaluator 🎯 · Explorer 🧭 · Theorist 🧬 · Methodologist 📐 · Statistician 📊 · Scribe ✍️ · Worker ⚙️ · Question Framer · Assumption Auditor · Outliner · Lit-Synthesizer · Figure-Critic · Refiner · Red Team
+Orchestrator 🧠 · Builder 🔨 · Scout 🔍 · Investigator 🔬 · Critic ⚖️ · Synthesizer 🧩 · Evaluator 🎯 · Explorer 🧭 · Theorist 🧬 · Methodologist 📐 · Statistician 📊 · Scribe ✍️ · Question Framer · Assumption Auditor · Outliner · Lit-Synthesizer · Figure-Critic · Refiner · Red Team
 
 **Two Science Modes** — auto-classified from your question:
 
@@ -273,14 +275,14 @@ src/voronoi/
   beads.py                # Beads subprocess helpers
   science/                # rigor gates and scientific state
     claims.py  consistency.py  convergence.py  fabrication.py  gates.py
-    interpretation.py  manifest.py  citation_coverage.py  lab_kg.py
+    interpretation.py  manifest.py  citation_coverage.py  lab_kg.py  locked_claim.py
   gateway/                # Telegram interface
     config.py  router.py  report.py  intent.py
     handlers_query.py  handlers_mutate.py  handlers_workflow.py
     memory.py  knowledge.py  handoff.py  progress.py
     codename.py  literature.py  evidence.py  pdf.py
   server/
-    prompt.py  dispatcher.py  queue.py  workspace.py
+    prompt.py  dispatcher/  queue.py  workspace.py
     sandbox.py  publisher.py  runner.py  events.py
     compact.py  repo_url.py  snapshot.py  tmux.py  provenance.py
   mcp/                    # MCP server — validated tool interface
@@ -356,8 +358,8 @@ Voronoi orchestrates coding agents for scientific investigation. Here's how it c
 **Prerequisites**: Python 3.10+ · [Beads](https://github.com/gastownhall/beads) with `bd init --server` support · [tmux](https://github.com/tmux/tmux) · [GitHub Copilot CLI](https://docs.github.com/en/copilot/using-github-copilot/using-github-copilot-in-the-command-line) (or [Claude Code](https://docs.anthropic.com/en/docs/claude-code))
 
 ```bash
-brew install beads tmux                        # macOS
-pip install voronoi[report]                     # optional: PDF generation
+brew install beads tmux   # macOS
+pip install "voronoi[report] @ git+https://github.com/Vahidrostami/voronoi"   # optional: PDF generation
 # Install Copilot CLI: see https://docs.github.com/en/copilot
 ```
 
@@ -365,7 +367,7 @@ pip install voronoi[report]                     # optional: PDF generation
 
 **Docker**: `docker build -t voronoi-python:latest -f docker/voronoi-python.Dockerfile .`
 
-**Upgrade**: `pip install --upgrade voronoi && voronoi upgrade`
+**Upgrade**: `pip install --upgrade git+https://github.com/Vahidrostami/voronoi && voronoi upgrade`
 
 </details>
 
@@ -375,7 +377,7 @@ pip install voronoi[report]                     # optional: PDF generation
 
 ```bash
 git clone https://github.com/Vahidrostami/voronoi && cd voronoi
-pip install -e . && pytest   # 1243 tests
+pip install -e . && pytest   # 1703 tests
 ```
 
 See [DESIGN.md](DESIGN.md) for the full design philosophy.
