@@ -2,7 +2,7 @@
 
 > Investigation queue, dispatcher, workspace provisioning, sandbox isolation, prompt building, publishing.
 
-**TL;DR**: `queue.py` = SQLite lifecycle (queued→running→complete). `dispatcher.py` polls queue, provisions workspaces, monitors progress; delegates tmux to `tmux.py`. `snapshot.py` = read-only workspace state capture (shared by dispatcher + gateway). `prompt.py` = single source of truth for all orchestrator prompts. `workspace.py` provisions with git clone/worktree. `provenance.py` writes LLM-call provenance records for experiment runners. `sandbox.py` = optional Docker. All in `src/voronoi/server/`.
+**TL;DR**: `queue.py` = SQLite lifecycle (queued→running→complete). `dispatcher/` package polls queue, provisions workspaces, monitors progress; delegates tmux to `tmux.py`. `snapshot.py` = read-only workspace state capture (shared by dispatcher + gateway). `prompt.py` = single source of truth for all orchestrator prompts. `workspace.py` provisions with git clone/worktree. `provenance.py` writes LLM-call provenance records for experiment runners. `sandbox.py` = optional Docker. All in `src/voronoi/server/`.
 
 ## 1. Module Map
 
@@ -10,7 +10,15 @@
 src/voronoi/server/
 ├── __init__.py       # Re-exports extract_repo_url
 ├── queue.py          # SQLite investigation queue (lifecycle management)
-├── dispatcher.py     # Provisions workspaces, launches agents, monitors progress
+├── dispatcher/       # Provisioning, launch, progress, audits, completion (mixin package)
+│   ├── __init__.py   #   Public surface: InvestigationDispatcher, DispatcherConfig, RunningInvestigation; _CoreMixin (dispatch_next, poll_progress, batched send, abort)
+│   ├── _launch.py    #   Workspace provisioning, prompt build, .swarm-config patch, tmux launch
+│   ├── _recovery.py  #   Re-adopt running rows, sweep missing manifests, pause/resume, restart, wake-from-park, build_resume_prompt
+│   ├── _progress.py  #   Per-poll progress: criteria sync, context pressure, token budget, phase detect, status snapshot, task diff, findings
+│   ├── _audits.py    #   Sentinel, graph-health (INV-58), paradigm-stress, design-invalid, reversed-hypotheses, event-log audits
+│   ├── _stalls.py    #   Self-steer escalator (strikes 1-4), claim-delta synthesis, learning-activity tracking, partial-review parking, /extend
+│   ├── _liveness.py  #   Worker/process liveness, exit-code classification, log tail, auth-failure detection, _needs_orchestrator
+│   └── _completion.py# Convergence checks, _is_complete, _handle_completion, manifest, publish, review transition, continuation, human gates
 ├── tmux.py           # TMux session launch, auth check, cleanup
 ├── snapshot.py       # WorkspaceSnapshot — read-only .swarm/ state capture
 ├── prompt.py         # Unified orchestrator prompt builder
@@ -178,11 +186,29 @@ CREATE INDEX idx_inv_chat ON investigations(chat_id);
 
 ---
 
-## 3. Dispatcher (`dispatcher.py`)
+## 3. Dispatcher (`dispatcher/` package)
 
 ### Purpose
 
 The dispatcher is the server's main loop. It polls the queue, provisions workspaces, launches agents in tmux, monitors progress, sends Telegram updates, and detects completion/timeout.
+
+### Package layout
+
+`InvestigationDispatcher` is a single class composed via mixin inheritance from one module per concern. Every method still resolves through the MRO, so callers and tests that reference `InvestigationDispatcher.<method>` remain unchanged.
+
+```
+dispatcher/
+├── __init__.py    # Public surface + _CoreMixin (dispatch_next, poll_progress, batched send, abort, get_detail)
+├── _launch.py     # _LaunchMixin     — provision workspace, build prompt, tmux launch
+├── _recovery.py   # _RecoveryMixin   — re-adopt, sweep manifests, pause/resume/restart, wake-from-park
+├── _progress.py   # _ProgressMixin   — criteria sync, context pressure, phase detect, status snapshot
+├── _audits.py     # _AuditsMixin     — sentinel, graph-health, paradigm-stress, event-log audits
+├── _stalls.py     # _StallsMixin     — strikes 1–4, claim deltas, learning activity, /extend, parking
+├── _liveness.py   # _LivenessMixin   — worker/process probing, exit classification, log tail
+└── _completion.py # _CompletionMixin — convergence, completion, manifest, publish, review, gates
+```
+
+Every mixin module re-imports the same prelude that `dispatcher.py` used (logging, dataclasses, `RunningInvestigation`, etc.). Helpers shared across mixins (e.g. `_CONVERGED_STATUSES`) live as module-level constants in the mixin that owns them; mixin methods reference them directly to avoid forward-referencing the composed class.
 
 ### DispatcherConfig
 
@@ -245,12 +271,12 @@ Beyond the worker-emitted event stream, the dispatcher synthesizes three classes
    |---|:-:|---|
    | `"setup"` | 3.0 | Infra build-out — long-running worker tasks writing experiment harnesses, evaluators, runners. Findings are not expected yet. |
    | `"explore"` / `"test"` | 1.0 | Normal hypothesis-driven work. |
-   | `"synthesize"` | 0.5 | Wrap-up — if findings have dried up here, close fast. |
+   | `"synthesize"` | 1.5 | Wrap-up — Scribe drafting and Evaluator scoring routinely produce no findings or claim transitions for >30 min because the deliverable IS the output; grant extra grace so converging runs are not aborted minutes before they finish. |
    | `""` (unset) | 2.0 if `phase ∈ {starting, scouting, planning}` else 1.0 | Inferred fallback so pre-existing runs still get setup grace. |
 
-   The orchestrator declares its lifecycle phase in `.swarm/orchestrator-checkpoint.json` (field `lifecycle_phase`). The declaration is advisory — the dispatcher reads it each poll but the multipliers are fixed by the table above; an orchestrator cannot lengthen its setup grace beyond 3× or its synthesize grace below 0.5× by choice of label.
+   The orchestrator declares its lifecycle phase in `.swarm/orchestrator-checkpoint.json` (field `lifecycle_phase`). The declaration is advisory — the dispatcher reads it each poll but the multipliers are fixed by the table above; an orchestrator cannot lengthen its setup grace beyond 3× or shorten its synthesize grace below 1.5× by choice of label.
 
-   `.swarm/stall-signal.json` has the shape `{"level": int, "directive": str, "instruction": str, "elapsed_minutes": float, "timestamp": str, "diagnosis": {...}}`. The `diagnosis` block is populated on every strike (1–3) and mirrors the orchestrator checkpoint (`lifecycle_phase`, `active_workers`, `next_actions`) plus the current open-task count — this is the belief-snapshot the next prompt injects. The orchestrator prompt builder (`server/prompt.py::build_orchestrator_prompt`) reads this file on every build and renders the `instruction` plus a bulleted view of the `diagnosis` under a `## ⚠ STALL DIRECTIVE` heading at the top of the prompt so the orchestrator sees it before anything else. Escalation is walked one strike at a time even when the run has been stalled long enough to warrant multiple strikes — each level's side effects fire exactly once.
+   `.swarm/stall-signal.json` has the shape `{"level": int, "directive": str, "instruction": str, "elapsed_minutes": float, "timestamp": str, "diagnosis": {...}}`. The `diagnosis` block is populated on every strike (1–3) and mirrors the orchestrator checkpoint (`lifecycle_phase`, `active_workers`, `next_actions`) plus the current open-task count — this is the belief-snapshot the next prompt injects. The orchestrator prompt builder (`server/prompt.py::build_orchestrator_prompt`) reads this file on every build and renders the `instruction` plus a bulleted view of the `diagnosis` under a `## ⚠ STALL DIRECTIVE` heading at the top of the prompt so the orchestrator sees it before anything else. Escalation advances **at most one strike per poll tick**, even when the elapsed window already crosses several thresholds (e.g. after a long dispatcher outage). Each level requires the orchestrator to have a real OODA cycle to react before the next level fires; cascading 1→2→3→4 in a single tick — the prior behaviour — defeated the entire self-steer design and skipped straight to partial review without the orchestrator ever seeing the strike-1/2/3 directives.
 
     **Human override (`/voronoi extend`).** The strike-2 and strike-3 Telegram messages prompt the PI with the extend command. Calling `/voronoi extend <codename> [minutes]` (default 60) invokes `InvestigationDispatcher.extend_run(...)`, which (a) grants explicit stall immunity for the requested window, (b) drops `stall_strike_level` back to 0, and (c) deletes `.swarm/stall-signal.json` so the next prompt build contains no stall directive. This is a convenience affordance, not the only rescue path: if the PI misses the message, strike 4 parks to review and `/voronoi status`, `/voronoi review <codename>`, `/voronoi continue <codename> [feedback]`, and `/voronoi complete <codename>` remain valid later. `/voronoi resume` remains scoped to paused or failed rows, not review-state rows.
 
@@ -535,7 +561,7 @@ The hard check calls `bd list --json` and scans for any non-closed task with "DE
 
 The dispatcher syncs `criteria_status` from the orchestrator checkpoint into `success-criteria.json` on each poll cycle via `_sync_criteria_from_checkpoint()`. This sync is promotion-only: checkpoint entries can mark a criterion as met, but they do not clear a criterion that is already marked met in the canonical file. That prevents stale or partial checkpoints from regressing canonical criteria state when the orchestrator updates its checkpoint but does not write back the full criteria file. The state digest generator also cross-references both sources, preferring whichever has more "met" values.
 
-**Strict boolean semantics**: Only the literal boolean `True` in `checkpoint.criteria_status[cid]` promotes a criterion to `met: True`. Any other value — truthy strings such as `"pending full data"`, numbers, dicts — is ignored and logged as a schema-violation warning. Without this discipline, free-form orchestrator notes silently flipped criteria to met and triggered false-positive convergence (see SCIENCE.md §10 anti-fabrication).
+**Strict boolean semantics**: Only the literal boolean `True` in `checkpoint.criteria_status[cid]` promotes a criterion to `met: True`. Any other value — truthy strings such as `"pending full data"`, numbers, dicts — is ignored and logged as a schema-violation warning. Without this discipline, free-form orchestrator notes silently flipped criteria to met and triggered false-positive convergence (see SCIENCE.md §10 anti-fabrication). The same `is True` check is applied by `compact._write_state_digest()` when merging checkpoint criteria into the in-memory digest, so the state digest cannot disagree with the canonical file by treating a non-bool value as met.
 
 ### Completion Handling
 

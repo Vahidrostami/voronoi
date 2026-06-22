@@ -12,6 +12,7 @@ import logging
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from voronoi.utils import extract_field
 from voronoi.science import consistency as _helpers
@@ -37,7 +38,7 @@ VALID_HYPOTHESIS_STATUSES = frozenset([
 ])
 
 
-def _safe_float(value: any, default: float = 0.5) -> float:
+def _safe_float(value: Any, default: float = 0.5) -> float:
     """Safely coerce value to float, returning default if conversion fails.
 
     Handles legacy belief-map data with non-numeric posterior/prior values
@@ -663,9 +664,12 @@ def check_convergence(workspace: Path, rigor: str,
         # Adaptive rigor: basic convergence if eval score present, otherwise just deliverable
         if eval_score >= 0.75 and not blockers:
             return ConvergenceResult(True, "converged", "Evaluator PASS", score=eval_score)
-        # If score is moderate but ALL success criteria are met, allow convergence
-        # rather than blocking indefinitely for a higher score
-        if eval_score >= 0.50 and _all_criteria_met(workspace):
+        # Success criteria are the PI's contract; the evaluator score is a
+        # secondary quality signal. When the contract is met and no blockers
+        # remain, converge regardless of score — otherwise a strict evaluator
+        # can force two unnecessary improvement rounds on a deliverable that
+        # already satisfies the PI's stated criteria.
+        if _all_criteria_met(workspace):
             return ConvergenceResult(
                 True, "converged",
                 f"All success criteria met (score={eval_score:.2f})",

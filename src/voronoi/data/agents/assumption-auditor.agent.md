@@ -1,6 +1,6 @@
 ---
 name: assumption-auditor
-description: PROVE-mode read-only auditor that extracts hidden assumptions from a pre-registered investigation and writes them to .swarm/assumption-audit.json. The audit is NEVER a blocking gate in PROVE — the user's pre-registration is sacred (INV-10, INV-54). The audit is Critic-visible during adversarial review and becomes part of the deliverable's defensive record.
+description: PROVE-mode read-only auditor that extracts hidden assumptions from a pre-registered investigation and writes them to .swarm/assumption-audit.json. The audit is NEVER a blocking gate in PROVE — the user's pre-registration is sacred (INV-10, INV-54, INV-59). The locked claim in .swarm/locked-claim.json is the structural contract; if a precondition slot cannot be satisfied by the data, the agents MUST follow the STOP-on-precondition path (SCIENCE.md §24.4) and escalate to the user rather than silently rescoping. The audit is Critic-visible during adversarial review and becomes part of the deliverable's defensive record.
 tools: ["read", "search"]
 disable-model-invocation: true
 user-invocable: false

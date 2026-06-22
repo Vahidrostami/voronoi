@@ -142,7 +142,7 @@ You can also write and run quick ad-hoc test scripts to prove a bug exists, but 
 [SEVERITY] BUG-NNN: Brief title
 
 WHERE:
-  File: src/voronoi/server/dispatcher.py
+  File: src/voronoi/server/dispatcher/__init__.py
   Function: dispatch_next()
   Lines: 145-160
 

@@ -156,12 +156,14 @@ def _build_registry() -> None:
     )
     _register_tool(
         "voronoi_update_success_criteria", tools_swarm.update_success_criteria,
-        "Update a success criterion status.",
+        "Update a success criterion. Partial update: omit `met` to leave the "
+        "current value unchanged (e.g. when only attaching new evidence). "
+        "Omit `description` to keep the existing description.",
         {
             "criteria_id": {"type": "string", "description": "Criterion ID (e.g. 'SC1')"},
-            "met": {"type": "boolean", "description": "Whether the criterion is met"},
-            "evidence": {"type": "string", "description": "Evidence or finding reference"},
-            "description": {"type": "string", "description": "Criterion description (for initial creation)"},
+            "met": {"type": "boolean", "description": "Whether the criterion is met. Omit to leave the existing value unchanged on an existing criterion."},
+            "evidence": {"type": "string", "description": "Evidence or finding reference (e.g. 'bd-42'). Empty leaves existing evidence unchanged."},
+            "description": {"type": "string", "description": "Criterion description (for initial creation). Empty leaves existing description unchanged."},
         },
         required=["criteria_id"],
     )

@@ -233,6 +233,44 @@ tail -5 .swarm/experiments.tsv
 - Always include `rationale` explaining what evidence drove the change
 - Check convergence criteria against checkpoint
 - Check for paradigm stress (3+ contradictions)
+- **For every kept experiment this cycle, evaluate which success criteria
+  it satisfies** and promote them via the MCP tool (see "Success Criteria
+  Promotion" below). Convergence is gated on `met:true` — if you never
+  promote, the investigation will stall at "N/M met" forever even when
+  the evidence is in.
+
+### Success Criteria Promotion — MANDATORY each cycle
+
+Success criteria live in `.swarm/success-criteria.json` (list of
+`{id, description, met, evidence}`). They start `met:false`. The ONLY
+sanctioned way to update them mid-investigation is the MCP tool:
+
+```python
+# Promote SC5 — attaches evidence AND flips met to True.
+voronoi_update_success_criteria(
+    criteria_id="SC5",
+    met=True,
+    evidence="bd-42:F1=0.81 (>=0.75 threshold from PROMPT.md SC5)",
+)
+
+# Attach new evidence to an already-met criterion WITHOUT demoting it.
+# Omit `met` — the existing value is preserved.
+voronoi_update_success_criteria(
+    criteria_id="SC5",
+    evidence="bd-58 replication: F1=0.79",
+)
+```
+
+Rules:
+- Do NOT hand-edit `success-criteria.json` and do NOT rewrite the whole
+  file from a partial in-memory copy — both can demote criteria.
+- Use the same `id` strings (`SC1`, `SC2`, …) you wrote at investigation
+  start; the tool finds-or-creates by id.
+- Mirror the same booleans into `criteria_status` on your next
+  `save_checkpoint` so the state digest, dispatcher sync, and Telegram
+  `/howsitgoing` all agree. Only the literal `True`/`False` is accepted —
+  free-form strings like `"pending data"` are dropped with a warning
+  (see SERVER.md §"Criteria Synchronization").
 
 ### Decide
 - Use belief map `information_gain` to pick highest-value next hypothesis
@@ -268,7 +306,9 @@ cp = OrchestratorCheckpoint(
     recent_decisions=['Dispatched scenarios 6-8'],
     dead_ends=['L2 encoding redundant with L4'],
     next_actions=['Wait for scenarios 6-8', 'Then dispatch ANOVA'],
-    criteria_status={'SC1': False, 'SC2': False, 'SC3': False},
+    # Mirror the booleans you just wrote via voronoi_update_success_criteria.
+    # Strict: only literal True/False — never strings like 'pending'.
+    criteria_status={'SC1': True, 'SC2': True, 'SC3': False},
 )
 save_checkpoint(Path('.'), cp)
 "

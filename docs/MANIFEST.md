@@ -254,7 +254,7 @@ The manifest never invents data. Every field traces to a source:
 ## 7. Integration With Dispatcher
 
 ```python
-# src/voronoi/server/dispatcher.py :: _handle_completion
+# src/voronoi/server/dispatcher/_completion.py :: _handle_completion
 if is_science:
     self._transition_to_review(run)
 else:

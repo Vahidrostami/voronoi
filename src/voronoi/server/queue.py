@@ -105,7 +105,21 @@ CREATE TABLE IF NOT EXISTS investigations_new (
     completed_at      REAL,
     error             TEXT
 );
-INSERT OR IGNORE INTO investigations_new SELECT * FROM investigations;
+-- Use an explicit column list — SELECT * relies on source column order,
+-- which is non-deterministic across upgrade paths (codename and demo_source
+-- were appended via ALTER on older databases) and would otherwise shift
+-- string columns into the wrong slots and drop rows whose NULL values
+-- collided with NOT NULL targets (e.g. queued/running rows with
+-- completed_at=NULL landing in created_at).
+INSERT OR IGNORE INTO investigations_new (
+    id, chat_id, status, investigation_type, repo, question, slug,
+    mode, rigor, codename, workspace_path, sandbox_id, github_url,
+    parent_id, demo_source, created_at, started_at, completed_at, error
+)
+SELECT id, chat_id, status, investigation_type, repo, question, slug,
+       mode, rigor, codename, workspace_path, sandbox_id, github_url,
+       parent_id, demo_source, created_at, started_at, completed_at, error
+FROM investigations;
 DROP TABLE investigations;
 ALTER TABLE investigations_new RENAME TO investigations;
 CREATE INDEX IF NOT EXISTS idx_inv_status ON investigations(status);

@@ -106,7 +106,7 @@ Inconsistent wording, outdated count, cosmetic doc issue.
 ```
 [SEVERITY] CATEGORY: Brief description
   Spec:  docs/SERVER.md §3, line 47 — "dispatcher polls every 10s"
-  Code:  src/voronoi/server/dispatcher.py, line 123 — actually polls every 15s
+  Code:  src/voronoi/server/dispatcher/__init__.py, line 123 — actually polls every 15s
   Fix:   Update spec to say 15s, or change code back to 10s
 ```
 

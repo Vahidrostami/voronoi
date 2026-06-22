@@ -152,6 +152,38 @@ class TestWriteStateDigest:
         digest = (swarm / "state-digest.md").read_text()
         assert "1/2 met" in digest
 
+    def test_checkpoint_non_bool_does_not_promote(self, tmp_path):
+        """Non-bool criteria_status values must NOT inflate the digest.
+
+        Regression test: previously the digest used a truthy check
+        (``if cp_cs.get(cid):``), so values like "pending data" or 1
+        silently marked criteria met — disagreeing with the dispatcher's
+        strict ``is True`` sync of ``success-criteria.json`` and producing
+        false-positive convergence signals.
+        """
+        swarm = tmp_path / ".swarm"
+        swarm.mkdir()
+        criteria = [
+            {"id": "C1", "met": False, "description": "first"},
+            {"id": "C2", "met": False, "description": "second"},
+            {"id": "C3", "met": False, "description": "third"},
+        ]
+        (swarm / "success-criteria.json").write_text(json.dumps(criteria))
+        cp = {"criteria_status": {
+            "C1": "pending full data",   # truthy non-bool — must be ignored
+            "C2": 1,                      # truthy non-bool — must be ignored
+            "C3": True,                   # only this one promotes
+        }}
+        (swarm / "orchestrator-checkpoint.json").write_text(json.dumps(cp))
+
+        assert _write_state_digest(tmp_path) is True
+        digest = (swarm / "state-digest.md").read_text()
+        assert "1/3 met" in digest, \
+            "only literal True should promote in the digest"
+        assert "[PENDING] C1" in digest
+        assert "[PENDING] C2" in digest
+        assert "[MET] C3" in digest
+
     def test_with_experiments_tsv(self, tmp_path):
         swarm = tmp_path / ".swarm"
         swarm.mkdir()

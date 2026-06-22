@@ -398,6 +398,7 @@ The server communicates over stdio (no network, no ports). It reads `VORONOI_WOR
 - `voronoi_pre_register` tool schemas MUST expose all required fields consumed by `pre_register()`, including `expected_result` and `effect_size`, so schema-valid MCP calls cannot fail with hidden missing-argument errors.
 - State-file MCP tools MUST read/write the same schemas used by the core convergence and dispatcher code paths.
 - `voronoi_update_belief_map` MUST emit the canonical list-based hypothesis schema from INV-33, append new evidence IDs to the existing list (with deduplication, never replace), and re-infer the confidence tier when `posterior` is updated without an explicit `confidence`.
+- `voronoi_update_success_criteria` MUST treat `met` as optional. When `met` is omitted the tool preserves the existing value on a known criterion (only attaching `evidence`/`description` if supplied); only an explicit `True`/`False` argument may flip the stored value. This prevents silent demotion when an orchestrator attaches new evidence to an already-met criterion. New criteria default to `met:false`.
 
 ### Invariant Enforcement
 

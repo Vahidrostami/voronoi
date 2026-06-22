@@ -440,8 +440,15 @@ def build_orchestrator_prompt(
         )
     sections.append(
         "During each OODA Orient cycle, check whether results satisfy each criterion.\n"
-        "Update `met: true` when evidence supports it.  **Convergence is blocked** "
-        "while any criterion has `met: false`.\n\n"
+        "**Promote criteria via the MCP tool, not by hand-editing JSON:**\n"
+        "```python\n"
+        "voronoi_update_success_criteria(criteria_id=\"SC5\", met=True,\n"
+        "    evidence=\"bd-42:F1=0.81 (>=0.75 threshold)\")\n"
+        "```\n"
+        "Omit `met` to attach new evidence without flipping the existing value\n"
+        "(prevents accidental demotion of an already-met criterion). Mirror the\n"
+        "same booleans into `criteria_status` on your next `save_checkpoint`.\n\n"
+        "**Convergence is blocked** while any criterion has `met: false`.\n\n"
         "If a criterion is unmet AND the experiment ran validly, document why in "
         "the limitations section.  If it's unmet because the experiment was broken "
         "(DESIGN_INVALID), fix and re-run — do NOT ship broken results.\n\n"

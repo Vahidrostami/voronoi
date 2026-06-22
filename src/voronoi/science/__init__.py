@@ -56,6 +56,22 @@ from voronoi.science.consistency import (
     save_success_criteria,
 )
 
+# --- Locked Claim (PROVE-mode claim-substitution gate) ---
+from voronoi.science.locked_claim import (
+    EXECUTED_CLAIM_FILENAME,
+    LOCKED_CLAIM_FILENAME,
+    LOCKED_CLAIM_SCHEMA_VERSION,
+    SLOT_NAMES as LOCKED_CLAIM_SLOTS,
+    EquivalenceFn,
+    FidelityDiff,
+    FidelityResult,
+    LockedClaim,
+    compare_claims,
+    load_locked_claim,
+    normalized_equivalence,
+    save_locked_claim,
+)
+
 # --- Citation coverage (manuscript paper-track) ---
 from voronoi.science.citation_coverage import (
     CoverageResult,
@@ -245,4 +261,10 @@ __all__ = [
     "save_tribunal_result", "load_tribunal_results",
     "ContinuationProposal", "generate_continuation_proposals",
     "save_continuation_proposals", "load_continuation_proposals",
+    # Locked Claim (PROVE-mode question-locking)
+    "LOCKED_CLAIM_FILENAME", "EXECUTED_CLAIM_FILENAME",
+    "LOCKED_CLAIM_SCHEMA_VERSION", "LOCKED_CLAIM_SLOTS",
+    "LockedClaim", "FidelityDiff", "FidelityResult", "EquivalenceFn",
+    "normalized_equivalence", "compare_claims",
+    "save_locked_claim", "load_locked_claim",
 ]
