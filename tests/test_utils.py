@@ -6,7 +6,7 @@ from voronoi.utils import clean_finding_title, extract_field, find_checkpoint, i
 
 
 class TestIsFindingTitle:
-    """Canonical FINDING-title detector — INV-47 / BUG-001 regression."""
+    """Canonical FINDING-title detector — INV-60 / BUG-001 regression."""
 
     @pytest.mark.parametrize("title", [
         "FINDING: EWC beats replay",

@@ -26,7 +26,7 @@ def extract_field(notes: str, field_name: str) -> str:
 #: Ledger, dispatcher progress events, and report extraction MUST all use
 #: ``is_finding_title`` rather than substring matching, so ghost titles like
 #: ``"Analyze pricing dataset for five action-changing findings"`` cannot
-#: launder into finding events or claims. See INV-47 / INV-57.
+#: launder into finding events or claims. See INV-60 / INV-57.
 FINDING_TITLE_PREFIXES: tuple[str, ...] = ("FINDING:", "FINDING -", "FINDING \u2014")
 
 

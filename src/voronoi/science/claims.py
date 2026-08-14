@@ -72,7 +72,7 @@ ARTIFACT_TYPES = {"data", "code", "result", "figure", "model"}
 # five action-changing findings" into provisional claims, inflating the
 # ledger with verb-phrase ghost-claims that satisfy success criteria and
 # mask genuine learning stalls. See docs/SCIENCE.md §17 ("Claim Statement
-# Shape") and docs/INVARIANTS.md (INV-47).
+# Shape") and docs/INVARIANTS.md (INV-60).
 
 # Bare imperative verbs that signal "task directive, not proposition".
 # Matched case-insensitively at the start of the statement (word boundary).

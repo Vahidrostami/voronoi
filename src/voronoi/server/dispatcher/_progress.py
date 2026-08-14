@@ -911,7 +911,7 @@ class _ProgressMixin:
             notes = task.get("notes", "")
             # Prefix-only check: a substring match would surface ghost
             # titles like "Analyze ... findings" as real findings, reset
-            # learning-stall timers, and mislead the PI. See INV-47.
+            # learning-stall timers, and mislead the PI. See INV-60.
             if is_finding_title(title) and tid not in run.notified_findings:
                 run.notified_findings.add(tid)
                 effect = ""

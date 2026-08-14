@@ -805,7 +805,7 @@ class _CompletionMixin:
             # prior substring check matched "FINDINGS" anywhere in a title
             # (e.g. "Analyze pricing dataset for five action-changing
             # findings"), which laundered task titles into provisional
-            # claims.  See docs/SCIENCE.md §17 and docs/INVARIANTS.md INV-47.
+            # claims.  See docs/SCIENCE.md §17 and docs/INVARIANTS.md INV-60.
             if not is_finding_title(title):
                 continue
             if tid in synced_ids:
