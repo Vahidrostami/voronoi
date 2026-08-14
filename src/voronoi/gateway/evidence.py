@@ -28,7 +28,7 @@ def get_findings(workspace: Path, *, _cache: dict | None = None) -> list[dict]:
     for t in tasks:
         title = t.get("title", "")
         # Prefix-only: substring matching laundered ghost task titles into
-        # the report and Telegram digests. See INV-47.
+        # the report and Telegram digests. See INV-60.
         if not _is_finding_title(title):
             continue
         notes = t.get("notes", "")

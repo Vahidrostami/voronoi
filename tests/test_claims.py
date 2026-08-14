@@ -662,7 +662,7 @@ class TestLedgerDiff:
 # ---------------------------------------------------------------------------
 
 class TestValidateClaimStatement:
-    """Regression tests for the claim-laundering fix (docs/INVARIANTS.md INV-47)."""
+    """Regression tests for the claim-laundering fix (docs/INVARIANTS.md INV-60)."""
 
     def test_accepts_propositional_statement(self):
         from voronoi.science.claims import validate_claim_statement

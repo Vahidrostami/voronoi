@@ -239,7 +239,7 @@ class TestProgressMonitoring:
     def test_ghost_finding_titles_ignored(self, dispatcher_setup):
         """Substring 'finding/findings' in a title MUST NOT emit a finding event.
 
-        Regression for INV-47 / BUG-001: titles like
+        Regression for INV-60 / BUG-001: titles like
         ``"Analyze pricing dataset for five action-changing findings"``
         were laundered into finding events, masking learning stalls and
         misleading the PI while the Claim Ledger stayed empty.
@@ -6439,7 +6439,7 @@ class TestTaskCountFallback:
 # ---------------------------------------------------------------------------
 
 class TestSyncFindingsToLedger:
-    """Regression tests for the claim-laundering fix (INV-47).
+    """Regression tests for the claim-laundering fix (INV-60).
 
     Prior bug: the substring check ``"FINDING" in title.upper()`` matched
     "FINDINGS" inside titles like "Analyze pricing dataset for five

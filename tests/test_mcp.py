@@ -1235,7 +1235,7 @@ class TestMCPConfigIntegration:
 
 
 # ---------------------------------------------------------------------------
-# require_claim_statement (INV-47 — claims are propositions, not tasks)
+# require_claim_statement (INV-60 — claims are propositions, not tasks)
 # ---------------------------------------------------------------------------
 
 class TestRequireClaimStatement:

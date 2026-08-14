@@ -194,7 +194,7 @@ def _validate_task_title(title: str) -> None:
     Mirrors :func:`voronoi.science.claims.validate_claim_statement` but
     enforces the shape at the *task creation* boundary — so ghost tasks
     like "Analyze business prompt findings" never get dispatched in the
-    first place. The Claim Ledger gate (INV-47) remains as defence in
+    first place. The Claim Ledger gate (INV-60) remains as defence in
     depth.
     """
     from voronoi.science.claims import _BANNED_PREFIX_RE  # type: ignore[attr-defined]

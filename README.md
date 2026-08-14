@@ -327,26 +327,54 @@ The dispatcher also regenerates `.swarm/run-status.json` and `.swarm/health.md` 
 
 <br/>
 
-Voronoi orchestrates coding agents for scientific investigation. Here's how it compares to standalone coding agents and AI research tools:
+### vs. autonomous-science systems
 
-| Capability | **Voronoi** | Claude Code | Codex CLI | OpenClaw | Devin | OpenHands | AI Scientist |
-|:-----------|:----------:|:-----------:|:---------:|:--------:|:-----:|:---------:|:------------:|
-| Multi-agent parallel execution | ✅ | — | — | ✅ | — | — | — |
-| Isolated git worktrees | ✅ | — | — | — | — | — | — |
-| Hypothesis management | ✅ | — | — | — | — | — | ✅ |
-| Statistical rigor gates | ✅ | — | — | — | — | — | — |
-| Pre-registration & replication | ✅ | — | — | — | — | — | — |
-| Evidence chain (SHA-256) | ✅ | — | — | — | — | — | — |
-| Iterative science (claim ledger) | ✅ | — | — | — | — | — | — |
-| Self-healing execution | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
-| Sandboxed execution | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
-| Report / manuscript generation | ✅ | — | — | — | — | — | ✅ |
-| Role-based specialization | ✅ (12) | — | — | — | — | — | ✅ |
-| Telegram-native interface | ✅ | — | — | — | — | — | — |
-| Works with any LLM agent | ✅ | — | — | — | — | — | — |
-| Open source | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ |
+Voronoi's differentiation is the **science layer**, not the orchestration plumbing. Parallel agents, worktrees, and OODA loops are table stakes. Every cell below is sourced from the project's own documentation (verified 2026-08).
 
-<sup>**Claude Code** and **Codex CLI** are single-agent coding tools. **[OpenClaw](https://github.com/openclaw/openclaw)** is an open-source multi-agent coding framework. **Devin** is an autonomous developer. **[OpenHands](https://github.com/All-Hands-AI/OpenHands)** is an open-source agent platform. **[AI Scientist](https://github.com/SakanaAI/AI-Scientist)** (Sakana AI) automates ML paper writing. Voronoi wraps agents like these and adds parallel orchestration + scientific methodology.</sup>
+| | **Voronoi** | AI Scientist-v2 | AI co-scientist | Agent Laboratory |
+|:--|:--:|:--:|:--:|:--:|
+| Primary output | Locked claims → report/paper | Paper | Hypotheses + overview + protocols | Report + code repo |
+| Runs experiments | ✅ | ✅ | — humans run the lab | ✅ |
+| Commitment before running | ✅ pre-reg + power + sensitivity | ⚠️ idea file (hypothesis + proposed exp.) | ⚠️ experimental protocols | ⚠️ plan-formulation phase |
+| Baseline-first enforced | ✅ hard gate | — | n/a | — |
+| **Validity audit — "ran" ≠ "tested"** | ✅ EVA + Sentinel | — debug-repair only | n/a | ⚠️ LLM reward model scores plan adherence |
+| **Direction-of-effect vs prediction** | ✅ Tribunal | — | n/a | — |
+| Non-triviality pressure | ✅ scored (CCSAN *N*), <0.4 → rerun | ⚠️ novelty check at ideation | ✅ Elo tournaments (self-rated) | — contribution rated 2.1/4 by humans |
+| **Claim state persists across runs** | ✅ Claim Ledger; locked ≠ re-tested | — | ⚠️ within a research goal | — |
+| **Prior vs evidence provenance** | ✅ 3-way tag | — | ⚠️ literature-grounded, untagged | — |
+| Anti-fabrication | ✅ SHA-256 + committed scripts | — humans did the repro review | ⚠️ factuality named as open limitation | — prompt-level; hallucinated results documented |
+| Adversarial reviewer | ✅ Red Team (cold context) | ✅ automated LLM reviewer | ✅ Reflection + self-play debate | ✅ 3 NeurIPS-style reviewer agents |
+| Human role | **PI** — locks, challenges, objects | Topic + picks which papers ship | Seed ideas, feedback, runs the lab | Feedback at each stage |
+| Domain scope | General | ML/AI (CUDA/PyTorch) | General; validated in biomed | ML/AI |
+
+<sup>Sources: [AI Scientist-v2](https://github.com/SakanaAI/AI-Scientist-v2) · [Sakana peer-review report](https://sakana.ai/ai-scientist-first-publication/) · [Google AI co-scientist](https://research.google/blog/accelerating-scientific-breakthroughs-with-an-ai-co-scientist/) · [Agent Laboratory](https://arxiv.org/abs/2501.04227). Voronoi's cells are spec invariants with test coverage — the system has no published benchmark results yet, while every system above has peer-reviewed, wet-lab, or benchmark validation.</sup>
+
+**What is actually unique**: cross-run claim persistence with immutable locking, and the `model_prior` / `retrieved_prior` / `run_evidence` provenance tag that stops model recall being presented as measurement. Nobody else has either. The validity audit is the other real gap — every system above checks whether code *ran*, none check whether the experiment *tested the hypothesis it claimed to test*.
+
+**Why AlphaEvolve isn't in this table**: it's a different category — verifier-grounded program search, not hypothesis-driven investigation. It needs an automatic evaluator, so it applies only where correctness is machine-checkable (math, kernels, scheduling). It has no hypotheses, literature, statistics, or writeup, and it beats Voronoi outright on anti-fabrication because a verifier *is* ground truth. That's exactly the point: Voronoi targets the domains where no verifier exists, so the process gets verified instead of the answer.
+
+### vs. coding agents
+
+Voronoi wraps agents like these; it does not replace them.
+
+| Capability | **Voronoi** | Claude Code | Codex CLI | OpenClaw | Devin | OpenHands |
+|:-----------|:----------:|:-----------:|:---------:|:--------:|:-----:|:---------:|
+| Multi-agent parallel execution | ✅ | — | — | ✅ | — | — |
+| Isolated git worktrees | ✅ | — | — | — | — | — |
+| Hypothesis management | ✅ | — | — | — | — | — |
+| Statistical rigor gates | ✅ | — | — | — | — | — |
+| Pre-registration & replication | ✅ | — | — | — | — | — |
+| Evidence chain (SHA-256) | ✅ | — | — | — | — | — |
+| Iterative science (claim ledger) | ✅ | — | — | — | — | — |
+| Self-healing execution | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Sandboxed execution | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Report / manuscript generation | ✅ | — | — | — | — | — |
+| Role-based specialization | ✅ (12 core) | — | — | — | — | — |
+| Telegram-native interface | ✅ | — | — | — | — | — |
+| Works with any LLM agent | ✅ | — | — | — | — | — |
+| Open source | ✅ | ✅ | ✅ | ✅ | — | ✅ |
+
+<sup>**Claude Code** and **Codex CLI** are single-agent coding tools. **[OpenClaw](https://github.com/openclaw/openclaw)** is an open-source multi-agent coding framework. **Devin** is an autonomous developer. **[OpenHands](https://github.com/All-Hands-AI/OpenHands)** is an open-source agent platform.</sup>
 
 </details>
 
