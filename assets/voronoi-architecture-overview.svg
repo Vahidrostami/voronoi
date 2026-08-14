@@ -1,0 +1,321 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 3000 1500" width="3000" height="1500" role="img" aria-labelledby="ov-title ov-desc">
+  <title id="ov-title">Voronoi architecture overview</title>
+  <desc id="ov-desc">A high-level view of Voronoi. A scientific question is admitted into three nested loops with disjoint authority: an always-on deterministic control loop, an episodic reasoning session inside it, and disposable one-shot workers inside that. All three loops communicate only by reading and appending to a durable evidence substrate of git, Beads and .swarm state. Evidence is submitted to a column of science gates — rigor ladder, validity audit, judgment tribunal, convergence gate and human gate — which either block and force a re-run, or release an evidence-backed result.</desc>
+
+  <defs>
+    <linearGradient id="paper" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FCFBF8"/>
+      <stop offset="0.55" stop-color="#F8F8F5"/>
+      <stop offset="1" stop-color="#F2F4F2"/>
+    </linearGradient>
+
+    <linearGradient id="fillNavy" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#EAF1F7"/><stop offset="1" stop-color="#F5F9FC"/>
+    </linearGradient>
+    <linearGradient id="fillTeal" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#E5F2EE"/><stop offset="1" stop-color="#F3F9F7"/>
+    </linearGradient>
+    <linearGradient id="fillIndigo" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#E9EDF7"/><stop offset="1" stop-color="#F4F6FC"/>
+    </linearGradient>
+    <linearGradient id="fillGraph" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#EEF1F0"/><stop offset="1" stop-color="#F7F8F8"/>
+    </linearGradient>
+    <linearGradient id="fillRust" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#F8EEEA"/><stop offset="1" stop-color="#FCF6F4"/>
+    </linearGradient>
+
+    <filter id="cardShadow" x="-12%" y="-14%" width="128%" height="140%">
+      <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#16232B" flood-opacity="0.10"/>
+    </filter>
+    <filter id="pillShadow" x="-20%" y="-40%" width="140%" height="200%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#16232B" flood-opacity="0.18"/>
+    </filter>
+
+    <marker id="mNavy" viewBox="0 0 16 12" refX="15.4" refY="6" markerWidth="16" markerHeight="12" markerUnits="userSpaceOnUse" orient="auto">
+      <path d="M0 0 L16 6 L0 12 Z" fill="#1D3D5C"/>
+    </marker>
+    <marker id="mTeal" viewBox="0 0 16 12" refX="15.4" refY="6" markerWidth="16" markerHeight="12" markerUnits="userSpaceOnUse" orient="auto">
+      <path d="M0 0 L16 6 L0 12 Z" fill="#0F6F66"/>
+    </marker>
+    <marker id="mRust" viewBox="0 0 16 12" refX="15.4" refY="6" markerWidth="16" markerHeight="12" markerUnits="userSpaceOnUse" orient="auto">
+      <path d="M0 0 L16 6 L0 12 Z" fill="#A4513C"/>
+    </marker>
+    <marker id="mGraph" viewBox="0 0 16 12" refX="15.4" refY="6" markerWidth="16" markerHeight="12" markerUnits="userSpaceOnUse" orient="auto">
+      <path d="M0 0 L16 6 L0 12 Z" fill="#4E5D66"/>
+    </marker>
+    <!-- reversed head so a single path can carry a double arrow -->
+    <marker id="mGraphR" viewBox="0 0 16 12" refX="0.6" refY="6" markerWidth="16" markerHeight="12" markerUnits="userSpaceOnUse" orient="auto">
+      <path d="M16 0 L0 6 L16 12 Z" fill="#4E5D66"/>
+    </marker>
+
+    <style>
+      text { font-family: "Inter", "Helvetica Neue", "Avenir Next", "Segoe UI", Arial, sans-serif; fill: #16232B; }
+      .mono { font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, "Liberation Mono", monospace; }
+      .h1 { font-size: 44px; font-weight: 700; letter-spacing: 0.6px; }
+      .h2 { font-size: 21px; fill: #6B7C86; }
+      .pill { font-size: 19px; font-weight: 700; letter-spacing: 1.8px; fill: #FFFFFF; }
+      .tier { font-size: 17px; font-weight: 700; letter-spacing: 0.6px; fill: #FFFFFF; }
+      .num { font-size: 15px; font-weight: 700; fill: #FFFFFF; }
+      .note { font-size: 15px; fill: #6B7C86; }
+      .ct { font-size: 19px; font-weight: 700; letter-spacing: 0.4px; }
+      .ct-s { font-size: 17px; font-weight: 700; letter-spacing: 0.4px; }
+      .body { font-size: 14.5px; fill: #33454F; }
+      .body-s { font-size: 13.5px; fill: #33454F; }
+      .micro { font-size: 12.5px; fill: #6B7C86; }
+      .edge { font-size: 14px; font-weight: 700; letter-spacing: 0.3px; }
+      .lg { font-size: 16px; fill: #33454F; }
+      .cap { font-size: 16px; fill: #6B7C86; }
+      .muted { fill: #6B7C86; }
+      .navy { fill: #1D3D5C; } .teal { fill: #0F6F66; } .indigo { fill: #34558F; }
+      .graph { fill: #4E5D66; } .rust { fill: #A4513C; } .plum { fill: #7A4A76; }
+
+      .lnNavy { fill: none; stroke: #1D3D5C; stroke-width: 2.8; marker-end: url(#mNavy); }
+      .lnTeal { fill: none; stroke: #0F6F66; stroke-width: 2.8; marker-end: url(#mTeal); }
+      .lnRust { fill: none; stroke: #A4513C; stroke-width: 2.8; marker-end: url(#mRust); }
+      .lnRustD { fill: none; stroke: #A4513C; stroke-width: 2.4; stroke-dasharray: 8 6; marker-end: url(#mRust); }
+      .lnBoth { fill: none; stroke: #4E5D66; stroke-width: 2.6; marker-start: url(#mGraphR); marker-end: url(#mGraph); }
+      .card { fill: #FFFFFF; stroke: #DCE2DF; stroke-width: 1.4; }
+      .hair { stroke: #DCE2DF; stroke-width: 1.4; fill: none; }
+    </style>
+  </defs>
+
+  <rect width="3000" height="1500" fill="url(#paper)"/>
+
+  <!-- Voronoi watermark: sparser than the detailed figure, to match the zoom level -->
+  <g fill="none" stroke="#7E8F8A" stroke-width="1.4" stroke-opacity="0.15" stroke-linejoin="round">
+    <path d="M-40 260 L320 140 L700 240 L640 560 L240 660 L-40 540 Z"/>
+    <path d="M700 240 L1140 90 L1520 220 L1420 520 L980 600 L640 560 Z"/>
+    <path d="M1520 220 L1980 80 L2440 200 L3040 110 L3040 480 L2360 560 L1420 520 Z"/>
+    <path d="M-40 540 L240 660 L640 560 L720 940 L300 1080 L-40 940 Z"/>
+    <path d="M640 560 L980 600 L1420 520 L1540 900 L1120 1020 L720 940 Z"/>
+    <path d="M1420 520 L2360 560 L3040 480 L3040 960 L2280 1040 L1540 900 Z"/>
+    <path d="M-40 940 L300 1080 L720 940 L860 1340 L360 1540 L-40 1400 Z"/>
+    <path d="M720 940 L1120 1020 L1540 900 L1700 1300 L1240 1540 L860 1340 Z"/>
+    <path d="M1540 900 L2280 1040 L3040 960 L3040 1440 L2200 1560 L1700 1300 Z"/>
+    <path d="M360 1540 L860 1340 L1240 1540 L1700 1300 L2200 1560 L3040 1440 L3040 1560 L-40 1560 Z"/>
+  </g>
+
+  <!-- ============================== HEADER ============================== -->
+  <text x="56" y="98" class="h1">VORONOI · NESTED AUTONOMY OVER A DURABLE EVIDENCE SUBSTRATE</text>
+  <text x="56" y="140" class="h2">Three loops of decreasing lifetime and disjoint authority, coupled only through files, released only by a progressive standard of proof.</text>
+  <path d="M56 166 H2944" class="hair"/>
+
+  <g transform="translate(2726 34)">
+    <g fill="none" stroke="#0F6F66" stroke-width="1.6" stroke-opacity="0.55" stroke-linejoin="round">
+      <path d="M4 46 L44 14 L96 24 L88 68 L40 88 L4 74 Z"/>
+      <path d="M96 24 L152 8 L196 40 L168 76 L88 68 Z"/>
+      <path d="M40 88 L88 68 L168 76 L160 118 L96 128 L44 112 Z"/>
+      <path d="M196 40 L218 84 L184 120 L160 118 L168 76 Z"/>
+    </g>
+    <g fill="#0F6F66" fill-opacity="0.85">
+      <circle cx="46" cy="52" r="4"/><circle cx="132" cy="40" r="4"/>
+      <circle cx="104" cy="98" r="4"/><circle cx="182" cy="84" r="4"/>
+    </g>
+    <path d="M4 46 L44 14 L96 24 L88 68 L40 88 L4 74 Z" fill="#0F6F66" fill-opacity="0.07"/>
+  </g>
+
+  <!-- =============================== INPUT ============================== -->
+  <g filter="url(#cardShadow)"><rect x="56" y="476" width="300" height="300" rx="16" class="card"/></g>
+  <rect x="56" y="476" width="300" height="6" rx="3" fill="#1D3D5C"/>
+  <text x="88" y="528" class="micro">HUMAN</text>
+  <text x="88" y="572" class="ct">A SCIENTIFIC</text>
+  <text x="88" y="600" class="ct">QUESTION</text>
+  <path d="M88 626 H324" class="hair"/>
+  <text x="88" y="656" class="body">asked in natural language</text>
+  <text x="88" y="682" class="body">Telegram · CLI</text>
+  <text x="88" y="726" class="micro">intent · rigor level · codename</text>
+
+  <path d="M356 626 H424" class="lnNavy"/>
+  <text x="390" y="600" class="edge navy" text-anchor="middle">ADMIT</text>
+
+  <!-- ==================== L0 · CONTROL (outermost) ====================== -->
+  <g filter="url(#cardShadow)">
+    <rect x="428" y="250" width="1404" height="752" rx="20" fill="url(#fillNavy)" stroke="#1D3D5C" stroke-opacity="0.50" stroke-width="1.8"/>
+  </g>
+  <rect x="460" y="278" width="48" height="32" rx="8" fill="#1D3D5C"/>
+  <text x="484" y="301" class="tier" text-anchor="middle">L0</text>
+  <text x="524" y="302" class="ct navy">CONTROL LOOP</text>
+  <text x="704" y="302" class="body muted">deterministic Python · never reasons</text>
+  <text x="1800" y="302" class="edge navy" text-anchor="end">LIFETIME · THE WHOLE INVESTIGATION</text>
+  <text x="468" y="978" class="micro">admits work · collects events · wakes and parks sessions · integrates results · recovers after any crash — and makes no scientific judgment</text>
+
+  <!-- ==================== L1 · REASONING (middle) ======================= -->
+  <g filter="url(#cardShadow)">
+    <rect x="496" y="366" width="1268" height="568" rx="18" fill="url(#fillTeal)" stroke="#0F6F66" stroke-opacity="0.50" stroke-width="1.8"/>
+  </g>
+  <rect x="528" y="394" width="48" height="32" rx="8" fill="#0F6F66"/>
+  <text x="552" y="417" class="tier" text-anchor="middle">L1</text>
+  <text x="592" y="418" class="ct teal">REASONING LOOP</text>
+  <text x="792" y="418" class="body muted">episodic LLM · OODA · never executes</text>
+  <text x="1732" y="418" class="edge teal" text-anchor="end">LIFETIME · ONE SESSION</text>
+  <text x="536" y="910" class="micro">OBSERVE → ORIENT → DECIDE → ACT, then exit — the session is disposable, its decisions are not</text>
+
+  <!-- ==================== L2 · EXECUTION (innermost) ==================== -->
+  <g filter="url(#cardShadow)">
+    <rect x="564" y="482" width="1132" height="388" rx="16" fill="url(#fillIndigo)" stroke="#34558F" stroke-opacity="0.50" stroke-width="1.8"/>
+  </g>
+  <rect x="596" y="510" width="48" height="32" rx="8" fill="#34558F"/>
+  <text x="620" y="533" class="tier" text-anchor="middle">L2</text>
+  <text x="660" y="534" class="ct indigo">EXECUTION LOOP</text>
+  <text x="860" y="534" class="body muted">one-shot workers · never coordinate</text>
+  <text x="1664" y="534" class="edge indigo" text-anchor="end">LIFETIME · ONE TASK</text>
+
+  <!-- competing hypotheses, run in parallel -->
+  <g>
+    <rect x="604" y="572" width="324" height="178" rx="12" class="card"/>
+    <rect x="604" y="572" width="324" height="5" rx="2.5" fill="#34558F"/>
+    <text x="628" y="614" class="ct-s indigo">H1 · PRIMARY</text>
+    <text x="628" y="642" class="micro">the leading explanation</text>
+    <path d="M628 666 H904" class="hair"/>
+    <text x="628" y="696" class="body-s">worker agent</text>
+    <text x="628" y="722" class="micro">fresh context · own worktree</text>
+  </g>
+  <g>
+    <rect x="968" y="572" width="324" height="178" rx="12" class="card"/>
+    <rect x="968" y="572" width="324" height="5" rx="2.5" fill="#34558F"/>
+    <text x="992" y="614" class="ct-s indigo">H2 · RIVAL</text>
+    <text x="992" y="642" class="micro">the strongest competitor</text>
+    <path d="M992 666 H1268" class="hair"/>
+    <text x="992" y="696" class="body-s">worker agent</text>
+    <text x="992" y="722" class="micro">fresh context · own worktree</text>
+  </g>
+  <g>
+    <rect x="1332" y="572" width="324" height="178" rx="12" class="card"/>
+    <rect x="1332" y="572" width="324" height="5" rx="2.5" fill="#34558F"/>
+    <text x="1356" y="614" class="ct-s indigo">Hn · ELASTIC</text>
+    <text x="1356" y="642" class="micro">opened only if warranted</text>
+    <path d="M1356 666 H1632" class="hair"/>
+    <text x="1356" y="696" class="body-s">worker agent</text>
+    <text x="1356" y="722" class="micro">fresh context · own worktree</text>
+  </g>
+
+  <text x="604" y="796" class="edge indigo">INNER LOOP — EXECUTE → TEST (≤3) → SELF-REVIEW + EVA → COMMIT → EMIT EVENT</text>
+  <text x="604" y="826" class="micro">19 role definitions · a worker sees only its own task and the substrate</text>
+
+  <!-- boundary couplings, drawn as tags ON the borders they cross -->
+  <g filter="url(#pillShadow)"><rect x="910" y="346" width="440" height="40" rx="20" fill="#FFFFFF" stroke="#0F6F66" stroke-width="1.8"/></g>
+  <text x="1116" y="372" class="edge teal" text-anchor="end">WAKE ↓ start session</text>
+  <text x="1130" y="372" class="edge muted" text-anchor="middle">·</text>
+  <text x="1144" y="372" class="edge teal">PARK ↑ exit session</text>
+
+  <g filter="url(#pillShadow)"><rect x="870" y="462" width="520" height="40" rx="20" fill="#FFFFFF" stroke="#34558F" stroke-width="1.8"/></g>
+  <text x="1116" y="488" class="edge indigo" text-anchor="end">SPAWN ↓ worktree + tmux</text>
+  <text x="1130" y="488" class="edge muted" text-anchor="middle">·</text>
+  <text x="1144" y="488" class="edge indigo">RETURN ↑ commit + event</text>
+
+  <!-- ====================== NEST ↔ SCIENCE GATES ======================== -->
+  <path d="M1832 590 H1944" class="lnRust"/>
+  <text x="1892" y="564" class="edge rust" text-anchor="middle">EVIDENCE</text>
+  <path d="M1944 662 H1840" class="lnRustD"/>
+  <text x="1892" y="692" class="edge rust" text-anchor="middle">BLOCKED</text>
+  <text x="1892" y="714" class="micro" text-anchor="middle">re-orient</text>
+
+  <!-- ========================== SCIENCE GATES =========================== -->
+  <g filter="url(#cardShadow)">
+    <rect x="1952" y="250" width="520" height="752" rx="20" fill="url(#fillRust)" stroke="#A4513C" stroke-opacity="0.50" stroke-width="1.8"/>
+  </g>
+  <text x="1984" y="304" class="ct">SCIENCE GATES</text>
+  <text x="1984" y="332" class="micro">rigor is enforced by code, not by good intentions</text>
+  <path d="M1984 352 H2440" class="hair"/>
+
+  <circle cx="1998" cy="390" r="14" fill="#A4513C"/>
+  <text x="1998" y="396" class="num" text-anchor="middle">1</text>
+  <text x="2030" y="396" class="ct-s">RIGOR LADDER</text>
+  <text x="2030" y="424" class="body-s">the standard of proof is fixed at intake, then escalates</text>
+
+  <circle cx="1998" cy="510" r="14" fill="#A4513C"/>
+  <text x="1998" y="516" class="num" text-anchor="middle">2</text>
+  <text x="2030" y="516" class="ct-s">VALIDITY AUDIT</text>
+  <text x="2030" y="544" class="body-s">no experiment counts until EVA declares it valid</text>
+
+  <circle cx="1998" cy="630" r="14" fill="#A4513C"/>
+  <text x="1998" y="636" class="num" text-anchor="middle">3</text>
+  <text x="2030" y="636" class="ct-s">JUDGMENT TRIBUNAL</text>
+  <text x="2030" y="664" class="body-s">a surprising result must be explained, not just reported</text>
+
+  <circle cx="1998" cy="750" r="14" fill="#A4513C"/>
+  <text x="1998" y="756" class="num" text-anchor="middle">4</text>
+  <text x="2030" y="756" class="ct-s">CONVERGENCE GATE</text>
+  <text x="2030" y="784" class="body-s">multi-signal and rigor-scaled — never self-declared</text>
+
+  <circle cx="1998" cy="870" r="14" fill="#7A4A76"/>
+  <text x="1998" y="876" class="num" text-anchor="middle">5</text>
+  <text x="2030" y="876" class="ct-s plum">HUMAN GATE</text>
+  <text x="2030" y="904" class="body-s">sign-off on pre-registration and convergence</text>
+
+  <text x="1984" y="958" class="micro rust">nothing leaves the system without clearing every gate</text>
+
+  <path d="M2472 626 H2540" class="lnTeal"/>
+  <text x="2506" y="600" class="edge teal" text-anchor="middle">PASS</text>
+
+  <!-- ============================== RESULT ============================== -->
+  <g filter="url(#cardShadow)"><rect x="2544" y="476" width="400" height="300" rx="16" fill="#0F6F66" fill-opacity="0.09" stroke="#0F6F66" stroke-opacity="0.55" stroke-width="1.8"/></g>
+  <path d="M2576 512 h34 l14 14 v46 h-48 z M2610 512 v14 h14" fill="#FFFFFF" stroke="#0F6F66" stroke-width="2.4" stroke-linejoin="round"/>
+  <path d="M2585 548 l8 9 l16 -18" fill="none" stroke="#0F6F66" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="2576" y="616" class="ct teal">EVIDENCE-BACKED</text>
+  <text x="2576" y="644" class="ct teal">RESULT</text>
+  <path d="M2576 670 H2912" class="hair"/>
+  <text x="2576" y="700" class="body">report · manuscript</text>
+  <text x="2576" y="726" class="body mono">run-manifest.json</text>
+  <text x="2576" y="756" class="micro">every claim → finding → hashed artifact</text>
+
+  <!-- ====================== SUBSTRATE COUPLING ========================== -->
+  <path d="M900 1002 V1092" class="lnBoth"/>
+  <path d="M1200 1002 V1092" class="lnBoth"/>
+  <path d="M1500 1002 V1092" class="lnBoth"/>
+  <path d="M2212 1002 V1092" class="lnBoth"/>
+  <text x="440" y="1052" class="edge graph">READ · APPEND</text>
+
+  <!-- ========================= EVIDENCE SUBSTRATE ======================= -->
+  <rect x="428" y="1092" width="2044" height="210" rx="18" fill="url(#fillGraph)" stroke="#4E5D66" stroke-opacity="0.45" stroke-width="1.8"/>
+  <g filter="url(#pillShadow)"><rect x="452" y="1072" width="342" height="40" rx="20" fill="#4E5D66"/></g>
+  <text x="474" y="1099" class="pill">EVIDENCE SUBSTRATE</text>
+  <text x="468" y="1152" class="note">the filesystem is the only interface between layers — durable, inspectable, and it survives every crash</text>
+
+  <g>
+    <rect x="468" y="1180" width="470" height="84" rx="12" class="card"/>
+    <rect x="468" y="1180" width="5" height="84" rx="2.5" fill="#4E5D66"/>
+    <text x="496" y="1214" class="ct-s"><tspan class="mono">git</tspan> worktrees</text>
+    <text x="496" y="1242" class="micro">one isolated tree per worker · commits are the unit of work</text>
+  </g>
+  <g>
+    <rect x="966" y="1180" width="470" height="84" rx="12" class="card"/>
+    <rect x="966" y="1180" width="5" height="84" rx="2.5" fill="#4E5D66"/>
+    <text x="994" y="1214" class="ct-s">Beads · Dolt</text>
+    <text x="994" y="1242" class="micro">a versioned task graph with real dependencies</text>
+  </g>
+  <g>
+    <rect x="1464" y="1180" width="470" height="84" rx="12" class="card"/>
+    <rect x="1464" y="1180" width="5" height="84" rx="2.5" fill="#4E5D66"/>
+    <text x="1492" y="1214" class="ct-s mono">.swarm/</text>
+    <text x="1492" y="1242" class="micro">findings · claims · verdicts · events · manifest</text>
+  </g>
+  <g>
+    <rect x="1962" y="1180" width="470" height="84" rx="12" class="card"/>
+    <rect x="1962" y="1180" width="5" height="84" rx="2.5" fill="#4E5D66"/>
+    <text x="1990" y="1214" class="ct-s">raw data + provenance</text>
+    <text x="1990" y="1242" class="micro">artifacts, content hashes and the run manifest</text>
+  </g>
+
+  <text x="428" y="1342" class="cap">Every layer reads and appends here. No layer trusts another layer’s memory — there is no message bus, no shared RAM and no custom IPC.</text>
+
+  <!-- ============================== LEGEND ============================== -->
+  <path d="M56 1382 H2944" class="hair"/>
+  <g>
+    <rect x="56" y="1408" width="20" height="20" rx="5" fill="#1D3D5C"/>
+    <text x="86" y="1424" class="lg">L0 control · deterministic code</text>
+    <rect x="530" y="1408" width="20" height="20" rx="5" fill="#0F6F66"/>
+    <text x="560" y="1424" class="lg">L1 reasoning · episodic LLM</text>
+    <rect x="1004" y="1408" width="20" height="20" rx="5" fill="#34558F"/>
+    <text x="1034" y="1424" class="lg">L2 execution · one-shot LLM</text>
+    <rect x="1478" y="1408" width="20" height="20" rx="5" fill="#4E5D66"/>
+    <text x="1508" y="1424" class="lg">evidence substrate · durable files</text>
+    <rect x="1952" y="1408" width="20" height="20" rx="5" fill="#A4513C"/>
+    <text x="1982" y="1424" class="lg">science gates · rigor enforcement</text>
+    <rect x="2426" y="1408" width="20" height="20" rx="5" fill="#7A4A76"/>
+    <text x="2456" y="1424" class="lg">human decision point</text>
+  </g>
+
+  <text x="56" y="1470" class="cap">Authority is strictly partitioned: the control loop never reasons, the reasoning loop never executes, and workers never coordinate. Every hand-off is a durable write.</text>
+</svg>

@@ -1,0 +1,585 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 3000 1950" width="3000" height="1950" role="img" aria-labelledby="fig-title fig-desc">
+  <title id="fig-title">Voronoi nested control architecture</title>
+  <desc id="fig-desc">Four coupled planes. A deterministic control plane (dispatcher) admits work and wakes an episodic reasoning plane (orchestrator running OODA), which spawns a disposable execution plane of parallel hypothesis tranches. All hand-offs are durable writes into an append-only evidence plane of git, Beads and .swarm state. A science plane applies a progressive rigor ladder, validity audits, a judgment tribunal and a convergence gate before any deliverable is emitted.</desc>
+
+  <defs>
+    <linearGradient id="paper" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FCFBF8"/>
+      <stop offset="0.55" stop-color="#F8F8F5"/>
+      <stop offset="1" stop-color="#F2F4F2"/>
+    </linearGradient>
+
+    <linearGradient id="fillNavy" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#EDF3F8"/><stop offset="1" stop-color="#F6F9FB"/>
+    </linearGradient>
+    <linearGradient id="fillTeal" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#E9F4F1"/><stop offset="1" stop-color="#F5FAF8"/>
+    </linearGradient>
+    <linearGradient id="fillIndigo" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ECEFF8"/><stop offset="1" stop-color="#F6F7FC"/>
+    </linearGradient>
+    <linearGradient id="fillGraph" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#EEF1F0"/><stop offset="1" stop-color="#F7F8F8"/>
+    </linearGradient>
+    <linearGradient id="fillRust" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#F8EEEA"/><stop offset="1" stop-color="#FCF6F4"/>
+    </linearGradient>
+
+    <filter id="cardShadow" x="-12%" y="-14%" width="128%" height="140%">
+      <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#16232B" flood-opacity="0.10"/>
+    </filter>
+    <filter id="pillShadow" x="-20%" y="-40%" width="140%" height="200%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#16232B" flood-opacity="0.18"/>
+    </filter>
+
+    <marker id="mNavy" viewBox="0 0 16 12" refX="15.4" refY="6" markerWidth="16" markerHeight="12" markerUnits="userSpaceOnUse" orient="auto">
+      <path d="M0 0 L16 6 L0 12 Z" fill="#1D3D5C"/>
+    </marker>
+    <marker id="mTeal" viewBox="0 0 16 12" refX="15.4" refY="6" markerWidth="16" markerHeight="12" markerUnits="userSpaceOnUse" orient="auto">
+      <path d="M0 0 L16 6 L0 12 Z" fill="#0F6F66"/>
+    </marker>
+    <marker id="mIndigo" viewBox="0 0 16 12" refX="15.4" refY="6" markerWidth="16" markerHeight="12" markerUnits="userSpaceOnUse" orient="auto">
+      <path d="M0 0 L16 6 L0 12 Z" fill="#34558F"/>
+    </marker>
+    <marker id="mRust" viewBox="0 0 16 12" refX="15.4" refY="6" markerWidth="16" markerHeight="12" markerUnits="userSpaceOnUse" orient="auto">
+      <path d="M0 0 L16 6 L0 12 Z" fill="#A4513C"/>
+    </marker>
+
+    <style>
+      text { font-family: "Inter", "Helvetica Neue", "Avenir Next", "Segoe UI", Arial, sans-serif; fill: #16232B; }
+      .mono { font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, "Liberation Mono", monospace; }
+      .h1 { font-size: 44px; font-weight: 700; letter-spacing: 0.6px; }
+      .h2 { font-size: 21px; fill: #6B7C86; }
+      .pill { font-size: 19px; font-weight: 700; letter-spacing: 1.8px; fill: #FFFFFF; }
+      .pillsub { font-size: 15px; letter-spacing: 0.4px; fill: #FFFFFF; fill-opacity: 0.82; }
+      .note { font-size: 15px; fill: #6B7C86; }
+      .ct { font-size: 19px; font-weight: 700; letter-spacing: 0.4px; }
+      .ct-s { font-size: 17px; font-weight: 700; letter-spacing: 0.4px; }
+      .body { font-size: 14.5px; fill: #33454F; }
+      .body-s { font-size: 13.5px; fill: #33454F; }
+      .micro { font-size: 12.5px; fill: #6B7C86; }
+      .edge { font-size: 14px; font-weight: 700; letter-spacing: 0.3px; }
+      .lg { font-size: 16px; fill: #33454F; }
+      .cap { font-size: 16px; fill: #6B7C86; }
+      .muted { fill: #6B7C86; }
+      .navy { fill: #1D3D5C; } .teal { fill: #0F6F66; } .indigo { fill: #34558F; }
+      .graph { fill: #4E5D66; } .rust { fill: #A4513C; } .plum { fill: #7A4A76; }
+
+      .lnNavy { fill: none; stroke: #1D3D5C; stroke-width: 2.6; marker-end: url(#mNavy); }
+      .lnNavyD { fill: none; stroke: #1D3D5C; stroke-width: 2.2; stroke-dasharray: 7 6; marker-end: url(#mNavy); }
+      .lnTeal { fill: none; stroke: #0F6F66; stroke-width: 2.6; marker-end: url(#mTeal); }
+      .lnTealD { fill: none; stroke: #0F6F66; stroke-width: 2.2; stroke-dasharray: 7 6; marker-end: url(#mTeal); }
+      .lnInd { fill: none; stroke: #34558F; stroke-width: 2.6; marker-end: url(#mIndigo); }
+      .lnIndD { fill: none; stroke: #34558F; stroke-width: 2.2; stroke-dasharray: 7 6; marker-end: url(#mIndigo); }
+      .lnRust { fill: none; stroke: #A4513C; stroke-width: 2.6; marker-end: url(#mRust); }
+      .lnRustD { fill: none; stroke: #A4513C; stroke-width: 2.4; stroke-dasharray: 8 6; marker-end: url(#mRust); }
+      .card { fill: #FFFFFF; stroke: #DCE2DF; stroke-width: 1.4; }
+      .hair { stroke: #DCE2DF; stroke-width: 1.4; fill: none; }
+    </style>
+  </defs>
+
+  <rect width="3000" height="1950" fill="url(#paper)"/>
+
+  <!-- Voronoi watermark: brand motif, deliberately beneath every opaque plane -->
+  <g fill="none" stroke="#7E8F8A" stroke-width="1.3" stroke-opacity="0.16" stroke-linejoin="round">
+    <path d="M-40 300 L250 180 L520 250 L470 520 L180 610 L-40 520 Z"/>
+    <path d="M250 180 L560 60 L840 130 L780 330 L520 250 Z"/>
+    <path d="M840 130 L1180 40 L1420 190 L1240 380 L920 340 L780 330 Z"/>
+    <path d="M1420 190 L1760 90 L2020 220 L1900 430 L1560 400 L1240 380 Z"/>
+    <path d="M2020 220 L2340 70 L2680 160 L3040 60 L3040 420 L2560 470 L1900 430 Z"/>
+    <path d="M520 250 L780 330 L920 340 L880 640 L560 700 L470 520 Z"/>
+    <path d="M1240 380 L1560 400 L1620 720 L1280 780 L880 640 L920 340 Z"/>
+    <path d="M1900 430 L2560 470 L2620 820 L2100 900 L1620 720 L1560 400 Z"/>
+    <path d="M2560 470 L3040 420 L3040 880 L2620 820 Z"/>
+    <path d="M-40 520 L180 610 L560 700 L500 1030 L120 1120 L-40 980 Z"/>
+    <path d="M560 700 L880 640 L1280 780 L1180 1120 L820 1200 L500 1030 Z"/>
+    <path d="M1280 780 L1620 720 L2100 900 L1980 1260 L1560 1300 L1180 1120 Z"/>
+    <path d="M2100 900 L2620 820 L3040 880 L3040 1300 L2540 1360 L1980 1260 Z"/>
+    <path d="M-40 980 L120 1120 L500 1030 L620 1420 L380 1700 L-40 1620 Z"/>
+    <path d="M500 1030 L820 1200 L1180 1120 L1300 1520 L960 1720 L620 1420 Z"/>
+    <path d="M1180 1120 L1560 1300 L1980 1260 L2060 1680 L1640 1800 L1300 1520 Z"/>
+    <path d="M1980 1260 L2540 1360 L3040 1300 L3040 1760 L2480 1860 L2060 1680 Z"/>
+    <path d="M-40 1620 L380 1700 L960 1720 L1640 1800 L2060 1680 L2480 1860 L3040 1760 L3040 2000 L-40 2000 Z"/>
+  </g>
+
+  <!-- ============================== HEADER ============================== -->
+  <text x="56" y="98" class="h1">VORONOI · NESTED CONTROL ARCHITECTURE FOR AUTONOMOUS SCIENCE</text>
+  <text x="56" y="140" class="h2">A deterministic control plane, an episodic reasoning plane, a disposable execution plane and an append-only evidence plane — coupled only through durable state.</text>
+  <path d="M56 166 H2944" class="hair"/>
+
+  <!-- brand mark: seeds and their tessellation -->
+  <g transform="translate(2726 34)">
+    <g fill="none" stroke="#0F6F66" stroke-width="1.6" stroke-opacity="0.55" stroke-linejoin="round">
+      <path d="M4 46 L44 14 L96 24 L88 68 L40 88 L4 74 Z"/>
+      <path d="M96 24 L152 8 L196 40 L168 76 L88 68 Z"/>
+      <path d="M40 88 L88 68 L168 76 L160 118 L96 128 L44 112 Z"/>
+      <path d="M196 40 L218 84 L184 120 L160 118 L168 76 Z"/>
+    </g>
+    <g fill="#0F6F66" fill-opacity="0.85">
+      <circle cx="46" cy="52" r="4"/><circle cx="132" cy="40" r="4"/>
+      <circle cx="104" cy="98" r="4"/><circle cx="182" cy="84" r="4"/>
+    </g>
+    <path d="M4 46 L44 14 L96 24 L88 68 L40 88 L4 74 Z" fill="#0F6F66" fill-opacity="0.07"/>
+  </g>
+
+  <!-- ======================= PLANE FRAMES + PILLS ======================= -->
+
+  <!-- C1 · EVIDENCE PLANE -->
+  <rect x="56" y="452" width="464" height="1324" rx="18" fill="url(#fillGraph)" stroke="#4E5D66" stroke-opacity="0.45" stroke-width="1.6"/>
+  <g filter="url(#pillShadow)"><rect x="80" y="432" width="312" height="40" rx="20" fill="#4E5D66"/></g>
+  <text x="102" y="459" class="pill">EVIDENCE PLANE</text>
+  <text x="84" y="500" class="note">durable · append-only · the sole inter-agent channel</text>
+
+  <!-- C2 · INTAKE -->
+  <rect x="680" y="190" width="1264" height="206" rx="18" fill="url(#fillNavy)" stroke="#1D3D5C" stroke-opacity="0.35" stroke-width="1.6"/>
+  <g filter="url(#pillShadow)"><rect x="704" y="170" width="288" height="40" rx="20" fill="#2B4E6E"/></g>
+  <text x="726" y="197" class="pill">ENTRY &amp; ADMISSION</text>
+  <text x="1914" y="234" class="note" text-anchor="end">one entry contract for every path: free text + repository → Investigation</text>
+
+  <!-- C2 · CONTROL PLANE -->
+  <rect x="680" y="452" width="1264" height="348" rx="18" fill="url(#fillNavy)" stroke="#1D3D5C" stroke-opacity="0.45" stroke-width="1.6"/>
+  <g filter="url(#pillShadow)"><rect x="704" y="432" width="630" height="40" rx="20" fill="#1D3D5C"/></g>
+  <text x="726" y="459" class="pill">CONTROL PLANE · DISPATCHER</text>
+  <text x="1096" y="459" class="pillsub">outer loop · always-on code</text>
+  <text x="1914" y="496" class="note" text-anchor="end">makes no scientific judgment — never selects a hypothesis, never evaluates a finding</text>
+
+  <!-- C2 · REASONING PLANE -->
+  <rect x="680" y="856" width="1264" height="426" rx="18" fill="url(#fillTeal)" stroke="#0F6F66" stroke-opacity="0.45" stroke-width="1.6"/>
+  <g filter="url(#pillShadow)"><rect x="704" y="836" width="680" height="40" rx="20" fill="#0F6F66"/></g>
+  <text x="726" y="863" class="pill">REASONING PLANE · ORCHESTRATOR</text>
+  <text x="1150" y="863" class="pillsub">middle loop · episodic LLM</text>
+  <text x="1914" y="900" class="note" text-anchor="end">owns all scientific judgment — never sleeps, merges, or enters a worktree</text>
+
+  <!-- C2 · EXECUTION PLANE -->
+  <rect x="680" y="1338" width="1264" height="438" rx="18" fill="url(#fillIndigo)" stroke="#34558F" stroke-opacity="0.45" stroke-width="1.6"/>
+  <g filter="url(#pillShadow)"><rect x="704" y="1318" width="604" height="40" rx="20" fill="#34558F"/></g>
+  <text x="726" y="1345" class="pill">EXECUTION PLANE · WORKERS</text>
+  <text x="1084" y="1345" class="pillsub">inner loop · one-shot LLM</text>
+  <text x="1914" y="1382" class="note" text-anchor="end">one git worktree + tmux window per worker · read-only roles get --deny-tool=write</text>
+
+  <!-- C3 · SCIENCE PLANE -->
+  <rect x="2140" y="190" width="804" height="1586" rx="18" fill="url(#fillRust)" stroke="#A4513C" stroke-opacity="0.45" stroke-width="1.6"/>
+  <g filter="url(#pillShadow)"><rect x="2164" y="170" width="560" height="40" rx="20" fill="#A4513C"/></g>
+  <text x="2186" y="197" class="pill">SCIENCE PLANE · RIGOR</text>
+  <text x="2540" y="197" class="pillsub">progressive · gated</text>
+  <text x="2916" y="234" class="note" text-anchor="end">every gate reads from the evidence plane; none of them writes results</text>
+
+  <!-- ==================== ENTRY &amp; ADMISSION — 5 chips ================== -->
+  <g filter="url(#cardShadow)">
+    <rect x="710" y="258" width="208" height="114" rx="12" class="card"/>
+    <rect x="959" y="258" width="208" height="114" rx="12" class="card"/>
+    <rect x="1208" y="258" width="208" height="114" rx="12" class="card"/>
+    <rect x="1457" y="258" width="208" height="114" rx="12" class="card"/>
+    <rect x="1706" y="258" width="208" height="114" rx="12" class="card"/>
+  </g>
+  <g fill="#2B4E6E">
+    <rect x="710" y="272" width="5" height="86" rx="2.5"/><rect x="959" y="272" width="5" height="86" rx="2.5"/>
+    <rect x="1208" y="272" width="5" height="86" rx="2.5"/><rect x="1457" y="272" width="5" height="86" rx="2.5"/>
+    <rect x="1706" y="272" width="5" height="86" rx="2.5"/>
+  </g>
+  <g>
+    <text x="732" y="292" class="ct-s">TELEGRAM · CLI</text>
+    <text x="732" y="320" class="body-s">free-text question</text>
+    <text x="732" y="344" class="body-s">+ repository URL</text>
+
+    <text x="981" y="292" class="ct-s mono">intent.classify()</text>
+    <text x="981" y="320" class="body-s">DISCOVER · PROVE</text>
+    <text x="981" y="344" class="body-s">DELIBERATE + rigor</text>
+
+    <text x="1230" y="292" class="ct-s mono">queue.db</text>
+    <text x="1230" y="320" class="body-s">SQLite atomic claim</text>
+    <text x="1230" y="344" class="body-s">codename assigned</text>
+
+    <text x="1479" y="292" class="ct-s">WORKSPACE</text>
+    <text x="1479" y="320" class="body-s">worktree + object cache</text>
+    <text x="1479" y="344" class="body-s">Docker sandbox (opt.)</text>
+
+    <text x="1728" y="292" class="ct-s mono">prompt.py</text>
+    <text x="1728" y="320" class="body-s">sole prompt builder</text>
+    <text x="1728" y="344" class="body-s">CLI ≡ Telegram</text>
+  </g>
+  <g class="lnNavy">
+    <path d="M918 315 H959"/><path d="M1167 315 H1208"/>
+    <path d="M1416 315 H1457"/><path d="M1665 315 H1706"/>
+  </g>
+
+  <!-- ============= CONTROL PLANE — 4 duty cards + poll self-loop ======= -->
+  <g filter="url(#cardShadow)">
+    <rect x="710" y="520" width="274" height="180" rx="12" class="card"/>
+    <rect x="1020" y="520" width="274" height="180" rx="12" class="card"/>
+    <rect x="1330" y="520" width="274" height="180" rx="12" class="card"/>
+    <rect x="1640" y="520" width="274" height="180" rx="12" class="card"/>
+  </g>
+  <g fill="#1D3D5C">
+    <rect x="710" y="534" width="5" height="152" rx="2.5"/><rect x="1020" y="534" width="5" height="152" rx="2.5"/>
+    <rect x="1330" y="534" width="5" height="152" rx="2.5"/><rect x="1640" y="534" width="5" height="152" rx="2.5"/>
+  </g>
+  <g>
+    <text x="734" y="556" class="ct">COLLECT EVENTS</text>
+    <text x="734" y="590" class="body">tmux liveness · git refs</text>
+    <text x="734" y="616" class="body mono">.swarm/events.jsonl</text>
+    <text x="734" y="642" class="body">worker exit · sentinels</text>
+    <text x="734" y="668" class="body">stalls · SERENDIPITY</text>
+
+    <text x="1044" y="556" class="ct">WAKE / PARK</text>
+    <text x="1044" y="590" class="body mono">needs_orchestrator?</text>
+    <text x="1044" y="616" class="body">objective triggers only</text>
+    <text x="1044" y="642" class="body mono">pending_events buffer</text>
+    <text x="1044" y="668" class="body">event-driven sessions</text>
+
+    <text x="1354" y="556" class="ct">INTEGRATE</text>
+    <text x="1354" y="590" class="body">auto-merge worker branches</text>
+    <text x="1354" y="616" class="body mono">merge-agent.sh</text>
+    <text x="1354" y="642" class="body">artifact gates on PRODUCES</text>
+    <text x="1354" y="668" class="body">prune worktree · bd close</text>
+
+    <text x="1664" y="556" class="ct">RECOVER</text>
+    <text x="1664" y="590" class="body">crash · timeout · auth loss</text>
+    <text x="1664" y="616" class="body mono">orchestrator-prompt.txt</text>
+    <text x="1664" y="642" class="body">replay and restart session</text>
+    <text x="1664" y="668" class="body">abort-signal honoured</text>
+  </g>
+  <path d="M1777 700 V742 H847 V706" class="lnNavy"/>
+  <text x="1312" y="772" class="edge navy" text-anchor="middle">poll 10 s · progress digest 30 s · throttled to 5 min while the orchestrator is parked</text>
+
+  <!-- ============ REASONING PLANE — OODA cycle + session boundary ====== -->
+  <g filter="url(#cardShadow)">
+    <rect x="710" y="936" width="262" height="220" rx="12" class="card"/>
+    <rect x="1024" y="936" width="262" height="220" rx="12" class="card"/>
+    <rect x="1338" y="936" width="262" height="220" rx="12" class="card"/>
+    <rect x="1652" y="936" width="262" height="220" rx="12" class="card"/>
+  </g>
+  <g fill="#0F6F66">
+    <rect x="710" y="950" width="5" height="192" rx="2.5"/><rect x="1024" y="950" width="5" height="192" rx="2.5"/>
+    <rect x="1338" y="950" width="5" height="192" rx="2.5"/><rect x="1652" y="950" width="5" height="192" rx="2.5"/>
+  </g>
+  <g>
+    <text x="734" y="976" class="ct teal">OBSERVE</text>
+    <text x="734" y="1012" class="body">read checkpoint</text>
+    <text x="734" y="1038" class="body">belief map + findings</text>
+    <text x="734" y="1064" class="body">events since last session</text>
+    <text x="734" y="1090" class="body">worker outcomes</text>
+    <text x="734" y="1122" class="micro mono">.swarm/belief-map.json</text>
+
+    <text x="1048" y="976" class="ct teal">ORIENT</text>
+    <text x="1048" y="1012" class="body">update posteriors</text>
+    <text x="1048" y="1038" class="body">escalate rigor if needed</text>
+    <text x="1048" y="1064" class="body">paradigm stress · dead ends</text>
+    <text x="1048" y="1090" class="body">novelty and prior art</text>
+    <text x="1048" y="1122" class="micro mono">strategic-context.md</text>
+
+    <text x="1362" y="976" class="ct teal">DECIDE</text>
+    <text x="1362" y="1012" class="body">allocate hypothesis tranches</text>
+    <text x="1362" y="1038" class="body">select the gates to apply</text>
+    <text x="1362" y="1064" class="body">baseline-first ordering</text>
+    <text x="1362" y="1090" class="body">test convergence criteria</text>
+    <text x="1362" y="1122" class="micro mono">success-criteria.json</text>
+
+    <text x="1676" y="976" class="ct teal">ACT</text>
+    <text x="1676" y="1012" class="body">spawn workers</text>
+    <text x="1676" y="1038" class="body">update belief map</text>
+    <text x="1676" y="1064" class="body">write checkpoint</text>
+    <text x="1676" y="1090" class="body">exit the session</text>
+    <text x="1676" y="1122" class="micro mono">spawn-agent.sh</text>
+  </g>
+  <g class="lnTeal">
+    <path d="M972 1046 H1024"/><path d="M1286 1046 H1338"/><path d="M1600 1046 H1652"/>
+  </g>
+  <path d="M1783 1156 V1206 H841 V1162" class="lnTeal"/>
+  <text x="1312" y="1240" class="edge teal" text-anchor="middle">session boundary — state travels in the checkpoint, not in context; every cycle starts fresh</text>
+
+  <!-- ========= EXECUTION PLANE — tranches, inner loop, role library ==== -->
+  <g filter="url(#cardShadow)">
+    <rect x="710" y="1412" width="380" height="154" rx="12" class="card"/>
+    <rect x="1122" y="1412" width="380" height="154" rx="12" class="card"/>
+    <rect x="1534" y="1412" width="380" height="154" rx="12" class="card"/>
+  </g>
+  <g fill="#34558F">
+    <rect x="710" y="1426" width="5" height="126" rx="2.5"/>
+    <rect x="1122" y="1426" width="5" height="126" rx="2.5"/>
+    <rect x="1534" y="1426" width="5" height="126" rx="2.5"/>
+  </g>
+  <g>
+    <text x="734" y="1448" class="ct indigo">H1 · PRIMARY ARM</text>
+    <text x="734" y="1482" class="body">arm + controls + sensitivity</text>
+    <text x="734" y="1508" class="body">roles: investigator · statistician</text>
+    <text x="734" y="1534" class="micro">own branch, worktree and tmux window</text>
+
+    <text x="1146" y="1448" class="ct indigo">H2 · RIVAL EXPLANATION</text>
+    <text x="1146" y="1482" class="body">designed to falsify H1</text>
+    <text x="1146" y="1508" class="body">roles: explorer · critic</text>
+    <text x="1146" y="1534" class="micro">runs concurrently, shares no memory</text>
+
+    <text x="1558" y="1448" class="ct indigo">Hn · ELASTIC SLOT</text>
+    <text x="1558" y="1482" class="body">refilled the moment an arm closes</text>
+    <text x="1558" y="1508" class="body">roles: scout · methodologist</text>
+    <text x="1558" y="1534" class="micro">agent cap scales with accrued evidence</text>
+  </g>
+
+  <g filter="url(#cardShadow)">
+    <rect x="710" y="1592" width="208" height="76" rx="10" class="card"/>
+    <rect x="959" y="1592" width="208" height="76" rx="10" class="card"/>
+    <rect x="1208" y="1592" width="208" height="76" rx="10" class="card"/>
+    <rect x="1457" y="1592" width="208" height="76" rx="10" class="card"/>
+    <rect x="1706" y="1592" width="208" height="76" rx="10" class="card"/>
+  </g>
+  <g>
+    <text x="814" y="1622" class="ct-s indigo" text-anchor="middle">EXECUTE</text>
+    <text x="814" y="1646" class="micro" text-anchor="middle">task + contract</text>
+    <text x="1063" y="1622" class="ct-s indigo" text-anchor="middle">TEST LOOP</text>
+    <text x="1063" y="1646" class="micro" text-anchor="middle">≤ 3 self-repairs</text>
+    <text x="1312" y="1622" class="ct-s indigo" text-anchor="middle">SELF-REVIEW</text>
+    <text x="1312" y="1646" class="micro" text-anchor="middle">checklist + EVA</text>
+    <text x="1561" y="1622" class="ct-s indigo" text-anchor="middle">COMMIT</text>
+    <text x="1561" y="1646" class="micro" text-anchor="middle">+ bd close</text>
+    <text x="1810" y="1622" class="ct-s indigo" text-anchor="middle">EMIT EVENT</text>
+    <text x="1810" y="1646" class="micro mono" text-anchor="middle">events.jsonl</text>
+  </g>
+  <g class="lnInd">
+    <path d="M918 1630 H959"/><path d="M1167 1630 H1208"/>
+    <path d="M1416 1630 H1457"/><path d="M1665 1630 H1706"/>
+  </g>
+  <text x="710" y="1704" class="edge indigo">INNER LOOP — every worker verifies itself before it closes a task</text>
+  <text x="1914" y="1704" class="edge rust" text-anchor="end">VERIFY_EXHAUSTED → escalate to orchestrator</text>
+  <text x="710" y="1732" class="micro">ROLE LIBRARY (19 definitions in <tspan class="mono">voronoi/data/agents/</tspan>) — question-framer · assumption-auditor · scout · investigator · explorer · statistician · critic · theorist</text>
+  <text x="710" y="1756" class="micro">methodologist · synthesizer · evaluator · scribe · red-team · outliner · lit-synthesizer · figure-critic · refiner · worker-agent · swarm-orchestrator</text>
+
+  <!-- ===================== EVIDENCE PLANE — artifacts ================== -->
+  <g filter="url(#cardShadow)">
+    <rect x="84" y="520" width="408" height="156" rx="12" class="card"/>
+    <rect x="84" y="700" width="408" height="156" rx="12" class="card"/>
+    <rect x="84" y="880" width="408" height="470" rx="12" class="card"/>
+    <rect x="84" y="1374" width="408" height="156" rx="12" class="card"/>
+  </g>
+  <g fill="#4E5D66">
+    <rect x="84" y="534" width="5" height="128" rx="2.5"/>
+    <rect x="84" y="714" width="5" height="128" rx="2.5"/>
+    <rect x="84" y="894" width="5" height="442" rx="2.5"/>
+    <rect x="84" y="1388" width="5" height="128" rx="2.5"/>
+  </g>
+  <g>
+    <text x="108" y="556" class="ct">GIT</text>
+    <text x="108" y="590" class="body">branches · worktrees · merges</text>
+    <text x="108" y="616" class="body">shared bare-repo object cache</text>
+    <text x="108" y="642" class="body">artifact gates on every merge</text>
+
+    <text x="108" y="736" class="ct">BEADS (Dolt)</text>
+    <text x="108" y="770" class="body">tasks and dependency graph</text>
+    <text x="108" y="796" class="body">findings and structured notes</text>
+    <text x="108" y="822" class="body mono">bd create / update / close</text>
+
+    <text x="108" y="916" class="ct">.swarm/ ORCHESTRATOR STATE</text>
+    <text x="108" y="942" class="micro">written by agents, read by every plane, archived per run</text>
+    <g class="body mono">
+      <text x="108" y="982">belief-map.json</text>
+      <text x="108" y="1008">strategic-context.md</text>
+      <text x="108" y="1034">experiments.tsv · success-criteria.json</text>
+      <text x="108" y="1060">claim-evidence.json</text>
+      <text x="108" y="1086">events.jsonl · lab-notebook.json</text>
+      <text x="108" y="1112">verify-log-*.jsonl</text>
+      <text x="108" y="1138">interpretation-request.json</text>
+      <text x="108" y="1164">tribunal-verdicts.json</text>
+      <text x="108" y="1190">continuation-proposals.json</text>
+      <text x="108" y="1216">convergence.json · eval-score.json</text>
+      <text x="108" y="1242">run-manifest.json · deliverable.md</text>
+      <text x="108" y="1268">human-gate.json · run-status.json</text>
+      <text x="108" y="1294">orchestrator-prompt.txt</text>
+      <text x="108" y="1320">archive/run-N/</text>
+    </g>
+
+    <text x="108" y="1410" class="ct">RAW DATA + PROVENANCE</text>
+    <text x="108" y="1444" class="body mono">data/raw/</text>
+    <text x="108" y="1470" class="body">preserved verbatim, SHA-256 per artifact</text>
+    <text x="108" y="1496" class="body">every LLM call recorded with its inputs</text>
+  </g>
+
+  <rect x="84" y="1554" width="408" height="158" rx="12" fill="#4E5D66" fill-opacity="0.07" stroke="#4E5D66" stroke-opacity="0.4" stroke-width="1.4"/>
+  <text x="108" y="1592" class="ct graph">NO CUSTOM IPC</text>
+  <text x="108" y="1626" class="body">Agents never address one another.</text>
+  <text x="108" y="1652" class="body">Every hand-off is a durable write that</text>
+  <text x="108" y="1678" class="body">survives a crash, restart or new run.</text>
+
+  <!-- ====================== SCIENCE PLANE — gates ====================== -->
+  <g filter="url(#cardShadow)">
+    <rect x="2168" y="276" width="748" height="496" rx="12" class="card"/>
+    <rect x="2168" y="788" width="748" height="288" rx="12" class="card"/>
+    <rect x="2168" y="1092" width="748" height="292" rx="12" class="card"/>
+    <rect x="2168" y="1400" width="748" height="212" rx="12" class="card"/>
+  </g>
+  <g fill="#A4513C">
+    <rect x="2168" y="290" width="5" height="468" rx="2.5"/>
+    <rect x="2168" y="802" width="5" height="260" rx="2.5"/>
+    <rect x="2168" y="1106" width="5" height="264" rx="2.5"/>
+    <rect x="2168" y="1414" width="5" height="184" rx="2.5"/>
+  </g>
+
+  <!-- A · rigor ladder -->
+  <text x="2192" y="312" class="ct">PROGRESSIVE RIGOR LADDER</text>
+  <text x="2192" y="338" class="micro">rigor is chosen at intake; DISCOVER escalates itself as hypotheses harden</text>
+  <g class="edge muted" text-anchor="middle">
+    <text x="2716" y="366">D</text><text x="2772" y="366">D+</text><text x="2828" y="366">S</text><text x="2884" y="366">E</text>
+  </g>
+  <path d="M2192 378 H2908" stroke="#DCE2DF" stroke-width="1.4"/>
+  <g class="body">
+    <text x="2192" y="408">Critic code review (inline)</text>
+    <text x="2192" y="435">Novelty and prior-art scan</text>
+    <text x="2192" y="462">Plan review</text>
+    <text x="2192" y="489">Baseline-first dependency</text>
+    <text x="2192" y="516">Statistician review</text>
+    <text x="2192" y="543">Finding interpretation</text>
+    <text x="2192" y="570">Claim–evidence registry</text>
+    <text x="2192" y="597">Methodologist design review</text>
+    <text x="2192" y="624">Pre-registration + power analysis</text>
+    <text x="2192" y="651">Pre-reg compliance audit</text>
+    <text x="2192" y="678">Blinded adversarial review loop</text>
+    <text x="2192" y="705">Final evaluation (CCSAN)</text>
+    <text x="2192" y="732">Replication</text>
+  </g>
+  <g fill="#A4513C" stroke="#A4513C" stroke-width="1.8">
+    <circle cx="2716" cy="403" r="6"/><circle cx="2772" cy="403" r="6"/><circle cx="2828" cy="403" r="6"/><circle cx="2884" cy="403" r="6"/>
+    <circle cx="2716" cy="430" r="6"/><circle cx="2772" cy="430" r="6"/><circle cx="2828" cy="430" r="6"/><circle cx="2884" cy="430" r="6"/>
+    <circle cx="2716" cy="457" r="6"/><circle cx="2772" cy="457" r="6"/><circle cx="2828" cy="457" r="6"/><circle cx="2884" cy="457" r="6"/>
+    <circle cx="2716" cy="484" r="6"/><circle cx="2772" cy="484" r="6"/><circle cx="2828" cy="484" r="6"/><circle cx="2884" cy="484" r="6"/>
+    <circle cx="2716" cy="511" r="6" fill="#FFFFFF"/><circle cx="2772" cy="511" r="6"/><circle cx="2828" cy="511" r="6"/><circle cx="2884" cy="511" r="6"/>
+    <circle cx="2716" cy="538" r="6" fill="#FFFFFF"/><circle cx="2772" cy="538" r="6"/><circle cx="2828" cy="538" r="6"/><circle cx="2884" cy="538" r="6"/>
+    <circle cx="2716" cy="565" r="6" fill="#FFFFFF"/><circle cx="2772" cy="565" r="6"/><circle cx="2828" cy="565" r="6"/><circle cx="2884" cy="565" r="6"/>
+    <circle cx="2716" cy="592" r="6" fill="#FFFFFF"/>
+    <circle cx="2772" cy="592" r="6" fill="#FFFFFF"/><path d="M2772 586 A6 6 0 0 0 2772 598 Z" stroke="none"/>
+    <circle cx="2828" cy="592" r="6"/><circle cx="2884" cy="592" r="6"/>
+    <circle cx="2716" cy="619" r="6" fill="#FFFFFF"/><circle cx="2772" cy="619" r="6"/><circle cx="2828" cy="619" r="6"/><circle cx="2884" cy="619" r="6"/>
+    <circle cx="2716" cy="646" r="6" fill="#FFFFFF"/><circle cx="2772" cy="646" r="6"/><circle cx="2828" cy="646" r="6"/><circle cx="2884" cy="646" r="6"/>
+    <circle cx="2716" cy="673" r="6" fill="#FFFFFF"/><circle cx="2772" cy="673" r="6"/><circle cx="2828" cy="673" r="6"/><circle cx="2884" cy="673" r="6"/>
+    <circle cx="2716" cy="700" r="6" fill="#FFFFFF"/><circle cx="2772" cy="700" r="6"/><circle cx="2828" cy="700" r="6"/><circle cx="2884" cy="700" r="6"/>
+    <circle cx="2716" cy="727" r="6" fill="#FFFFFF"/><circle cx="2772" cy="727" r="6" fill="#FFFFFF"/><circle cx="2828" cy="727" r="6" fill="#FFFFFF"/><circle cx="2884" cy="727" r="6"/>
+  </g>
+  <text x="2192" y="755" class="micro">D DISCOVER initial · D+ DISCOVER escalated · S PROVE scientific · E PROVE experimental</text>
+
+  <!-- B · validity -->
+  <text x="2192" y="824" class="ct">VALIDITY &amp; INTEGRITY AUDITS</text>
+  <g class="body">
+    <text x="2192" y="860">EVA — three mandatory checks on every experiment,</text>
+    <text x="2192" y="886">returning VALID or DESIGN_INVALID</text>
+    <text x="2192" y="918">Experiment sentinel — contract phase gates</text>
+    <text x="2192" y="944">Metric contracts — declared before measurement</text>
+    <text x="2192" y="970">Anti-fabrication — no synthetic or simulated results</text>
+    <text x="2192" y="996">Consistency — cross-finding conflict detection</text>
+    <text x="2192" y="1022">Citation coverage ≥ 0.90, zero orphans (paper track)</text>
+  </g>
+  <text x="2192" y="1052" class="micro rust">DESIGN_INVALID never fails silently — it escalates and forces a re-design</text>
+
+  <!-- C · tribunal -->
+  <text x="2192" y="1128" class="ct">JUDGMENT TRIBUNAL</text>
+  <text x="2416" y="1128" class="micro">judgment loop</text>
+  <g class="body">
+    <text x="2192" y="1164">trigger — REFUTED_REVERSED · SURPRISING · pre-convergence</text>
+    <text x="2192" y="1190">panel — Theorist · Statistician · Methodologist (+ Critic)</text>
+    <text x="2192" y="1216" class="mono">→ .swarm/tribunal-verdicts.json</text>
+  </g>
+  <g>
+    <rect x="2192" y="1240" width="166" height="44" rx="9" fill="#0F6F66" fill-opacity="0.10" stroke="#0F6F66" stroke-opacity="0.55" stroke-width="1.4"/>
+    <rect x="2370" y="1240" width="166" height="44" rx="9" fill="#A4513C" fill-opacity="0.10" stroke="#A4513C" stroke-opacity="0.55" stroke-width="1.4"/>
+    <rect x="2548" y="1240" width="166" height="44" rx="9" fill="#A4513C" fill-opacity="0.10" stroke="#A4513C" stroke-opacity="0.55" stroke-width="1.4"/>
+    <rect x="2726" y="1240" width="166" height="44" rx="9" fill="#4E5D66" fill-opacity="0.10" stroke="#4E5D66" stroke-opacity="0.55" stroke-width="1.4"/>
+    <text x="2275" y="1269" class="ct-s teal" text-anchor="middle">EXPLAINED</text>
+    <text x="2453" y="1269" class="ct-s rust" text-anchor="middle">ANOMALY</text>
+    <text x="2631" y="1269" class="ct-s rust" text-anchor="middle">ARTIFACT</text>
+    <text x="2809" y="1269" class="ct-s graph" text-anchor="middle">TRIVIAL</text>
+    <text x="2275" y="1306" class="micro" text-anchor="middle">may converge</text>
+    <text x="2453" y="1306" class="micro" text-anchor="middle">convergence blocked</text>
+    <text x="2631" y="1306" class="micro" text-anchor="middle">→ DESIGN_INVALID</text>
+    <text x="2809" y="1306" class="micro" text-anchor="middle">downgraded in report</text>
+  </g>
+  <text x="2192" y="1344" class="micro rust">a surprising result is not a finding until the tribunal can account for it</text>
+
+  <!-- D · convergence -->
+  <text x="2192" y="1436" class="ct">CONVERGENCE GATE</text>
+  <g class="body">
+    <text x="2192" y="1472" class="mono">convergence-gate.sh</text>
+    <text x="2364" y="1472">— multi-signal, rigor-scaled</text>
+    <text x="2192" y="1498">evaluator CCSAN score ≥ threshold · zero open blockers</text>
+    <text x="2192" y="1524">claim–evidence coverage complete · figure-lint clean</text>
+  </g>
+  <circle cx="2199" cy="1545" r="5" fill="#7A4A76"/>
+  <text x="2216" y="1550" class="body plum">HUMAN GATE (Scientific+) — pre-registration and convergence</text>
+  <text x="2192" y="1580" class="body"><tspan class="mono">/voronoi continue</tspan> → additive next run, warm-started from claims</text>
+
+  <!-- E · deliverable -->
+  <rect x="2168" y="1636" width="748" height="110" rx="12" fill="#0F6F66" fill-opacity="0.09" stroke="#0F6F66" stroke-opacity="0.55" stroke-width="1.6"/>
+  <path d="M2196 1674 h30 l12 12 v40 h-42 z M2226 1674 v12 h12" fill="#FFFFFF" stroke="#0F6F66" stroke-width="2.2" stroke-linejoin="round"/>
+  <path d="M2204 1706 l7 8 l14 -16" fill="none" stroke="#0F6F66" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="2256" y="1676" class="ct teal">EVIDENCE-BACKED DELIVERABLE</text>
+  <text x="2256" y="1706" class="body">report · manuscript · <tspan class="mono">run-manifest.json</tspan></text>
+  <text x="2256" y="1732" class="micro">every claim → linked finding → hashed artifact</text>
+
+  <!-- ============= COUPLINGS · evidence plane (channel 520→680) ======== -->
+  <text x="600" y="588" class="edge navy" text-anchor="middle">merge · status</text>
+  <path d="M680 600 H524" class="lnNavy"/>
+  <text x="600" y="728" class="edge navy" text-anchor="middle">poll events</text>
+  <path d="M520 740 H676" class="lnNavyD"/>
+
+  <text x="600" y="948" class="edge teal" text-anchor="middle">read checkpoint</text>
+  <path d="M520 960 H676" class="lnTealD"/>
+  <text x="600" y="1108" class="edge teal" text-anchor="middle">write checkpoint</text>
+  <path d="M680 1120 H524" class="lnTeal"/>
+
+  <text x="600" y="1408" class="edge indigo" text-anchor="middle">read task</text>
+  <path d="M520 1420 H676" class="lnIndD"/>
+  <text x="600" y="1498" class="edge indigo" text-anchor="middle">commit findings</text>
+  <path d="M680 1510 H524" class="lnInd"/>
+
+  <!-- ============ COUPLINGS · science plane (channel 1944→2140) ======== -->
+  <text x="2042" y="288" class="edge rust" text-anchor="middle">rigor selects ladder</text>
+  <path d="M1944 300 H2136" class="lnRustD"/>
+
+  <text x="2042" y="988" class="edge rust" text-anchor="middle">submit for audit</text>
+  <path d="M1944 1000 H2136" class="lnRustD"/>
+
+  <text x="2042" y="1176" class="edge rust" text-anchor="middle">verdicts · blockers</text>
+  <path d="M2140 1200 H1948" class="lnRust"/>
+  <text x="2042" y="1226" class="micro rust" text-anchor="middle">→ re-orient</text>
+
+  <text x="2042" y="1488" class="edge rust" text-anchor="middle">claims + evidence</text>
+  <path d="M1944 1500 H2136" class="lnRustD"/>
+
+  <!-- ============= COUPLINGS · vertical spine inside the centre ======== -->
+  <path d="M1440 396 V448" class="lnNavy"/>
+  <text x="704" y="421" class="edge navy">ADMIT · the dispatcher takes ownership of the investigation</text>
+
+  <path d="M1440 800 V852" class="lnTeal"/>
+  <path d="M1783 856 V804" class="lnNavy"/>
+  <text x="704" y="825" class="edge teal">WAKE ↓ dispatcher launches a session</text>
+  <text x="1024" y="825" class="edge muted">·</text>
+  <text x="1050" y="825" class="edge navy">PARK ↑ session exits, events buffer</text>
+
+  <path d="M1783 1282 V1334" class="lnInd"/>
+  <text x="704" y="1307" class="edge indigo">SPAWN · one fresh git worktree and tmux window per worker</text>
+
+  <!-- ================================ LEGEND =========================== -->
+  <path d="M56 1810 H2944" class="hair"/>
+  <g>
+    <path d="M56 1846 H116" class="lnNavy"/>
+    <text x="128" y="1852" class="lg">deterministic control event</text>
+
+    <path d="M460 1846 H520" class="lnTeal"/>
+    <text x="532" y="1852" class="lg">orchestrator session control</text>
+
+    <path d="M900 1846 H960" class="lnInd"/>
+    <text x="972" y="1852" class="lg">execution + evidence write</text>
+
+    <path d="M1330 1846 H1390" class="lnNavyD"/>
+    <text x="1402" y="1852" class="lg">read-only access to durable state</text>
+
+    <path d="M1810 1846 H1870" class="lnRustD"/>
+    <text x="1882" y="1852" class="lg">rigor gate · verdict · human decision</text>
+
+    <circle cx="2318" cy="1846" r="6" fill="#A4513C"/>
+    <text x="2334" y="1852" class="lg">required</text>
+    <circle cx="2450" cy="1846" r="6" fill="#FFFFFF" stroke="#A4513C" stroke-width="1.8"/>
+    <path d="M2450 1840 A6 6 0 0 0 2450 1852 Z" fill="#A4513C"/>
+    <text x="2466" y="1852" class="lg">advisory</text>
+    <circle cx="2600" cy="1846" r="6" fill="#FFFFFF" stroke="#A4513C" stroke-width="1.8"/>
+    <text x="2616" y="1852" class="lg">not applied</text>
+  </g>
+
+  <text x="56" y="1912" class="cap">Coupling rule — every hand-off between planes is a durable write to the evidence plane; no agent addresses another directly. Control never reasons about science, reasoning never manages processes, and execution never persists anything outside git, Beads and <tspan class="mono">.swarm/</tspan>.</text>
+</svg>
