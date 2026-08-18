@@ -41,7 +41,7 @@ Use `list_dir` on `src/voronoi/` to explore the current layout — do not rely o
 ## Specs — Developer Reference
 
 Detailed specs live in `docs/`. Read only what you need:
-1. Start with `docs/SPEC-INDEX.md` (~70 lines) — maps your task to the right spec
+1. Start with `docs/SPEC-INDEX.md` — maps your task to the right spec, section, and line range
 2. For dataclass signatures → `docs/DATA-STRUCTURES.md`
 3. For rules that must not be violated → `docs/INVARIANTS.md`
 

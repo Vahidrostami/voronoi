@@ -142,6 +142,30 @@ class TestPreRegistration:
         assert pr.power_analysis == "0.80"
         assert "PARAM1" in pr.sensitivity_plan
 
+    def test_parse_scientific_with_validator_field_names(self):
+        notes = (
+            "PRE_REG: HYPOTHESIS=[h1] | METHOD=[m1] | CONTROLS=[c1] | "
+            "EXPECTED_RESULT=[e1] | CONFOUNDS=[cf1] | STAT_TEST=[t1] | SAMPLE_SIZE=[50]\n"
+            "PRE_REG_POWER_ANALYSIS=[0.80 at n=64]\n"
+            "PRE_REG_SENSITIVITY_PLAN=[lambda and K sweeps]"
+        )
+
+        pr = parse_pre_registration(notes)
+        valid, missing = validate_pre_registration(notes, "scientific")
+
+        assert pr.power_analysis == "0.80 at n=64"
+        assert pr.sensitivity_plan == "lambda and K sweeps"
+        assert pr.is_scientific_complete is True
+        assert valid is True
+        assert missing == []
+
+    def test_sensitivity_plan_requires_supported_syntax(self):
+        notes = "PRE_REG_SENSITIVITY_PLAN lambda and K sweeps"
+
+        pr = parse_pre_registration(notes)
+
+        assert pr.sensitivity_plan == ""
+
     def test_validate_standard_ok(self):
         notes = (
             "PRE_REG: HYPOTHESIS=[h] | METHOD=[m] | CONTROLS=[c] | "

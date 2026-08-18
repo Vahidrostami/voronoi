@@ -10,6 +10,7 @@ Example scenarios to test the agent swarm orchestrator. Each demo includes a rea
 | [Epistemic Trajectories](epistemic-trajectories/) | Knowledge compilation + cross-source constraint detection + feasible trajectory pruning | 8+ | 4 |
 | [Forgetting Cure](forgetting-cure/) | Brain-inspired anti-forgetting strategies — computational neuroscience | 9 | 4 |
 | [Emergent Ecosystem](emergent-ecosystem/) | Multi-species simulation with emergent communication | 6 | 3 |
+| [Opponent Routing](ei-agents/) | Learned signed support/challenge graphs over frozen SLMs — needs an OpenAI-compatible endpoint with logprobs | 8–12 | adaptive |
 
 ## Running a Demo
 

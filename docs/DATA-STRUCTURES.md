@@ -405,7 +405,7 @@ class ConvergenceResult:
     blockers: list[str]
 ```
 
-### ParadigmStressResult (`science/_helpers.py`)
+### ParadigmStressResult (`science/consistency.py`)
 
 ```python
 @dataclass
@@ -481,7 +481,7 @@ class ClaimLedger:
 
 **Storage**: `<base-dir>/ledgers/<lineage_id>/claim-ledger.json` (default `~/.voronoi/ledgers/...`)
 
-### ConsistencyConflict (`science/_helpers.py`)
+### ConsistencyConflict (`science/consistency.py`)
 
 ```python
 @dataclass

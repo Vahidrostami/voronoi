@@ -57,7 +57,8 @@ Handoff chains:
 
 These rules apply during simplification and refactoring work. Flag violations before expanding the affected code.
 
-- Soft max file length: 300 lines. If a touched file stays over 300 lines, explain why it remains cohesive.
+- Soft max file length: 300 lines **for source files under `src/`**. If a touched file stays over 300 lines, explain why it remains cohesive.
+- This length rule does NOT apply to `docs/`. Specs are reference material, addressed by line range from `docs/SPEC-INDEX.md`. Never delete spec content to hit a line count — that causes spec drift. The doc rules are: keep each `##` section addressable (~170 lines), keep every doc reachable from the SPEC-INDEX routing table, and rerun `python scripts/check-spec-index.py` after editing a spec.
 - Soft max function length: 40 lines. If a touched function stays over 40 lines, explain why extraction would make it worse.
 - A module that imports from more than 3 sibling modules may be misplaced; flag the ownership question before adding another sibling import.
 - Dead code rule: if a function or class has no callers in `src/`, `tests/`, `docs/`, or `.github/`, delete it only after confirming it is not public runtime surface.

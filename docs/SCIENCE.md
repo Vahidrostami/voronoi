@@ -96,6 +96,12 @@ def validate_pre_registration(task_notes: str, rigor: str) -> tuple[bool, list[s
 
 `validate_pre_registration` returns `(valid, list_of_missing_fields)`.
 
+The canonical note forms remain `PRE_REG_POWER: ... | POWER=[...]` and
+`PRE_REG_SENSITIVITY: ...`. For compatibility with the field names returned by
+validation, a `PRE_REG`-prefixed line may instead use
+`POWER_ANALYSIS=[...]` or `SENSITIVITY_PLAN=[...]`, including the standalone
+`PRE_REG_POWER_ANALYSIS=[...]` and `PRE_REG_SENSITIVITY_PLAN=[...]` forms.
+
 ---
 
 ## 4. Belief Map

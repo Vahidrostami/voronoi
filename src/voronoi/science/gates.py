@@ -60,16 +60,17 @@ def parse_pre_registration(notes: str) -> PreRegistration:
             continue
         for fld in ["HYPOTHESIS", "METHOD", "CONTROLS", "EXPECTED_RESULT",
                      "CONFOUNDS", "STAT_TEST", "SAMPLE_SIZE",
-                     "EXPECTED_DIRECTION"]:
+                     "EXPECTED_DIRECTION", "POWER_ANALYSIS",
+                     "SENSITIVITY_PLAN"]:
             m = re.search(rf"{fld}\s*=\s*\[([^\]]+)\]", line)
             if m:
                 setattr(pre_reg, fld.lower(), m.group(1).strip())
-        if "POWER" in line:
+        if not pre_reg.power_analysis and "POWER" in line:
             m = re.search(r"POWER=\[([^\]]+)\]", line)
             if m:
                 pre_reg.power_analysis = m.group(1).strip()
-        if "SENSITIVITY" in line and "PRE_REG_SENSITIVITY" in line:
-            pre_reg.sensitivity_plan = line.split("PRE_REG_SENSITIVITY:")[-1].strip()
+        if not pre_reg.sensitivity_plan and line.startswith("PRE_REG_SENSITIVITY:"):
+            pre_reg.sensitivity_plan = line.removeprefix("PRE_REG_SENSITIVITY:").strip()
         if "PRE_REG_DEVIATION" in line:
             pre_reg.deviations.append(line.split("PRE_REG_DEVIATION:")[-1].strip())
     return pre_reg

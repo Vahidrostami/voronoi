@@ -11,7 +11,7 @@ If you moved, renamed, or deleted a file or directory:
    grep -r "old/path" docs/ CLAUDE.md DESIGN.md README.md .github/ --include="*.md"
    ```
 
-2. **Check SPEC-INDEX.md** — update the Module → Spec → Test Mapping table if any row references the old path
+2. **Check SPEC-INDEX.md** — update the Module → Spec → Test Mapping table if any row references the old path, including its `Lines` range
 
 3. **Check INVARIANTS.md** — update any invariant that references the old path or module name
 
