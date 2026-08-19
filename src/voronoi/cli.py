@@ -884,8 +884,10 @@ def _server_prune(args: argparse.Namespace) -> None:
         cleanup_tmux(f"voronoi-inv-{inv.id}", workspace_path)
         diagnostics: list[str] = []
         removed = wm.cleanup_path(workspace_path, diagnostics=diagnostics)
-        if removed:
+        gone = removed or not workspace_path.exists()
+        if gone:
             print(f"  Removed {workspace_path.name}")
+            queue.clear_workspace_path(inv.id)
         else:
             print(f"  Could not remove {workspace_path.name}")
         for message in diagnostics:
