@@ -173,6 +173,28 @@ def _write_demo_manifest(workspace: Path, *, question: str = "") -> Path | None:
         return None
 
 
+def _warn_if_untracked_content(target: Path) -> None:
+    """Point out pre-existing files the empty initial commit left untracked.
+
+    Agent worktrees materialize committed state only (INV-61), so untracked
+    project files never reach a worker.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=normal"],
+            cwd=str(target), capture_output=True, text=True, timeout=30,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return
+    if result.returncode != 0:
+        return
+    entries = [line for line in result.stdout.splitlines() if line.strip()]
+    if not entries:
+        return
+    print(f"  ⚠ {len(entries)} uncommitted path(s) — workers only see committed state.")
+    print("    Commit your own files before dispatching agents: git add -A && git commit")
+
+
 def cmd_init(args: argparse.Namespace) -> None:
     """Scaffold voronoi into the current directory."""
     target = Path.cwd()
@@ -181,6 +203,17 @@ def cmd_init(args: argparse.Namespace) -> None:
     # Guard: don't init inside the framework repo itself
     if (target / "pyproject.toml").exists() and (target / "src" / "voronoi").is_dir():
         print("Error: you're inside the voronoi source repo. cd to your project first.")
+        sys.exit(1)
+
+    # Guard: $HOME and the filesystem root are never project directories.
+    # Scaffolding there spreads a git repo, .swarm/ and a Beads store across
+    # the user's entire account.
+    resolved = target.resolve()
+    if resolved == Path.home().resolve() or resolved == Path(resolved.anchor):
+        print(f"Error: refusing to initialize voronoi in {target}.")
+        print("  This is your home or root directory, not a project.")
+        print("  Create a project directory first:")
+        print("    mkdir my-investigation && cd my-investigation && voronoi init")
         sys.exit(1)
 
     print(f"Initializing voronoi v{__version__} in {target}")
@@ -194,16 +227,18 @@ def cmd_init(args: argparse.Namespace) -> None:
     # Ensure at least one commit exists (git worktree requires it)
     result = subprocess.run(
         ["git", "rev-parse", "HEAD"],
-        cwd=str(target), capture_output=True, text=True,
+        cwd=str(target), capture_output=True, text=True, timeout=60,
     )
     if result.returncode != 0:
         print("  Creating initial commit (required for agent worktrees)...")
-        subprocess.run(["git", "add", "-A"], cwd=str(target), capture_output=True)
+        # Deliberately empty: staging the tree here would hash every file under
+        # the project, which stalls on large directories and can commit secrets.
         subprocess.run(
             ["git", "commit", "--allow-empty", "-m", "voronoi: initial commit"],
-            cwd=str(target), capture_output=True,
+            cwd=str(target), capture_output=True, timeout=120,
         )
         print("  ✓ initial commit")
+        _warn_if_untracked_content(target)
 
     # Copy directories
     for dirname in FRAMEWORK_DIRS:
@@ -247,13 +282,23 @@ def cmd_init(args: argparse.Namespace) -> None:
     init_script = target / "scripts" / "swarm-init.sh"
     if init_script.exists():
         print("\nRunning swarm-init.sh...")
-        result = subprocess.run(["bash", str(init_script)], cwd=str(target))
-        if result.returncode != 0:
-            print(
-                "  Warning: swarm-init.sh did not complete. "
-                "Install/update Beads with server-mode support before running agents: "
-                "https://github.com/gastownhall/beads"
+        try:
+            result = subprocess.run(
+                ["bash", str(init_script)], cwd=str(target), timeout=300,
             )
+        except subprocess.TimeoutExpired:
+            print(
+                "  Warning: swarm-init.sh timed out after 5m. "
+                "`bd init` can stall on network or NFS-backed filesystems — "
+                "run it manually to see where it blocks."
+            )
+        else:
+            if result.returncode != 0:
+                print(
+                    "  Warning: swarm-init.sh did not complete. "
+                    "Install/update Beads with server-mode support before running agents: "
+                    "https://github.com/gastownhall/beads"
+                )
 
     # Re-copy AGENTS.md after swarm-init.sh — bd init overwrites it with
     # its own template that unconditionally mandates git push. The Voronoi

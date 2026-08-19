@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -160,6 +161,63 @@ def test_init_creates_files():
         assert ".github/agents/critic.agent.md" in tracked
         assert "scripts/spawn-agent.sh" in tracked
         assert "CLAUDE.md" in tracked
+
+
+def test_init_refuses_home_directory():
+    """init in $HOME would scaffold a repo and Beads store across the account."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        result = subprocess.run(
+            [sys.executable, "-m", "voronoi.cli", "init"],
+            cwd=tmpdir,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "HOME": tmpdir},
+            stdin=subprocess.DEVNULL,
+            timeout=120,
+        )
+
+        assert result.returncode != 0
+        assert "refusing to initialize" in result.stdout
+        # Nothing was scaffolded before the guard fired
+        assert not (Path(tmpdir) / ".git").exists()
+        assert not (Path(tmpdir) / "scripts").exists()
+
+
+def test_init_does_not_commit_preexisting_files():
+    """Regression: the initial commit used to `git add -A` the whole tree.
+
+    That hashed every file under the target (hanging on large or NFS-backed
+    directories) and swept secrets into the commit.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        target = Path(tmpdir)
+        (target / "secrets.env").write_text("GH_TOKEN=super-secret")
+        (target / "bigdata").mkdir()
+        (target / "bigdata" / "sample.bin").write_text("x")
+
+        result = subprocess.run(
+            [sys.executable, "-m", "voronoi.cli", "init"],
+            cwd=tmpdir,
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=300,
+        )
+
+        tracked = subprocess.run(
+            ["git", "ls-tree", "-r", "--name-only", "HEAD"],
+            cwd=tmpdir,
+            capture_output=True,
+            text=True,
+        ).stdout
+
+        assert "secrets.env" not in tracked
+        assert "bigdata/sample.bin" not in tracked
+        # INV-61: the framework payload is still committed, via commit_framework_files
+        assert "CLAUDE.md" in tracked
+        assert "scripts/spawn-agent.sh" in tracked
+        # And the user is told their own files are not visible to workers
+        assert "workers only see committed state" in result.stdout
 
 
 def test_framework_paths_cover_scaffolded_content():

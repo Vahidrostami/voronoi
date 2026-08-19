@@ -66,9 +66,21 @@ AGENTS.md             # Compatibility alias
 3. Copies `scripts/` directory (all `.sh` files made executable)
 4. Copies `CLAUDE.md` and `AGENTS.md` (skips if already exist — user-owned)
 5. Copies `.env.example`
-6. Initializes git repo if not already initialized
-7. Runs `swarm-init.sh`, which initializes Beads with `bd init --quiet --server`; if the installed `bd` CLI does not support server mode, the command prints an upgrade warning because worker and dispatcher processes must share one `.beads/` store
+6. Initializes git repo if not already initialized. When the repo has no commits yet, creates an **empty** initial commit — `git worktree` only requires that `HEAD` resolves. Init never stages the working tree: doing so hashes every file under the target, which stalls on large or NFS-backed directories and sweeps secrets such as `.env` into the commit. Pre-existing files therefore stay untracked, and init prints a warning naming the count, because agent worktrees materialize committed state only (INV-61).
+7. Runs `swarm-init.sh`, which initializes Beads with `bd init --quiet --server`; if the installed `bd` CLI does not support server mode, the command prints an upgrade warning because worker and dispatcher processes must share one `.beads/` store. The script is bounded by a 5-minute timeout so a stalled `bd init` surfaces as a warning instead of an apparent freeze.
 8. Commits `.github/`, `scripts/`, `CLAUDE.md` and `AGENTS.md` (INV-61). Agent worktrees are created off the default branch and materialize committed state only, so an untracked framework payload would never reach a worker. The commit is path-limited, so unrelated staged or dirty work is preserved, and is skipped when nothing changed.
+
+### Refused Targets
+
+`voronoi init` exits non-zero without writing anything when the working directory is:
+
+| Target | Reason |
+|---|---|
+| The voronoi source repo (`pyproject.toml` + `src/voronoi/`) | Would scaffold the framework into itself |
+| `$HOME` | Would spread a git repo, `.swarm/` and a Beads store across the whole account |
+| The filesystem root | Same, system-wide |
+
+`~/.voronoi/` is set up by `voronoi server init`, not `voronoi init` — the two are unrelated.
 
 ### User-Owned Files
 
