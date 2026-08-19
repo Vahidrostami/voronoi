@@ -438,12 +438,89 @@ class TestProgressMonitoring:
         assert len(msgs) >= 1
         assert "didn't make it" in msgs[0].lower()
 
+    def test_handle_completion_failed_cleans_worktrees(self, dispatcher_setup):
+        """Failed runs must not leak worktrees or the tmux secrets file."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        d._queue = MagicMock()
+
+        ws = tmp_path / "active" / "inv-1-fail"
+        ws.mkdir(parents=True)
+        swarm = tmp_path / "active" / "inv-1-fail-swarm"
+        (swarm / "agent-scout").mkdir(parents=True)
+        env_file = ws.parent / ".tmux-env-test"
+        env_file.write_text("GH_TOKEN=redacted")
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=ws,
+            tmux_session="test",
+            question="Why is model degrading?",
+            mode="discover",
+        )
+        run.task_snapshot = {"bd-1": {"status": "open", "title": "Incomplete"}}
+
+        d._handle_completion(run, failed=True, failure_reason="agent crashed")
+
+        assert not swarm.exists()
+        assert not env_file.exists()
+
+    def test_cleanup_worktrees_queues_blocked_swarm_dir(self, dispatcher_setup):
+        """A swarm dir pinned by open handles is queued for prune, not forgotten."""
+        from voronoi.server.workspace import read_pending_cleanup
+
+        d, msgs, docs, tmp_path = dispatcher_setup
+        ws = tmp_path / "active" / "inv-1-blocked"
+        ws.mkdir(parents=True)
+        swarm = tmp_path / "active" / "inv-1-blocked-swarm"
+        swarm.mkdir()
+
+        run = RunningInvestigation(
+            investigation_id=1,
+            workspace_path=ws,
+            tmux_session="test",
+            question="Q",
+            mode="discover",
+        )
+
+        with patch("voronoi.server.workspace.shutil.rmtree", side_effect=OSError("busy")), \
+             patch("voronoi.server.workspace.time.sleep"), \
+             patch("voronoi.server.workspace.describe_live_file_holders",
+                   return_value=["7 (bd)"]):
+            d._cleanup_worktrees(run)
+
+        assert swarm.exists()
+        assert read_pending_cleanup(tmp_path) == [str(swarm)]
+
+    def test_clean_shared_tmp_reports_leftovers(self, dispatcher_setup):
+        """Undeletable temp entries must be surfaced, not logged as success."""
+        d, msgs, docs, tmp_path = dispatcher_setup
+        tmp_dir = tmp_path / "tmp"
+        tmp_dir.mkdir()
+        (tmp_dir / ".nfs0001").write_text("")
+
+        with patch("voronoi.server.dispatcher._completion.shutil.rmtree",
+                   side_effect=OSError("busy")), \
+             patch("voronoi.server.dispatcher._completion.logger") as log:
+            d._clean_shared_tmp()
+
+        assert log.warning.called
+        assert not log.info.called
+
+    def test_clean_shared_tmp_recreates_empty_dir(self, dispatcher_setup):
+        d, msgs, docs, tmp_path = dispatcher_setup
+        tmp_dir = tmp_path / "tmp"
+        (tmp_dir / "scratch").mkdir(parents=True)
+
+        d._clean_shared_tmp()
+
+        assert tmp_dir.is_dir()
+        assert list(tmp_dir.iterdir()) == []
+
     def test_handle_completion_uses_chat_id(self, dispatcher_setup):
         """Document send should use per-investigation chat_id, not global file."""
         d, msgs, docs, tmp_path = dispatcher_setup
         mock_queue = MagicMock()
         d._queue = mock_queue
-
         (tmp_path / ".swarm").mkdir()
         (tmp_path / ".swarm" / "deliverable.md").write_text("# Done")
 

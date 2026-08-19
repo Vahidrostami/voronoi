@@ -46,6 +46,20 @@ def _cleanup_test_tmux_sessions():
     _kill_test_tmux_sessions()
 
 
+@pytest.fixture(autouse=True)
+def voronoi_base_dir(tmp_path_factory, monkeypatch):
+    """Redirect all server/gateway state to a throwaway base directory.
+
+    Handlers resolve state through ``get_gateway_base_dir()``, which defaults
+    to the operator's real ``~/.voronoi``.  Without this fixture the suite
+    appends live rows to the production ``queue.db`` (and would touch
+    ``knowledge.db`` and ``ledgers/``).
+    """
+    base = tmp_path_factory.mktemp("voronoi-base")
+    monkeypatch.setenv("VORONOI_BASE_DIR", str(base))
+    return base
+
+
 @pytest.fixture
 def swarm_workspace(tmp_path):
     """Workspace with .swarm/ pre-created."""

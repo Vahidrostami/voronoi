@@ -29,6 +29,97 @@ BEADS_SERVER_MODE_HINT = (
     "Install or update Beads from https://github.com/gastownhall/beads."
 )
 
+# Paths that resisted removal are queued here for `voronoi server prune`.
+PENDING_CLEANUP_FILE = ".pending-cleanup.json"
+
+
+def remove_tree_with_retry(path: Path, attempts: int = 3,
+                           delay: float = 1.0) -> bool:
+    """Remove a directory tree, retrying while open handles are released.
+
+    On NFS-backed homes an open file becomes a ``.nfs*`` silly-rename entry,
+    so the first rmtree fails with ENOTEMPTY even though the holder is exiting.
+    """
+    for attempt in range(attempts):
+        try:
+            shutil.rmtree(path)
+        except OSError:
+            pass
+        if not path.exists():
+            return True
+        if attempt < attempts - 1:
+            time.sleep(delay * (attempt + 1))
+    return not path.exists()
+
+
+def _pending_cleanup_registry(base_dir: Path) -> Path:
+    return Path(base_dir) / PENDING_CLEANUP_FILE
+
+
+def _is_prunable(base_dir: Path, path: Path) -> bool:
+    """Only paths inside ``<base_dir>/active/`` may be queued or swept."""
+    try:
+        active_root = (Path(base_dir) / "active").resolve()
+        return path.resolve().is_relative_to(active_root)
+    except OSError:
+        return False
+
+
+def read_pending_cleanup(base_dir: Path) -> list[str]:
+    """Return the queued deferred-cleanup paths for a base dir."""
+    try:
+        entries = json.loads(_pending_cleanup_registry(base_dir).read_text())
+    except (json.JSONDecodeError, OSError):
+        return []
+    if not isinstance(entries, list):
+        return []
+    return [e for e in entries if isinstance(e, str)]
+
+
+def record_pending_cleanup(base_dir: Path, path: Path) -> None:
+    """Queue a path that resisted removal so ``server prune`` retries it."""
+    if not _is_prunable(base_dir, path):
+        logger.warning("Refusing to queue cleanup outside active root: %s", path)
+        return
+    entries = read_pending_cleanup(base_dir)
+    target = str(path)
+    if target in entries:
+        return
+    entries.append(target)
+    try:
+        _pending_cleanup_registry(base_dir).write_text(json.dumps(entries, indent=2))
+    except OSError:
+        logger.debug("Could not record pending cleanup for %s", path, exc_info=True)
+
+
+def sweep_pending_cleanup(base_dir: Path) -> tuple[list[str], list[str]]:
+    """Retry every queued removal. Returns ``(removed, still_blocked)``."""
+    entries = read_pending_cleanup(base_dir)
+    if not entries:
+        return [], []
+
+    removed: list[str] = []
+    blocked: list[str] = []
+    for entry in entries:
+        path = Path(entry)
+        if not _is_prunable(base_dir, path):
+            logger.warning("Dropping non-prunable cleanup entry: %s", entry)
+            continue
+        if not path.exists() or remove_tree_with_retry(path):
+            removed.append(entry)
+        else:
+            blocked.append(entry)
+
+    registry = _pending_cleanup_registry(base_dir)
+    try:
+        if blocked:
+            registry.write_text(json.dumps(blocked, indent=2))
+        else:
+            registry.unlink(missing_ok=True)
+    except OSError:
+        logger.debug("Could not update %s", registry, exc_info=True)
+    return removed, blocked
+
 
 def describe_live_file_holders(paths: Sequence[Path]) -> list[str]:
     """Return short descriptions of processes holding files under paths."""
@@ -55,6 +146,17 @@ def describe_live_file_holders(paths: Sequence[Path]) -> list[str]:
             command, pid = parts[0], parts[1]
             holders[(pid, command)] = f"{pid} ({command})"
     return sorted(holders.values())
+
+
+def describe_removal_blocker(path: Path) -> str:
+    """Explain why a tree could not be removed, naming live holders if known."""
+    holders = describe_live_file_holders([path])
+    if not holders:
+        return f"Could not remove {path}; it may contain open NFS lock files"
+    detail = ", ".join(holders[:8])
+    if len(holders) > 8:
+        detail += f", +{len(holders) - 8} more"
+    return f"Could not remove {path}; live processes hold files: {detail}"
 
 
 @dataclass
@@ -285,32 +387,17 @@ class WorkspaceManager:
         """Remove a directory tree and report likely lock holders on failure."""
         if not path.exists():
             return False
-        try:
-            shutil.rmtree(path)
-        except OSError as exc:
-            self._record_cleanup_blocker(path, exc, diagnostics)
-            return False
-        if path.exists():
-            self._record_cleanup_blocker(path, None, diagnostics)
-            return False
-        return True
+        if remove_tree_with_retry(path):
+            return True
+        self._record_cleanup_blocker(path, diagnostics)
+        return False
 
     def _record_cleanup_blocker(
         self,
         path: Path,
-        exc: OSError | None,
         diagnostics: list[str] | None,
     ) -> None:
-        holders = describe_live_file_holders([path])
-        if holders:
-            detail = ", ".join(holders[:8])
-            if len(holders) > 8:
-                detail += f", +{len(holders) - 8} more"
-            message = f"Could not remove {path}; live processes hold files: {detail}"
-        elif exc is not None:
-            message = f"Could not remove {path}: {exc}"
-        else:
-            message = f"Could not remove {path}; it may contain open NFS lock files"
+        message = describe_removal_blocker(path)
         logger.warning(message)
         if diagnostics is not None:
             diagnostics.append(message)

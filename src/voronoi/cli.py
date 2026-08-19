@@ -94,6 +94,18 @@ def _server_tmp_dir(base_dir: Path) -> Path:
     return base_dir / "tmp"
 
 
+_DAEMON_LOG_MAX_BYTES = 5 * 1024 * 1024
+
+
+def _rotate_daemon_log(log_path: Path) -> None:
+    """Roll the daemon stdout capture once it exceeds the size cap."""
+    try:
+        if log_path.exists() and log_path.stat().st_size >= _DAEMON_LOG_MAX_BYTES:
+            log_path.replace(log_path.with_name(log_path.name + ".1"))
+    except OSError:
+        pass
+
+
 def _server_runtime_env(base_dir: Path) -> dict[str, str]:
     """Build a subprocess environment rooted in the server temp directory."""
     tmp_dir = _server_tmp_dir(base_dir)
@@ -741,6 +753,7 @@ def _server_start(args: argparse.Namespace) -> None:
             logs_dir.mkdir(parents=True, exist_ok=True)
             log_path = Path(args.log_file).expanduser() if getattr(args, "log_file", None) else logs_dir / "telegram-bridge.log"
             log_path.parent.mkdir(parents=True, exist_ok=True)
+            _rotate_daemon_log(log_path)
             with log_path.open("ab") as log_handle:
                 proc = subprocess.Popen(
                     bridge_cmd,
@@ -828,7 +841,14 @@ def _server_prune(args: argparse.Namespace) -> None:
     from voronoi.server.runner import ServerConfig
     from voronoi.server.queue import InvestigationQueue
     from voronoi.server.tmux import cleanup_tmux
-    from voronoi.server.workspace import WorkspaceManager
+    from voronoi.server.workspace import (
+        WorkspaceManager,
+        describe_removal_blocker,
+        read_pending_cleanup,
+        record_pending_cleanup,
+        remove_tree_with_retry,
+        sweep_pending_cleanup,
+    )
 
     config = ServerConfig(base_dir=getattr(args, "base_dir", None))
     wm = WorkspaceManager(config.base_dir)
@@ -864,7 +884,12 @@ def _server_prune(args: argparse.Namespace) -> None:
             if not (active_dir / main_name).exists():
                 orphan_swarms.append(swarm_dir)
 
-    if not eligible and not orphan_swarms:
+    pending = [
+        entry for entry in read_pending_cleanup(config.base_dir)
+        if Path(entry) not in orphan_swarms
+    ]
+
+    if not eligible and not orphan_swarms and not pending:
         print("No workspaces to prune.")
         return
 
@@ -874,6 +899,9 @@ def _server_prune(args: argparse.Namespace) -> None:
     print(f"Orphan swarm directories: {len(orphan_swarms)}")
     for swarm_dir in orphan_swarms:
         print(f"  {swarm_dir.name}")
+    print(f"Deferred cleanups pending: {len(pending)}")
+    for entry in pending:
+        print(f"  {Path(entry).name}")
 
     if not getattr(args, "force", False):
         print("\nRun with --force to remove these workspaces and swarm directories.")
@@ -894,19 +922,17 @@ def _server_prune(args: argparse.Namespace) -> None:
             print(f"    Warning: {message}")
 
     for swarm_dir in orphan_swarms:
-        try:
-            shutil.rmtree(swarm_dir)
+        if remove_tree_with_retry(swarm_dir):
             print(f"  Removed {swarm_dir.name}")
-        except OSError as exc:
-            from voronoi.server.workspace import describe_live_file_holders
-            holders = describe_live_file_holders([swarm_dir])
-            if holders:
-                print(
-                    f"  Could not remove {swarm_dir.name}; "
-                    f"live processes hold files: {', '.join(holders[:8])}"
-                )
-            else:
-                print(f"  Could not remove {swarm_dir.name}: {exc}")
+            continue
+        print(f"  {describe_removal_blocker(swarm_dir)}")
+        record_pending_cleanup(config.base_dir, swarm_dir)
+
+    swept, blocked = sweep_pending_cleanup(config.base_dir)
+    for entry in swept:
+        print(f"  Removed deferred {Path(entry).name}")
+    for entry in blocked:
+        print(f"  Still blocked (kept queued): {Path(entry).name}")
 
     print("Done.")
 

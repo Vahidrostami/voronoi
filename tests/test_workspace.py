@@ -1,6 +1,7 @@
 """Tests for voronoi.server.workspace — Workspace Manager."""
 
 from contextlib import contextmanager
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -9,7 +10,15 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from voronoi.server.repo_url import RepoRef
-from voronoi.server.workspace import WorkspaceManager, WorkspaceInfo
+from voronoi.server.workspace import (
+    PENDING_CLEANUP_FILE,
+    WorkspaceManager,
+    WorkspaceInfo,
+    read_pending_cleanup,
+    record_pending_cleanup,
+    remove_tree_with_retry,
+    sweep_pending_cleanup,
+)
 
 
 @pytest.fixture
@@ -198,6 +207,7 @@ class TestWorkspaceManagement:
             raise OSError("busy")
 
         with patch("voronoi.server.workspace.shutil.rmtree", side_effect=fake_rmtree), \
+             patch("voronoi.server.workspace.time.sleep"), \
              patch("voronoi.server.workspace.describe_live_file_holders", return_value=["123 (bd)"]):
             assert wm.cleanup(1, "test", diagnostics=diagnostics) is False
 
@@ -220,6 +230,94 @@ class TestWorkspaceManagement:
         wm.provision_lab(2, "replay", "Replay question")
         active = wm.list_active()
         assert len(active) == 2
+
+
+class TestDeferredCleanup:
+    """Retrying removal and the deferred-cleanup queue consumed by prune."""
+
+    def test_retry_succeeds_after_transient_failure(self, tmp_path):
+        """NFS silly-rename files make the first rmtree fail; the retry wins."""
+        target = tmp_path / "swarm"
+        target.mkdir()
+        real_rmtree = shutil.rmtree
+        calls: list[int] = []
+
+        def flaky(path, *args, **kwargs):
+            calls.append(1)
+            if len(calls) == 1:
+                raise OSError("directory not empty")
+            real_rmtree(path, *args, **kwargs)
+
+        with patch("voronoi.server.workspace.shutil.rmtree", side_effect=flaky), \
+             patch("voronoi.server.workspace.time.sleep"):
+            assert remove_tree_with_retry(target) is True
+
+        assert len(calls) == 2
+        assert not target.exists()
+
+    def test_retry_gives_up_and_reports_failure(self, tmp_path):
+        target = tmp_path / "swarm"
+        target.mkdir()
+
+        with patch("voronoi.server.workspace.shutil.rmtree", side_effect=OSError("busy")), \
+             patch("voronoi.server.workspace.time.sleep"):
+            assert remove_tree_with_retry(target) is False
+
+        assert target.exists()
+
+    def test_record_then_sweep_removes_and_clears_registry(self, tmp_path):
+        base = tmp_path / "base"
+        blocked = base / "active" / "inv-1-test-swarm"
+        blocked.mkdir(parents=True)
+
+        record_pending_cleanup(base, blocked)
+        assert read_pending_cleanup(base) == [str(blocked)]
+
+        removed, still_blocked = sweep_pending_cleanup(base)
+
+        assert removed == [str(blocked)]
+        assert still_blocked == []
+        assert not blocked.exists()
+        assert not (base / PENDING_CLEANUP_FILE).exists()
+
+    def test_sweep_keeps_blocked_entries_queued(self, tmp_path):
+        base = tmp_path / "base"
+        blocked = base / "active" / "inv-1-test-swarm"
+        blocked.mkdir(parents=True)
+        record_pending_cleanup(base, blocked)
+
+        with patch("voronoi.server.workspace.shutil.rmtree", side_effect=OSError("busy")), \
+             patch("voronoi.server.workspace.time.sleep"):
+            removed, still_blocked = sweep_pending_cleanup(base)
+
+        assert removed == []
+        assert still_blocked == [str(blocked)]
+        assert read_pending_cleanup(base) == [str(blocked)]
+
+    def test_record_refuses_paths_outside_active_root(self, tmp_path):
+        base = tmp_path / "base"
+        base.mkdir()
+        outside = tmp_path / "elsewhere"
+        outside.mkdir()
+
+        record_pending_cleanup(base, outside)
+
+        assert read_pending_cleanup(base) == []
+        assert outside.exists()
+
+    def test_sweep_drops_tampered_entries_outside_active_root(self, tmp_path):
+        """A doctored registry must not turn prune into arbitrary deletion."""
+        base = tmp_path / "base"
+        base.mkdir()
+        outside = tmp_path / "elsewhere"
+        outside.mkdir()
+        (base / PENDING_CLEANUP_FILE).write_text(json.dumps([str(outside)]))
+
+        removed, still_blocked = sweep_pending_cleanup(base)
+
+        assert removed == []
+        assert still_blocked == []
+        assert outside.exists()
 
 
 class TestEnsureBeads:

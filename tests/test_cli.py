@@ -30,7 +30,7 @@ def test_demo_run_uses_bootstrap_prompt_not_full_prompt(tmp_path, monkeypatch):
 
     captured_cmd = []
 
-    def fake_run(cmd, cwd=None):
+    def fake_run(cmd, cwd=None, **kwargs):
         captured_cmd.extend(cmd)
         return subprocess.CompletedProcess(cmd, 0)
 

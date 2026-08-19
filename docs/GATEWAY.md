@@ -805,6 +805,10 @@ Telegram API ↔ telegram-bridge.py ↔ CommandRouter (business logic)
 
 TCP socket on port derived from bot token hash. Prevents dual instances polling the same bot token.
 
+### Logging
+
+`resolve_log_dir()` picks the log directory as `VORONOI_LOG_DIR` → `VORONOI_BASE_DIR` → `~/.voronoi`. Falling through to `VORONOI_BASE_DIR` matters because `voronoi server start` exports it for the bridge subprocess: without it, a server started with `--base-dir` would still write `bridge.log` into the operator's home. The handler rotates at 3 × 5 MB.
+
 ### Command Handler (`/voronoi`)
 
 Parses `/voronoi <subcommand> [args]`, routes through `CommandRouter.route()`, adds contextual inline buttons to response.

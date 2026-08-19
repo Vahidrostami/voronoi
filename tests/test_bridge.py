@@ -119,10 +119,35 @@ class TestConfig:
         assert chat_file.read_text().strip() == "12345"
 
 
+class TestBridgeLogDir:
+    """Bridge logs must follow the server base dir, not always $HOME."""
+
+    def test_prefers_explicit_log_dir(self, tmp_path, monkeypatch):
+        module = _load_bridge_module()
+        monkeypatch.setenv("VORONOI_LOG_DIR", str(tmp_path / "explicit"))
+        monkeypatch.setenv("VORONOI_BASE_DIR", str(tmp_path / "base"))
+
+        assert module.resolve_log_dir() == tmp_path / "explicit"
+
+    def test_falls_back_to_base_dir(self, tmp_path, monkeypatch):
+        module = _load_bridge_module()
+        monkeypatch.delenv("VORONOI_LOG_DIR", raising=False)
+        monkeypatch.setenv("VORONOI_BASE_DIR", str(tmp_path / "base"))
+
+        assert module.resolve_log_dir() == tmp_path / "base"
+
+    def test_falls_back_to_home_when_unset(self, tmp_path, monkeypatch):
+        module = _load_bridge_module()
+        monkeypatch.delenv("VORONOI_LOG_DIR", raising=False)
+        monkeypatch.delenv("VORONOI_BASE_DIR", raising=False)
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        assert module.resolve_log_dir() == tmp_path / ".voronoi"
+
+
 class TestBridgeSupervision:
     def test_action_buttons_for_partial_review(self):
         module = _load_bridge_module()
-
         buttons = module._action_buttons_for_text(
             "🔬 *Synapse* is ready for partial review."
         )

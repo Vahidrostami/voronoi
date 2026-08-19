@@ -20,15 +20,15 @@
 | Mid-investigation Q&A, `/voronoi ask` | [GATEWAY.md](GATEWAY.md) | §8b (Ask Handler) | L568-L654 |
 | Report/manuscript/PDF generation | [GATEWAY.md](GATEWAY.md) | §9 (Report) | L655-L732 |
 | Telegram bridge, inline buttons, groups | [GATEWAY.md](GATEWAY.md) | §12 (Telegram Bridge) | L790-L860 |
-| Ops diagnostics via Telegram | [GATEWAY.md](GATEWAY.md) | §13 (Ops Commands) | L861-L903 |
+| Ops diagnostics via Telegram | [GATEWAY.md](GATEWAY.md) | §13 (Ops Commands) | L865-L907 |
 | Investigation queue, lifecycle | [SERVER.md](SERVER.md) | §2 (Queue) | L35-L188 |
 | Dispatcher, launching agents | [SERVER.md](SERVER.md) | §3 (Dispatcher — API + Lifecycle) | L377-L405 |
 | Progress monitoring, phase detection | [SERVER.md](SERVER.md) | §3 (Dispatcher — Progress Polling) | L406-L432, L522-L536 |
 | Agent restart, abort, recovery | [SERVER.md](SERVER.md) | §3 (Dispatcher — Completion/Recovery) | L580-L658 |
-| Orchestrator prompt building | [SERVER.md](SERVER.md) | §4 (Prompt) | L659-L766 |
-| Workspace provisioning, cloning | [SERVER.md](SERVER.md) | §5 (Workspace) | L767-L854 |
-| Docker sandbox isolation | [SERVER.md](SERVER.md) | §6 (Sandbox) | L855-L917 |
-| Server config, env vars | [SERVER.md](SERVER.md) | §7 (Config) | L918-L971 |
+| Orchestrator prompt building | [SERVER.md](SERVER.md) | §4 (Prompt) | L661-L768 |
+| Workspace provisioning, cloning | [SERVER.md](SERVER.md) | §5 (Workspace) | L769-L861 |
+| Docker sandbox isolation | [SERVER.md](SERVER.md) | §6 (Sandbox) | L862-L924 |
+| Server config, env vars | [SERVER.md](SERVER.md) | §7 (Config) | L925-L978 |
 | Rigor gates, which gates when | [SCIENCE.md](SCIENCE.md) | §2 (Gate Matrix) | L27-L49 |
 | Pre-registration, belief maps | [SCIENCE.md](SCIENCE.md) | §3-4 | L50-L179 |
 | Convergence detection | [SCIENCE.md](SCIENCE.md) | §5 | L180-L335 |
@@ -61,7 +61,7 @@
 | Run Manifest, structured deliverable | [MANIFEST.md](MANIFEST.md) | — | L1-L304 |
 | Run Manifest source-of-truth map, validation | [SCIENCE.md](SCIENCE.md) | §19 (Run Manifest) | L1021-L1065 |
 | `.swarm/run-manifest.json` format | [DATA-STRUCTURES.md](DATA-STRUCTURES.md) | §7 (run-manifest) | L1007-L1045 |
-| Deliberation mode | [GATEWAY.md](GATEWAY.md) | §14 (Deliberation) | L904-L941 |
+| Deliberation mode | [GATEWAY.md](GATEWAY.md) | §14 (Deliberation) | L908-L945 |
 | Iterative science, review/continue | [WORKFLOWS.md](WORKFLOWS.md) | §10 (Multi-Run Iteration) | L423-L506 |
 | Structured evaluator feedback | [SCIENCE.md](SCIENCE.md) | §5 (Convergence) | L180-L335 |
 | Hybrid BM25+keyword search | [GATEWAY.md](GATEWAY.md) | §6 (Knowledge) | L298-L369 |
@@ -124,13 +124,13 @@
 | `src/voronoi/server/dispatcher/_completion.py` | SERVER.md | §3 | L560-L594 | `test_dispatcher.py` |
 | `src/voronoi/server/tmux.py` | SERVER.md | §3 | L305-L344 | `test_dispatcher.py` |
 | `src/voronoi/server/snapshot.py` | SERVER.md | §3 | L242-L304 | `test_snapshot.py` |
-| `src/voronoi/server/prompt.py` | SERVER.md | §4 | L659-L766 | `test_unified_prompt.py`, `test_worker_prompt.py` |
-| `src/voronoi/server/workspace.py` | SERVER.md | §5 | L767-L854 | `test_workspace.py` |
-| `src/voronoi/server/sandbox.py` | SERVER.md | §6 | L855-L917 | `test_sandbox.py` |
-| `src/voronoi/server/runner.py` | SERVER.md | §7 | L918-L971 | `test_runner.py` |
+| `src/voronoi/server/prompt.py` | SERVER.md | §4 | L661-L768 | `test_unified_prompt.py`, `test_worker_prompt.py` |
+| `src/voronoi/server/workspace.py` | SERVER.md | §5 | L769-L861 | `test_workspace.py` |
+| `src/voronoi/server/sandbox.py` | SERVER.md | §6 | L862-L924 | `test_sandbox.py` |
+| `src/voronoi/server/runner.py` | SERVER.md | §7 | L925-L978 | `test_runner.py` |
 | `src/voronoi/server/events.py` | CONTEXT-MANAGEMENT.md | §10 | L269-L287 | `test_events.py` |
-| `src/voronoi/server/publisher.py` | SERVER.md | §8 | L972-L994 | `test_publisher.py` |
-| `src/voronoi/server/repo_url.py` | SERVER.md | §9 | L995-L1026 | `test_repo_url.py` |
+| `src/voronoi/server/publisher.py` | SERVER.md | §8 | L979-L1001 | `test_publisher.py` |
+| `src/voronoi/server/repo_url.py` | SERVER.md | §9 | L1002-L1033 | `test_repo_url.py` |
 | `src/voronoi/server/compact.py` | CONTEXT-MANAGEMENT.md | §12 | L379-L402 | `test_compact.py` |
 | `src/voronoi/server/provenance.py` | SCIENCE.md / DATA-STRUCTURES.md | §17 / §7 | L815-L925 / L1046-L1089 | `test_provenance.py` |
 | `src/voronoi/science/claims.py` | SCIENCE.md | §17 | L815-L925 | `test_claims.py` |

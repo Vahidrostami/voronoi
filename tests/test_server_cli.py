@@ -40,7 +40,8 @@ def test_server_status_before_init(tmp_path):
     result = subprocess.run(
         [sys.executable, "-m", "voronoi.cli", "server", "status"],
         capture_output=True, text=True,
-        env={**__import__("os").environ, "HOME": str(tmp_path)},
+        env={**os.environ, "HOME": str(tmp_path),
+             "VORONOI_BASE_DIR": str(tmp_path / ".voronoi")},
     )
     # Should fail with message about not initialized
     assert result.returncode != 0 or "not initialized" in result.stderr + result.stdout
@@ -75,6 +76,7 @@ def test_server_start_passes_temp_env_to_bridge(tmp_path, monkeypatch):
         return subprocess.CompletedProcess(cmd, 0)
 
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("VORONOI_BASE_DIR", str(base_dir))
     monkeypatch.setenv("VORONOI_TG_BOT_TOKEN", "test-token")
     monkeypatch.setattr(cli, "_find_bridge_script", lambda: bridge_script)
     monkeypatch.setattr(cli.shutil, "which", lambda cmd: None)
@@ -122,6 +124,7 @@ def test_server_prune_removes_terminal_workspace_and_swarm(tmp_path, monkeypatch
 
     monkeypatch.setenv("HOME", str(tmp_path))
     base_dir = tmp_path / ".voronoi"
+    monkeypatch.setenv("VORONOI_BASE_DIR", str(base_dir))
     active_dir = base_dir / "active"
     active_dir.mkdir(parents=True)
     (base_dir / "config.json").write_text(
@@ -169,6 +172,7 @@ def test_server_prune_preserves_workspace_reused_by_active_round(tmp_path, monke
 
     monkeypatch.setenv("HOME", str(tmp_path))
     base_dir = tmp_path / ".voronoi"
+    monkeypatch.setenv("VORONOI_BASE_DIR", str(base_dir))
     active_dir = base_dir / "active"
     active_dir.mkdir(parents=True)
     (base_dir / "config.json").write_text(
@@ -197,3 +201,51 @@ def test_server_prune_preserves_workspace_reused_by_active_round(tmp_path, monke
 
     assert parent_ws.exists()
     assert parent_swarm.exists()
+
+
+def test_server_prune_sweeps_deferred_cleanup(tmp_path, monkeypatch):
+    """Swarm dirs the dispatcher could not remove are retried by prune."""
+    from voronoi import cli
+    from voronoi.server.workspace import read_pending_cleanup, record_pending_cleanup
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    base_dir = tmp_path / ".voronoi"
+    monkeypatch.setenv("VORONOI_BASE_DIR", str(base_dir))
+    active_dir = base_dir / "active"
+    active_dir.mkdir(parents=True)
+    (base_dir / "config.json").write_text("{}")
+
+    blocked = active_dir / "inv-1-blocked-swarm"
+    (blocked / "agent-scout").mkdir(parents=True)
+    (active_dir / "inv-1-blocked").mkdir()
+    record_pending_cleanup(base_dir, blocked)
+
+    cli._server_prune(argparse.Namespace(force=True))
+
+    assert not blocked.exists()
+    assert read_pending_cleanup(base_dir) == []
+
+
+def test_server_daemon_log_is_rotated_at_cap(tmp_path):
+    """The daemon stdout capture must not grow without bound."""
+    from voronoi import cli
+
+    log_path = tmp_path / "telegram-bridge.log"
+    log_path.write_bytes(b"x" * (cli._DAEMON_LOG_MAX_BYTES + 1))
+
+    cli._rotate_daemon_log(log_path)
+
+    assert not log_path.exists()
+    assert (tmp_path / "telegram-bridge.log.1").exists()
+
+
+def test_server_daemon_log_kept_below_cap(tmp_path):
+    from voronoi import cli
+
+    log_path = tmp_path / "telegram-bridge.log"
+    log_path.write_bytes(b"x" * 10)
+
+    cli._rotate_daemon_log(log_path)
+
+    assert log_path.exists()
+    assert not (tmp_path / "telegram-bridge.log.1").exists()

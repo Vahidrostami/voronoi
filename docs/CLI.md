@@ -156,7 +156,7 @@ Beads is **not** initialized at the server level — each investigation workspac
 4. Starts Telegram bridge (`telegram-bridge.py`) if token present
 5. Starts dispatcher loop (10s poll interval)
 
-By default this runs in the foreground. Use `voronoi server start --daemon` on remote hosts or SSH sessions to detach the bridge and write logs to `<base-dir>/logs/telegram-bridge.log` (default `~/.voronoi/logs/telegram-bridge.log`).
+By default this runs in the foreground. Use `voronoi server start --daemon` on remote hosts or SSH sessions to detach the bridge and write logs to `<base-dir>/logs/telegram-bridge.log` (default `~/.voronoi/logs/telegram-bridge.log`). That capture file is rolled to `telegram-bridge.log.1` once it reaches 5 MB, so daemon mode cannot grow an unbounded log. The bridge's own rotating log (`<base-dir>/bridge.log`) is separate and capped at 15 MB.
 
 The bridge now auto-restarts after unexpected transient polling failures with exponential backoff. Fatal configuration errors such as invalid bot tokens still fail fast.
 
@@ -178,9 +178,10 @@ Cleans up:
 - Completed investigations older than `workspace_retention_days`
 - Their sibling `*-swarm/` worktree directories
 - Orphaned `*-swarm/` directories whose main workspace has already gone away
+- Paths queued in `<base-dir>/.pending-cleanup.json` by a dispatcher run that could not remove them
 - Stale tmux sessions
 
-`--force` is required before anything is removed. Running, queued, paused, and review-state investigations are preserved; prune only removes terminal investigations (`complete`, `failed`, or `cancelled`) past the retention window. If cleanup is blocked by live `bd`, MCP, or agent processes, prune reports the likely locking PIDs instead of silently leaving the directory behind.
+`--force` is required before anything is removed. Running, queued, paused, and review-state investigations are preserved; prune only removes terminal investigations (`complete`, `failed`, or `cancelled`) past the retention window. If cleanup is blocked by live `bd`, MCP, or agent processes, prune reports the likely locking PIDs instead of silently leaving the directory behind, and re-queues the path so the next prune retries it.
 
 ### `voronoi server config`
 

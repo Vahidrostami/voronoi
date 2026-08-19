@@ -573,9 +573,11 @@ The dispatcher syncs `criteria_status` from the orchestrator checkpoint into `su
 6. **Federated knowledge sync**: Sync findings to `<base-dir>/knowledge.db` for cross-investigation search
 7. Try GitHub publish if `gh` CLI available
 8. Clean up agent worktrees — prune git worktrees, remove worktree directories, remove the `-swarm/` directory
-    - If removal is blocked, cleanup logs likely live lock holders using `lsof` (for example lingering `bd`, MCP, or agent processes) and leaves the main workspace intact for operator follow-up.
+    - Steps 8-10 run on **every** terminal path, success and failure alike. A failed run leaks worktrees, the secrets env file, and tmp scratch otherwise.
+    - Removal retries before giving up: on NFS-backed homes an open file becomes a `.nfs*` silly-rename entry, so the first `rmtree` fails with `ENOTEMPTY` even while the holder is exiting.
+    - If removal is still blocked, cleanup logs likely live lock holders using `lsof` (for example lingering `bd`, MCP, or agent processes), records the path in `<base-dir>/.pending-cleanup.json`, and leaves the main workspace intact for operator follow-up. `voronoi server prune` retries every queued path.
 9. Remove the per-session secrets env file (sibling of the workspace at `<base_dir>/active/.tmux-env-<session>`, outside the git repo — see INV-31). Also unlink any legacy `.swarm/.tmux-env` left over from prior dispatcher versions.
-10. Clean `<base-dir>/tmp` if no other investigations are running
+10. Clean `<base-dir>/tmp` if no other investigations are running. The directory is recreated and re-listed afterwards: leftover entries are reported as a warning rather than logged as a successful clean.
 
 ### Agent Restart
 
@@ -777,6 +779,7 @@ Provisions investigation workspaces with auto-cloning, git worktrees, and framew
 ├── objects/                    # Bare git repos (shared object store)
 │   └── owner--repo.git        # --reference for deduplication
 ├── tmp/                        # Dedicated temp root for bridge + agent subprocesses
+├── .pending-cleanup.json       # Paths that resisted removal; retried by `server prune`
 └── active/                    # Active investigation workspaces
     └── inv-{id}-{slug}/       # One per investigation
         ├── .github/           # Agent roles, skills, instructions, hooks
@@ -785,6 +788,10 @@ Provisions investigation workspaces with auto-cloning, git worktrees, and framew
         ├── data/raw/          # Experimental data
         └── PROMPT.md          # Investigation brief
 ```
+
+### Deferred Cleanup
+
+`remove_tree_with_retry()` is the single removal primitive for workspaces and swarm directories. When it exhausts its retries, `record_pending_cleanup()` appends the path to `<base-dir>/.pending-cleanup.json` and `sweep_pending_cleanup()` retries it on the next `voronoi server prune`. Both functions refuse any path outside `<base-dir>/active/`, so a tampered registry cannot turn prune into arbitrary deletion.
 
 ### WorkspaceInfo
 

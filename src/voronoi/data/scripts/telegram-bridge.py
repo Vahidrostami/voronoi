@@ -683,6 +683,15 @@ def run_bot_forever(config: dict, restart_delay: int = 5, max_delay: int = 60) -
 # Main
 # ---------------------------------------------------------------------------
 
+def resolve_log_dir() -> Path:
+    """Resolve the bridge log directory, honouring the server base dir."""
+    return Path(
+        os.environ.get("VORONOI_LOG_DIR")
+        or os.environ.get("VORONOI_BASE_DIR")
+        or Path.home() / ".voronoi"
+    ).expanduser()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Voronoi ↔ Telegram bridge")
     parser.add_argument("--config", default=".swarm-config.json", help="Path to .swarm-config.json")
@@ -698,7 +707,7 @@ def main() -> None:
     console.setFormatter(log_fmt)
 
     # Rotating file handler: 3 × 5 MB = 15 MB max on disk
-    log_dir = Path(os.environ.get("VORONOI_LOG_DIR", Path.home() / ".voronoi"))
+    log_dir = resolve_log_dir()
     log_dir.mkdir(parents=True, exist_ok=True)
     file_handler = logging.handlers.RotatingFileHandler(
         log_dir / "bridge.log",

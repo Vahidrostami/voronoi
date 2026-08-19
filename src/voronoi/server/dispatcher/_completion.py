@@ -437,6 +437,9 @@ class _CompletionMixin:
                 max_retries=self.config.max_retries,
             )
             self.send_message(msg)
+            # Failed runs leak worktrees, the secrets env file and tmp
+            # scratch unless cleanup runs here too.
+            self._cleanup_worktrees(run)
             return
 
         logger.info("Voronoi %s (#%d) complete: %d/%d tasks in %.1fmin",
@@ -561,29 +564,18 @@ class _CompletionMixin:
             except OSError:
                 pass
 
-            # 3. Remove the swarm directory if empty or only has stale content
-            try:
-                remaining = list(swarm_dir.iterdir())
-                if not remaining:
-                    swarm_dir.rmdir()
-                else:
-                    # Force remove — worktrees are expendable after completion
-                    shutil.rmtree(swarm_dir)
-            except OSError:
-                from voronoi.server.workspace import describe_live_file_holders
-                holders = describe_live_file_holders([swarm_dir])
-                if holders:
-                    logger.warning(
-                        "Could not remove %s; live processes hold files: %s",
-                        swarm_dir, ", ".join(holders[:8]),
-                    )
-                else:
-                    logger.warning(
-                        "Could not remove %s; it may contain open NFS lock files",
-                        swarm_dir,
-                    )
-
-            logger.info("Cleaned up worktrees for %s", run.label)
+            # 3. Remove the swarm directory — worktrees are expendable now
+            from voronoi.server.workspace import (
+                describe_removal_blocker,
+                record_pending_cleanup,
+                remove_tree_with_retry,
+            )
+            if remove_tree_with_retry(swarm_dir):
+                logger.info("Cleaned up worktrees for %s", run.label)
+            else:
+                logger.warning("%s — queued for prune",
+                               describe_removal_blocker(swarm_dir))
+                record_pending_cleanup(self.config.base_dir, swarm_dir)
 
         # 4. Clean secrets env file (sibling of workspace, outside the git
         # repo — see tmux.py / INV-31).  The shell also ``rm -f``s it
@@ -611,14 +603,30 @@ class _CompletionMixin:
             len(self.running) == 1
             and run.investigation_id in self.running
         ):
-            tmp_dir = self.config.base_dir / "tmp"
-            if tmp_dir.exists():
-                try:
-                    shutil.rmtree(tmp_dir, ignore_errors=True)
-                    tmp_dir.mkdir(exist_ok=True)
-                    logger.info("Cleaned tmp directory")
-                except OSError:
-                    pass
+            self._clean_shared_tmp()
+
+    def _clean_shared_tmp(self) -> None:
+        """Wipe the shared temp root, reporting leftovers instead of hiding them."""
+        tmp_dir = self.config.base_dir / "tmp"
+        if not tmp_dir.exists():
+            return
+        try:
+            shutil.rmtree(tmp_dir)
+        except OSError:
+            pass
+        try:
+            tmp_dir.mkdir(parents=True, exist_ok=True)
+            leftovers = list(tmp_dir.iterdir())
+        except OSError as exc:
+            logger.warning("Could not reset tmp directory %s: %s", tmp_dir, exc)
+            return
+        if leftovers:
+            logger.warning(
+                "tmp directory %s not fully cleaned — %d entries remain",
+                tmp_dir, len(leftovers),
+            )
+        else:
+            logger.info("Cleaned tmp directory")
 
     def _try_publish(self, run: RunningInvestigation) -> None:
         try:
