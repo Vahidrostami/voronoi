@@ -797,6 +797,14 @@ class InvestigationQueue:
             error=row["error"],
         )
 
+    def clear_workspace_path(self, investigation_id: int) -> None:
+        """Detach a pruned workspace so it stops resurfacing in future prune runs."""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE investigations SET workspace_path=NULL WHERE id=?",
+                (investigation_id,),
+            )
+
     def set_demo_source(self, investigation_id: int, demo_name: str, demo_path: str) -> None:
         """Store the demo origin so the dispatcher can copy demo files."""
         value = f"{demo_name}:{demo_path}"
