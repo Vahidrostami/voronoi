@@ -1,6 +1,7 @@
 """Tests for voronoi.server.workspace — Workspace Manager."""
 
 from contextlib import contextmanager
+import shutil
 import subprocess
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -277,3 +278,55 @@ class TestEnsureBeads:
             wm._ensure_beads(ws)
 
         mock_run.assert_not_called()
+
+
+class TestFrameworkFilesReachWorkers:
+    """Regression: spawn-agent.sh branches worker worktrees off the default
+    branch, and a worktree materializes committed tree state only.  If the
+    framework payload stays untracked, every worker starts without skills,
+    role definitions, scripts/ or CLAUDE.md.
+    """
+
+    @pytest.fixture
+    def workspace(self, wm):
+        with patch.object(WorkspaceManager, "_voronoi_init"):
+            info = wm.provision_lab(1, "skills", "question")
+        return Path(info.path)
+
+    def test_worktree_contains_framework(self, wm, workspace, tmp_path, monkeypatch):
+        real_run = subprocess.run
+
+        def without_voronoi_cli(cmd, *args, **kwargs):
+            if isinstance(cmd, (list, tuple)) and cmd and cmd[0] == "voronoi":
+                raise FileNotFoundError("voronoi")
+            return real_run(cmd, *args, **kwargs)
+
+        monkeypatch.setattr("voronoi.server.workspace.subprocess.run", without_voronoi_cli)
+
+        with patch.object(WorkspaceManager, "_ensure_beads"):
+            wm._voronoi_init(workspace)
+
+        worktree = tmp_path / "swarm" / "agent-scout"
+        result = real_run(
+            ["git", "worktree", "add", str(worktree), "-b", "agent-scout", "main"],
+            cwd=str(workspace), capture_output=True, text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert (worktree / ".github" / "skills" / "investigation-protocol" / "SKILL.md").is_file()
+        assert (worktree / ".github" / "agents").is_dir()
+        assert (worktree / ".github" / "hooks").is_dir()
+        assert (worktree / "scripts" / "spawn-agent.sh").is_file()
+        assert (worktree / "CLAUDE.md").is_file()
+
+    def test_ensure_github_files_restores_missing_subdir(self, wm, workspace):
+        wm._ensure_github_files(workspace)
+        skills = workspace / ".github" / "skills"
+        assert skills.is_dir()
+
+        # agents/ survives but skills/ is gone — the repair must not be gated
+        # on agents/ being absent.
+        shutil.rmtree(skills)
+        wm._ensure_github_files(workspace)
+
+        assert (skills / "investigation-protocol" / "SKILL.md").is_file()
+        assert (workspace / ".github" / "agents").is_dir()

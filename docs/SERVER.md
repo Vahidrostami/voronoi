@@ -826,6 +826,7 @@ class WorkspaceManager:
 1. Clone with `--reference` to bare repo in `objects/` (deduplication)
 2. Run `voronoi init` to scaffold `.github/`
 3. Fallback: copy `.github/` files even if `voronoi init` fails
+4. Commit the framework payload onto the default branch (see below)
 
 **Lab-type** (`provision_lab`):
 1. Create fresh directory
@@ -833,6 +834,15 @@ class WorkspaceManager:
 3. Write `PROMPT.md` with user question
 4. Run `voronoi init`
 5. Initialize Beads in **server mode** (`bd init --quiet --server`) so the dispatcher can query tasks concurrently while the agent's MCP server holds the database open. A Beads CLI without `--server` support is not a supported server-workspace dependency; provisioning fails with an upgrade message instead of launching an investigation with embedded-mode locks.
+6. Commit the framework payload onto the default branch (see below)
+
+### Framework Commit (INV-61)
+
+Steps 2-5 leave `.github/`, `scripts/`, `CLAUDE.md` and `AGENTS.md` **untracked**. `spawn-agent.sh` creates worker worktrees with `git worktree add <path> -b <branch> <default-branch>`, which materializes committed tree state only — so untracked framework files never reach a worker.
+
+`_voronoi_init()` therefore ends by calling `voronoi.utils.commit_framework_files(workspace_path)`, a path-limited commit that leaves unrelated staged or dirty work untouched. `_warn_if_framework_uncommitted()` then logs a WARNING if `.github/skills` is still absent from the index. The same call covers continuation rounds, where `server/dispatcher/_launch.py` re-runs `_voronoi_init()` to refresh templates.
+
+`_ensure_github_files()` restores each `.github/` subdirectory (`agents`, `prompts`, `skills`, `instructions`, `hooks`) independently — a present `agents/` must not mask a deleted `skills/`.
 
 ### Workspace Naming Convention
 

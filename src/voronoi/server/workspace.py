@@ -21,7 +21,7 @@ from typing import Optional, Sequence
 logger = logging.getLogger("voronoi.workspace")
 
 from voronoi.server.repo_url import RepoRef
-from voronoi.utils import git_init_main
+from voronoi.utils import commit_framework_files, git_init_main
 
 
 BEADS_SERVER_MODE_HINT = (
@@ -354,6 +354,35 @@ class WorkspaceManager:
         # which has the correct nuanced git discipline.
         self._restore_agents_md(workspace_path)
 
+        # Commit the framework payload.  spawn-agent.sh branches worker
+        # worktrees off the default branch, and a worktree only materializes
+        # committed tree state — untracked .github/, scripts/ and CLAUDE.md
+        # would never reach a worker.
+        commit_framework_files(workspace_path)
+        self._warn_if_framework_uncommitted(workspace_path)
+
+    def _warn_if_framework_uncommitted(self, workspace_path: Path) -> None:
+        """Warn if agent skills are absent from HEAD's tree.
+
+        Checks HEAD rather than the index: ``commit_framework_files`` always
+        stages before committing, so an index check would stay green even when
+        the commit itself failed.
+        """
+        try:
+            result = subprocess.run(
+                ["git", "ls-tree", "--name-only", "HEAD", "--", ".github/skills"],
+                cwd=str(workspace_path),
+                capture_output=True, text=True, timeout=30,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            return
+        if result.returncode != 0 or not result.stdout.strip():
+            logger.warning(
+                "%s: .github/skills is not committed — worker worktrees will start "
+                "without skills, role definitions or CLAUDE.md",
+                workspace_path,
+            )
+
     def _restore_agents_md(self, workspace_path: Path) -> None:
         """Overwrite AGENTS.md with the Voronoi template after bd init.
 
@@ -409,20 +438,20 @@ class WorkspaceManager:
 
             data = find_data_dir()
 
-            # Copy agents/prompts/skills/instructions/hooks into workspace's .github/ if missing
+            # Restore each missing .github/ subdir independently — a present
+            # agents/ must not mask a deleted skills/ or hooks/.
             github_dst = workspace_path / ".github"
-            if not (github_dst / "agents").is_dir():
-                github_dst.mkdir(exist_ok=True)
-                for subdir in ("agents", "prompts", "skills", "instructions", "hooks"):
-                    src = data / subdir
-                    dst = github_dst / subdir
-                    if src.is_dir() and not dst.is_dir():
-                        shutil.copytree(src, dst)
-                # Make hook scripts executable
-                hooks_dst = github_dst / "hooks"
-                if hooks_dst.is_dir():
-                    for sh in hooks_dst.rglob("*.sh"):
-                        sh.chmod(sh.stat().st_mode | 0o755)
+            github_dst.mkdir(exist_ok=True)
+            for subdir in ("agents", "prompts", "skills", "instructions", "hooks"):
+                src = data / subdir
+                dst = github_dst / subdir
+                if src.is_dir() and not dst.is_dir():
+                    shutil.copytree(src, dst)
+            # Make hook scripts executable
+            hooks_dst = github_dst / "hooks"
+            if hooks_dst.is_dir():
+                for sh in hooks_dst.rglob("*.sh"):
+                    sh.chmod(sh.stat().st_mode | 0o755)
 
             # Copy runtime scripts if missing
             scripts_dst = workspace_path / "scripts"

@@ -68,6 +68,7 @@ AGENTS.md             # Compatibility alias
 5. Copies `.env.example`
 6. Initializes git repo if not already initialized
 7. Runs `swarm-init.sh`, which initializes Beads with `bd init --quiet --server`; if the installed `bd` CLI does not support server mode, the command prints an upgrade warning because worker and dispatcher processes must share one `.beads/` store
+8. Commits `.github/`, `scripts/`, `CLAUDE.md` and `AGENTS.md` (INV-61). Agent worktrees are created off the default branch and materialize committed state only, so an untracked framework payload would never reach a worker. The commit is path-limited, so unrelated staged or dirty work is preserved, and is skipped when nothing changed.
 
 ### User-Owned Files
 

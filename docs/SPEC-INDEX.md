@@ -26,9 +26,9 @@
 | Progress monitoring, phase detection | [SERVER.md](SERVER.md) | §3 (Dispatcher — Progress Polling) | L406-L432, L522-L536 |
 | Agent restart, abort, recovery | [SERVER.md](SERVER.md) | §3 (Dispatcher — Completion/Recovery) | L580-L658 |
 | Orchestrator prompt building | [SERVER.md](SERVER.md) | §4 (Prompt) | L659-L766 |
-| Workspace provisioning, cloning | [SERVER.md](SERVER.md) | §5 (Workspace) | L767-L844 |
-| Docker sandbox isolation | [SERVER.md](SERVER.md) | §6 (Sandbox) | L845-L907 |
-| Server config, env vars | [SERVER.md](SERVER.md) | §7 (Config) | L908-L961 |
+| Workspace provisioning, cloning | [SERVER.md](SERVER.md) | §5 (Workspace) | L767-L854 |
+| Docker sandbox isolation | [SERVER.md](SERVER.md) | §6 (Sandbox) | L855-L917 |
+| Server config, env vars | [SERVER.md](SERVER.md) | §7 (Config) | L918-L971 |
 | Rigor gates, which gates when | [SCIENCE.md](SCIENCE.md) | §2 (Gate Matrix) | L27-L49 |
 | Pre-registration, belief maps | [SCIENCE.md](SCIENCE.md) | §3-4 | L50-L179 |
 | Convergence detection | [SCIENCE.md](SCIENCE.md) | §5 | L180-L335 |
@@ -49,7 +49,7 @@
 | Targeted Beads queries | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §5 | L148-L168 |
 | Code-assembled worker prompts | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §6 | L169-L219 |
 | Per-agent context budget | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §3 | L32-L72 |
-| System rules, code review | [INVARIANTS.md](INVARIANTS.md) | All (63 invariants) | L1-L272 |
+| System rules, code review | [INVARIANTS.md](INVARIANTS.md) | All (64 invariants) | L1-L279 |
 | Worker self-verification protocol | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §8 | L229-L251 |
 | Token budget tracking | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §9 | L252-L268 |
 | Structured event log | [CONTEXT-MANAGEMENT.md](CONTEXT-MANAGEMENT.md) | §10 | L269-L287 |
@@ -125,12 +125,12 @@
 | `src/voronoi/server/tmux.py` | SERVER.md | §3 | L305-L344 | `test_dispatcher.py` |
 | `src/voronoi/server/snapshot.py` | SERVER.md | §3 | L242-L304 | `test_snapshot.py` |
 | `src/voronoi/server/prompt.py` | SERVER.md | §4 | L659-L766 | `test_unified_prompt.py`, `test_worker_prompt.py` |
-| `src/voronoi/server/workspace.py` | SERVER.md | §5 | L767-L844 | `test_workspace.py` |
-| `src/voronoi/server/sandbox.py` | SERVER.md | §6 | L845-L907 | `test_sandbox.py` |
-| `src/voronoi/server/runner.py` | SERVER.md | §7 | L908-L961 | `test_runner.py` |
+| `src/voronoi/server/workspace.py` | SERVER.md | §5 | L767-L854 | `test_workspace.py` |
+| `src/voronoi/server/sandbox.py` | SERVER.md | §6 | L855-L917 | `test_sandbox.py` |
+| `src/voronoi/server/runner.py` | SERVER.md | §7 | L918-L971 | `test_runner.py` |
 | `src/voronoi/server/events.py` | CONTEXT-MANAGEMENT.md | §10 | L269-L287 | `test_events.py` |
-| `src/voronoi/server/publisher.py` | SERVER.md | §8 | L962-L984 | `test_publisher.py` |
-| `src/voronoi/server/repo_url.py` | SERVER.md | §9 | L985-L1016 | `test_repo_url.py` |
+| `src/voronoi/server/publisher.py` | SERVER.md | §8 | L972-L994 | `test_publisher.py` |
+| `src/voronoi/server/repo_url.py` | SERVER.md | §9 | L995-L1026 | `test_repo_url.py` |
 | `src/voronoi/server/compact.py` | CONTEXT-MANAGEMENT.md | §12 | L379-L402 | `test_compact.py` |
 | `src/voronoi/server/provenance.py` | SCIENCE.md / DATA-STRUCTURES.md | §17 / §7 | L815-L925 / L1046-L1089 | `test_provenance.py` |
 | `src/voronoi/science/claims.py` | SCIENCE.md | §17 | L815-L925 | `test_claims.py` |

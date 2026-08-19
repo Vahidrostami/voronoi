@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 
 from voronoi import __version__
-from voronoi.utils import git_init_main
+from voronoi.utils import commit_framework_files, git_init_main
 
 # Framework files to copy into user projects
 FRAMEWORK_DIRS = ["scripts"]
@@ -251,6 +251,10 @@ def cmd_init(args: argparse.Namespace) -> None:
     if agents_src.is_file():
         shutil.copy2(agents_src, agents_dst)
 
+    # Agent worktrees check out committed state only — leave nothing untracked.
+    if commit_framework_files(target):
+        print("  ✓ framework files committed (required for agent worktrees)")
+
     print("\nDone! Next steps:")
     print("  voronoi demo list            # see available demos")
     print("  voronoi demo run <name>      # run a demo")
@@ -296,11 +300,15 @@ def cmd_upgrade(args: argparse.Namespace) -> None:
     for filename in TEMPLATE_FILES:
         src = templates_dir / filename
         dst = target / filename
-        if not dst.exists() and src.is_file():
+        if src.is_file() and not (dst.exists() and filename in USER_OWNED):
             shutil.copy2(src, dst)
             print(f"  ✓ {filename} (created)")
         else:
             print(f"  ⊘ {filename} (kept your version)")
+
+    # Refreshed files are worthless to workers until they are committed (INV-61).
+    if commit_framework_files(target):
+        print("  ✓ framework files committed (required for agent worktrees)")
 
     print("\nUpgrade complete.")
 
@@ -379,6 +387,10 @@ def cmd_demo(args: argparse.Namespace) -> None:
             dst = demos_root_dst / fname
             if src.is_file() and not dst.exists():
                 shutil.copy2(src, dst)
+
+        # Workers run in worktrees off the default branch and only see
+        # committed state, so the demo must be committed before launch (INV-61).
+        commit_framework_files(target)
 
         prompt_path = f"demos/{name}/PROMPT.md"
 

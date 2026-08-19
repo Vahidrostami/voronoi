@@ -10,7 +10,8 @@ from pathlib import Path
 import pytest
 
 from voronoi import __version__
-from voronoi.cli import find_data_dir
+from voronoi.cli import FRAMEWORK_DIRS, TEMPLATE_FILES, find_data_dir
+from voronoi.utils import FRAMEWORK_PATHS
 
 
 def test_demo_run_uses_bootstrap_prompt_not_full_prompt(tmp_path, monkeypatch):
@@ -147,6 +148,49 @@ def test_init_creates_files():
             text=True,
         )
         assert branch.stdout.strip() == "main"
+
+        # INV-61: worker worktrees only materialize committed state.
+        tracked = subprocess.run(
+            ["git", "ls-tree", "-r", "--name-only", "HEAD"],
+            cwd=tmpdir,
+            capture_output=True,
+            text=True,
+        ).stdout
+        assert ".github/skills/investigation-protocol/SKILL.md" in tracked
+        assert ".github/agents/critic.agent.md" in tracked
+        assert "scripts/spawn-agent.sh" in tracked
+        assert "CLAUDE.md" in tracked
+
+
+def test_framework_paths_cover_scaffolded_content():
+    """INV-61: anything voronoi scaffolds must be inside the committed payload."""
+    for dirname in FRAMEWORK_DIRS:
+        assert dirname in FRAMEWORK_PATHS, f"{dirname} is scaffolded but never committed"
+    for filename in TEMPLATE_FILES:
+        assert filename in FRAMEWORK_PATHS, f"{filename} is scaffolded but never committed"
+    assert ".github" in FRAMEWORK_PATHS
+
+
+def test_upgrade_commits_refreshed_framework():
+    """INV-61: upgrade rewrites the payload, so it must re-commit it."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        subprocess.run(
+            [sys.executable, "-m", "voronoi.cli", "init"],
+            cwd=tmpdir, capture_output=True, text=True,
+        )
+        skill = Path(tmpdir) / ".github" / "skills" / "investigation-protocol" / "SKILL.md"
+        skill.write_text("# stale local edit")
+        subprocess.run(
+            [sys.executable, "-m", "voronoi.cli", "upgrade"],
+            cwd=tmpdir, capture_output=True, text=True,
+        )
+
+        committed = subprocess.run(
+            ["git", "show", "HEAD:.github/skills/investigation-protocol/SKILL.md"],
+            cwd=tmpdir, capture_output=True, text=True,
+        )
+        assert committed.returncode == 0
+        assert "stale local edit" not in committed.stdout
 
 
 def test_init_blocks_inside_source_repo():

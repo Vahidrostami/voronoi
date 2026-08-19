@@ -35,6 +35,7 @@ from voronoi.server.tmux import (
     cleanup_tmux,
     EFFORT_BY_RIGOR,
 )
+from voronoi.utils import commit_framework_files
 
 logger = logging.getLogger("voronoi.dispatcher")
 
@@ -407,5 +408,8 @@ class _LaunchMixin:
         if demo_dst.exists():
             shutil.rmtree(demo_dst)
         shutil.copytree(demo_src, demo_dst)
+        # Demo files land after provisioning committed the framework, so they
+        # need their own commit to reach worker worktrees (INV-61).
+        commit_framework_files(workspace_path)
         logger.info("Copied demo files from %s to %s", demo_src, demo_dst)
 

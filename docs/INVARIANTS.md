@@ -2,7 +2,7 @@
 
 > Rules that MUST never be violated. Reference during code review, debugging, and development.
 
-This document lists 63 invariants. Key ones: prompt.py is sole prompt builder (INV-01). Roles only in `src/voronoi/data/agents/*.agent.md` (copied to `.github/agents/` in investigation workspaces) (INV-02). Orchestrator never enters worktrees (INV-03). Atomic queue claiming (INV-06). Rigor only escalates (INV-08). Baseline-first (INV-09). EVA before finding (INV-12). No simulation bypass (INV-16). Push before session end (INV-25). Plan review before dispatch at Analytical+ (INV-35b). Experiment contract before workers (INV-39). Sentinel audit cannot be bypassed (INV-40). Missing contract warning (INV-41). Tribunal clear before convergence (INV-42). Directional verification on findings (INV-43). Every completion writes a run manifest (INV-44). Paper-track citation integrity (INV-45). Hypothesis-tranche parallelism (INV-46). Red Team verdict before Scientific+ convergence (INV-47). Lab-KG priors preserve provenance and durability (INV-53). PROVE question immutability is protected by confirmation/framing gates AND structurally enforced by the locked-claim fidelity gate (INV-54). Title laundering rejected at create-time (INV-55). PRODUCES required and namespaced for experiment-type tasks (INV-56). FINDING linkage required to close experiment tasks (INV-57). Graph-health audit per OODA cycle (INV-58). Locked-claim fidelity at merge (INV-59). Claims are propositions, not tasks (INV-60).
+This document lists 64 invariants. Key ones: prompt.py is sole prompt builder (INV-01). Roles only in `src/voronoi/data/agents/*.agent.md` (copied to `.github/agents/` in investigation workspaces) (INV-02). Orchestrator never enters worktrees (INV-03). Atomic queue claiming (INV-06). Rigor only escalates (INV-08). Baseline-first (INV-09). EVA before finding (INV-12). No simulation bypass (INV-16). Push before session end (INV-25). Plan review before dispatch at Analytical+ (INV-35b). Experiment contract before workers (INV-39). Sentinel audit cannot be bypassed (INV-40). Missing contract warning (INV-41). Tribunal clear before convergence (INV-42). Directional verification on findings (INV-43). Every completion writes a run manifest (INV-44). Paper-track citation integrity (INV-45). Hypothesis-tranche parallelism (INV-46). Red Team verdict before Scientific+ convergence (INV-47). Lab-KG priors preserve provenance and durability (INV-53). PROVE question immutability is protected by confirmation/framing gates AND structurally enforced by the locked-claim fidelity gate (INV-54). Title laundering rejected at create-time (INV-55). PRODUCES required and namespaced for experiment-type tasks (INV-56). FINDING linkage required to close experiment tasks (INV-57). Graph-health audit per OODA cycle (INV-58). Locked-claim fidelity at merge (INV-59). Claims are propositions, not tasks (INV-60). Framework payload committed before worktrees branch (INV-61).
 
 ## 1. Architectural Invariants
 
@@ -126,6 +126,13 @@ If a remote named `origin` exists, work MUST be pushed before ending a session. 
 
 ### INV-26: Worktree Isolation
 Each worker agent operates in its own git worktree. Workers MUST NOT modify files in other worktrees or in the main workspace.
+
+### INV-61: Framework Payload Committed Before Worktrees Branch
+`spawn-agent.sh` creates worker worktrees with `git worktree add <path> -b <branch> <default-branch>`, and a worktree materializes **committed tree state only** — untracked files in the main workspace never reach a worker. Therefore the framework payload (`.github/`, `scripts/`, `CLAUDE.md`, `AGENTS.md`) MUST be committed onto the workspace's default branch during provisioning, before any worker can be dispatched.
+
+Enforced by `voronoi.utils.commit_framework_files()`, called at the end of `WorkspaceManager._voronoi_init()` (covering fresh lab/repo provisioning *and* the continuation refresh in `server/dispatcher/_launch.py`) and at the end of `cli.cmd_init()`. The commit is path-limited so unrelated staged or dirty work in the workspace is preserved. `_warn_if_framework_uncommitted()` logs a WARNING if `.github/skills` is still untracked afterwards.
+
+Violating this invariant is silent: workers start, read their prompt's `Skills to Read` list, find nothing, and proceed without skills, role definitions (INV-02) or the runtime constitution — producing degraded science with no error.
 
 ---
 

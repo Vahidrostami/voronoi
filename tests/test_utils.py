@@ -1,8 +1,18 @@
 """Tests for voronoi.utils — shared field extraction, title cleaning, note parsing."""
 
+import subprocess
+
 import pytest
 
-from voronoi.utils import clean_finding_title, extract_field, find_checkpoint, is_finding_title, parse_finding_notes
+from voronoi.utils import (
+    clean_finding_title,
+    commit_framework_files,
+    extract_field,
+    find_checkpoint,
+    git_init_main,
+    is_finding_title,
+    parse_finding_notes,
+)
 
 
 class TestIsFindingTitle:
@@ -139,3 +149,72 @@ class TestFindCheckpoint:
     def test_no_checkpoint(self, tmp_path):
         (tmp_path / ".swarm").mkdir()
         assert find_checkpoint(tmp_path) is None
+
+
+def _git(repo, *args):
+    return subprocess.run(
+        ["git", *args], cwd=str(repo), capture_output=True, text=True, check=False,
+    )
+
+
+@pytest.fixture
+def repo(tmp_path):
+    git_init_main(tmp_path)
+    _git(tmp_path, "config", "user.email", "test@voronoi.local")
+    _git(tmp_path, "config", "user.name", "Voronoi Test")
+    _git(tmp_path, "commit", "--allow-empty", "-m", "initial")
+    return tmp_path
+
+
+class TestCommitFrameworkFiles:
+    """Worker worktrees materialize committed state only — the framework payload
+    must be tracked before spawn-agent.sh branches off the default branch."""
+
+    def _scaffold(self, repo):
+        (repo / ".github" / "skills" / "evidence-system").mkdir(parents=True)
+        (repo / ".github" / "skills" / "evidence-system" / "SKILL.md").write_text("# skill")
+        (repo / ".github" / "agents").mkdir()
+        (repo / ".github" / "agents" / "critic.agent.md").write_text("# critic")
+        (repo / "scripts").mkdir()
+        (repo / "scripts" / "spawn-agent.sh").write_text("#!/bin/bash\n")
+        (repo / "CLAUDE.md").write_text("# constitution")
+        (repo / "AGENTS.md").write_text("# alias")
+
+    def test_tracks_framework_payload(self, repo):
+        self._scaffold(repo)
+        assert commit_framework_files(repo) is True
+
+        tracked = _git(repo, "ls-files").stdout
+        assert ".github/skills/evidence-system/SKILL.md" in tracked
+        assert ".github/agents/critic.agent.md" in tracked
+        assert "scripts/spawn-agent.sh" in tracked
+        assert "CLAUDE.md" in tracked
+        assert "AGENTS.md" in tracked
+
+    def test_worktree_receives_skills(self, repo, tmp_path):
+        self._scaffold(repo)
+        commit_framework_files(repo)
+
+        worktree = tmp_path / "swarm" / "agent-scout"
+        result = _git(repo, "worktree", "add", str(worktree), "-b", "agent-scout", "main")
+        assert result.returncode == 0, result.stderr
+        assert (worktree / ".github" / "skills" / "evidence-system" / "SKILL.md").is_file()
+        assert (worktree / "CLAUDE.md").is_file()
+
+    def test_noop_when_already_committed(self, repo):
+        self._scaffold(repo)
+        commit_framework_files(repo)
+        assert commit_framework_files(repo) is False
+
+    def test_noop_without_framework_files(self, repo):
+        assert commit_framework_files(repo) is False
+
+    def test_leaves_unrelated_staged_work_alone(self, repo):
+        self._scaffold(repo)
+        (repo / "experiment.py").write_text("print('wip')")
+        _git(repo, "add", "experiment.py")
+
+        assert commit_framework_files(repo) is True
+
+        assert "experiment.py" not in _git(repo, "show", "--name-only", "HEAD").stdout
+        assert "experiment.py" in _git(repo, "diff", "--cached", "--name-only").stdout

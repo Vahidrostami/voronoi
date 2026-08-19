@@ -136,6 +136,43 @@ def git_init_main(repo_path: str | Path) -> None:
     )
 
 
+# Everything a worker worktree must contain.  Worktrees are created with
+# `git worktree add -b <branch> <default-branch>`, which checks out committed
+# tree state only — anything left untracked never reaches a worker (INV-61).
+# `demos/` is investigation input rather than framework, but it is copied into
+# the workspace after provisioning and has the same visibility requirement.
+FRAMEWORK_PATHS = (".github", "scripts", "CLAUDE.md", "AGENTS.md", "demos")
+
+
+def commit_framework_files(repo_path: str | Path) -> bool:
+    """Commit the framework payload onto the current branch.
+
+    Uses a path-limited (partial) commit so unrelated staged or dirty work in
+    the workspace is left untouched.  Returns True if a commit was created.
+    """
+    root = Path(repo_path)
+    paths = [name for name in FRAMEWORK_PATHS if (root / name).exists()]
+    if not paths:
+        return False
+
+    def _git(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["git", *args], cwd=str(root), capture_output=True, text=True, timeout=120,
+        )
+
+    try:
+        # Staging first is required: a path-limited commit rejects untracked paths.
+        _git("add", "--", *paths)
+        result = _git(
+            "commit",
+            "-m", "voronoi: framework files (agents, skills, scripts, constitution)",
+            "--", *paths,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return False
+    return result.returncode == 0
+
+
 # Canonical checkpoint filenames — LLMs sometimes shorten the name
 _CHECKPOINT_NAMES = ("orchestrator-checkpoint.json", "checkpoint.json")
 
